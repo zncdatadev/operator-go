@@ -1,34 +1,28 @@
-# 定义工作流的名称
 name: CI
 
 on:
-  workflow_dispatch: # 允许手动触发工作流
-  push: # 当有代码推送事件发生时
+  workflow_dispatch:
+  push:
     branches:
-      - '*' # 只有推送到 main 分支时才触发
+      - '*'
     tags:
       - '*'
   pull_request:
 
 
-# 定义工作流的任务
 jobs:
   build:
     name: Set up Build
     runs-on: ubuntu-latest
 
-    # 定义任务中的步骤
     steps:
-      # 检出代码。只检出最新的1次提交
       - uses: actions/checkout@v3
         with:
           fetch-depth: 1
 
-      # 设置 QEMU 模拟器，这通常用于多平台的 Docker 构建
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
-      # 设置 Docker Buildx，用于构建多平台的 Docker 镜像
       - name: Set up Build
         uses: docker/setup-buildx-action@v2
       - run: |

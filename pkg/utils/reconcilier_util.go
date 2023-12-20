@@ -18,6 +18,7 @@ var (
 	logger = ctrl.Log.WithName("utils")
 )
 
+// CreateOrUpdate creates or updates the client.object
 func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
 	key := client.ObjectKeyFromObject(obj)
 	namespace := obj.GetNamespace()

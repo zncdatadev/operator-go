@@ -30,6 +30,7 @@ func Encode(value []byte) []byte {
 	return encoded
 }
 
+// GenerateRandomStr - generate random string for given length
 func GenerateRandomStr(length int) string {
 	letterBytes := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	bytes := make([]byte, length)
@@ -40,6 +41,7 @@ func GenerateRandomStr(length int) string {
 	return string(bytes)
 }
 
+// RemoveSpecialCharacter - remove special character
 func RemoveSpecialCharacter(str string) string {
 	regex := regexp.MustCompile("[^a-zA-Z0-9]+")
 	result := regex.ReplaceAllString(str, "")
