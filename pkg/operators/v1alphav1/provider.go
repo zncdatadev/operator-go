@@ -2,9 +2,12 @@ package v1alphav1
 
 // DatabaseProvider defines all types database provider of DatabaseConnection
 type DatabaseProvider struct {
-	MysqlProvider    *MysqlProvider    `json:"mysql,omitempty"`
+	// +kubebuilder:validation:Optional
+	MysqlProvider *MysqlProvider `json:"mysql,omitempty"`
+	// +kubebuilder:validation:Optional
 	PostgresProvider *PostgresProvider `json:"postgres,omitempty"`
-	RedisProvider    *RedisProvider    `json:"redis,omitempty"`
+	// +kubebuilder:validation:Optional
+	RedisProvider *RedisProvider `json:"redis,omitempty"`
 }
 
 // MysqlProvider defines the desired connection info of Mysql
