@@ -9,6 +9,12 @@ import (
 type S3ConnectionSpec struct {
 	// +kubebuilder:validation:Required
 	S3Credential *S3Credential `json:"credential,omitempty"`
+	// +kubebuilder:validation:Required
+	Endpoint string `json:"endpoint,omitempty"`
+	// +kubebuilder:validation:Optional
+	Region string `json:"region,omitempty"`
+	// +kubebuilder:validation:Optional
+	SSL bool `json:"ssl,omitempty"`
 }
 
 // S3Credential include  AccessKey and SecretKey or ExistingSecret. ExistingSecret include AccessKey and SecretKey ,it is encrypted by base64.
