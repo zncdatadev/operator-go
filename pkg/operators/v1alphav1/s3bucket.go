@@ -37,8 +37,8 @@ type S3Bucket struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   S3BucketSpec         `json:"spec,omitempty"`
-	Status status.ZncdataStatus `json:"status,omitempty"`
+	Spec   S3BucketSpec  `json:"spec,omitempty"`
+	Status status.Status `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true

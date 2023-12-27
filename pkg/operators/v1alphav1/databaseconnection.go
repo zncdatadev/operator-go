@@ -26,7 +26,7 @@ type DatabaseConnection struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec   DatabaseConnectionSpec `json:"spec,omitempty"`
-	Status status.ZncdataStatus   `json:"status,omitempty"`
+	Status status.Status          `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true

@@ -29,8 +29,8 @@ type Database struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   DatabaseSpec         `json:"spec,omitempty"`
-	Status status.ZncdataStatus `json:"status,omitempty"`
+	Spec   DatabaseSpec  `json:"spec,omitempty"`
+	Status status.Status `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
