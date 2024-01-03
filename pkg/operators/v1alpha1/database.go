@@ -1,4 +1,4 @@
-package v1alphav1 //nolint:typecheck
+package v1alpha1 //nolint:typecheck
 import (
 	"github.com/zncdata-labs/operator-go/pkg/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,8 +29,8 @@ type Database struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   DatabaseSpec         `json:"spec,omitempty"`
-	Status status.ZncdataStatus `json:"status,omitempty"`
+	Spec   DatabaseSpec  `json:"spec,omitempty"`
+	Status status.Status `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
