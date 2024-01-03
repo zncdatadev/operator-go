@@ -1,4 +1,4 @@
-package v1alphav1
+package v1alpha1
 
 // DatabaseProvider defines all types database provider of DatabaseConnection
 type DatabaseProvider struct {

@@ -90,7 +90,7 @@ func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) err
 	return err
 }
 
-// UpdateStatus updates the status of the SparkHistoryServer resource
+// UpdateStatus updates the status of the Server resource
 // https://stackoverflow.com/questions/76388004/k8s-controller-update-status-and-condition
 func UpdateStatus(ctx context.Context, reconcilier client.Client, instance client.Object) error {
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
