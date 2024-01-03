@@ -13,7 +13,6 @@ type IngressSpec struct {
 	// +kubebuilder:validation:Optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:="spark-history-server.example.com"
 	Host string `json:"host,omitempty"`
 }
 

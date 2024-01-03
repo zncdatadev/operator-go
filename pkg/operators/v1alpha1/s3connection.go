@@ -1,4 +1,4 @@
-package v1alphav1
+package v1alpha1
 
 import (
 	"github.com/zncdata-labs/operator-go/pkg/status"

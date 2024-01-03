@@ -1,4 +1,4 @@
-package v1alphav1 //nolint:typecheck
+package v1alpha1 //nolint:typecheck
 import (
 	"github.com/zncdata-labs/operator-go/pkg/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
