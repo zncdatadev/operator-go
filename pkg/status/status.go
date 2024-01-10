@@ -49,7 +49,7 @@ func (status *Status) InitStatusConditions() {
 	status.Conditions = []metav1.Condition{}
 	status.SetStatusCondition(metav1.Condition{
 		Type:               ConditionTypeProgressing,
-		Status:             metav1.ConditionTrue,
+		Status:             metav1.ConditionUnknown,
 		Reason:             ConditionReasonPreparing,
 		Message:            fmt.Sprintf("%s is preparing", status.Type),
 		ObservedGeneration: status.GetGeneration(),
@@ -57,7 +57,7 @@ func (status *Status) InitStatusConditions() {
 	})
 	status.SetStatusCondition(metav1.Condition{
 		Type:               ConditionTypeAvailable,
-		Status:             metav1.ConditionFalse,
+		Status:             metav1.ConditionUnknown,
 		Reason:             ConditionReasonPreparing,
 		Message:            fmt.Sprintf("%s is preparing", status.Type),
 		ObservedGeneration: status.GetGeneration(),
