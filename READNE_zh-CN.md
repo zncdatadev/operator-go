@@ -1,19 +1,17 @@
-# Operator-go
+# operator-go
 
-## 1. Operator-go简介
+Operator-go 是 zncdata-stack 中 operator 开发需要用公共类库，主要用于处理 operator 的相关逻辑。
 
-Operator-go 是 zncdata 下的 operator 的公共类库，主要用于处理 operator 的相关逻辑。
+[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdata-labs/operator-go)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdata-labs/operator-go)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zncdata-labs/operator-go/ci.yml)
+![GitHub License](https://img.shields.io/github/license/zncdata-labs/commons-operator)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/zncdata-labs/operator-go)
 
-## 2. 目录介绍
+## 特性
 
-由于都是公共类库，所以主要代码都放在了pkg目录下。
-
-### pkg/spec 目录
-
-    该目录把zncdata 开发的 operator 的公共部分提取出来，方便应用，后续会陆续增加内容
-    其中 commons-spec比较特殊，Commons-spec 是commons-operator 的 spec 部分，commons-operator 在 zncdata 的规划中会被许多
-    operator 引用，所以把它单独提取出来，方便其他项目使用。
-
-### pkg/status 目录
-
-    该目录是对 operator 的状态进行定义，目前 zncdata 的 operator 的 status 比较统一，目前抽离了出来，后续会陆续增加内容
+- 数据库连接 CRD ，为应用提供数据库连接和数据库配置，目前已经实现 Mysql ， Postgres ， Redis
+- S3连接 CRD ，为应用提供 S3 连接和 S3 桶配置
+- 认证 CRD，为应用提供灵活的认证方式，已经实现 oidc 配置
+- 错误和条件常量
+- k8s 对象创建或更新的优化

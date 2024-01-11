@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alhpa1
+package v1alpha1
 
 import (
 	"github.com/zncdata-labs/operator-go/pkg/status"
@@ -33,6 +33,9 @@ type S3ConnectionSpec struct {
 	Region string `json:"region,omitempty"`
 	// +kubebuilder:validation:Optional
 	SSL bool `json:"ssl,omitempty"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:=false
+	PathStyle bool `json:"pathStyle,omitempty"`
 }
 
 // S3Credential include  AccessKey and SecretKey or ExistingSecret.

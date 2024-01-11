@@ -2,4 +2,4 @@
 // +kubebuilder:object:generate=true
 // +groupName=stack.zncdata.net
 
-package v1alhpa1
+package v1alpha1

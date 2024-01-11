@@ -1,20 +1,16 @@
 # Operator-go
 
-## 1. Introduction to Operator-go
+[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdata-labs/operator-go)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdata-labs/operator-go)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zncdata-labs/operator-go/ci.yml)
+![GitHub License](https://img.shields.io/github/license/zncdata-labs/commons-operator)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/zncdata-labs/operator-go)
 
-Operator-go is the public class library of operator under zncdata, which is mainly used to handle operator-related logic.
 
-## 2. Directory introduction
+## Features
 
-Since they are all public class libraries, the main codes are placed in the pkg directory.
-
-### pkg/spec directory
-
-    This directory extracts the public parts of the operator developed by zncdata for easy application, and content will be added in the future.
-    Among them, commons-spec is special. Commons-spec is the spec part of commons-operator.
-    commons-operator will be referenced by many operators in the planning of zncdata, so it is extracted separately to facilitate the use of other projects.
-
-### pkg/status directory
-
-    This directory defines the status of the operator. Currently, the status of the operator in zncdata is relatively unified.
-    It is currently separated and content will be added in the future.
+- Database Connection CRD, which provides database connection and database configuration for applications, has implemented Mysql, Postgres, Redis
+- S3 Connection CRD: Provides S3 connection and S3 bucket configuration for applications
+- Authentication CRD provides flexible authentication for applications and has been configured with oidc
+- Error and condition constants
+- k8s object creation or update optimization
