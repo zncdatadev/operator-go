@@ -142,3 +142,7 @@ type RedisProvider struct {
 	// +kubebuilder:validation:Optional
 	Credential *DatabaseConnectionCredentialSpec `json:"credential,omitempty"`
 }
+
+func init() {
+	SchemeBuilder.Register(&Database{}, &DatabaseList{}, &DatabaseConnection{}, &DatabaseConnectionList{})
+}
