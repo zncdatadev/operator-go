@@ -109,3 +109,7 @@ type S3BucketList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []S3Bucket `json:"items"`
 }
+
+func init() {
+	SchemeBuilder.Register(&S3Bucket{}, &S3BucketList{}, &S3Connection{}, &S3ConnectionList{})
+}
