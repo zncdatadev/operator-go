@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/zncdata-labs/operator-go/pkg/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -25,28 +24,43 @@ const S3BucketFinalizer = "s3bucket.finalizers.stack.zncdata.net"
 
 // S3ConnectionSpec defines the desired credential of S3Connection
 type S3ConnectionSpec struct {
+
 	// +kubebuilder:validation:Required
 	S3Credential *S3Credential `json:"credential,omitempty"`
+
 	// +kubebuilder:validation:Required
 	Endpoint string `json:"endpoint,omitempty"`
+
 	// +kubebuilder:validation:Optional
 	Region string `json:"region,omitempty"`
+
 	// +kubebuilder:validation:Optional
 	SSL bool `json:"ssl,omitempty"`
+
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=false
 	PathStyle bool `json:"pathStyle,omitempty"`
 }
 
 // S3Credential include  AccessKey and SecretKey or ExistingSecret.
-// ExistingSecret include AccessKey and SecretKey ,it is encrypted by base64.
 type S3Credential struct {
+
+	// ExistingSecret include AccessKey and SecretKey ,it is encrypted by base64.
+	// If ExistingSecret is not empty, AccessKey and SecretKey will be ignored.
 	// +kubebuilder:validation:Optional
 	ExistSecret string `json:"existSecret,omitempty"`
+
 	// +kubebuilder:validation:Optional
 	AccessKey string `json:"accessKey,omitempty"`
+
 	// +kubebuilder:validation:Optional
 	SecretKey string `json:"secretKey,omitempty"`
+}
+
+type S3ConnectionStatus struct {
+
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"condition,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -57,8 +71,8 @@ type S3Connection struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   S3ConnectionSpec `json:"spec,omitempty"`
-	Status status.Status    `json:"status,omitempty"`
+	Spec   S3ConnectionSpec   `json:"spec,omitempty"`
+	Status S3ConnectionStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -74,19 +88,19 @@ type S3ConnectionList struct {
 type S3BucketSpec struct {
 
 	// +kubebuilder:validation:Required
+	BucketName string `json:"bucketName,omitempty"`
+
+	// +kubebuilder:validation:Required
 	Reference string `json:"reference,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Credential *S3BucketCredential `json:"credential,omitempty"`
-
-	// +kubebuilder:validation:Required
-	Name string `json:"name,omitempty"`
+	Credential *S3Credential `json:"credential,omitempty"`
 }
 
-// S3BucketCredential defines the desired secret of S3Bucket
-type S3BucketCredential struct {
+type S3BucketStatus struct {
+
 	// +kubebuilder:validation:Optional
-	ExistSecret string `json:"existSecret,omitempty"`
+	Conditions []metav1.Condition `json:"condition,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -97,8 +111,8 @@ type S3Bucket struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   S3BucketSpec  `json:"spec,omitempty"`
-	Status status.Status `json:"status,omitempty"`
+	Spec   S3BucketSpec   `json:"spec,omitempty"`
+	Status S3BucketStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true

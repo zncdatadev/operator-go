@@ -17,27 +17,28 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/zncdata-labs/operator-go/pkg/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // DatabaseSpec defines the desired connection info of Database
 type DatabaseSpec struct {
+
 	//+kubebuilder:validation:Required
-	Name string `json:"name,omitempty"`
+	DatabaseName string `json:"databaseName,omitempty"`
+
+	// Name of DatabaseConnection CR to use for this database.
 	//+kubebuilder:validation:Required
 	Reference string `json:"reference,omitempty"`
+
+	// Credential is the credential for the database.
+	// It contains Username and Password, or ExistSecret.
 	//+kubebuilder:validation:Required
-	Credential *DatabaseCredentialSpec `json:"credential,omitempty"`
+	Credential *CredentialSpec `json:"credential,omitempty"`
 }
 
-// DatabaseCredentialSpec include:
-// Username and Password or ExistSecret.
-// ExistSecret include Username and Password ,it is encrypted by base64.
-type DatabaseCredentialSpec struct {
-	ExistSecret string `json:"existingSecret,omitempty"`
-	Username    string `json:"username,omitempty"`
-	Password    string `json:"password,omitempty"`
+type DatabaseStatus struct {
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"condition,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -48,8 +49,8 @@ type Database struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   DatabaseSpec  `json:"spec,omitempty"`
-	Status status.Status `json:"status,omitempty"`
+	Spec   DatabaseSpec   `json:"spec,omitempty"`
+	Status DatabaseStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -64,13 +65,32 @@ type DatabaseList struct {
 // DatabaseConnectionSpec defines the desired state of DatabaseConnection
 type DatabaseConnectionSpec struct {
 	// +kubebuilder:validation:Required
-	Provider *DatabaseProvider `json:"provider,omitempty"`
-	Default  bool              `json:"default,omitempty"`
+	Provider *DatabaseConnectionProvider `json:"provider,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	Default bool `json:"default,omitempty"`
 }
 
-// DatabaseConnectionCredentialSpec include ExistSecret, it is encrypted by base64.
-type DatabaseConnectionCredentialSpec struct {
+// CredentialSpec include: Username and Password or ExistSecret.
+type CredentialSpec struct {
+	// ExistSecret is a Secret name, created by user.
+	// It includes Username and Password, it is encrypted by base64.
+	// If ExistSecret is not empty, Username and Password will be ignored.
+	// +kubebuilder:validation:Optional
 	ExistSecret string `json:"existingSecret,omitempty"`
+
+	// Username is the username for the database.
+	// +kubebuilder:validation:Optional
+	Username string `json:"username,omitempty"`
+
+	// Password is the password for the database.
+	// +kubebuilder:validation:Optional
+	Password string `json:"password,omitempty"`
+}
+
+type DatabaseConnectionStatus struct {
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"condition,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -81,8 +101,8 @@ type DatabaseConnection struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   DatabaseConnectionSpec `json:"spec,omitempty"`
-	Status status.Status          `json:"status,omitempty"`
+	Spec   DatabaseConnectionSpec   `json:"spec,omitempty"`
+	Status DatabaseConnectionStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -94,8 +114,10 @@ type DatabaseConnectionList struct {
 	Items           []DatabaseConnection `json:"items"`
 }
 
-// DatabaseProvider defines all types database provider of DatabaseConnection
-type DatabaseProvider struct {
+// DatabaseConnectionProvider defines the enum provider for DataConnection.
+// You can choose one of mysql, postgres, redis, and provider is required.
+// +kubebuilder:validation:Enum=mysql;postgres;redis
+type DatabaseConnectionProvider struct {
 	// +kubebuilder:validation:Optional
 	Mysq *MysqlProvider `json:"mysql,omitempty"`
 	// +kubebuilder:validation:Optional
@@ -106,7 +128,9 @@ type DatabaseProvider struct {
 
 // MysqlProvider defines the desired connection info of Mysql
 type MysqlProvider struct {
-	// +kubebuilder:default=mysql
+	// If you want to use mysql8+ , you should set driver to com.mysql.cj.jdbc.Driver,
+	// otherwise you should set driver to com.mysql.jdbc.Driver.
+	// +kubebuilder:default=com.mysql.cj.jdbc.Driver
 	// +kubebuilder:validation:Required
 	Driver string `json:"driver,omitempty"`
 	// +kubebuilder:validation:Required
@@ -116,12 +140,12 @@ type MysqlProvider struct {
 	// +kubebuilder:validation:Required
 	SSL bool `json:"ssl,omitempty"`
 	// +kubebuilder:validation:Required
-	Credential *DatabaseConnectionCredentialSpec `json:"credential,omitempty"`
+	Credential *CredentialSpec `json:"credential,omitempty"`
 }
 
 // PostgresProvider defines the desired connection info of Postgres
 type PostgresProvider struct {
-	// +kubebuilder:default=postgres
+	// +kubebuilder:default=org.postgresql.Driver
 	Driver string `json:"driver,omitempty"`
 	// +kubebuilder:validation:Required
 	Host string `json:"host,omitempty"`
@@ -130,7 +154,7 @@ type PostgresProvider struct {
 	// +kubebuilder:validation:Required
 	SSL bool `json:"ssl,omitempty"`
 	// +kubebuilder:validation:Required
-	Credential *DatabaseConnectionCredentialSpec `json:"credential,omitempty"`
+	Credential *CredentialSpec `json:"credential,omitempty"`
 }
 
 // RedisProvider defines the desired connection info of Redis
@@ -140,7 +164,7 @@ type RedisProvider struct {
 	// +kubebuilder:validation:Required
 	Port string `json:"port,omitempty"`
 	// +kubebuilder:validation:Optional
-	Credential *DatabaseConnectionCredentialSpec `json:"credential,omitempty"`
+	Credential *CredentialSpec `json:"credential,omitempty"`
 }
 
 func init() {
