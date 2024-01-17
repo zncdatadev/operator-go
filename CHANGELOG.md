@@ -1,5 +1,13 @@
 # CHANGELOG
 
+<!-- markdownlint-disable -->
+
+## v0.2.1 2024-01-17
+
+### bugs
+
+- remove `DatabaseConnection.spec.provider` enum by CRD validation
+
 ## v0.2.0 2024-01-16
 
 ### bugs
