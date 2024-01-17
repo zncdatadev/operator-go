@@ -116,7 +116,6 @@ type DatabaseConnectionList struct {
 
 // DatabaseConnectionProvider defines the enum provider for DataConnection.
 // You can choose one of mysql, postgres, redis, and provider is required.
-// +kubebuilder:validation:Enum=mysql;postgres;redis
 type DatabaseConnectionProvider struct {
 	// +kubebuilder:validation:Optional
 	Mysq *MysqlProvider `json:"mysql,omitempty"`
