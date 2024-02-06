@@ -33,7 +33,7 @@ type DatabaseSpec struct {
 	// Credential is the credential for the database.
 	// It contains Username and Password, or ExistSecret.
 	//+kubebuilder:validation:Required
-	Credential *CredentialSpec `json:"credential,omitempty"`
+	Credential *DatabaseCredentialSpec `json:"credential,omitempty"`
 }
 
 type DatabaseStatus struct {
@@ -71,8 +71,8 @@ type DatabaseConnectionSpec struct {
 	Default bool `json:"default,omitempty"`
 }
 
-// CredentialSpec include: Username and Password or ExistSecret.
-type CredentialSpec struct {
+// DatabaseCredentialSpec include: Username and Password or ExistSecret.
+type DatabaseCredentialSpec struct {
 	// ExistSecret is a Secret name, created by user.
 	// It includes Username and Password, it is encrypted by base64.
 	// If ExistSecret is not empty, Username and Password will be ignored.
@@ -127,9 +127,7 @@ type DatabaseConnectionProvider struct {
 
 // MysqlProvider defines the desired connection info of Mysql
 type MysqlProvider struct {
-	// If you want to use mysql8+ , you should set driver to com.mysql.cj.jdbc.Driver,
-	// otherwise you should set driver to com.mysql.jdbc.Driver.
-	// +kubebuilder:default=com.mysql.cj.jdbc.Driver
+	// +kubebuilder:default=mysql
 	// +kubebuilder:validation:Required
 	Driver string `json:"driver,omitempty"`
 	// +kubebuilder:validation:Required
@@ -139,7 +137,7 @@ type MysqlProvider struct {
 	// +kubebuilder:validation:Required
 	SSL bool `json:"ssl,omitempty"`
 	// +kubebuilder:validation:Required
-	Credential *CredentialSpec `json:"credential,omitempty"`
+	Credential *DatabaseCredentialSpec `json:"credential,omitempty"`
 }
 
 // PostgresProvider defines the desired connection info of Postgres
@@ -153,7 +151,7 @@ type PostgresProvider struct {
 	// +kubebuilder:validation:Required
 	SSL bool `json:"ssl,omitempty"`
 	// +kubebuilder:validation:Required
-	Credential *CredentialSpec `json:"credential,omitempty"`
+	Credential *DatabaseCredentialSpec `json:"credential,omitempty"`
 }
 
 // RedisProvider defines the desired connection info of Redis
@@ -162,8 +160,6 @@ type RedisProvider struct {
 	Host string `json:"host,omitempty"`
 	// +kubebuilder:validation:Required
 	Port string `json:"port,omitempty"`
-	// +kubebuilder:validation:Optional
-	Credential *CredentialSpec `json:"credential,omitempty"`
 }
 
 func init() {
