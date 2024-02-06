@@ -7,7 +7,6 @@ var (
 	Errorf       = errors.Errorf
 	Wrap         = errors.Wrap
 	Wrapf        = errors.Wrapf
-	WithStack    = errors.WithStack
 	WithMessagef = errors.WithMessagef
 	Cause        = errors.Cause
 	Is           = errors.Is
