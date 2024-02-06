@@ -1,6 +1,13 @@
 # CHANGELOG
 
 <!-- markdownlint-disable -->
+## v0.3.0 2024-0206
+
+### features
+
+- Update domain to `zncdata.dev`
+- Update credential struct name
+- Fix `mysql` word typo
 
 ## v0.2.1 2024-01-17
 
