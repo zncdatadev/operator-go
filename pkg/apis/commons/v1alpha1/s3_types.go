@@ -26,7 +26,7 @@ const S3BucketFinalizer = "s3bucket.finalizers.stack.zncdata.net"
 type S3ConnectionSpec struct {
 
 	// +kubebuilder:validation:Required
-	S3Credential *S3Credential `json:"credential,omitempty"`
+	Credential *S3Credential `json:"credential,omitempty"`
 
 	// +kubebuilder:validation:Required
 	Endpoint string `json:"endpoint,omitempty"`
@@ -42,11 +42,11 @@ type S3ConnectionSpec struct {
 	PathStyle bool `json:"pathStyle,omitempty"`
 }
 
-// S3Credential include  AccessKey and SecretKey or ExistingSecret.
+// S3Credential include `ACCESS_KEY` and `SECRET_KEY` or ExistingSecret.
 type S3Credential struct {
 
-	// ExistingSecret include AccessKey and SecretKey ,it is encrypted by base64.
-	// If ExistingSecret is not empty, AccessKey and SecretKey will be ignored.
+	// ExistingSecret include `ACCESS_KEY` and `SECRET_KEY` ,it is encrypted by base64.
+	// If ExistingSecret is not empty, `ACCESS_KEY` and `SECRET_KEY` will be ignored.
 	// +kubebuilder:validation:Optional
 	ExistSecret string `json:"existSecret,omitempty"`
 
