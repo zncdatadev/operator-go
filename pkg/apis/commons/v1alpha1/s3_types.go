@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const S3BucketFinalizer = "s3bucket.finalizers.stack.zncdata.net"
+const S3BucketFinalizer = "s3bucket.finalizers.zncdata.net"
 
 // S3ConnectionSpec defines the desired credential of S3Connection
 type S3ConnectionSpec struct {
