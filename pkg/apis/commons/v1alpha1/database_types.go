@@ -118,7 +118,7 @@ type DatabaseConnectionList struct {
 // You can choose one of mysql, postgres, redis, and provider is required.
 type DatabaseConnectionProvider struct {
 	// +kubebuilder:validation:Optional
-	Mysq *MysqlProvider `json:"mysql,omitempty"`
+	Mysql *MysqlProvider `json:"mysql,omitempty"`
 	// +kubebuilder:validation:Optional
 	Postgres *PostgresProvider `json:"postgres,omitempty"`
 	// +kubebuilder:validation:Optional
