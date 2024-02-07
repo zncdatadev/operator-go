@@ -3,11 +3,11 @@ package util
 import "encoding/base64"
 
 type Base64[T []byte | string] struct {
-	data T
+	Data T
 }
 
 func (b Base64[T]) Encode() T {
-	switch v := any(b.data).(type) {
+	switch v := any(b.Data).(type) {
 	case []byte:
 		str := base64.StdEncoding.EncodeToString(v)
 		return T(str)
@@ -20,7 +20,7 @@ func (b Base64[T]) Encode() T {
 }
 
 func (b Base64[T]) Decode() (T, error) {
-	switch v := any(b.data).(type) {
+	switch v := any(b.Data).(type) {
 	case []byte:
 		bytes, err := base64.StdEncoding.DecodeString(string(v))
 		if err != nil {
