@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.4.0 2024-03-20
+
+### features
+
+- Add base64 util function, support method: `Base64.Encode` and `Base64.Decode`
+
 <!-- markdownlint-disable -->
 ## v0.3.0 2024-0206
 
