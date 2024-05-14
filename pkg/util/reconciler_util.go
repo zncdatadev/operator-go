@@ -7,6 +7,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/cisco-open/k8s-objectmatcher/patch"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,22 +20,31 @@ var (
 )
 
 // CreateOrUpdate creates or updates the client.object
-func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
+func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) (bool, error) {
+
 	key := client.ObjectKeyFromObject(obj)
 	namespace := obj.GetNamespace()
-
 	kinds, _, _ := scheme.Scheme.ObjectKinds(obj)
-
 	name := obj.GetName()
+
+	logger.V(5).Info("Creating or updating object", "Kind", kinds, "Namespace", namespace, "Name", name)
+
 	current := obj.DeepCopyObject().(client.Object)
 	// Check if the object exists, if not create a new one
 	err := c.Get(ctx, key, current)
+	var calculateOpt = []patch.CalculateOption{
+		patch.IgnoreStatusFields(),
+	}
 	if errors.IsNotFound(err) {
 		if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(obj); err != nil {
-			return err
+			return false, err
 		}
 		logger.Info("Creating a new object", "Kind", kinds, "Namespace", namespace, "Name", name)
-		return c.Create(ctx, obj)
+
+		if err := c.Create(ctx, obj); err != nil {
+			return false, err
+		}
+		return true, nil
 	} else if err == nil {
 		switch obj.(type) {
 		case *corev1.Service:
@@ -54,40 +64,45 @@ func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) err
 					svc.Spec.Ports[i].NodePort = currentSvc.Spec.Ports[i].NodePort
 				}
 			}
+		case *appsv1.StatefulSet:
+			calculateOpt = append(calculateOpt, patch.IgnoreVolumeClaimTemplateTypeMetaAndStatus())
 		}
-		result, err := patch.DefaultPatchMaker.Calculate(current, obj, patch.IgnoreStatusFields())
+		result, err := patch.DefaultPatchMaker.Calculate(current, obj, calculateOpt...)
 		if err != nil {
 			logger.Error(err, "failed to calculate patch to match objects, moving on to update")
 			// if there is an error with matching, we still want to update
 			resourceVersion := current.(metav1.ObjectMetaAccessor).GetObjectMeta().GetResourceVersion()
 			obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetResourceVersion(resourceVersion)
 
-			return c.Update(ctx, obj)
+			if err := c.Update(ctx, obj); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 
 		if !result.IsEmpty() {
-			logger.Info(fmt.Sprintf("Resource update for object %s:%s", kinds, obj.(metav1.ObjectMetaAccessor).GetObjectMeta().GetName()),
+			logger.Info(
+				fmt.Sprintf("Resource update for object %s:%s", kinds, obj.(metav1.ObjectMetaAccessor).GetObjectMeta().GetName()),
 				"patch", string(result.Patch),
-				// "original", string(result.Original),
-				// "modified", string(result.Modified),
-				// "current", string(result.Current),
 			)
 
-			err := patch.DefaultAnnotator.SetLastAppliedAnnotation(obj)
-			if err != nil {
+			if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(obj); err != nil {
 				logger.Error(err, "failed to annotate modified object", "object", obj)
 			}
 
 			resourceVersion := current.(metav1.ObjectMetaAccessor).GetObjectMeta().GetResourceVersion()
 			obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetResourceVersion(resourceVersion)
 
-			return c.Update(ctx, obj)
+			if err = c.Update(ctx, obj); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 
 		logger.V(1).Info(fmt.Sprintf("Skipping update for object %s:%s", kinds, obj.(metav1.ObjectMetaAccessor).GetObjectMeta().GetName()))
-
 	}
-	return err
+	return false, err
+
 }
 
 // UpdateStatus updates the status of the Server resource
