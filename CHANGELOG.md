@@ -1,4 +1,18 @@
+<!-- markdownlint-disable -->
 # CHANGELOG
+
+## v0.5.0 2024-05-21
+
+**BREAKCHANGE** Update github group to `zncdatadev`
+
+### features
+
+- Add `properties` configuration util
+- Add `xml` configuration util
+- Add code of string intendation, tabs and spaces can be converted to each other
+- Add name string generator, use `-` to connect words
+- Add StatefulSet check to `CreateOrUpdate`
+- Add golang template parse function
 
 ## v0.4.0 2024-03-20
 
@@ -6,7 +20,6 @@
 
 - Add base64 util function, support method: `Base64.Encode` and `Base64.Decode`
 
-<!-- markdownlint-disable -->
 ## v0.3.0 2024-0206
 
 ### features
