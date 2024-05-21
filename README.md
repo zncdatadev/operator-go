@@ -1,10 +1,10 @@
 # Operator-go
 
-[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdata-labs/operator-go)
-![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdata-labs/operator-go)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zncdata-labs/operator-go/ci.yml)
-![GitHub License](https://img.shields.io/github/license/zncdata-labs/commons-operator)
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/zncdata-labs/operator-go)
+[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdatadev/operator-go)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdatadev/operator-go)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zncdatadev/operator-go/ci.yml)
+![GitHub License](https://img.shields.io/github/license/zncdatadev/commons-operator)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/zncdatadev/operator-go)
 
 
 ## Features

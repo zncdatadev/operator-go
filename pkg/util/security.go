@@ -2,7 +2,7 @@ package util
 
 import (
 	"encoding/base64"
-	"github.com/zncdata-labs/operator-go/pkg/errors"
+	"github.com/zncdatadev/operator-go/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 )
 
