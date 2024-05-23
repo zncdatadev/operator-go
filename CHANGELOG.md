@@ -1,6 +1,16 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.5.1 2024-05-23
+
+### features
+
+- Bump go version to 1.22
+
+### chore
+
+- Add go boilerplate to auto generate license header
+
 ## v0.5.0 2024-05-21
 
 **BREAKCHANGE** Update github group to `zncdatadev`
