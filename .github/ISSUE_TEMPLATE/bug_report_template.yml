@@ -15,13 +15,13 @@ body:
       placeholder: Bug description
     validations:
       required: true
-  - type: checkboxes
-    attributes:
-      label: Have you searched existing issues?  🔎
-      description: Please search to see if an issue already exists for the issue you encountered.
-      options:
-        - label: I have searched and found no existing issues
-          required: true
+#  - type: checkboxes
+#    attributes:
+#      label: Have you searched existing issues?  🔎
+#      description: Please search to see if an issue already exists for the issue you encountered.
+#      options:
+#        - label: I have searched and found no existing issues
+#          required: true
   - type: textarea
     id: reproduction
     attributes:
