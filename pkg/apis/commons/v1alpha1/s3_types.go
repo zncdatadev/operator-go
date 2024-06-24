@@ -26,7 +26,7 @@ const S3BucketFinalizer = "s3bucket.finalizers.zncdata.net"
 type S3ConnectionSpec struct {
 
 	// +kubebuilder:validation:Required
-	Credential *S3Credential `json:"credential,omitempty"`
+	Credential *S3Credential `json:"credential"`
 
 	// +kubebuilder:validation:Required
 	Endpoint string `json:"endpoint,omitempty"`
@@ -40,6 +40,37 @@ type S3ConnectionSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=false
 	PathStyle bool `json:"pathStyle,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	Tls *Tls `json:"tls,omitempty"`
+}
+
+type Tls struct {
+	// +kubebuilder:validation:Optional
+	Verification *Verification `json:"verification,omitempty"`
+}
+
+type Verification struct {
+	// +kubebuilder:validation:Optional
+	None *NoneVerification `json:"none,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	Server *ServerVerification `json:"server,omitempty"`
+}
+
+type NoneVerification struct {
+}
+
+type ServerVerification struct {
+	// +kubebuilder:validation:Required
+	CACert *CACert `json:"caCert"`
+}
+
+type CACert struct {
+	// +kubebuilder:validation:Optional
+	SecretClass string `json:"secretClass,omitempty"`
+
+	WebPIK *string `json:"webPIK,omitempty"`
 }
 
 // S3Credential include `ACCESS_KEY` and `SECRET_KEY` or ExistingSecret.
