@@ -25,6 +25,7 @@ const S3BucketFinalizer = "s3bucket.finalizers.zncdata.net"
 // S3ConnectionSpec defines the desired credential of S3Connection
 type S3ConnectionSpec struct {
 
+	// Provides access credentials for S3Connection through SecretClass. SecretClass only needs to include the ACCESS_KEY and SECRET_KEY fields.
 	// +kubebuilder:validation:Required
 	Credential *S3Credential `json:"credential"`
 
@@ -76,16 +77,23 @@ type CACert struct {
 // S3Credential include `ACCESS_KEY` and `SECRET_KEY` or ExistingSecret.
 type S3Credential struct {
 
-	// ExistingSecret include `ACCESS_KEY` and `SECRET_KEY` ,it is encrypted by base64.
-	// If ExistingSecret is not empty, `ACCESS_KEY` and `SECRET_KEY` will be ignored.
 	// +kubebuilder:validation:Optional
-	ExistSecret string `json:"existSecret,omitempty"`
+	Scope *S3CredentialScope `json:"scope,omitempty"`
+
+	// +kubebuilder:validation:Required
+	SecretClass string `json:"secretClass"`
+}
+
+type S3CredentialScope struct {
 
 	// +kubebuilder:validation:Optional
-	AccessKey string `json:"accessKey,omitempty"`
+	Node bool `json:"node,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	SecretKey string `json:"secretKey,omitempty"`
+	Pod bool `json:"pod,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	Services []string `json:"services,omitempty"`
 }
 
 type S3ConnectionStatus struct {
