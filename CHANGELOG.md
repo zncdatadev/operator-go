@@ -1,6 +1,21 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.7.0 2024-06-27
+
+### features
+
+**BROKENCHANGE** Update `S3Connection` and `DatabaseConnection` to `SecretClass` and `SecretClass` support `SecretClass.authentication.zncdata.dev` and `SecretClass.s3.zncdata.dev` group
+
+- Add group `s3.zncdata.dev` to `s3` package, and move `S3Connection` and `S3Bucket` to `s3` package
+- Add group `database.zncdata.dev` to `database` package, and move `DatabaseConnection` and `Database` to `database` package
+- Add `AuthenticationClass.authentication.zncdata.dev`, and support oidc ldap tls and static
+- Use `SecretClass` provide `S3Connection` credential
+
+### chore
+
+- typo fix issue template
+
 ## v0.6.0 2024-06-24
 
 ### features
