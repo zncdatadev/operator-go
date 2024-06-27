@@ -1,6 +1,19 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.6.0 2024-06-24
+
+### features
+
+- Add `cluster operation` `logging` `pdb` `resource` api to commons
+- Add resource builder and basic reconciler, you can implement in operator
+- Add s3 client-side to verification tls certificate
+
+### chore
+
+- Add issue template
+
+
 ## v0.5.1 2024-05-23
 
 ### features
