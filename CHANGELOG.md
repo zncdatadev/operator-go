@@ -5,7 +5,7 @@
 
 ### features
 
-**BROKENCHANGE** Update `S3Connection` and `DatabaseConnection` to `SecretClass` and `SecretClass` support `SecretClass.authentication.zncdata.dev` and `SecretClass.s3.zncdata.dev` group
+**BROKENCHANGE:** Update `S3Connection` and `S3Bucket` group to `S3Connection.s3.zncdata.dev` and `S3Bucket.s3.zncdata.dev`, Update `DatabaseConnection` and `Database` group to `DatabaseConnection.database.zncdata.dev` and `Database.database.zncdata.dev`
 
 - Add group `s3.zncdata.dev` to `s3` package, and move `S3Connection` and `S3Bucket` to `s3` package
 - Add group `database.zncdata.dev` to `database` package, and move `DatabaseConnection` and `Database` to `database` package
