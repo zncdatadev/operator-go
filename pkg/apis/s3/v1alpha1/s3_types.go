@@ -22,8 +22,6 @@ import (
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
-const S3BucketFinalizer = "s3bucket.finalizers.zncdata.net"
-
 // S3ConnectionSpec defines the desired credential of S3Connection
 type S3ConnectionSpec struct {
 
