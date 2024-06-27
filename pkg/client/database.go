@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	commonsv1alph1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	dbv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/database/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
 type DataBaseType string
@@ -98,21 +99,21 @@ func (d *DatabaseConfiguration) GetRefDatabaseName() string {
 	return *d.DbReference
 }
 
-func (d *DatabaseConfiguration) GetRefDatabase(ctx context.Context) (commonsv1alph1.Database, error) {
-	databaseCR := &commonsv1alph1.Database{
+func (d *DatabaseConfiguration) GetRefDatabase(ctx context.Context) (dbv1alpha1.Database, error) {
+	databaseCR := &dbv1alpha1.Database{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: d.Client.GetOwnerNamespace(),
 			Name:      d.GetRefDatabaseName(),
 		},
 	}
 	if err := d.Client.Get(ctx, databaseCR); err != nil {
-		return commonsv1alph1.Database{}, err
+		return dbv1alpha1.Database{}, err
 	}
 	return *databaseCR, nil
 }
 
-func (d *DatabaseConfiguration) GetRefDatabaseConnection(name string) (commonsv1alph1.DatabaseConnection, error) {
-	databaseConnectionCR := &commonsv1alph1.DatabaseConnection{
+func (d *DatabaseConfiguration) GetRefDatabaseConnection(name string) (dbv1alpha1.DatabaseConnection, error) {
+	databaseConnectionCR := &dbv1alpha1.DatabaseConnection{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: d.GetNamespace(),
 			Name:      name,
@@ -120,7 +121,7 @@ func (d *DatabaseConfiguration) GetRefDatabaseConnection(name string) (commonsv1
 	}
 
 	if err := d.Client.Get(d.Context, databaseConnectionCR); err != nil {
-		return commonsv1alph1.DatabaseConnection{}, err
+		return dbv1alpha1.DatabaseConnection{}, err
 	}
 	return *databaseConnectionCR, nil
 }

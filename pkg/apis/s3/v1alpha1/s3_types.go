@@ -18,6 +18,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
 const S3BucketFinalizer = "s3bucket.finalizers.zncdata.net"
@@ -48,30 +50,7 @@ type S3ConnectionSpec struct {
 
 type Tls struct {
 	// +kubebuilder:validation:Optional
-	Verification *Verification `json:"verification,omitempty"`
-}
-
-type Verification struct {
-	// +kubebuilder:validation:Optional
-	None *NoneVerification `json:"none,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	Server *ServerVerification `json:"server,omitempty"`
-}
-
-type NoneVerification struct {
-}
-
-type ServerVerification struct {
-	// +kubebuilder:validation:Required
-	CACert *CACert `json:"caCert"`
-}
-
-type CACert struct {
-	// +kubebuilder:validation:Optional
-	SecretClass string `json:"secretClass,omitempty"`
-
-	WebPIK *string `json:"webPIK,omitempty"`
+	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification,omitempty"`
 }
 
 // S3Credential include `ACCESS_KEY` and `SECRET_KEY` or ExistingSecret.

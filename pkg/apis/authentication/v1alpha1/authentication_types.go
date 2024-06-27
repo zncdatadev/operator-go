@@ -14,27 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1alpha1 contains API Schema definitions for the v1alpha1 API group
-// +kubebuilder:object:generate=true
-// +groupName=zncdata.dev
-
 package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
-)
 
-var (
-	// GroupVersion is group version used to register these objects
-	AuthenticationGroupVersion = schema.GroupVersion{Group: "authentication.zncdata.dev", Version: "v1alpha1"}
-
-	// SchemeBuilder is used to add go types to the GroupVersionKind scheme
-	AuthenticationSchemeBuilder = &scheme.Builder{GroupVersion: AuthenticationGroupVersion}
-
-	// AddToScheme adds the types in this group-version to the given scheme.
-	AuthenticationAddToScheme = AuthenticationSchemeBuilder.AddToScheme
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
 type ResponseType string
@@ -44,9 +29,10 @@ const (
 	ResponseTypeToken ResponseType = "id_token"
 )
 
+// AuthenticationClassSpec defines the desired state of AuthenticationClass
 type AuthenticationClassSpec struct {
 	// +kubebuilder:validation:Required
-	AuthenticationProvider string `json:"provider,omitempty"`
+	AuthenticationProvider *AuthenticationProvider `json:"provider,omitempty"`
 }
 
 type AuthenticationProvider struct {
@@ -84,7 +70,7 @@ type OIDCProvider struct {
 	Scopes []string `json:"scopes,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Tls *Tls `json:"tls,omitempty"`
+	TLS *TLS `json:"tls,omitempty"`
 }
 
 type TLSPrivider struct {
@@ -118,7 +104,12 @@ type LDAPProvider struct {
 	SearchFilter string `json:"searchFilter,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Tls *Tls `json:"tls,omitempty"`
+	TLS *TLS `json:"tls,omitempty"`
+}
+
+type TLS struct {
+	// +kubebuilder:validation:Optional
+	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification,omitempty"`
 }
 
 type LDAPCredential struct {
@@ -183,5 +174,5 @@ type AuthenticationClassList struct {
 }
 
 func init() {
-	AuthenticationSchemeBuilder.Register(&AuthenticationClass{}, &AuthenticationClassList{})
+	SchemeBuilder.Register(&AuthenticationClass{}, &AuthenticationClassList{})
 }
