@@ -3,7 +3,6 @@ package reconciler
 import (
 	"context"
 
-	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,9 +24,11 @@ var _ Reconciler = &BaseReconciler[AnySpec]{}
 
 type BaseReconciler[T AnySpec] struct {
 	// Do not use ptr, to avoid other packages to modify the client
-	Client  *client.Client
-	Options builder.Options
-	Spec    T
+	Client *client.Client
+
+	Name string
+
+	Spec T
 }
 
 func (b *BaseReconciler[T]) GetClient() *client.Client {
@@ -35,11 +36,11 @@ func (b *BaseReconciler[T]) GetClient() *client.Client {
 }
 
 func (b *BaseReconciler[T]) GetName() string {
-	return b.Options.GetFullName()
+	return b.Name
 }
 
 func (b *BaseReconciler[T]) GetNamespace() string {
-	return b.Options.GetNamespace()
+	return b.Client.GetOwnerNamespace()
 }
 
 func (b *BaseReconciler[T]) GetCtrlClient() ctrlclient.Client {

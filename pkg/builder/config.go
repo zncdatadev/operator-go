@@ -9,7 +9,7 @@ import (
 )
 
 type ConfigBuilder interface {
-	Builder
+	ResourceBuilder
 	AddData(data map[string]string) ConfigBuilder
 	AddDecodeData(data map[string][]byte) ConfigBuilder
 	SetData(data map[string]string) ConfigBuilder
@@ -26,14 +26,22 @@ type BaseConfigBuilder struct {
 	data map[string]string
 }
 
+type ConfigBuilderOptions struct {
+	Name        string
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
 func NewBaseConfigBuilder(
 	client *client.Client,
-	options Options,
+	options *ConfigBuilderOptions,
 ) *BaseConfigBuilder {
 	return &BaseConfigBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client:      client,
+			name:        options.Name,
+			labels:      options.Labels,
+			annotations: options.Annotations,
 		},
 		data: make(map[string]string),
 	}
@@ -83,7 +91,7 @@ type ConfigMapBuilder struct {
 
 func NewConfigMapBuilder(
 	client *client.Client,
-	options Options,
+	options *ConfigBuilderOptions,
 ) *ConfigMapBuilder {
 	return &ConfigMapBuilder{
 		BaseConfigBuilder: *NewBaseConfigBuilder(client, options),
@@ -109,7 +117,7 @@ var _ ConfigBuilder = &SecretBuilder{}
 
 func NewSecretBuilder(
 	client *client.Client,
-	options Options,
+	options *ConfigBuilderOptions,
 ) *SecretBuilder {
 	return &SecretBuilder{
 		BaseConfigBuilder: *NewBaseConfigBuilder(client, options),

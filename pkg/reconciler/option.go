@@ -1,18 +1,9 @@
-package builder
+package reconciler
 
 import (
 	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/util"
 	corev1 "k8s.io/api/core/v1"
-)
-
-var (
-	MatchingLabelsNames = []string{
-		"app.kubernetes.io/name",
-		"app.kubernetes.io/instance",
-		"app.kubernetes.io/role-group",
-		"app.kubernetes.io/component",
-	}
 )
 
 type Options interface {
@@ -22,7 +13,6 @@ type Options interface {
 	GetFullName() string
 	GetLabels() map[string]string
 	AddLabels(labels map[string]string)
-	GetMatchingLabels() map[string]string
 	GetAnnotations() map[string]string
 
 	GetClusterOperation() *apiv1alpha1.ClusterOperationSpec
@@ -73,21 +63,6 @@ func (o *ClusterOptions) AddLabels(labels map[string]string) {
 	}
 }
 
-func (o *ClusterOptions) filterLabels(labels map[string]string) map[string]string {
-
-	matchingLabels := make(map[string]string)
-	for _, label := range MatchingLabelsNames {
-		if value, ok := labels[label]; ok {
-			matchingLabels[label] = value
-		}
-	}
-	return matchingLabels
-}
-
-func (o *ClusterOptions) GetMatchingLabels() map[string]string {
-	return o.filterLabels(o.GetLabels())
-}
-
 func (o *ClusterOptions) GetClusterOperation() *apiv1alpha1.ClusterOperationSpec {
 	return o.ClusterOperation
 }
@@ -123,16 +98,13 @@ func (o *RoleOptions) GetLabels() map[string]string {
 	return labels
 }
 
-func (o *RoleOptions) GetMatchingLabels() map[string]string {
-	return o.filterLabels(o.GetLabels())
-}
-
 type RoleGroupOptions struct {
 	RoleOptions
 	Name     string
 	Replicas *int32
 
 	PodDisruptionBudget *apiv1alpha1.PodDisruptionBudgetSpec
+	Affinity            *corev1.Affinity
 
 	CommandOverrides []string
 	EnvOverrides     map[string]string
@@ -151,8 +123,4 @@ func (o *RoleGroupOptions) GetLabels() map[string]string {
 	labels := o.RoleOptions.GetLabels()
 	labels["app.kubernetes.io/role-group"] = o.Name
 	return labels
-}
-
-func (o *RoleGroupOptions) GetMatchingLabels() map[string]string {
-	return o.filterLabels(o.GetLabels())
 }

@@ -10,62 +10,42 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type JobBuilder interface {
-	Builder
-	GetObject() *batchv1.Job
+var _ JobBuilder = &jobBuilder{}
 
-	AddContainers([]corev1.Container)
-	AddContainer(corev1.Container)
-	ResetContainers([]corev1.Container)
-	GetContainers() []corev1.Container
+type jobBuilder struct {
+	BaseWorkloadBuilder
 
-	AddInitContainers([]corev1.Container)
-	AddInitContainer(corev1.Container)
-	ResetInitContainers([]corev1.Container)
-	GetInitContainers() []corev1.Container
-
-	AddVolumes([]corev1.Volume)
-	AddVolume(corev1.Volume)
-	ResetVolumes([]corev1.Volume)
-	GetVolumes() []corev1.Volume
-
-	SetRestPolicy(corev1.RestartPolicy)
-}
-
-type GenericJobBuilder struct {
-	BaseResourceBuilder
-
-	containers     []corev1.Container
-	initContainers []corev1.Container
-	volumes        []corev1.Volume
-	resetPolicy    corev1.RestartPolicy
+	resetPolicy *corev1.RestartPolicy
 }
 
 func NewGenericJobBuilder(
 	client *resourceClient.Client,
-	options Options,
-) *GenericJobBuilder {
-	return &GenericJobBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
-		},
+	options *WorkloadOptions,
+) JobBuilder {
+	return &jobBuilder{
+		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(options),
 	}
 }
 
-func (b *GenericJobBuilder) GetObject() *batchv1.Job {
+func (b *jobBuilder) GetObject() *batchv1.Job {
 	obj := &batchv1.Job{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: batchv1.JobSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: b.GetMatchingLabels(),
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: b.Options.GetLabels(),
+					Labels:      b.GetLabels(),
+					Annotations: b.GetAnnotations(),
 				},
 				Spec: corev1.PodSpec{
-					InitContainers: b.initContainers,
-					Containers:     b.containers,
-					Volumes:        b.volumes,
-					RestartPolicy:  b.resetPolicy,
+					InitContainers:                b.initContainers,
+					Containers:                    b.containers,
+					Volumes:                       b.volumes,
+					RestartPolicy:                 *b.resetPolicy,
+					Affinity:                      b.Affinity,
+					TerminationGracePeriodSeconds: b.terminationGracePeriodSeconds,
 				},
 			},
 		},
@@ -73,60 +53,10 @@ func (b *GenericJobBuilder) GetObject() *batchv1.Job {
 	return obj
 }
 
-func (b *GenericJobBuilder) AddContainers(containers []corev1.Container) {
-	b.containers = append(b.containers, containers...)
-}
-
-func (b *GenericJobBuilder) AddContainer(container corev1.Container) {
-	b.AddContainers([]corev1.Container{container})
-}
-
-func (b *GenericJobBuilder) ResetContainers(containers []corev1.Container) {
-	b.containers = containers
-}
-
-func (b *GenericJobBuilder) GetContainers() []corev1.Container {
-	return b.containers
-}
-
-func (b *GenericJobBuilder) AddInitContainers(containers []corev1.Container) {
-	b.initContainers = append(b.initContainers, containers...)
-
-}
-
-func (b *GenericJobBuilder) AddInitContainer(container corev1.Container) {
-	b.AddInitContainers([]corev1.Container{container})
-}
-
-func (b *GenericJobBuilder) ResetInitContainers(containers []corev1.Container) {
-	b.initContainers = containers
-}
-
-func (b *GenericJobBuilder) GetInitContainers() []corev1.Container {
-	return b.initContainers
-}
-
-func (b *GenericJobBuilder) AddVolumes(volumes []corev1.Volume) {
-	b.volumes = append(b.volumes, volumes...)
-
-}
-
-func (b *GenericJobBuilder) AddVolume(volume corev1.Volume) {
-	b.AddVolumes([]corev1.Volume{volume})
-}
-
-func (b *GenericJobBuilder) ResetVolumes(volumes []corev1.Volume) {
-	b.volumes = volumes
-}
-
-func (b *GenericJobBuilder) GetVolumes() []corev1.Volume {
-	return b.volumes
-}
-
-func (b *GenericJobBuilder) SetRestPolicy(policy corev1.RestartPolicy) {
+func (b *jobBuilder) SetRestPolicy(policy *corev1.RestartPolicy) {
 	b.resetPolicy = policy
 }
 
-func (b *GenericJobBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
+func (b *jobBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
 	return b.GetObject(), nil
 }

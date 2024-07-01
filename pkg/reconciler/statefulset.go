@@ -8,18 +8,18 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 )
 
-var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSetReconciler{}
+var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSet{}
 
-type StatefulSetReconciler struct {
+type StatefulSet struct {
 	GenericResourceReconciler[builder.StatefulSetBuilder]
-	Options *builder.RoleGroupOptions
+
+	Stopped bool
 }
 
 // getReplicas returns the number of replicas for the role group.
 // handle cluster operation stopped state.
-func (r *StatefulSetReconciler) getReplicas() *int32 {
-	clusterOptions := r.Options.GetClusterOperation()
-	if clusterOptions != nil && clusterOptions.Stopped {
+func (r *StatefulSet) getReplicas() *int32 {
+	if r.Stopped {
 		logger.Info("Cluster operation stopped, set replicas to 0")
 		zero := int32(0)
 		return &zero
@@ -27,7 +27,7 @@ func (r *StatefulSetReconciler) getReplicas() *int32 {
 	return nil
 }
 
-func (r *StatefulSetReconciler) Reconcile(ctx context.Context) Result {
+func (r *StatefulSet) Reconcile(ctx context.Context) Result {
 	resourceBuilder := r.GetBuilder()
 	resourceBuilder.SetReplicas(r.getReplicas())
 	resource, err := resourceBuilder.Build(ctx)
@@ -38,7 +38,7 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context) Result {
 	return r.ResourceReconcile(ctx, resource)
 }
 
-func (r *StatefulSetReconciler) Ready(ctx context.Context) Result {
+func (r *StatefulSet) Ready(ctx context.Context) Result {
 	obj := appv1.StatefulSet{
 		ObjectMeta: r.GetObjectMeta(),
 	}
@@ -54,12 +54,12 @@ func (r *StatefulSetReconciler) Ready(ctx context.Context) Result {
 	return NewResult(false, 5, nil)
 }
 
-func NewStatefulSetReconciler(
+func NewStatefulSet(
 	client *client.Client,
-	options *builder.RoleGroupOptions,
+	options *ResourceReconcilerOptions,
 	stsBuilder builder.StatefulSetBuilder,
-) *StatefulSetReconciler {
-	return &StatefulSetReconciler{
+) *StatefulSet {
+	return &StatefulSet{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
 			client,
 			options,

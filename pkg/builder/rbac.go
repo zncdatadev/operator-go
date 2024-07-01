@@ -10,27 +10,27 @@ import (
 )
 
 type ServiceAccountBuilder interface {
-	Builder
+	ResourceBuilder
 	GetObject() *corev1.ServiceAccount
 }
 
 type RoleBuilder interface {
-	Builder
+	ResourceBuilder
 	GetObject() *rbacv1.Role
 }
 
 type RoleBindingBuilder interface {
-	Builder
+	ResourceBuilder
 	GetObject() *rbacv1.RoleBinding
 }
 
 type ClusterRoleBuilder interface {
-	Builder
+	ResourceBuilder
 	GetObject() *rbacv1.ClusterRole
 }
 
 type ClusterRoleBindingBuilder interface {
-	Builder
+	ResourceBuilder
 	GetObject() *rbacv1.ClusterRoleBinding
 }
 
@@ -42,14 +42,21 @@ type GenericServiceAccountBuilder struct {
 	obj *corev1.ServiceAccount
 }
 
+type RBACBuilderOptions struct {
+	Name        string
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
 func NewGenericServiceAccountBuilder(
 	client *resourceClient.Client,
-	options Options,
+	options *RBACBuilderOptions,
 ) *GenericServiceAccountBuilder {
 	return &GenericServiceAccountBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client: client,
+			name:   options.Name,
+			labels: options.Labels,
 		},
 	}
 }
@@ -77,12 +84,14 @@ type GenericRoleBuilder struct {
 
 func NewGenericRoleBuilder(
 	client *resourceClient.Client,
-	options Options,
+	options *RBACBuilderOptions,
 ) *GenericRoleBuilder {
 	return &GenericRoleBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client:      client,
+			name:        options.Name,
+			labels:      options.Labels,
+			annotations: options.Annotations,
 		},
 	}
 }
@@ -110,12 +119,14 @@ type GenericRoleBindingBuilder struct {
 
 func NewGenericRoleBindingBuilder(
 	client *resourceClient.Client,
-	options Options,
+	options *RBACBuilderOptions,
 ) *GenericRoleBindingBuilder {
 	return &GenericRoleBindingBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client:      client,
+			name:        options.Name,
+			labels:      options.Labels,
+			annotations: options.Annotations,
 		},
 	}
 }
@@ -143,12 +154,14 @@ type GenericClusterRoleBuilder struct {
 
 func NewGenericClusterRoleBuilder(
 	client *resourceClient.Client,
-	options Options,
+	options *RBACBuilderOptions,
 ) *GenericClusterRoleBuilder {
 	return &GenericClusterRoleBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client:      client,
+			name:        options.Name,
+			labels:      options.Labels,
+			annotations: options.Annotations,
 		},
 	}
 }
@@ -178,12 +191,14 @@ type GenericClusterRoleBindingBuilder struct {
 
 func NewGenericClusterRoleBindingBuilder(
 	client *resourceClient.Client,
-	options Options,
+	options *RBACBuilderOptions,
 ) *GenericClusterRoleBindingBuilder {
 	return &GenericClusterRoleBindingBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client:      client,
+			name:        options.Name,
+			labels:      options.Labels,
+			annotations: options.Annotations,
 		},
 	}
 }

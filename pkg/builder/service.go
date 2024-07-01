@@ -9,25 +9,30 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func ContainerPort2ServicePort(port corev1.ContainerPort) *corev1.ServicePort {
-	target := intstr.FromString(port.Name)
+func ContainerPorts2ServicePorts(port []corev1.ContainerPort) []corev1.ServicePort {
+	ports := make([]corev1.ServicePort, 0)
+	for _, p := range port {
+		target := intstr.FromString(p.Name)
 
-	if port.Name == "" {
-		target = intstr.FromInt32(port.ContainerPort)
+		if p.Name == "" {
+			target = intstr.FromInt32(p.ContainerPort)
+		}
+
+		ports = append(ports, corev1.ServicePort{
+			Name:       p.Name,
+			Port:       p.ContainerPort,
+			Protocol:   p.Protocol,
+			TargetPort: target,
+		})
 	}
 
-	return &corev1.ServicePort{
-		Name:       port.Name,
-		Port:       port.ContainerPort,
-		Protocol:   port.Protocol,
-		TargetPort: target,
-	}
+	return ports
 }
 
 type ServiceBuilder interface {
-	Builder
+	ResourceBuilder
 	GetObject() *corev1.Service
-	AddPort(port *corev1.ContainerPort)
+	AddPort(port *corev1.ServicePort)
 	GetPorts() []corev1.ServicePort
 	GetServiceType() corev1.ServiceType
 }
@@ -46,27 +51,18 @@ func (b *BaseServiceBuilder) GetObject() *corev1.Service {
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: corev1.ServiceSpec{
 			Ports:    b.GetPorts(),
-			Selector: b.Options.GetMatchingLabels(),
+			Selector: b.GetMatchingLabels(),
 			Type:     b.GetServiceType(),
 		},
 	}
 }
 
-func (b *BaseServiceBuilder) AddPort(port *corev1.ContainerPort) {
-	p := ContainerPort2ServicePort(*port)
-
-	b.ports = append(b.ports, *p)
+func (b *BaseServiceBuilder) AddPort(port *corev1.ServicePort) {
+	b.ports = append(b.ports, *port)
 }
 
 func (b *BaseServiceBuilder) GetPorts() []corev1.ServicePort {
-	optionsPorts := b.Options.GetPorts()
-	ports := b.ports
-
-	for _, port := range optionsPorts {
-		ports = append(ports, *ContainerPort2ServicePort(port))
-	}
-
-	return ports
+	return b.ports
 }
 
 func (b *BaseServiceBuilder) GetServiceType() corev1.ServiceType {
@@ -78,14 +74,26 @@ func (b *BaseServiceBuilder) Build(_ context.Context) (ctrlclient.Object, error)
 	return obj, nil
 }
 
+type ServiceBuilderOptions struct {
+	Name        string
+	Labels      map[string]string
+	Annotations map[string]string
+	Ports       []corev1.ContainerPort
+}
+
 func NewServiceBuilder(
 	client *client.Client,
-	options Options,
+	options *ServiceBuilderOptions,
 ) *BaseServiceBuilder {
+
+	ports := ContainerPorts2ServicePorts(options.Ports)
+
 	return &BaseServiceBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client:  client,
-			Options: options,
+			Client: client,
+			name:   options.Name,
+			labels: options.Labels,
 		},
+		ports: ports,
 	}
 }
