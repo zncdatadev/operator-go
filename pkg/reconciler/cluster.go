@@ -63,7 +63,7 @@ func (r *BaseCluster[T]) RegisterResources(ctx context.Context) error {
 	panic("unimplemented")
 }
 
-func (r *BaseCluster[T]) Ready(ctx context.Context) Result {
+func (r *BaseCluster[T]) Ready(ctx context.Context) *Result {
 	for _, resource := range r.resources {
 		if result := resource.Ready(ctx); result.RequeueOrNot() {
 			return result
@@ -72,7 +72,7 @@ func (r *BaseCluster[T]) Ready(ctx context.Context) Result {
 	return NewResult(false, 0, nil)
 }
 
-func (r *BaseCluster[T]) Reconcile(ctx context.Context) Result {
+func (r *BaseCluster[T]) Reconcile(ctx context.Context) *Result {
 	for _, resource := range r.resources {
 		result := resource.Reconcile(ctx)
 		if result.RequeueOrNot() {

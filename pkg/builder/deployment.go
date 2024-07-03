@@ -7,7 +7,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/util"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -23,54 +22,49 @@ type deployment struct {
 
 func NewDeployment(
 	client *client.Client,
-	options *WorkloadReplicasOptions,
+	name string,
+	labels map[string]string,
+	annotations map[string]string,
+	affinity *corev1.Affinity,
+	image *util.Image,
+	ports []corev1.ContainerPort,
+	commandOverrides []string,
+	envOverrides map[string]string,
+	podOverrides *corev1.PodTemplateSpec,
+	terminationGracePeriodSeconds *int64,
+	replicas *int32,
 ) DeploymentBuilder {
 	return &deployment{
-		BaseWorkloadReplicasBuilder: *NewBaseWorkloadReplicasBuilder(options),
+		BaseWorkloadReplicasBuilder: *NewBaseWorkloadReplicasBuilder(
+			client,
+			name,
+			labels,
+			annotations,
+			affinity,
+			podOverrides,
+			terminationGracePeriodSeconds,
+			replicas,
+		),
 	}
 }
 
-func (b *deployment) GetObject() *appv1.Deployment {
-	if b.replicas == nil {
-		b.replicas = &DefaultReplicas
+func (b *deployment) GetObject() (*appv1.Deployment, error) {
+	tpl, err := b.getPodTemplate()
+	if err != nil {
+		return nil, err
 	}
+
 	obj := &appv1.Deployment{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: appv1.DeploymentSpec{
 			Replicas: b.replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: b.GetMatchingLabels(),
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      b.GetLabels(),
-					Annotations: b.GetAnnotations(),
-				},
-				Spec: corev1.PodSpec{
-					InitContainers:                b.initContainers,
-					Containers:                    b.containers,
-					Volumes:                       b.volumes,
-					Affinity:                      b.Affinity,
-					TerminationGracePeriodSeconds: b.terminationGracePeriodSeconds,
-				},
-			},
+			Selector: b.GetSelector(),
+			Template: *tpl,
 		},
 	}
-	return obj
+	return obj, nil
 }
 
 func (b *deployment) Build(_ context.Context) (ctrlclient.Object, error) {
-	obj := b.GetObject()
-
-	if b.containers == nil {
-		obj.Spec.Template.Spec.Containers = []corev1.Container{
-			{
-				Name:    b.GetName(),
-				Image:   b.Image.String(),
-				Env:     util.EnvsToEnvVars(b.EnvOverrides),
-				Command: b.CommandOverrides,
-			},
-		}
-	}
-	return obj, nil
+	return b.GetObject()
 }

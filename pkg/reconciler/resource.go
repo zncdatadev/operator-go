@@ -19,7 +19,7 @@ type ResourceReconciler[B builder.ResourceBuilder] interface {
 	Reconciler
 	GetObjectMeta() metav1.ObjectMeta
 	GetBuilder() B
-	ResourceReconcile(ctx context.Context, resource ctrlclient.Object) Result
+	ResourceReconcile(ctx context.Context, resource ctrlclient.Object) *Result
 }
 
 var _ ResourceReconciler[builder.ResourceBuilder] = &GenericResourceReconciler[builder.ResourceBuilder]{}
@@ -56,7 +56,7 @@ func (r *GenericResourceReconciler[B]) GetBuilder() B {
 	return r.Builder
 }
 
-func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) Result {
+func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) *Result {
 
 	if mutation, err := r.Client.CreateOrUpdate(ctx, resource); err != nil {
 		resourceLogger.Error(err, "Failed to create or update resource", "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", r.GetName())
@@ -68,7 +68,7 @@ func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, re
 	return NewResult(false, 0, nil)
 }
 
-func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) Result {
+func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) *Result {
 	resource, err := r.GetBuilder().Build(ctx)
 
 	if err != nil {
@@ -77,7 +77,7 @@ func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) Result {
 	return r.ResourceReconcile(ctx, resource)
 }
 
-func (r *GenericResourceReconciler[B]) Ready(ctx context.Context) Result {
+func (r *GenericResourceReconciler[B]) Ready(ctx context.Context) *Result {
 	return NewResult(false, 0, nil)
 }
 

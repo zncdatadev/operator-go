@@ -1,8 +1,11 @@
 package builder
 
 import (
-	"github.com/zncdatadev/operator-go/pkg/util"
+	"errors"
+
+	"github.com/zncdatadev/operator-go/pkg/client"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
@@ -14,30 +17,14 @@ var (
 	_ WorkloadTerminationGracePeriodSeconds = &BaseWorkloadBuilder{}
 )
 
-type WorkloadOptions struct {
-	Name        string
-	Labels      map[string]string
-	Annotations map[string]string
-	Affinity    *corev1.Affinity
-
-	Image            *util.Image
-	Ports            []corev1.ContainerPort
-	CommandOverrides []string
-	EnvOverrides     map[string]string
-	PodOverrides     *corev1.PodTemplateSpec
-}
+var ErrNoContainers = errors.New("no containers defined")
 
 type BaseWorkloadBuilder struct {
 	BaseResourceBuilder
 
-	Affinity *corev1.Affinity
+	affinity *corev1.Affinity
 
-	Image *util.Image
-	Ports []corev1.ContainerPort
-
-	CommandOverrides []string
-	EnvOverrides     map[string]string
-	PodOverrides     *corev1.PodTemplateSpec
+	podOverrides *corev1.PodTemplateSpec
 
 	terminationGracePeriodSeconds *int64
 
@@ -46,21 +33,28 @@ type BaseWorkloadBuilder struct {
 	volumes        []corev1.Volume    // do not init this field when constructing the struct
 }
 
-func NewBaseWorkloadBuilder(options *WorkloadOptions) *BaseWorkloadBuilder {
+func NewBaseWorkloadBuilder(
+	client *client.Client,
+	name string,
+	labels map[string]string,
+	annotations map[string]string,
+	affinity *corev1.Affinity,
+	podOverrides *corev1.PodTemplateSpec,
+	terminationGracePeriodSeconds *int64,
+) *BaseWorkloadBuilder {
 	return &BaseWorkloadBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			name:        options.Name,
-			labels:      options.Labels,
-			annotations: options.Annotations,
+			Client:      client,
+			name:        name,
+			labels:      labels,
+			annotations: annotations,
 		},
 
-		Affinity: options.Affinity,
+		affinity: affinity,
 
-		Image:            options.Image,
-		Ports:            options.Ports,
-		CommandOverrides: options.CommandOverrides,
-		EnvOverrides:     options.EnvOverrides,
-		PodOverrides:     options.PodOverrides,
+		podOverrides: podOverrides,
+
+		terminationGracePeriodSeconds: terminationGracePeriodSeconds,
 	}
 }
 
@@ -113,11 +107,11 @@ func (b *BaseWorkloadBuilder) GetVolumes() []corev1.Volume {
 }
 
 func (b *BaseWorkloadBuilder) AddAffinity(affinity *corev1.Affinity) {
-	b.Affinity = affinity
+	b.affinity = affinity
 }
 
 func (b *BaseWorkloadBuilder) GetAffinity() *corev1.Affinity {
-	return b.Affinity
+	return b.affinity
 }
 
 func (b *BaseWorkloadBuilder) AddTerminationGracePeriodSeconds(seconds *int64) {
@@ -128,22 +122,121 @@ func (b *BaseWorkloadBuilder) GetTerminationGracePeriodSeconds() *int64 {
 	return b.terminationGracePeriodSeconds
 }
 
-var _ WorkloadReplicas = &BaseWorkloadReplicasBuilder{}
+func (b *BaseWorkloadBuilder) getDefaultPodTemplate() (*corev1.PodTemplateSpec, error) {
+	containers := b.GetContainers()
 
-type WorkloadReplicasOptions struct {
-	Replicas *int32
-	WorkloadOptions
+	if len(containers) == 0 {
+		return &corev1.PodTemplateSpec{}, ErrNoContainers
+	}
+
+	pod := &corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      b.GetLabels(),
+			Annotations: b.GetAnnotations(),
+		},
+		Spec: corev1.PodSpec{
+			InitContainers:                b.GetInitContainers(),
+			Containers:                    b.GetContainers(),
+			Volumes:                       b.GetVolumes(),
+			Affinity:                      b.GetAffinity(),
+			TerminationGracePeriodSeconds: b.GetTerminationGracePeriodSeconds(),
+		},
+	}
+	return pod, nil
 }
+
+func (b *BaseWorkloadBuilder) getOverridedPodTemplate() (*corev1.PodTemplateSpec, error) {
+	pod, err := b.getDefaultPodTemplate()
+
+	if err != nil {
+		return nil, err
+	}
+
+	if b.podOverrides != nil {
+		// Merge labels
+		if len(b.podOverrides.Labels) > 0 {
+			if pod.ObjectMeta.Labels == nil {
+				pod.ObjectMeta.Labels = make(map[string]string)
+			}
+			for key, value := range b.podOverrides.Labels {
+				pod.ObjectMeta.Labels[key] = value
+			}
+		}
+
+		// Merge annotations
+		if len(b.podOverrides.Annotations) > 0 {
+			if pod.ObjectMeta.Annotations == nil {
+				pod.ObjectMeta.Annotations = make(map[string]string)
+			}
+			for key, value := range b.podOverrides.Annotations {
+				pod.ObjectMeta.Annotations[key] = value
+			}
+		}
+
+		// Merge init containers
+		if len(b.podOverrides.Spec.InitContainers) > 0 {
+			pod.Spec.InitContainers = append(pod.Spec.InitContainers, b.podOverrides.Spec.InitContainers...)
+		}
+
+		// Merge containers
+		if len(b.podOverrides.Spec.Containers) > 0 {
+			pod.Spec.Containers = append(pod.Spec.Containers, b.podOverrides.Spec.Containers...)
+		}
+
+		// Merge volumes
+		if len(b.podOverrides.Spec.Volumes) > 0 {
+			pod.Spec.Volumes = append(pod.Spec.Volumes, b.podOverrides.Spec.Volumes...)
+		}
+
+		// Merge affinity
+		if b.podOverrides.Spec.Affinity != nil {
+			pod.Spec.Affinity = b.podOverrides.Spec.Affinity
+		}
+
+		// Merge termination grace period seconds
+		if b.podOverrides.Spec.TerminationGracePeriodSeconds != nil {
+			pod.Spec.TerminationGracePeriodSeconds = b.podOverrides.Spec.TerminationGracePeriodSeconds
+		}
+	}
+
+	return pod, nil
+}
+
+func (b *BaseWorkloadBuilder) getPodTemplate() (*corev1.PodTemplateSpec, error) {
+	if b.podOverrides != nil {
+		return b.getOverridedPodTemplate()
+	}
+	return b.getDefaultPodTemplate()
+}
+
+var _ WorkloadReplicas = &BaseWorkloadReplicasBuilder{}
 
 type BaseWorkloadReplicasBuilder struct {
 	BaseWorkloadBuilder
 	replicas *int32
 }
 
-func NewBaseWorkloadReplicasBuilder(options *WorkloadReplicasOptions) *BaseWorkloadReplicasBuilder {
+func NewBaseWorkloadReplicasBuilder(
+	client *client.Client,
+	name string,
+	labels map[string]string,
+	annotations map[string]string,
+	affinity *corev1.Affinity,
+	podOverrides *corev1.PodTemplateSpec,
+	terminationGracePeriodSeconds *int64,
+	replicas *int32,
+) *BaseWorkloadReplicasBuilder {
 	return &BaseWorkloadReplicasBuilder{
-		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(&options.WorkloadOptions),
-		replicas:            options.Replicas,
+		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(
+			client,
+			name,
+			labels,
+			annotations,
+			affinity,
+			podOverrides,
+			terminationGracePeriodSeconds,
+		),
+		replicas: replicas,
 	}
 }
 
@@ -152,5 +245,11 @@ func (b *BaseWorkloadReplicasBuilder) SetReplicas(replicas *int32) {
 }
 
 func (b *BaseWorkloadReplicasBuilder) GetReplicas() *int32 {
+
+	if b.replicas == nil {
+		replicas := int32(1)
+		logger.Info("Replicas not set, defaulting to 1")
+		return &replicas
+	}
 	return b.replicas
 }

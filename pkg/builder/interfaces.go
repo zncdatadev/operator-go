@@ -7,6 +7,7 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -65,7 +66,7 @@ type StatefulSetBuilder interface {
 	WorkloadAffinity
 	WorkloadTerminationGracePeriodSeconds
 
-	GetObject() *appv1.StatefulSet
+	GetObject() (*appv1.StatefulSet, error)
 
 	AddVolumeClaimTemplates(claims []corev1.PersistentVolumeClaim)
 	AddVolumeClaimTemplate(claim *corev1.PersistentVolumeClaim)
@@ -76,7 +77,7 @@ type StatefulSetBuilder interface {
 type DeploymentBuilder interface {
 	ResourceBuilder
 
-	GetObject() *appv1.Deployment
+	GetObject() (*appv1.Deployment, error)
 
 	WorkloadReplicas
 	WorkloadContainers
@@ -88,7 +89,7 @@ type DeploymentBuilder interface {
 
 type JobBuilder interface {
 	ResourceBuilder
-	GetObject() *batchv1.Job
+	GetObject() (*batchv1.Job, error)
 
 	WorkloadContainers
 	WorkloadInitContainers
@@ -97,4 +98,37 @@ type JobBuilder interface {
 	WorkloadTerminationGracePeriodSeconds
 
 	SetRestPolicy(policy *corev1.RestartPolicy)
+}
+
+type ServiceBuilder interface {
+	ResourceBuilder
+	GetObject() *corev1.Service
+	AddPort(port *corev1.ServicePort)
+	GetPorts() []corev1.ServicePort
+	GetServiceType() corev1.ServiceType
+}
+
+type ServiceAccountBuilder interface {
+	ResourceBuilder
+	GetObject() *corev1.ServiceAccount
+}
+
+type RoleBuilder interface {
+	ResourceBuilder
+	GetObject() *rbacv1.Role
+}
+
+type RoleBindingBuilder interface {
+	ResourceBuilder
+	GetObject() *rbacv1.RoleBinding
+}
+
+type ClusterRoleBuilder interface {
+	ResourceBuilder
+	GetObject() *rbacv1.ClusterRole
+}
+
+type ClusterRoleBindingBuilder interface {
+	ResourceBuilder
+	GetObject() *rbacv1.ClusterRoleBinding
 }

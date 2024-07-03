@@ -16,8 +16,7 @@ type StatefulSet struct {
 	Stopped bool
 }
 
-// getReplicas returns the number of replicas for the role group.
-// handle cluster operation stopped state.
+// getReplicas returns the number of replicas for the StatefulSet.
 func (r *StatefulSet) getReplicas() *int32 {
 	if r.Stopped {
 		logger.Info("Cluster operation stopped, set replicas to 0")
@@ -27,7 +26,7 @@ func (r *StatefulSet) getReplicas() *int32 {
 	return nil
 }
 
-func (r *StatefulSet) Reconcile(ctx context.Context) Result {
+func (r *StatefulSet) Reconcile(ctx context.Context) *Result {
 	resourceBuilder := r.GetBuilder()
 	resourceBuilder.SetReplicas(r.getReplicas())
 	resource, err := resourceBuilder.Build(ctx)
@@ -38,7 +37,7 @@ func (r *StatefulSet) Reconcile(ctx context.Context) Result {
 	return r.ResourceReconcile(ctx, resource)
 }
 
-func (r *StatefulSet) Ready(ctx context.Context) Result {
+func (r *StatefulSet) Ready(ctx context.Context) *Result {
 	obj := appv1.StatefulSet{
 		ObjectMeta: r.GetObjectMeta(),
 	}

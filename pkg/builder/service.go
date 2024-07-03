@@ -29,14 +29,6 @@ func ContainerPorts2ServicePorts(port []corev1.ContainerPort) []corev1.ServicePo
 	return ports
 }
 
-type ServiceBuilder interface {
-	ResourceBuilder
-	GetObject() *corev1.Service
-	AddPort(port *corev1.ServicePort)
-	GetPorts() []corev1.ServicePort
-	GetServiceType() corev1.ServiceType
-}
-
 var _ ServiceBuilder = &BaseServiceBuilder{}
 
 type BaseServiceBuilder struct {

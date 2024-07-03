@@ -9,31 +9,6 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type ServiceAccountBuilder interface {
-	ResourceBuilder
-	GetObject() *corev1.ServiceAccount
-}
-
-type RoleBuilder interface {
-	ResourceBuilder
-	GetObject() *rbacv1.Role
-}
-
-type RoleBindingBuilder interface {
-	ResourceBuilder
-	GetObject() *rbacv1.RoleBinding
-}
-
-type ClusterRoleBuilder interface {
-	ResourceBuilder
-	GetObject() *rbacv1.ClusterRole
-}
-
-type ClusterRoleBindingBuilder interface {
-	ResourceBuilder
-	GetObject() *rbacv1.ClusterRoleBinding
-}
-
 var _ ServiceAccountBuilder = &GenericServiceAccountBuilder{}
 
 type GenericServiceAccountBuilder struct {

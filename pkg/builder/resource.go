@@ -70,6 +70,12 @@ func (b *BaseResourceBuilder) GetMatchingLabels() map[string]string {
 	return b.filterLabels(b.GetLabels())
 }
 
+func (b *BaseResourceBuilder) GetSelector() *metav1.LabelSelector {
+	return &metav1.LabelSelector{
+		MatchLabels: b.GetMatchingLabels(),
+	}
+}
+
 func (b *BaseResourceBuilder) AddAnnotations(annotations map[string]string) {
 	if b.annotations == nil {
 		b.annotations = make(map[string]string)
@@ -100,6 +106,10 @@ func (b *BaseResourceBuilder) GetObjectMetaWithClusterScope() metav1.ObjectMeta 
 		Labels:      b.labels,
 		Annotations: b.annotations,
 	}
+}
+
+func (b *BaseResourceBuilder) GetObject() (ctrlclient.Object, error) {
+	panic("implement me")
 }
 
 func (b *BaseResourceBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {

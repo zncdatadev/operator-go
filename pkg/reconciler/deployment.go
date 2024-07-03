@@ -27,7 +27,7 @@ func (r *Deployment) getReplicas() *int32 {
 	return nil
 }
 
-func (r *Deployment) Reconcile(ctx context.Context) Result {
+func (r *Deployment) Reconcile(ctx context.Context) *Result {
 	resourceBuilder := r.GetBuilder()
 	replicas := r.getReplicas()
 	if replicas != nil {
@@ -41,7 +41,7 @@ func (r *Deployment) Reconcile(ctx context.Context) Result {
 	return r.ResourceReconcile(ctx, resource)
 }
 
-func (r *Deployment) Ready(ctx context.Context) Result {
+func (r *Deployment) Ready(ctx context.Context) *Result {
 
 	obj := appv1.Deployment{
 		ObjectMeta: r.GetObjectMeta(),

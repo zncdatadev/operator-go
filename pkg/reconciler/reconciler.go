@@ -16,8 +16,8 @@ type Reconciler interface {
 	GetClient() *client.Client
 	GetCtrlClient() ctrlclient.Client
 	GetCtrlScheme() *runtime.Scheme
-	Reconcile(ctx context.Context) Result
-	Ready(ctx context.Context) Result
+	Reconcile(ctx context.Context) *Result
+	Ready(ctx context.Context) *Result
 }
 
 var _ Reconciler = &BaseReconciler[AnySpec]{}
@@ -51,11 +51,11 @@ func (b *BaseReconciler[T]) GetCtrlScheme() *runtime.Scheme {
 	return b.Client.GetCtrlScheme()
 }
 
-func (b *BaseReconciler[T]) Ready(ctx context.Context) Result {
+func (b *BaseReconciler[T]) Ready(ctx context.Context) *Result {
 	panic("unimplemented")
 }
 
-func (b *BaseReconciler[T]) Reconcile(ctx context.Context) Result {
+func (b *BaseReconciler[T]) Reconcile(ctx context.Context) *Result {
 	panic("unimplemented")
 }
 
