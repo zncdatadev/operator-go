@@ -24,7 +24,7 @@ func (b *FooStatefulSetBuilder) Build(ctx context.Context) (ctrlclient.Object, e
 	containerBuilder := builder.NewContainerBuilder(
 		"foo",
 		"nginx",
-		nil,
+		corev1.PullIfNotPresent,
 	)
 
 	b.AddContainer(containerBuilder.Build())

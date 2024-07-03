@@ -16,14 +16,14 @@ var (
 type ContainerBuilder struct {
 	Name       string
 	Image      string
-	PullPolicy *corev1.PullPolicy
+	PullPolicy corev1.PullPolicy
 
 	obj *corev1.Container
 }
 
 func NewContainerBuilder(
 	name, image string,
-	pullPolicy *corev1.PullPolicy,
+	pullPolicy corev1.PullPolicy,
 ) *ContainerBuilder {
 	return &ContainerBuilder{
 		Name:       name,
@@ -39,8 +39,8 @@ func (b *ContainerBuilder) getObject() *corev1.Container {
 			Image:           b.Image,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 		}
-		if b.PullPolicy != nil {
-			b.obj.ImagePullPolicy = *b.PullPolicy
+		if b.PullPolicy != "" {
+			b.obj.ImagePullPolicy = b.PullPolicy
 		}
 	}
 	return b.obj
