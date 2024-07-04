@@ -8,26 +8,26 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 )
 
-var _ ResourceReconciler[builder.DeploymentBuilder] = &DeploymentReconciler{}
+var _ ResourceReconciler[builder.DeploymentBuilder] = &Deployment{}
 
-type DeploymentReconciler struct {
+type Deployment struct {
 	GenericResourceReconciler[builder.DeploymentBuilder]
-	Options *builder.RoleGroupOptions
+
+	Stopped bool
 }
 
 // getReplicas returns the number of replicas for the role group.
 // handle cluster operation stopped state.
-func (r *DeploymentReconciler) getReplicas() *int32 {
-	clusterOperations := r.Options.GetClusterOperation()
-	if clusterOperations != nil && clusterOperations.Stopped {
-		logger.Info("Cluster operation stopped, set replicas to 0")
+func (r *Deployment) getReplicas() *int32 {
+	if r.Stopped {
+		logger.Info("Stopped deployment, set replicas to 0")
 		zero := int32(0)
 		return &zero
 	}
 	return nil
 }
 
-func (r *DeploymentReconciler) Reconcile(ctx context.Context) Result {
+func (r *Deployment) Reconcile(ctx context.Context) *Result {
 	resourceBuilder := r.GetBuilder()
 	replicas := r.getReplicas()
 	if replicas != nil {
@@ -41,7 +41,7 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context) Result {
 	return r.ResourceReconcile(ctx, resource)
 }
 
-func (r *DeploymentReconciler) Ready(ctx context.Context) Result {
+func (r *Deployment) Ready(ctx context.Context) *Result {
 
 	obj := appv1.Deployment{
 		ObjectMeta: r.GetObjectMeta(),
@@ -58,17 +58,16 @@ func (r *DeploymentReconciler) Ready(ctx context.Context) Result {
 	return NewResult(false, 5, nil)
 }
 
-func NewDeploymentReconciler(
+func NewDeployment(
 	client *client.Client,
-	options *builder.RoleGroupOptions,
+	options *ResourceReconcilerOptions,
 	deployBuilder builder.DeploymentBuilder,
-) *DeploymentReconciler {
-	return &DeploymentReconciler{
+) *Deployment {
+	return &Deployment{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.DeploymentBuilder](
 			client,
 			options,
 			deployBuilder,
 		),
-		Options: options,
 	}
 }

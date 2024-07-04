@@ -101,5 +101,4 @@ jobs:
           fetch-depth: 0
       - name: Go Test
         run: |
-          docker ps -a
-          go test -v ./...
+          make test

@@ -5,7 +5,6 @@ import (
 	"reflect"
 
 	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -22,38 +21,49 @@ type ClusterReconciler interface {
 	RegisterResources(ctx context.Context) error
 }
 
-type BaseClusterReconciler[T AnySpec] struct {
+var _ ClusterReconciler = &BaseCluster[AnySpec]{}
+
+type BaseCluster[T AnySpec] struct {
 	BaseReconciler[T]
-	resources []Reconciler
+
+	ClusterOperation *apiv1alpha1.ClusterOperationSpec
+	resources        []Reconciler
 }
 
-func NewBaseClusterReconciler[T AnySpec](
+func NewBaseCluster[T AnySpec](
 	client *client.Client,
-	options builder.Options,
-	spec T,
-) *BaseClusterReconciler[T] {
-	return &BaseClusterReconciler[T]{
+	name string, // name of the cluster, Normally it is the name of CR
+	clusterOperation *apiv1alpha1.ClusterOperationSpec,
+
+	spec T, // spec of the cluster
+) *BaseCluster[T] {
+	return &BaseCluster[T]{
 		BaseReconciler: BaseReconciler[T]{
-			Client:  client,
-			Options: options,
-			Spec:    spec,
+			Client: client,
+			Name:   name,
+			Spec:   spec,
 		},
+		ClusterOperation: clusterOperation,
 	}
 }
 
-func (r *BaseClusterReconciler[T]) GetResources() []Reconciler {
+func (r *BaseCluster[T]) GetClusterOperation() *apiv1alpha1.ClusterOperationSpec {
+	return r.ClusterOperation
+}
+
+func (r *BaseCluster[T]) GetResources() []Reconciler {
 	return r.resources
 }
 
-func (r *BaseClusterReconciler[T]) AddResource(resource Reconciler) {
+func (r *BaseCluster[T]) AddResource(resource Reconciler) {
 	r.resources = append(r.resources, resource)
 }
 
-func (r *BaseClusterReconciler[T]) RegisterResources(ctx context.Context) error {
+func (r *BaseCluster[T]) RegisterResources(ctx context.Context) error {
 	panic("unimplemented")
 }
 
-func (r *BaseClusterReconciler[T]) Ready(ctx context.Context) Result {
+func (r *BaseCluster[T]) Ready(ctx context.Context) *Result {
 	for _, resource := range r.resources {
 		if result := resource.Ready(ctx); result.RequeueOrNot() {
 			return result
@@ -62,7 +72,7 @@ func (r *BaseClusterReconciler[T]) Ready(ctx context.Context) Result {
 	return NewResult(false, 0, nil)
 }
 
-func (r *BaseClusterReconciler[T]) Reconcile(ctx context.Context) Result {
+func (r *BaseCluster[T]) Reconcile(ctx context.Context) *Result {
 	for _, resource := range r.resources {
 		result := resource.Reconcile(ctx)
 		if result.RequeueOrNot() {
@@ -74,13 +84,57 @@ func (r *BaseClusterReconciler[T]) Reconcile(ctx context.Context) Result {
 
 type RoleReconciler interface {
 	ClusterReconciler
+
+	RegisterResourceWithRoleGroup(ctx context.Context, name string, roleGroup any) error
 }
 
 var _ RoleReconciler = &BaseRoleReconciler[AnySpec]{}
 
 type BaseRoleReconciler[T AnySpec] struct {
-	BaseClusterReconciler[T]
-	Options *builder.RoleOptions
+	BaseCluster[T]
+}
+
+func NewBaseRoleReconciler[T AnySpec](
+	client *client.Client,
+	name string, // name of the role
+	clusterOperation *apiv1alpha1.ClusterOperationSpec,
+	spec T, // spec of the role
+) *BaseRoleReconciler[T] {
+	return &BaseRoleReconciler[T]{
+		BaseCluster: *NewBaseCluster[T](
+			client,
+			name,
+			clusterOperation,
+			spec,
+		),
+	}
+}
+
+func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {
+
+	value := reflect.ValueOf(r.Spec)
+
+	// if value is a pointer, get the value it points to
+	if value.Kind() == reflect.Ptr {
+		value = value.Elem()
+	}
+
+	roleGroups := value.FieldByName("RoleGroups").Interface().(map[string]any)
+
+	for name, rg := range roleGroups {
+		r.MergeRoleGroupSpec(rg)
+
+		if err := r.RegisterResourceWithRoleGroup(ctx, name, rg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+
+}
+
+func (r *BaseRoleReconciler[T]) RegisterResourceWithRoleGroup(ctx context.Context, name string, roleGroup any) error {
+	panic("unimplemented")
 }
 
 // MergeRoleGroupSpec
@@ -115,34 +169,5 @@ func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup any) {
 			leftValue.Set(rightField)
 			logger.V(5).Info("Merge role group", "field", rightFieldName, "value", rightField)
 		}
-	}
-}
-
-func (b *BaseRoleReconciler[T]) GetClusterOperation() *apiv1alpha1.ClusterOperationSpec {
-	return b.Options.GetClusterOperation()
-}
-
-func (b *BaseRoleReconciler[T]) Ready(ctx context.Context) Result {
-	for _, resource := range b.resources {
-		if result := resource.Ready(ctx); result.RequeueOrNot() {
-			return result
-		}
-	}
-	return NewResult(false, 0, nil)
-}
-
-func NewBaseRoleReconciler[T AnySpec](
-	client *client.Client,
-	roleOptions *builder.RoleOptions,
-	spec T,
-) *BaseRoleReconciler[T] {
-
-	return &BaseRoleReconciler[T]{
-		BaseClusterReconciler: *NewBaseClusterReconciler[T](
-			client,
-			roleOptions,
-			spec,
-		),
-		Options: roleOptions,
 	}
 }

@@ -3,6 +3,8 @@ package builder
 import (
 	"context"
 	"fmt"
+	"slices"
+
 	pkgclient "github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	appv1 "k8s.io/api/apps/v1"
@@ -10,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
-	"slices"
 )
 
 // todo: in future,  all operator should config log, config and data to the same dir, like '/zncdata/log', '/zncdata/config'
@@ -360,7 +361,7 @@ func (v *VectorDecorator) appendVectorContainer(containers *[]corev1.Container) 
 }
 
 func (v *VectorDecorator) NewVectorContainer() *corev1.Container {
-	vectorBuilder := NewGenericContainerBuilder(VectorContainerName, VectorImage, corev1.PullAlways)
+	vectorBuilder := NewContainerBuilder(VectorContainerName, VectorImage, corev1.PullAlways)
 	vectorBuilder.SetCommand(VectorCommand())
 	vectorBuilder.SetArgs(VectorCommandArgs())
 	vectorBuilder.AddVolumeMounts(VectorVolumeMount(v.VectorConfigVolumeName, v.LogVolumeName))

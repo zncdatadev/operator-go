@@ -3,26 +3,40 @@ package reconciler
 import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
+	corev1 "k8s.io/api/core/v1"
 )
 
-var _ ResourceReconciler[builder.ServiceBuilder] = &GenericServiceReconciler{}
+var _ ResourceReconciler[builder.ServiceBuilder] = &Service{}
 
-type GenericServiceReconciler struct {
+type Service struct {
 	GenericResourceReconciler[builder.ServiceBuilder]
+}
+
+type ServiceReconcilerOptions struct {
+	ResourceReconcilerOptions
+	Labels      map[string]string
+	Annotations map[string]string
+
+	Ports []corev1.ContainerPort
 }
 
 func NewServiceReconciler(
 	client *client.Client,
-	options builder.Options,
-) *GenericServiceReconciler {
+	options *ServiceReconcilerOptions,
+) *Service {
 	svcBuilder := builder.NewServiceBuilder(
 		client,
-		options,
+		&builder.ServiceBuilderOptions{
+			Name:        options.Name,
+			Labels:      options.Labels,
+			Annotations: options.Annotations,
+			Ports:       options.Ports,
+		},
 	)
-	return &GenericServiceReconciler{
+	return &Service{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.ServiceBuilder](
 			client,
-			options,
+			&options.ResourceReconcilerOptions,
 			svcBuilder,
 		),
 	}
