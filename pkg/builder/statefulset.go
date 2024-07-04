@@ -49,7 +49,7 @@ func (b *StatefulSet) GetObject() (*appv1.StatefulSet, error) {
 	obj := &appv1.StatefulSet{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: appv1.StatefulSetSpec{
-			Selector: b.GetSelector(),
+			Selector: b.GetLabelSelector(),
 			Template: *tpl,
 		},
 	}

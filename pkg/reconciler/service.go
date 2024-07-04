@@ -12,31 +12,25 @@ type Service struct {
 	GenericResourceReconciler[builder.ServiceBuilder]
 }
 
-type ServiceReconcilerOptions struct {
-	ResourceReconcilerOptions
-	Labels      map[string]string
-	Annotations map[string]string
-
-	Ports []corev1.ContainerPort
-}
-
 func NewServiceReconciler(
 	client *client.Client,
-	options *ServiceReconcilerOptions,
+	name string,
+	labels map[string]string,
+	annotations map[string]string,
+	ports []corev1.ContainerPort,
+
 ) *Service {
 	svcBuilder := builder.NewServiceBuilder(
 		client,
-		&builder.ServiceBuilderOptions{
-			Name:        options.Name,
-			Labels:      options.Labels,
-			Annotations: options.Annotations,
-			Ports:       options.Ports,
-		},
+		name,
+		labels,
+		annotations,
+		ports,
 	)
 	return &Service{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.ServiceBuilder](
 			client,
-			&options.ResourceReconcilerOptions,
+			name,
 			svcBuilder,
 		),
 	}

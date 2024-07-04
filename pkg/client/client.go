@@ -26,6 +26,15 @@ type Client struct {
 	OwnerReference ctrlclient.Object
 }
 
+// NewClient returns a new instance of the Client struct.
+// It accepts a control client `client` and an owner reference `ownerReference`.
+func NewClient(client ctrlclient.Client, ownerReference ctrlclient.Object) *Client {
+	return &Client{
+		Client:         client,
+		OwnerReference: ownerReference,
+	}
+}
+
 // GetCtrlClient returns the control client associated with the client.
 func (c *Client) GetCtrlClient() ctrlclient.Client {
 	return c.Client

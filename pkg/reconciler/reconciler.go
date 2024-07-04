@@ -26,7 +26,7 @@ type BaseReconciler[T AnySpec] struct {
 	// Do not use ptr, to avoid other packages to modify the client
 	Client *client.Client
 
-	Name string
+	name string
 
 	Spec T
 }
@@ -36,7 +36,7 @@ func (b *BaseReconciler[T]) GetClient() *client.Client {
 }
 
 func (b *BaseReconciler[T]) GetName() string {
-	return b.Name
+	return b.name
 }
 
 func (b *BaseReconciler[T]) GetNamespace() string {

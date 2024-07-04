@@ -70,7 +70,7 @@ func (b *BaseResourceBuilder) GetMatchingLabels() map[string]string {
 	return b.filterLabels(b.GetLabels())
 }
 
-func (b *BaseResourceBuilder) GetSelector() *metav1.LabelSelector {
+func (b *BaseResourceBuilder) GetLabelSelector() *metav1.LabelSelector {
 	return &metav1.LabelSelector{
 		MatchLabels: b.GetMatchingLabels(),
 	}
