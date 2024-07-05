@@ -2,7 +2,6 @@ package reconciler
 
 import (
 	"context"
-	"reflect"
 
 	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
@@ -34,13 +33,12 @@ func NewBaseCluster[T AnySpec](
 	client *client.Client,
 	name string, // name of the cluster, Normally it is the name of CR
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
-
 	spec T, // spec of the cluster
 ) *BaseCluster[T] {
 	return &BaseCluster[T]{
 		BaseReconciler: BaseReconciler[T]{
 			Client: client,
-			Name:   name,
+			name:   name,
 			Spec:   spec,
 		},
 		ClusterOperation: clusterOperation,
@@ -60,10 +58,23 @@ func (r *BaseCluster[T]) AddResource(resource Reconciler) {
 }
 
 func (r *BaseCluster[T]) RegisterResources(ctx context.Context) error {
+
 	panic("unimplemented")
 }
 
+func (r *BaseCluster[T]) Paused(ctx context.Context) bool {
+	if r.ClusterOperation != nil && r.ClusterOperation.ReconciliationPaused {
+		logger.Info("Reconciliation paused", "cluster", r.GetName(), "namespace", r.GetNamespace(), "paused", "true")
+		return true
+	}
+	return false
+}
+
 func (r *BaseCluster[T]) Ready(ctx context.Context) *Result {
+	if r.Paused(ctx) {
+		logger.Info("Reconciliation paused, skip ready check", "cluster", r.GetName(), "namespace", r.GetNamespace())
+		return NewResult(true, 0, nil)
+	}
 	for _, resource := range r.resources {
 		if result := resource.Ready(ctx); result.RequeueOrNot() {
 			return result
@@ -73,101 +84,17 @@ func (r *BaseCluster[T]) Ready(ctx context.Context) *Result {
 }
 
 func (r *BaseCluster[T]) Reconcile(ctx context.Context) *Result {
+	if r.Paused(ctx) {
+		logger.Info("Reconciliation paused, skip reconcile", "cluster", r.GetName(), "namespace", r.GetNamespace())
+		return NewResult(true, 0, nil)
+	}
+
 	for _, resource := range r.resources {
+		logger.Info("Reconciling resource", "cluster", r.GetName(), "namespace", r.GetNamespace(), "resource", resource.GetName())
 		result := resource.Reconcile(ctx)
 		if result.RequeueOrNot() {
 			return result
 		}
 	}
 	return NewResult(false, 0, nil)
-}
-
-type RoleReconciler interface {
-	ClusterReconciler
-
-	RegisterResourceWithRoleGroup(ctx context.Context, name string, roleGroup any) error
-}
-
-var _ RoleReconciler = &BaseRoleReconciler[AnySpec]{}
-
-type BaseRoleReconciler[T AnySpec] struct {
-	BaseCluster[T]
-}
-
-func NewBaseRoleReconciler[T AnySpec](
-	client *client.Client,
-	name string, // name of the role
-	clusterOperation *apiv1alpha1.ClusterOperationSpec,
-	spec T, // spec of the role
-) *BaseRoleReconciler[T] {
-	return &BaseRoleReconciler[T]{
-		BaseCluster: *NewBaseCluster[T](
-			client,
-			name,
-			clusterOperation,
-			spec,
-		),
-	}
-}
-
-func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {
-
-	value := reflect.ValueOf(r.Spec)
-
-	// if value is a pointer, get the value it points to
-	if value.Kind() == reflect.Ptr {
-		value = value.Elem()
-	}
-
-	roleGroups := value.FieldByName("RoleGroups").Interface().(map[string]any)
-
-	for name, rg := range roleGroups {
-		r.MergeRoleGroupSpec(rg)
-
-		if err := r.RegisterResourceWithRoleGroup(ctx, name, rg); err != nil {
-			return err
-		}
-	}
-
-	return nil
-
-}
-
-func (r *BaseRoleReconciler[T]) RegisterResourceWithRoleGroup(ctx context.Context, name string, roleGroup any) error {
-	panic("unimplemented")
-}
-
-// MergeRoleGroupSpec
-// merge right to left, if field of right not exist in left, add it to left.
-// else skip it.
-// merge will modify left, so left must be a pointer.
-func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup any) {
-	leftValue := reflect.ValueOf(roleGroup)
-	rightValue := reflect.ValueOf(b.Spec)
-
-	if leftValue.Kind() == reflect.Ptr {
-		leftValue = leftValue.Elem()
-	} else {
-		panic("roleGroup is not a pointer")
-	}
-
-	if rightValue.Kind() == reflect.Ptr {
-		rightValue = rightValue.Elem()
-	}
-
-	for i := 0; i < rightValue.NumField(); i++ {
-		rightField := rightValue.Field(i)
-
-		if rightField.IsZero() {
-			continue
-		}
-		rightFieldName := rightValue.Type().Field(i).Name
-		leftField := leftValue.FieldByName(rightFieldName)
-
-		// if field exist in left, add it to left
-		if leftField.IsValid() && leftField.IsZero() {
-			leftValue.Set(rightField)
-			logger.V(5).Info("Merge role group", "field", rightFieldName, "value", rightField)
-		}
-	}
 }

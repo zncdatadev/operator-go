@@ -186,3 +186,5 @@ Temporary Items
 
 bin/
 testbin/
+
+**/coverage/

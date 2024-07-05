@@ -55,13 +55,13 @@ func (r *StatefulSet) Ready(ctx context.Context) *Result {
 
 func NewStatefulSet(
 	client *client.Client,
-	options *ResourceReconcilerOptions,
+	name string,
 	stsBuilder builder.StatefulSetBuilder,
 ) *StatefulSet {
 	return &StatefulSet{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
 			client,
-			options,
+			name,
 			stsBuilder,
 		),
 	}

@@ -66,26 +66,22 @@ func (b *BaseServiceBuilder) Build(_ context.Context) (ctrlclient.Object, error)
 	return obj, nil
 }
 
-type ServiceBuilderOptions struct {
-	Name        string
-	Labels      map[string]string
-	Annotations map[string]string
-	Ports       []corev1.ContainerPort
-}
-
 func NewServiceBuilder(
 	client *client.Client,
-	options *ServiceBuilderOptions,
+	name string,
+	labels map[string]string,
+	annotations map[string]string,
+	ports []corev1.ContainerPort,
 ) *BaseServiceBuilder {
 
-	ports := ContainerPorts2ServicePorts(options.Ports)
+	servicePorts := ContainerPorts2ServicePorts(ports)
 
 	return &BaseServiceBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client: client,
-			name:   options.Name,
-			labels: options.Labels,
+			name:   name,
+			labels: labels,
 		},
-		ports: ports,
+		ports: servicePorts,
 	}
 }

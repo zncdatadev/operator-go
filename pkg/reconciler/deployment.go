@@ -28,6 +28,8 @@ func (r *Deployment) getReplicas() *int32 {
 }
 
 func (r *Deployment) Reconcile(ctx context.Context) *Result {
+	// TODO: Extract a doBuild method to invoke the implementation side's Build method and append some framework logic.
+	// Consider abstracting a WorkloadReconciler on top of DeploymentReconciler to extract some of the logic into it.
 	resourceBuilder := r.GetBuilder()
 	replicas := r.getReplicas()
 	if replicas != nil {
@@ -60,13 +62,13 @@ func (r *Deployment) Ready(ctx context.Context) *Result {
 
 func NewDeployment(
 	client *client.Client,
-	options *ResourceReconcilerOptions,
+	name string,
 	deployBuilder builder.DeploymentBuilder,
 ) *Deployment {
 	return &Deployment{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.DeploymentBuilder](
 			client,
-			options,
+			name,
 			deployBuilder,
 		),
 	}

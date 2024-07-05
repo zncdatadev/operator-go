@@ -47,7 +47,7 @@ func (b *jobBuilder) GetObject() (*batchv1.Job, error) {
 	obj := &batchv1.Job{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: batchv1.JobSpec{
-			Selector: b.GetSelector(),
+			Selector: b.GetLabelSelector(),
 			Template: *tpl,
 		},
 	}

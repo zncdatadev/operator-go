@@ -18,6 +18,10 @@ type ResourceBuilder interface {
 	GetClient() *client.Client
 	SetName(name string)
 	GetName() string
+	AddLabels(labels map[string]string)
+	GetLabels() map[string]string
+	AddAnnotations(annotations map[string]string)
+	GetAnnotations() map[string]string
 }
 
 type WorkloadContainers interface {
