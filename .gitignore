@@ -188,3 +188,4 @@ bin/
 testbin/
 
 **/coverage/
+**/cover*

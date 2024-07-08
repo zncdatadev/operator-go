@@ -25,14 +25,14 @@ type ClusterReconciler struct {
 
 func NewClusterReconciler(
 	client *client.Client,
-	clusterName string,
+	clusterInfo *reconciler.ClusterInfo,
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
 	spec *GiteaClusterSpec,
 ) *ClusterReconciler {
 	return &ClusterReconciler{
 		BaseCluster: *reconciler.NewBaseCluster[*GiteaClusterSpec](
 			client,
-			clusterName,
+			clusterInfo,
 			clusterOperation,
 			spec,
 		),
@@ -48,8 +48,8 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 	serviceReconciler := reconciler.NewServiceReconciler(
 		r.Client,
 		r.GetName(),
-		map[string]string{"app.kubernetes.io/name": r.GetName()},
-		map[string]string{"app.kubernetes.io/name": r.GetName()},
+		r.ClusterInfo.GetLabels(),
+		r.ClusterInfo.GetAnnotations(),
 		[]corev1.ContainerPort{
 			{
 				Name:          "http",
@@ -66,7 +66,16 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 var _ = Describe("Cluster reconciler", func() {
 	Context("ClusterReconciler test", func() {
 		var resourceClient *client.Client
-		const name = "whoami"
+
+		clusterInfo := &reconciler.ClusterInfo{
+			GVK: &metav1.GroupVersionKind{
+				Group:   "fake.zncdata.dev",
+				Version: "v1alpha1",
+				Kind:    "GiteaCluster",
+			},
+			ClusterName: "fake-owner",
+		}
+
 		var namespace string
 		ctx := context.Background()
 
@@ -84,7 +93,7 @@ var _ = Describe("Cluster reconciler", func() {
 
 			fakeOwner := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "fake-owner",
+					Name:      clusterInfo.GetClusterName(),
 					Namespace: namespace,
 					UID:       types.UID("fake-uid"),
 				},
@@ -97,22 +106,38 @@ var _ = Describe("Cluster reconciler", func() {
 
 		})
 
-		It("should pass", func() {
+		It("should success reconcile cluster resource", func() {
+			By("Create a cluster reconciler")
 			clusterReconciler := NewClusterReconciler(
 				resourceClient,
-				name,
+				clusterInfo,
 				&apiv1alpha1.ClusterOperationSpec{},
 				giteaCluster,
 			)
-
 			Expect(clusterReconciler).ShouldNot(BeNil())
 
+			By("Register resources")
 			Expect(clusterReconciler.RegisterResources(ctx)).Should(BeNil())
 
+			By("Reconcile")
 			result := clusterReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
 			Expect(result.RequeueOrNot()).Should(BeTrue())
+
+			By("Ready")
+			result = clusterReconciler.Ready(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(result.Error).Should(BeNil())
+			Expect(result.RequeueOrNot()).Should(BeFalse())
+
+			By("Checking the service resource of cluster level")
+			service := &corev1.Service{}
+			serviceName := clusterInfo.GetClusterName()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: namespace}, service)).Should(Succeed())
+
+			By("Checking the service labels")
+			Expect(service.Labels).Should(HaveKeyWithValue("app.kubernetes.io/instance", clusterInfo.GetClusterName()))
 
 		})
 	})

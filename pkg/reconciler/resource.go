@@ -17,6 +17,7 @@ var (
 
 type ResourceReconciler[B builder.ResourceBuilder] interface {
 	Reconciler
+
 	GetObjectMeta() metav1.ObjectMeta
 	GetBuilder() B
 	ResourceReconcile(ctx context.Context, resource ctrlclient.Object) *Result
@@ -27,6 +28,8 @@ var _ ResourceReconciler[builder.ResourceBuilder] = &GenericResourceReconciler[b
 type GenericResourceReconciler[B builder.ResourceBuilder] struct {
 	BaseReconciler[AnySpec]
 	Builder B
+
+	Name string
 }
 
 func NewGenericResourceReconciler[B builder.ResourceBuilder](
@@ -37,11 +40,15 @@ func NewGenericResourceReconciler[B builder.ResourceBuilder](
 	return &GenericResourceReconciler[B]{
 		BaseReconciler: BaseReconciler[AnySpec]{
 			Client: client,
-			name:   name,
 			Spec:   nil,
 		},
 		Builder: builder,
+		Name:    name,
 	}
+}
+
+func (r *GenericResourceReconciler[B]) GetName() string {
+	return r.Name
 }
 
 func (r *GenericResourceReconciler[b]) GetObjectMeta() metav1.ObjectMeta {

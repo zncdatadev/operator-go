@@ -90,16 +90,17 @@ var _ = Describe("Deloyment reconciler", func() {
 		})
 
 		It("Should successfully reconcile a whoami deployment", func() {
-
+			By("Create a deployment reconciler")
 			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
+			By("reconcile the deployment")
 			result := deploymentReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
 			Expect(result.RequeueOrNot()).Should(BeTrue())
 
-			// Check the deployment is ready
+			By("check the deployment is ready or not")
 			result = deploymentReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
@@ -107,12 +108,14 @@ var _ = Describe("Deloyment reconciler", func() {
 
 			// Because the envtest does not handle the pod, we need to mock that the statefulset is ready
 			// Mock that the deployment is ready by updating the ready replicas to 1
+			By("mock the deployment is ready")
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
 			deployment.Status.Replicas = replcias
 			deployment.Status.ReadyReplicas = replcias
 			Expect(k8sClient.Status().Update(ctx, deployment)).Should(Succeed())
 
+			By("check the deployment is ready or not")
 			result = deploymentReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
