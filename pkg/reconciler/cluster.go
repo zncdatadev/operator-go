@@ -25,13 +25,13 @@ var _ ClusterReconciler = &BaseCluster[AnySpec]{}
 type BaseCluster[T AnySpec] struct {
 	BaseReconciler[T]
 	ClusterOperation *apiv1alpha1.ClusterOperationSpec
-	ClusterInfo      *ClusterInfo
+	ClusterInfo      ClusterInfo
 	resources        []Reconciler
 }
 
 func NewBaseCluster[T AnySpec](
 	client *client.Client,
-	clusterInfo *ClusterInfo,
+	clusterInfo ClusterInfo,
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
 	spec T, // spec of the cluster
 ) *BaseCluster[T] {

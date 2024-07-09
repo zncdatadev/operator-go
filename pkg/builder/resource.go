@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -11,13 +12,6 @@ import (
 
 var (
 	logger = ctrl.Log.WithName("builder")
-
-	MatchingLabelsNames = []string{
-		"app.kubernetes.io/name",
-		"app.kubernetes.io/instance",
-		"app.kubernetes.io/role-group",
-		"app.kubernetes.io/component",
-	}
 )
 
 var _ ResourceBuilder = &BaseResourceBuilder{}
@@ -28,6 +22,21 @@ type BaseResourceBuilder struct {
 	name        string
 	labels      map[string]string
 	annotations map[string]string
+
+	roleGroupInfo *RoleGroupInfo
+}
+
+func NewBaseResourceBuilder(
+	client *client.Client,
+	name string,
+	options *ResourceOptions,
+) *BaseResourceBuilder {
+	return &BaseResourceBuilder{
+		Client:        client,
+		name:          name,
+		labels:        options.Labels,
+		roleGroupInfo: options.RoleGroupInfo,
+	}
 }
 
 func (b *BaseResourceBuilder) GetClient() *client.Client {
@@ -52,13 +61,28 @@ func (b *BaseResourceBuilder) AddLabels(labels map[string]string) {
 }
 
 func (b *BaseResourceBuilder) GetLabels() map[string]string {
+	if b.labels == nil {
+		b.labels = map[string]string{
+			util.AppKubernetesInstanceName:  b.Client.GetOwnerName(),
+			util.AppKubernetesManagedByName: util.StackDomain,
+		}
+
+		if b.roleGroupInfo != nil {
+			if b.roleGroupInfo.RoleName != "" {
+				b.labels[util.AppKubernetesComponentName] = b.roleGroupInfo.RoleName
+			}
+			if b.roleGroupInfo.RoleGroupName != "" {
+				b.labels[util.AppKubernetesRoleGroupName] = b.roleGroupInfo.RoleGroupName
+			}
+		}
+	}
 	return b.labels
 }
 
 func (o *BaseResourceBuilder) filterLabels(labels map[string]string) map[string]string {
 
 	matchingLabels := make(map[string]string)
-	for _, label := range MatchingLabelsNames {
+	for _, label := range util.AppMatchingLabelsNames {
 		if value, ok := labels[label]; ok {
 			matchingLabels[label] = value
 		}
@@ -93,7 +117,7 @@ func (b *BaseResourceBuilder) GetObjectMeta() metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Name:        b.GetName(),
 		Namespace:   b.Client.GetOwnerNamespace(),
-		Labels:      b.labels,
+		Labels:      b.GetLabels(),
 		Annotations: b.annotations,
 	}
 }
@@ -103,7 +127,7 @@ func (b *BaseResourceBuilder) GetObjectMeta() metav1.ObjectMeta {
 func (b *BaseResourceBuilder) GetObjectMetaWithClusterScope() metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Name:        b.GetName(),
-		Labels:      b.labels,
+		Labels:      b.GetLabels(),
 		Annotations: b.annotations,
 	}
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"github.com/zncdatadev/operator-go/pkg/client"
-	"k8s.io/apimachinery/pkg/runtime"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type AnySpec any
@@ -14,8 +12,6 @@ type Reconciler interface {
 	GetName() string
 	GetNamespace() string
 	GetClient() *client.Client
-	GetCtrlClient() ctrlclient.Client
-	GetCtrlScheme() *runtime.Scheme
 	Reconcile(ctx context.Context) *Result
 	Ready(ctx context.Context) *Result
 }
@@ -39,14 +35,6 @@ func (b *BaseReconciler[T]) GetClient() *client.Client {
 
 func (b *BaseReconciler[T]) GetNamespace() string {
 	return b.Client.GetOwnerNamespace()
-}
-
-func (b *BaseReconciler[T]) GetCtrlClient() ctrlclient.Client {
-	return b.Client.GetCtrlClient()
-}
-
-func (b *BaseReconciler[T]) GetCtrlScheme() *runtime.Scheme {
-	return b.Client.GetCtrlScheme()
 }
 
 func (b *BaseReconciler[T]) Ready(ctx context.Context) *Result {

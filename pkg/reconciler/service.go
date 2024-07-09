@@ -18,7 +18,6 @@ func NewServiceReconciler(
 	labels map[string]string,
 	annotations map[string]string,
 	ports []corev1.ContainerPort,
-
 ) *Service {
 	svcBuilder := builder.NewServiceBuilder(
 		client,

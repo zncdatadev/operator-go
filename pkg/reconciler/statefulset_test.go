@@ -17,6 +17,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
 var _ builder.StatefulSetBuilder = &FooStatefulSetBuilder{}
@@ -26,10 +27,9 @@ type FooStatefulSetBuilder struct {
 }
 
 func (b *FooStatefulSetBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
-	containerBuilder := builder.NewContainerBuilder(
+	containerBuilder := builder.NewContainer(
 		"foo",
 		"nginx",
-		corev1.PullIfNotPresent,
 	)
 
 	b.AddContainer(containerBuilder.Build())
@@ -75,12 +75,13 @@ var _ = Describe("Statefulset reconciler", func() {
 				StatefulSet: *builder.NewStatefulSetBuilder(
 					resourceClient,
 					name,
-					map[string]string{"app.kubernetes.io/instance": name},
-					map[string]string{"app.kubernetes.io/instance": name},
-					nil,
-					nil,
-					nil,
 					&replcias,
+					&util.Image{
+						StackVersion:   "1.0.0",
+						ProductVersion: "458",
+						ProductName:    "nginx",
+					},
+					&builder.WorkloadOptions{},
 				),
 			}
 		})

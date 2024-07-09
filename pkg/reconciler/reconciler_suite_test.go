@@ -17,7 +17,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	commonsapiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
 var (
@@ -68,11 +68,11 @@ var _ = AfterSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 })
 
-type GiteaClusterSpec struct {
-	Image            *ImageSpec                               `json:"image,omitempty"`
-	ClusterConfig    *ClusterConfigSpec                       `json:"clusterConfig,omitempty"`
-	ClusterOperation *commonsapiv1alpha1.ClusterOperationSpec `json:"clusterOperation,omitempty"`
-	Gitea            *GiteaSpec                               `json:"gitea,omitempty"`
+type TrinoClusterSpec struct {
+	Image            *ImageSpec                            `json:"image,omitempty"`
+	ClusterConfig    *ClusterConfigSpec                    `json:"clusterConfig,omitempty"`
+	ClusterOperation *commonsv1alpha1.ClusterOperationSpec `json:"clusterOperation,omitempty"`
+	Coordinator      *CoordinatorSpec                      `json:"Coordinator,omitempty"`
 }
 
 type ImageSpec struct {
@@ -86,26 +86,29 @@ type ClusterConfigSpec struct {
 	ListenerClass string `json:"listenerClass,omitempty"`
 }
 
-type GiteaSpec struct {
-	RoleGroups       map[string]GiteaRoleGroupSpec `json:"roleGroups,omitempty"`
-	Config           *GiteaConfigSpec              `json:"config,omitempty"`
+type CoordinatorSpec struct {
+	RoleGroups       map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
+	Config           *TrinoConfigSpec              `json:"config,omitempty"`
 	CommandOverrides []string                      `json:"commandOverrides,omitempty"`
-	EnvOverrides     []corev1.EnvVar               `json:"envOverrides,omitempty"`
+	EnvOverrides     map[string]string             `json:"envOverrides,omitempty"`
 	ConfigOverrides  map[string]string             `json:"configOverrides,omitempty"`
+	PodOverrides     *corev1.PodTemplateSpec       `json:"podOverrides,omitempty"`
 }
 
-type GiteaRoleGroupSpec struct {
-	Replicas         *int32            `json:"replicas,omitempty"`
-	Config           *GiteaConfigSpec  `json:"config,omitempty"`
-	CommandOverrides []string          `json:"commandOverrides,omitempty"`
-	EnvOverrides     []corev1.EnvVar   `json:"envOverrides,omitempty"`
-	ConfigOverrides  map[string]string `json:"configOverrides,omitempty"`
+type TrinoRoleGroupSpec struct {
+	Replicas         *int32                  `json:"replicas,omitempty"`
+	Config           *TrinoConfigSpec        `json:"config,omitempty"`
+	CommandOverrides []string                `json:"commandOverrides,omitempty"`
+	EnvOverrides     map[string]string       `json:"envOverrides,omitempty"`
+	ConfigOverrides  map[string]string       `json:"configOverrides,omitempty"`
+	PodOverrides     *corev1.PodTemplateSpec `json:"podOverrides,omitempty"`
 }
 
-type GiteaConfigSpec struct {
-	Affinity                *corev1.Affinity                            `json:"affinity,omitempty"`
-	PodDisruptionBudget     *commonsapiv1alpha1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
-	GracefulShutdownTimeout *string                                     `json:"gracefulShutdownTimeout,omitempty"`
-	Logging                 *commonsapiv1alpha1.LoggingConfigSpec       `json:"logging,omitempty"`
-	Resources               *commonsapiv1alpha1.ResourcesSpec           `json:"resources,omitempty"`
+type TrinoConfigSpec struct {
+	Affinity            *corev1.Affinity                         `json:"affinity,omitempty"`
+	PodDisruptionBudget *commonsv1alpha1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+	// ParseDuration parses a duration string.
+	GracefulShutdownTimeout string                             `json:"gracefulShutdownTimeout,omitempty"`
+	Logging                 *commonsv1alpha1.LoggingConfigSpec `json:"logging,omitempty"`
+	Resources               *commonsv1alpha1.ResourcesSpec     `json:"resources,omitempty"`
 }

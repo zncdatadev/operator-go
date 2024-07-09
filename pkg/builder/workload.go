@@ -2,60 +2,95 @@ package builder
 
 import (
 	"errors"
+	"time"
 
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
 	_ ResourceBuilder                       = &BaseWorkloadBuilder{}
+	_ WorkloadImage                         = &BaseWorkloadBuilder{}
 	_ WorkloadContainers                    = &BaseWorkloadBuilder{}
 	_ WorkloadInitContainers                = &BaseWorkloadBuilder{}
 	_ WorkloadVolumes                       = &BaseWorkloadBuilder{}
 	_ WorkloadAffinity                      = &BaseWorkloadBuilder{}
 	_ WorkloadTerminationGracePeriodSeconds = &BaseWorkloadBuilder{}
+	_ WorkloadSecurityContext               = &BaseWorkloadBuilder{}
+	_ WorkloadReplicas                      = &BaseWorkloadReplicasBuilder{}
 )
 
 var ErrNoContainers = errors.New("no containers defined")
 
+// WorkloadOptions is a struct to hold the options for a workload
+//
+// Note: The values of envOverrides and commandOverrides will
+// only be overridden on the container with the same name as roleGroupInfo.RoleName,
+// if roleGroupInfo exists and roleGroupInfo.RoleName has a value.
 type BaseWorkloadBuilder struct {
 	BaseResourceBuilder
 
+	image *util.Image
+
 	affinity *corev1.Affinity
 
-	podOverrides *corev1.PodTemplateSpec
+	commandOverrides []string
+	envOverrides     map[string]string
+	podOverrides     *corev1.PodTemplateSpec
 
-	terminationGracePeriodSeconds *int64
+	terminationGracePeriod *time.Duration
 
-	containers     []corev1.Container // do not init this field when constructing the struct
-	initContainers []corev1.Container // do not init this field when constructing the struct
-	volumes        []corev1.Volume    // do not init this field when constructing the struct
+	resource *commonsv1alpha1.ResourcesSpec
+
+	containers      []corev1.Container         // do not init this field when constructing the struct
+	initContainers  []corev1.Container         // do not init this field when constructing the struct
+	volumes         []corev1.Volume            // do not init this field when constructing the struct
+	securityContext *corev1.PodSecurityContext // do not init this field when constructing the struct
+
 }
 
 func NewBaseWorkloadBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
-	affinity *corev1.Affinity,
-	podOverrides *corev1.PodTemplateSpec,
-	terminationGracePeriodSeconds *int64,
+	image *util.Image,
+	options *WorkloadOptions,
 ) *BaseWorkloadBuilder {
-	return &BaseWorkloadBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
-			Client:      client,
-			name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
 
-		affinity: affinity,
-
-		podOverrides: podOverrides,
-
-		terminationGracePeriodSeconds: terminationGracePeriodSeconds,
+	resourceOptions := &ResourceOptions{
+		Labels:        options.Labels,
+		Annotations:   options.Annotations,
+		RoleGroupInfo: options.RoleGroupInfo,
 	}
+
+	return &BaseWorkloadBuilder{
+		BaseResourceBuilder: *NewBaseResourceBuilder(
+			client,
+			name,
+			resourceOptions,
+		),
+		image: image,
+
+		commandOverrides: options.CommandOverrides,
+		envOverrides:     options.EnvOverrides,
+		affinity:         options.Affinity,
+
+		podOverrides: options.PodOverrides,
+
+		terminationGracePeriod: options.TerminationGracePeriod,
+
+		resource: options.Resource,
+	}
+}
+
+func (b *BaseWorkloadBuilder) SetImage(image *util.Image) {
+	b.image = image
+}
+
+func (b *BaseWorkloadBuilder) GetImage() string {
+	return b.image.String()
 }
 
 func (b *BaseWorkloadBuilder) AddContainers(containers []corev1.Container) {
@@ -72,6 +107,84 @@ func (b *BaseWorkloadBuilder) ResetContainers(containers []corev1.Container) {
 
 func (b *BaseWorkloadBuilder) GetContainers() []corev1.Container {
 	return b.containers
+}
+
+func (b *BaseWorkloadBuilder) SetResources(resources *commonsv1alpha1.ResourcesSpec) {
+	b.resource = resources
+}
+
+func (b *BaseWorkloadBuilder) GetResources() *commonsv1alpha1.ResourcesSpec {
+	return b.resource
+}
+
+func (b *BaseWorkloadBuilder) SetSecurityContext(user int64, group int64, nonRoot bool) {
+	securityContext := &corev1.PodSecurityContext{
+		RunAsUser:    &user,
+		RunAsGroup:   &group,
+		RunAsNonRoot: &nonRoot,
+	}
+
+	b.securityContext = securityContext
+}
+
+func (b *BaseWorkloadBuilder) GetSecurityContext() *corev1.PodSecurityContext {
+	return b.securityContext
+}
+
+func (b *BaseWorkloadBuilder) OverrideCommand() {
+	containers := b.GetContainers()
+
+	if len(containers) == 0 || b.commandOverrides == nil || len(b.commandOverrides) == 0 || b.roleGroupInfo == nil || b.roleGroupInfo.RoleName == "" {
+		containersName := []string{}
+		for _, container := range containers {
+			containersName = append(containersName, container.Name)
+		}
+		logger.V(5).Info("Sikpping command override", "containers", containersName, "commandOverrides", b.commandOverrides, "roleGroupInfo", b.roleGroupInfo)
+		return
+	}
+
+	for i := range containers {
+		container := &containers[i]
+		if container.Name == b.roleGroupInfo.RoleName {
+			// Override the command, clear the args
+			container.Command = b.commandOverrides
+			container.Args = []string{}
+			logger.V(5).Info("Command override", "container", container.Name, "command", container.Command)
+			break
+		}
+	}
+
+	b.containers = containers
+}
+
+func (b *BaseWorkloadBuilder) OverrideEnv() {
+	containers := b.GetContainers()
+
+	if len(containers) == 0 || b.envOverrides == nil || len(b.envOverrides) == 0 || b.roleGroupInfo == nil || b.roleGroupInfo.RoleName == "" {
+		containersName := []string{}
+		for _, container := range containers {
+			containersName = append(containersName, container.Name)
+		}
+		logger.V(5).Info("Sikpping env override", "containers", containersName, "envOverrides", b.envOverrides, "roleGroupInfo", b.roleGroupInfo)
+		return
+	}
+
+	for i := range containers {
+		container := &containers[i]
+		if container.Name == b.roleGroupInfo.RoleName {
+			// Override the env
+			for key, value := range b.envOverrides {
+				container.Env = append(container.Env, corev1.EnvVar{
+					Name:  key,
+					Value: value,
+				})
+			}
+			logger.V(5).Info("Env override", "container", container.Name, "env", container.Env)
+			break
+		}
+	}
+
+	b.containers = containers
 }
 
 func (b *BaseWorkloadBuilder) AddInitContainers(containers []corev1.Container) {
@@ -114,12 +227,27 @@ func (b *BaseWorkloadBuilder) GetAffinity() *corev1.Affinity {
 	return b.affinity
 }
 
-func (b *BaseWorkloadBuilder) AddTerminationGracePeriodSeconds(seconds *int64) {
-	b.terminationGracePeriodSeconds = seconds
+func (b *BaseWorkloadBuilder) AddTerminationGracePeriod(duration *time.Duration) {
+	b.terminationGracePeriod = duration
+}
+
+func (b *BaseWorkloadBuilder) GetTerminationGracePeriod() *time.Duration {
+	return b.terminationGracePeriod
 }
 
 func (b *BaseWorkloadBuilder) GetTerminationGracePeriodSeconds() *int64 {
-	return b.terminationGracePeriodSeconds
+	if b.terminationGracePeriod != nil {
+		seconds := int64(b.terminationGracePeriod.Seconds())
+		return &seconds
+	}
+	return nil
+}
+
+func (b *BaseWorkloadBuilder) GetImagePullSecrets() []corev1.LocalObjectReference {
+	if b.image.PullSecretName != "" {
+		return []corev1.LocalObjectReference{{Name: b.image.PullSecretName}}
+	}
+	return nil
 }
 
 func (b *BaseWorkloadBuilder) getDefaultPodTemplate() (*corev1.PodTemplateSpec, error) {
@@ -140,69 +268,52 @@ func (b *BaseWorkloadBuilder) getDefaultPodTemplate() (*corev1.PodTemplateSpec, 
 			Volumes:                       b.GetVolumes(),
 			Affinity:                      b.GetAffinity(),
 			TerminationGracePeriodSeconds: b.GetTerminationGracePeriodSeconds(),
+			ImagePullSecrets:              b.GetImagePullSecrets(),
+			SecurityContext:               b.GetSecurityContext(),
 		},
 	}
 	return pod, nil
 }
 
 func (b *BaseWorkloadBuilder) getOverridedPodTemplate() (*corev1.PodTemplateSpec, error) {
-	pod, err := b.getDefaultPodTemplate()
+	podTemplate := b.podOverrides.DeepCopy()
 
-	if err != nil {
-		return nil, err
+	meta := &podTemplate.ObjectMeta
+	meta.Labels = util.MergeStringMaps(meta.Labels, b.GetLabels())
+	meta.Annotations = util.MergeStringMaps(meta.Annotations, b.GetAnnotations())
+
+	pod := &podTemplate.Spec
+
+	pod.Volumes = append(pod.Volumes, b.GetVolumes()...)
+	pod.InitContainers = append(pod.InitContainers, b.GetInitContainers()...)
+	pod.Containers = append(pod.Containers, b.GetContainers()...)
+	pod.ImagePullSecrets = append(pod.ImagePullSecrets, b.GetImagePullSecrets()...)
+
+	if b.affinity != nil {
+		pod.Affinity = b.affinity
 	}
 
-	if b.podOverrides != nil {
-		// Merge labels
-		if len(b.podOverrides.Labels) > 0 {
-			if pod.ObjectMeta.Labels == nil {
-				pod.ObjectMeta.Labels = make(map[string]string)
-			}
-			for key, value := range b.podOverrides.Labels {
-				pod.ObjectMeta.Labels[key] = value
-			}
-		}
-
-		// Merge annotations
-		if len(b.podOverrides.Annotations) > 0 {
-			if pod.ObjectMeta.Annotations == nil {
-				pod.ObjectMeta.Annotations = make(map[string]string)
-			}
-			for key, value := range b.podOverrides.Annotations {
-				pod.ObjectMeta.Annotations[key] = value
-			}
-		}
-
-		// Merge init containers
-		if len(b.podOverrides.Spec.InitContainers) > 0 {
-			pod.Spec.InitContainers = append(pod.Spec.InitContainers, b.podOverrides.Spec.InitContainers...)
-		}
-
-		// Merge containers
-		if len(b.podOverrides.Spec.Containers) > 0 {
-			pod.Spec.Containers = append(pod.Spec.Containers, b.podOverrides.Spec.Containers...)
-		}
-
-		// Merge volumes
-		if len(b.podOverrides.Spec.Volumes) > 0 {
-			pod.Spec.Volumes = append(pod.Spec.Volumes, b.podOverrides.Spec.Volumes...)
-		}
-
-		// Merge affinity
-		if b.podOverrides.Spec.Affinity != nil {
-			pod.Spec.Affinity = b.podOverrides.Spec.Affinity
-		}
-
-		// Merge termination grace period seconds
-		if b.podOverrides.Spec.TerminationGracePeriodSeconds != nil {
-			pod.Spec.TerminationGracePeriodSeconds = b.podOverrides.Spec.TerminationGracePeriodSeconds
-		}
+	if b.terminationGracePeriod != nil {
+		pod.TerminationGracePeriodSeconds = b.GetTerminationGracePeriodSeconds()
 	}
 
-	return pod, nil
+	if b.securityContext != nil {
+		pod.SecurityContext = b.securityContext
+	}
+
+	return podTemplate, nil
 }
 
 func (b *BaseWorkloadBuilder) getPodTemplate() (*corev1.PodTemplateSpec, error) {
+
+	if b.commandOverrides != nil {
+		b.OverrideCommand()
+	}
+
+	if b.envOverrides != nil {
+		b.OverrideEnv()
+	}
+
 	if b.podOverrides != nil {
 		return b.getOverridedPodTemplate()
 	}
@@ -219,22 +330,16 @@ type BaseWorkloadReplicasBuilder struct {
 func NewBaseWorkloadReplicasBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
-	affinity *corev1.Affinity,
-	podOverrides *corev1.PodTemplateSpec,
-	terminationGracePeriodSeconds *int64,
 	replicas *int32,
+	image *util.Image,
+	options *WorkloadOptions,
 ) *BaseWorkloadReplicasBuilder {
 	return &BaseWorkloadReplicasBuilder{
 		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(
 			client,
 			name,
-			labels,
-			annotations,
-			affinity,
-			podOverrides,
-			terminationGracePeriodSeconds,
+			image,
+			options,
 		),
 		replicas: replicas,
 	}

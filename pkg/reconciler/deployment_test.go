@@ -16,6 +16,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,20 +24,18 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var _ builder.DeploymentBuilder = &FooDeploymentBuilder{}
+var _ builder.DeploymentBuilder = &TrinoCoordinatorDeploymentBuilder{}
 
-type FooDeploymentBuilder struct {
+type TrinoCoordinatorDeploymentBuilder struct {
 	builder.Deployment
 }
 
-func (b *FooDeploymentBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
-	containerBuilder := builder.NewContainerBuilder(
-		"foo",
-		"nginx",
-		corev1.PullIfNotPresent,
-	)
+func (b *TrinoCoordinatorDeploymentBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
+	trinoContainer := builder.NewContainerBuilder("coordinator", b.GetImage()).
+		SetCommand([]string{"/usr/lib/trino/bin/launcher", "run"}).
+		Build()
 
-	b.AddContainer(containerBuilder.Build())
+	b.AddContainer(trinoContainer)
 
 	return b.GetObject()
 }
@@ -45,14 +44,13 @@ var _ = Describe("Deloyment reconciler", func() {
 
 	Context("DeploymentReconciler test", func() {
 		var resourceClient *client.Client
-		var deploymentBuilder *FooDeploymentBuilder
+		var deploymentBuilder *TrinoCoordinatorDeploymentBuilder
 		const name = "whoami"
 		var namespace string
 		ctx := context.Background()
 		replcias := int32(1)
 
 		BeforeEach(func() {
-
 			// Define a random namespace
 			namespace = "test-" + strconv.Itoa(rand.Intn(10000))
 			ns := &corev1.Namespace{
@@ -60,7 +58,6 @@ var _ = Describe("Deloyment reconciler", func() {
 					Name: namespace,
 				},
 			}
-
 			// Create a namespace
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
@@ -75,16 +72,13 @@ var _ = Describe("Deloyment reconciler", func() {
 			resourceClient = client.NewClient(k8sClient, fakeOwner)
 
 			// Create a deployment builder
-			deploymentBuilder = &FooDeploymentBuilder{
+			deploymentBuilder = &TrinoCoordinatorDeploymentBuilder{
 				Deployment: *builder.NewDeployment(
 					resourceClient,
 					name,
-					map[string]string{"app.kubernetes.io/instance": name},
-					map[string]string{"app.kubernetes.io/instance": name},
-					nil,
-					nil,
-					nil,
 					&replcias,
+					util.NewImage("trino", "458", "1.0.0"),
+					&builder.WorkloadOptions{},
 				),
 			}
 		})
@@ -123,4 +117,5 @@ var _ = Describe("Deloyment reconciler", func() {
 		})
 
 	})
+
 })
