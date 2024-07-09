@@ -95,7 +95,7 @@ type GiteaSpec struct {
 }
 
 type GiteaRoleGroupSpec struct {
-	Replicas         int32             `json:"replicas,omitempty"`
+	Replicas         *int32            `json:"replicas,omitempty"`
 	Config           *GiteaConfigSpec  `json:"config,omitempty"`
 	CommandOverrides []string          `json:"commandOverrides,omitempty"`
 	EnvOverrides     []corev1.EnvVar   `json:"envOverrides,omitempty"`

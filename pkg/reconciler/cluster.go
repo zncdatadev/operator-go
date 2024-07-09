@@ -24,25 +24,29 @@ var _ ClusterReconciler = &BaseCluster[AnySpec]{}
 
 type BaseCluster[T AnySpec] struct {
 	BaseReconciler[T]
-
 	ClusterOperation *apiv1alpha1.ClusterOperationSpec
+	ClusterInfo      *ClusterInfo
 	resources        []Reconciler
 }
 
 func NewBaseCluster[T AnySpec](
 	client *client.Client,
-	name string, // name of the cluster, Normally it is the name of CR
+	clusterInfo *ClusterInfo,
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
 	spec T, // spec of the cluster
 ) *BaseCluster[T] {
 	return &BaseCluster[T]{
 		BaseReconciler: BaseReconciler[T]{
 			Client: client,
-			name:   name,
 			Spec:   spec,
 		},
 		ClusterOperation: clusterOperation,
+		ClusterInfo:      clusterInfo,
 	}
+}
+
+func (r *BaseCluster[T]) GetName() string {
+	return r.ClusterInfo.GetClusterName()
 }
 
 func (r *BaseCluster[T]) GetClusterOperation() *apiv1alpha1.ClusterOperationSpec {
@@ -95,6 +99,7 @@ func (r *BaseCluster[T]) Reconcile(ctx context.Context) *Result {
 		if result.RequeueOrNot() {
 			return result
 		}
+		logger.Info("Reconcile completed", "cluster", r.GetName(), "namespace", r.GetNamespace())
 	}
 	return NewResult(false, 0, nil)
 }

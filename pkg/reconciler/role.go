@@ -2,92 +2,131 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"reflect"
 
 	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
 )
 
+var (
+	ErrRoleSpecNotPointer = errors.New("role spec must be a pointer")
+)
+
 type RoleReconciler interface {
 	ClusterReconciler
+	// Get the full name of the role, formatted as `<clusterName>-<roleName>`
+	GetFullName() string
+	// Register resources based on roleGroup
+}
 
-	RegisterResourceWithRoleGroup(ctx context.Context, name *RoleGroupName, roleGroup any) error
+type RoleGroupResourceReconcilersGetter interface {
+	GetResourceReconcilers(info *RoleGroupInfo, roleGroupSpec any) ([]Reconciler, error)
 }
 
 var _ RoleReconciler = &BaseRoleReconciler[AnySpec]{}
 
 type BaseRoleReconciler[T AnySpec] struct {
 	BaseCluster[T]
-	name string
+	RoleInfo *RoleInfo
 }
 
 func NewBaseRoleReconciler[T AnySpec](
 	client *client.Client,
-	clusterName string, // name of the cluster
-	name string, // name of the role
+	roleInfo *RoleInfo,
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
 	spec T, // spec of the role
 ) *BaseRoleReconciler[T] {
 	return &BaseRoleReconciler[T]{
 		BaseCluster: *NewBaseCluster[T](
 			client,
-			clusterName,
+			&roleInfo.ClusterInfo,
 			clusterOperation,
 			spec,
 		),
-		name: name,
+		RoleInfo: roleInfo,
 	}
 }
 
-func (r *BaseRoleReconciler[T]) GetClusterName() string {
-	return r.BaseCluster.name
+func (r *BaseRoleReconciler[T]) GetName() string {
+	return r.RoleInfo.GetRoleName()
 }
 
-func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {
+func (r *BaseRoleReconciler[T]) GetFullName() string {
+	return r.RoleInfo.GetFullName()
+}
+
+func (r *BaseRoleReconciler[T]) GetRoleGroups() (map[string]AnySpec, error) {
+
+	roleGroups := map[string]AnySpec{}
 
 	value := reflect.ValueOf(r.Spec)
 
-	// if value is a pointer, get the value it points to
 	if value.Kind() == reflect.Ptr {
 		value = value.Elem()
 	}
 
-	roleGroups := value.FieldByName("RoleGroups").Interface().(map[string]any)
+	roleGroupsReflect := value.FieldByName("RoleGroups")
 
-	for name, rg := range roleGroups {
-		rgName := NewRoleGroupName(name, r.name, r.GetClusterName())
-		r.MergeRoleGroupSpec(rg)
+	iter := roleGroupsReflect.MapRange()
+	for iter.Next() {
+		key := iter.Key()
+		value := iter.Value()
 
-		if err := r.RegisterResourceWithRoleGroup(ctx, rgName, rg); err != nil {
-			return err
-		}
+		// construct a new roleGroup pointer
+		roleGroupPrt := reflect.New(value.Type())
+		roleGroupPrt.Elem().Set(value)
+
+		mergedRoleGroup := r.MergeRoleGroupSpec(roleGroupPrt.Interface())
+
+		roleGroups[key.String()] = mergedRoleGroup
 	}
 
-	return nil
+	return roleGroups, nil
+
 }
 
-func (r *BaseRoleReconciler[T]) RegisterResourceWithRoleGroup(
-	ctx context.Context,
-	name *RoleGroupName,
-	roleGroup any,
-) error {
+func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {
 	panic("unimplemented")
 }
 
-// MergeRoleGroupSpec
-// merge right to left, if field of right not exist in left, add it to left.
-// else skip it.
-// merge will modify left, so left must be a pointer.
-func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup any) {
+// MergeRoleGroupSpec merges the roleGroup spec with the base role spec.
+// It merges the fields from the right (roleSpec) to the left (roleGroup).
+// If a field exists in the left but is zero, it will be replaced by the corresponding field from the right.
+// The left must be a pointer, as the merge operation modifies it.
+// The fields "RoleGroups" and "PodDisruptionBudget" are excluded during the merge.
+//
+// Example:
+//
+//	left := &RoleGroupSpec{
+//		Replicas:      1,
+//		Config:        config,
+//		EnvOverrides:  envOverridesRoleGroup,
+//	}
+//
+//	right := RoleSpec{
+//		RoleGroups:        rolegroups,            // this field is excluded
+//		EnvOverrides:      envOverridesRole,
+//		CommandOverrides:  commandOverrides,
+//	}
+//
+//	result := &RoleGroupSpec{
+//		Replicas:          1,
+//		Config:            config,
+//		EnvOverrides:      envOverridesRoleGroup,   // `EnvOverrides` exists in left, so it is not replaced
+//		CommandOverrides:  commandOverrides,        // Add RoleSpec.CommandOverrides to left
+//	}
+func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup AnySpec) AnySpec {
 	leftValue := reflect.ValueOf(roleGroup)
-	rightValue := reflect.ValueOf(b.Spec)
+	rightValue := reflect.ValueOf(b.Spec) // When b.Spec is T, it is not a pointer
 
 	if leftValue.Kind() == reflect.Ptr {
 		leftValue = leftValue.Elem()
 	} else {
-		panic("roleGroup is not a pointer")
+		panic(ErrRoleSpecNotPointer)
 	}
 
+	// If the b.Spec is a pointer, get the actual value pointed to directly
 	if rightValue.Kind() == reflect.Ptr {
 		rightValue = rightValue.Elem()
 	}
@@ -96,15 +135,17 @@ func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup any) {
 		rightField := rightValue.Field(i)
 
 		if rightField.IsZero() {
-			continue
+			continue // Skip if the right field is zero
 		}
+
 		rightFieldName := rightValue.Type().Field(i).Name
 		leftField := leftValue.FieldByName(rightFieldName)
 
-		// if field exist in left, add it to left
-		if leftField.IsValid() && leftField.IsZero() {
-			leftValue.Set(rightField)
-			logger.V(5).Info("Merge role group", "field", rightFieldName, "value", rightField)
+		// If the left field exists and is zero, perform the merge
+		if leftField.IsValid() && leftField.CanSet() && leftField.IsZero() {
+			leftField.Set(rightField)                                                                      // Copy the field value
+			logger.V(5).Info("Merge role group", "field", rightFieldName, "value", rightField.Interface()) // Log the field and its value
 		}
 	}
+	return roleGroup
 }
