@@ -1,6 +1,21 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.0 2024-07-10
+
+### features
+
+**BROKENCHANGE:** Update `reconciler` and `builder` package
+
+- Add vector log builder
+- Refactor reconciler and builder, and add test case
+- Add image selection
+- Remove s3 finalizer constant
+
+### bugs
+
+- Fix code indentation can not handle multiple lines
+
 ## v0.7.0 2024-06-27
 
 ### features
