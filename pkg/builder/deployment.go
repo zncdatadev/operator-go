@@ -4,8 +4,8 @@ import (
 	"context"
 
 	client "github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	appv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -22,23 +22,17 @@ type Deployment struct {
 func NewDeployment(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
-	affinity *corev1.Affinity,
-	podOverrides *corev1.PodTemplateSpec,
-	terminationGracePeriodSeconds *int64,
 	replicas *int32,
+	image *util.Image,
+	options *WorkloadOptions,
 ) *Deployment {
 	return &Deployment{
 		BaseWorkloadReplicasBuilder: *NewBaseWorkloadReplicasBuilder(
 			client,
 			name,
-			labels,
-			annotations,
-			affinity,
-			podOverrides,
-			terminationGracePeriodSeconds,
 			replicas,
+			image,
+			options,
 		),
 	}
 }
@@ -52,11 +46,12 @@ func (b *Deployment) GetObject() (*appv1.Deployment, error) {
 	obj := &appv1.Deployment{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: appv1.DeploymentSpec{
-			Replicas: b.replicas,
+			Replicas: b.GetReplicas(),
 			Selector: b.GetLabelSelector(),
 			Template: *tpl,
 		},
 	}
+
 	return obj, nil
 }
 

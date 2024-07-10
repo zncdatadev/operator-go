@@ -3,32 +3,13 @@ package reconciler
 import (
 	"strings"
 
+	"github.com/zncdatadev/operator-go/pkg/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-type InfoName interface {
-	GetFullName() string
-	GetClusterName() string
-}
-
-type InfoLabel interface {
-	AddLabel(key, value string) InfoLabel
-	GetLabels() map[string]string
-}
-
-type InfoAnnotation interface {
-	AddAnnotation(key, value string) InfoAnnotation
-	GetAnnotations() map[string]string
-}
-
-var _ InfoName = &ClusterInfo{}
-var _ InfoLabel = &ClusterInfo{}
-var _ InfoAnnotation = &ClusterInfo{}
 
 type ClusterInfo struct {
 	GVK         *metav1.GroupVersionKind
 	ClusterName string
-	Namespace   string
 
 	annotations map[string]string
 
@@ -43,31 +24,29 @@ func (i *ClusterInfo) GetClusterName() string {
 	return i.ClusterName
 }
 
-func (i *ClusterInfo) AddLabel(key, value string) InfoLabel {
+func (i *ClusterInfo) AddLabel(key, value string) {
 	if i.labels == nil {
 		i.labels = map[string]string{}
 	}
 	i.labels[key] = value
-	return i
 }
 
 func (i *ClusterInfo) GetLabels() map[string]string {
 	if i.labels == nil {
 		i.labels = map[string]string{
-			"app.kubernetes.io/instance":   i.ClusterName,
-			"app.kubernetes.io/name":       strings.ToLower(i.GVK.Kind),
-			"app.kubernetes.io/managed-by": i.GVK.Group,
+			util.AppKubernetesInstanceName:  i.ClusterName,
+			util.AppKubernetesNameName:      strings.ToLower(i.GVK.Kind),
+			util.AppKubernetesManagedByName: i.GVK.Group,
 		}
 	}
 	return i.labels
 }
 
-func (i *ClusterInfo) AddAnnotation(key, value string) InfoAnnotation {
+func (i *ClusterInfo) AddAnnotation(key, value string) {
 	if i.annotations == nil {
 		i.annotations = map[string]string{}
 	}
 	i.annotations[key] = value
-	return i
 }
 
 func (i *ClusterInfo) GetAnnotations() map[string]string {
@@ -80,6 +59,10 @@ func (i *ClusterInfo) GetAnnotations() map[string]string {
 type RoleInfo struct {
 	ClusterInfo
 	RoleName string
+
+	annotations map[string]string
+
+	labels map[string]string
 }
 
 func (i *RoleInfo) GetFullName() string {
@@ -90,27 +73,93 @@ func (i *RoleInfo) GetRoleName() string {
 	return i.RoleName
 }
 
+func (i *RoleInfo) AddLabel(key, value string) {
+	if i.labels == nil {
+		i.labels = map[string]string{}
+		for k, v := range i.ClusterInfo.GetLabels() {
+			i.labels[k] = v
+		}
+	}
+	i.labels[key] = value
+}
+
 func (i *RoleInfo) GetLabels() map[string]string {
-	labels := i.ClusterInfo.GetLabels()
-	labels["app.kubernetes.io/component"] = i.RoleName
+	if i.labels == nil {
+		i.labels = map[string]string{}
+		for k, v := range i.ClusterInfo.GetLabels() {
+			i.labels[k] = v
+		}
+	}
+
+	i.labels[util.AppKubernetesComponentName] = i.RoleName
 	return i.labels
+}
+
+func (i *RoleInfo) AddAnnotation(key, value string) {
+	if i.annotations == nil {
+		i.annotations = map[string]string{}
+		for k, v := range i.ClusterInfo.GetAnnotations() {
+			i.annotations[k] = v
+		}
+	}
+	i.annotations[key] = value
+}
+
+func (i *RoleInfo) GetAnnotations() map[string]string {
+	if i.annotations == nil {
+		i.annotations = map[string]string{}
+		for k, v := range i.ClusterInfo.GetAnnotations() {
+			i.annotations[k] = v
+		}
+	}
+	return i.annotations
 }
 
 type RoleGroupInfo struct {
 	RoleInfo
-	GroupName string
+	RoleGroupName string
+
+	annotations map[string]string
+
+	labels map[string]string
 }
 
 func (i *RoleGroupInfo) GetFullName() string {
-	return i.RoleInfo.GetFullName() + "-" + i.GroupName
+	return i.RoleInfo.GetFullName() + "-" + i.RoleGroupName
 }
 
 func (i *RoleGroupInfo) GetGroupName() string {
-	return i.GroupName
+	return i.RoleGroupName
 }
 
 func (i *RoleGroupInfo) GetLabels() map[string]string {
-	labels := i.RoleInfo.GetLabels()
-	labels["app.kubernetes.io/role-group"] = i.GroupName
-	return labels
+	if i.labels == nil {
+		i.labels = map[string]string{}
+		for k, v := range i.RoleInfo.GetLabels() {
+			i.labels[k] = v
+		}
+	}
+
+	i.labels[util.AppKubernetesRoleGroupName] = i.RoleGroupName
+	return i.labels
+}
+
+func (i *RoleGroupInfo) GetAnnotations() map[string]string {
+	if i.annotations == nil {
+		i.annotations = map[string]string{}
+		for k, v := range i.RoleInfo.GetAnnotations() {
+			i.annotations[k] = v
+		}
+	}
+	return i.annotations
+}
+
+func (i *RoleGroupInfo) AddLabel(key, value string) {
+	if i.labels == nil {
+		i.labels = map[string]string{}
+		for k, v := range i.RoleInfo.GetLabels() {
+			i.labels[k] = v
+		}
+	}
+	i.labels[key] = value
 }

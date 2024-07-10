@@ -2,36 +2,46 @@ package reconciler_test
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	appv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
-	appv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"github.com/zncdatadev/operator-go/pkg/util"
+)
+
+var (
+	roleLogger = ctrl.Log.WithName("role-reconciler")
 )
 
 type RoleReconciler struct {
-	reconciler.BaseRoleReconciler[GiteaSpec]
+	reconciler.BaseRoleReconciler[CoordinatorSpec]
 	ClusterConfig *ClusterConfigSpec // add more fields in implementation
 }
 
 func NewRoleReconciler(
 	client *client.Client,
-	roleInfo *reconciler.RoleInfo,
-	clusterOperation *apiv1alpha1.ClusterOperationSpec,
+	roleInfo reconciler.RoleInfo,
+	clusterOperation *commonsv1alpha1.ClusterOperationSpec,
 	clusterConfig *ClusterConfigSpec,
-	spec GiteaSpec,
+	spec CoordinatorSpec,
 ) *RoleReconciler {
 	return &RoleReconciler{
-		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler[GiteaSpec](
+		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler[CoordinatorSpec](
 			client,
 			roleInfo,
 			clusterOperation,
@@ -49,18 +59,19 @@ func (r *RoleReconciler) RegisterResourcesWithReflect(ctx context.Context) error
 	}
 
 	for roleGroupName, roleGroupSpec := range roleGroup {
-		info := &reconciler.RoleGroupInfo{
-			RoleInfo:  *r.RoleInfo,
-			GroupName: roleGroupName,
+		info := reconciler.RoleGroupInfo{
+			RoleInfo:      r.RoleInfo,
+			RoleGroupName: roleGroupName,
 		}
 
-		reconcilers, err := r.RegisterResourceWithRoleGroup(ctx, info, roleGroupSpec)
+		reconcilers, err := r.getResourceWithRoleGroup(ctx, info, roleGroupSpec)
 		if err != nil {
 			return err
 		}
 
 		for _, reconciler := range reconcilers {
 			r.AddResource(reconciler)
+			roleLogger.Info("register resource", "role", r.GetName(), "roleGroup", roleGroupName, "reconciler", reconciler.GetName())
 		}
 	}
 	return nil
@@ -69,59 +80,98 @@ func (r *RoleReconciler) RegisterResourcesWithReflect(ctx context.Context) error
 // RegisterResources registers resources with T
 func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 	for roleGroupName, roleGroupSpec := range r.Spec.RoleGroups {
-		info := &reconciler.RoleGroupInfo{
-			RoleInfo:  *r.RoleInfo,
-			GroupName: roleGroupName,
+
+		mergedRoleGroup := r.MergeRoleGroupSpec(&roleGroupSpec)
+
+		info := reconciler.RoleGroupInfo{
+			RoleInfo:      r.RoleInfo,
+			RoleGroupName: roleGroupName,
 		}
 
-		reconcilers, err := r.RegisterResourceWithRoleGroup(ctx, info, &roleGroupSpec)
+		reconcilers, err := r.getResourceWithRoleGroup(ctx, info, mergedRoleGroup)
 		if err != nil {
 			return err
 		}
 
 		for _, reconciler := range reconcilers {
 			r.AddResource(reconciler)
+			roleLogger.Info("register resource", "role", r.GetName(), "roleGroup", roleGroupName, "reconciler", reconciler.GetName())
 		}
 	}
 	return nil
 }
 
-func (r *RoleReconciler) RegisterResourceWithRoleGroup(ctx context.Context, info *reconciler.RoleGroupInfo, roleGroupSpec any) ([]reconciler.Reconciler, error) {
+func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconciler.RoleGroupInfo, roleGroupSpec any) ([]reconciler.Reconciler, error) {
 
-	// roleGroupSpec convert to GiteaRoleGroupSpec
-	roleGroup := roleGroupSpec.(*GiteaRoleGroupSpec)
+	// roleGroupSpec convert to TrinoRoleGroupSpec
+	roleGroup := roleGroupSpec.(*TrinoRoleGroupSpec)
 
 	reconcilers := []reconciler.Reconciler{}
 
 	reconcilers = append(reconcilers, r.getServiceReconciler(info))
 
-	reconcilers = append(reconcilers, r.getDeployment(info, roleGroup))
+	deploymentReconciler, err := r.getDeployment(info, roleGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	reconcilers = append(reconcilers, deploymentReconciler)
 
 	return reconcilers, nil
 }
 
-func (r *RoleReconciler) getDeployment(info *reconciler.RoleGroupInfo, roleGroup *GiteaRoleGroupSpec) reconciler.Reconciler {
+func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup *TrinoRoleGroupSpec) (reconciler.Reconciler, error) {
+
+	options := &builder.WorkloadOptions{
+		Labels:           info.GetLabels(),
+		Annotations:      info.GetAnnotations(),
+		EnvOverrides:     roleGroup.EnvOverrides,
+		CommandOverrides: roleGroup.CommandOverrides,
+		RoleGroupInfo: &builder.RoleGroupInfo{
+			RoleName:      info.RoleName,
+			RoleGroupName: info.RoleGroupName,
+		},
+	}
+
+	if roleGroup.Config != nil {
+
+		var gracefulShutdownTimeout time.Duration
+		var err error
+
+		if roleGroup.Config.GracefulShutdownTimeout != "" {
+			gracefulShutdownTimeout, err = time.ParseDuration(roleGroup.Config.GracefulShutdownTimeout)
+
+			if err != nil {
+				return nil, errors.New("failed to parse graceful shutdown")
+			}
+		}
+
+		options.TerminationGracePeriod = &gracefulShutdownTimeout
+
+		options.Affinity = roleGroup.Config.Affinity
+	}
 
 	// Create a deployment builder
-	deploymentBuilder := &FooDeploymentBuilder{
+	deploymentBuilder := &TrinoCoordinatorDeploymentBuilder{
 		Deployment: *builder.NewDeployment(
-			r.Client,
+			r.GetClient(),
 			info.GetFullName(),
-			info.GetLabels(),
-			info.GetAnnotations(),
-			nil,
-			nil,
-			nil,
 			roleGroup.Replicas,
+			&util.Image{
+				StackVersion:   "1.0.0",
+				ProductName:    "trino",
+				ProductVersion: "458",
+			},
+			options,
 		),
 	}
 	// Create a deployment reconciler
-	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder)
+	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder), nil
 }
 
-func (r *RoleReconciler) getServiceReconciler(info *reconciler.RoleGroupInfo) reconciler.Reconciler {
+func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) reconciler.Reconciler {
 	return reconciler.NewServiceReconciler(
-		r.Client,
+		r.GetClient(),
 		info.GetFullName(),
 		info.GetLabels(),
 		info.GetAnnotations(),
@@ -139,23 +189,33 @@ var _ = Describe("Role reconciler", func() {
 	Context("RoleReconciler test", func() {
 		var resourceClient *client.Client
 
-		roleInfo := &reconciler.RoleInfo{
+		roleInfo := reconciler.RoleInfo{
 			ClusterInfo: reconciler.ClusterInfo{
 				GVK: &metav1.GroupVersionKind{
 					Group:   "fake.zncdata.dev",
 					Version: "v1alpha1",
-					Kind:    "GiteaCluster",
+					Kind:    "TrinoCluster",
 				},
 				ClusterName: "fake-owner",
 			},
-			RoleName: "gitea",
+			RoleName: "trino",
 		}
 
 		var namespace string
 		ctx := context.Background()
 
-		giteaRole := GiteaSpec{
-			RoleGroups: map[string]GiteaRoleGroupSpec{
+		coordinatorRole := CoordinatorSpec{
+			EnvOverrides: map[string]string{"TEST": "test"},
+			Config: &TrinoConfigSpec{
+				Resources: &commonsv1alpha1.ResourcesSpec{
+					CPU: &commonsv1alpha1.CPUResource{
+						Max: resource.Quantity{
+							Format: "100m",
+						},
+					},
+				},
+			},
+			RoleGroups: map[string]TrinoRoleGroupSpec{
 				"default": {
 					Replicas: &[]int32{1}[0],
 				},
@@ -192,9 +252,9 @@ var _ = Describe("Role reconciler", func() {
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&apiv1alpha1.ClusterOperationSpec{},
+				&commonsv1alpha1.ClusterOperationSpec{},
 				&ClusterConfigSpec{},
-				giteaRole,
+				coordinatorRole,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
 
@@ -224,36 +284,31 @@ var _ = Describe("Role reconciler", func() {
 
 	Context("RoleReconciler role and roleGroup merge", func() {
 
-		roleInfo := &reconciler.RoleInfo{
+		roleInfo := reconciler.RoleInfo{
 			ClusterInfo: reconciler.ClusterInfo{
 				GVK: &metav1.GroupVersionKind{
 					Group:   "fake.zncdata.dev",
 					Version: "v1alpha1",
-					Kind:    "GiteaCluster",
+					Kind:    "TrinoCluster",
 				},
 				ClusterName: "fake-owner",
 			},
-			RoleName: "gitea",
+			RoleName: "Trino",
 		}
 
 		resourceClient := client.NewClient(k8sClient, nil)
-		var role *GiteaSpec
+		var role *CoordinatorSpec
 
 		BeforeEach(func() {
-			role = &GiteaSpec{
-				EnvOverrides: []corev1.EnvVar{
-					{
-						Name:  "TEST",
-						Value: "test",
-					},
-				},
-				Config: &GiteaConfigSpec{
-					GracefulShutdownTimeout: &[]string{"10s"}[0],
+			role = &CoordinatorSpec{
+				EnvOverrides: map[string]string{"TEST": "test"},
+				Config: &TrinoConfigSpec{
+					GracefulShutdownTimeout: "10s",
 				},
 				CommandOverrides: []string{
 					"tail",
 				},
-				RoleGroups: map[string]GiteaRoleGroupSpec{
+				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
 						Replicas: &[]int32{1}[0],
 						CommandOverrides: []string{
@@ -262,8 +317,8 @@ var _ = Describe("Role reconciler", func() {
 					},
 					"test": {
 						Replicas: &[]int32{2}[0],
-						Config: &GiteaConfigSpec{
-							GracefulShutdownTimeout: &[]string{"20s"}[0],
+						Config: &TrinoConfigSpec{
+							GracefulShutdownTimeout: "20s",
 						},
 					},
 				},
@@ -275,7 +330,7 @@ var _ = Describe("Role reconciler", func() {
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&apiv1alpha1.ClusterOperationSpec{},
+				&commonsv1alpha1.ClusterOperationSpec{},
 				&ClusterConfigSpec{},
 				*role,
 			)
@@ -290,7 +345,7 @@ var _ = Describe("Role reconciler", func() {
 			defaultRoleGroupValue, ok := roleGroups["default"]
 			Expect(ok).To(BeTrue())
 			Expect(defaultRoleGroupValue).ToNot(BeNil())
-			defaultRoleGroup, ok := defaultRoleGroupValue.(*GiteaRoleGroupSpec)
+			defaultRoleGroup, ok := defaultRoleGroupValue.(*TrinoRoleGroupSpec)
 			Expect(ok).To(BeTrue())
 			Expect(defaultRoleGroup).ToNot(BeNil())
 			Expect(defaultRoleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
@@ -302,7 +357,7 @@ var _ = Describe("Role reconciler", func() {
 			testRoleGroupValue, ok := roleGroups["test"]
 			Expect(ok).To(BeTrue())
 			Expect(testRoleGroupValue).ToNot(BeNil())
-			testRoleGroup, ok := testRoleGroupValue.(*GiteaRoleGroupSpec)
+			testRoleGroup, ok := testRoleGroupValue.(*TrinoRoleGroupSpec)
 			Expect(ok).To(BeTrue())
 			Expect(testRoleGroup).ToNot(BeNil())
 			Expect(testRoleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
@@ -315,60 +370,55 @@ var _ = Describe("Role reconciler", func() {
 
 	Context("RoleReconciler merge roleGroup spec", func() {
 
-		roleInfo := &reconciler.RoleInfo{
+		roleInfo := reconciler.RoleInfo{
 			ClusterInfo: reconciler.ClusterInfo{
 				GVK: &metav1.GroupVersionKind{
 					Group:   "fake.zncdata.dev",
 					Version: "v1alpha1",
-					Kind:    "GiteaCluster",
+					Kind:    "TrinoCluster",
 				},
 				ClusterName: "fake-owner",
 			},
-			RoleName: "gitea",
+			RoleName: "coordinator",
 		}
 
 		resourceClient := client.NewClient(k8sClient, nil)
-		var role *GiteaSpec
-		var roleGroupOne *GiteaRoleGroupSpec
-		var roleGroupTwo *GiteaRoleGroupSpec
+		var role *CoordinatorSpec
+		var roleGroupOne *TrinoRoleGroupSpec
+		var roleGroupTwo *TrinoRoleGroupSpec
 
 		BeforeEach(func() {
-			role = &GiteaSpec{
-				EnvOverrides: []corev1.EnvVar{
-					{
-						Name:  "TEST",
-						Value: "test",
-					},
-				},
-				Config: &GiteaConfigSpec{
-					GracefulShutdownTimeout: &[]string{"10s"}[0],
+			role = &CoordinatorSpec{
+				EnvOverrides: map[string]string{"TEST": "test"},
+				Config: &TrinoConfigSpec{
+					GracefulShutdownTimeout: "10s",
 				},
 				CommandOverrides: []string{
 					"tail",
 				},
 			}
 
-			roleGroupOne = &GiteaRoleGroupSpec{
+			roleGroupOne = &TrinoRoleGroupSpec{
 				Replicas: &[]int32{1}[0],
 				CommandOverrides: []string{
 					"echo",
 				},
 			}
 
-			roleGroupTwo = &GiteaRoleGroupSpec{
+			roleGroupTwo = &TrinoRoleGroupSpec{
 				Replicas: &[]int32{2}[0],
-				Config: &GiteaConfigSpec{
-					GracefulShutdownTimeout: &[]string{"20s"}[0],
+				Config: &TrinoConfigSpec{
+					GracefulShutdownTimeout: "20s",
 				},
 			}
 		})
 
-		It("should merged role to roleGroup spec with roleGroupOne", func() {
+		It("should merged role to roleGroup spec with Role.Config when RoleGroup.config not exist", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&apiv1alpha1.ClusterOperationSpec{},
+				&commonsv1alpha1.ClusterOperationSpec{},
 				&ClusterConfigSpec{},
 				*role,
 			)
@@ -379,8 +429,8 @@ var _ = Describe("Role reconciler", func() {
 			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupOne)
 			Expect(roleGroupValue).ToNot(BeNil())
 
-			By("assert roleGroupValue is GiteaRoleGroupSpec")
-			roleGroup, ok := roleGroupValue.(*GiteaRoleGroupSpec)
+			By("assert roleGroupValue is TrinoRoleGroupSpec")
+			roleGroup, ok := roleGroupValue.(*TrinoRoleGroupSpec)
 			Expect(ok).To(BeTrue())
 
 			By("checking role.Config merged")
@@ -393,12 +443,12 @@ var _ = Describe("Role reconciler", func() {
 			Expect(roleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
 		})
 
-		It("should merged role to roleGroup spec with roleGroupTwo", func() {
+		It("should not merged role to roleGroup spec with Role.Config when RoleGroup.config exist", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&apiv1alpha1.ClusterOperationSpec{},
+				&commonsv1alpha1.ClusterOperationSpec{},
 				&ClusterConfigSpec{},
 				*role,
 			)
@@ -409,8 +459,8 @@ var _ = Describe("Role reconciler", func() {
 			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupTwo)
 			Expect(roleGroupValue).ToNot(BeNil())
 
-			By("assert roleGroupValue is GiteaRoleGroupSpec")
-			roleGroup, ok := roleGroupValue.(*GiteaRoleGroupSpec)
+			By("assert roleGroupValue is TrinoRoleGroupSpec")
+			roleGroup, ok := roleGroupValue.(*TrinoRoleGroupSpec)
 			Expect(ok).To(BeTrue())
 
 			By("checking role.CommandOverrides merged")

@@ -361,9 +361,13 @@ func (v *VectorDecorator) appendVectorContainer(containers *[]corev1.Container) 
 }
 
 func (v *VectorDecorator) NewVectorContainer() *corev1.Container {
-	vectorBuilder := NewContainerBuilder(VectorContainerName, VectorImage, corev1.PullAlways)
-	vectorBuilder.SetCommand(VectorCommand())
-	vectorBuilder.SetArgs(VectorCommandArgs())
-	vectorBuilder.AddVolumeMounts(VectorVolumeMount(v.VectorConfigVolumeName, v.LogVolumeName))
-	return vectorBuilder.Build()
+
+	vectorContainer := NewContainerBuilder(VectorContainerName, VectorImage).
+		SetImagePullPolicy(corev1.PullIfNotPresent).
+		SetCommand(VectorCommand()).
+		SetArgs(VectorCommandArgs()).
+		AddVolumeMounts(VectorVolumeMount(v.VectorConfigVolumeName, v.LogVolumeName)).
+		Build()
+
+	return vectorContainer
 }

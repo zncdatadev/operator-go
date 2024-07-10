@@ -28,19 +28,19 @@ var _ RoleReconciler = &BaseRoleReconciler[AnySpec]{}
 
 type BaseRoleReconciler[T AnySpec] struct {
 	BaseCluster[T]
-	RoleInfo *RoleInfo
+	RoleInfo RoleInfo
 }
 
 func NewBaseRoleReconciler[T AnySpec](
 	client *client.Client,
-	roleInfo *RoleInfo,
+	roleInfo RoleInfo,
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
 	spec T, // spec of the role
 ) *BaseRoleReconciler[T] {
 	return &BaseRoleReconciler[T]{
 		BaseCluster: *NewBaseCluster[T](
 			client,
-			&roleInfo.ClusterInfo,
+			roleInfo.ClusterInfo,
 			clusterOperation,
 			spec,
 		),
@@ -78,8 +78,9 @@ func (r *BaseRoleReconciler[T]) GetRoleGroups() (map[string]AnySpec, error) {
 		roleGroupPrt.Elem().Set(value)
 
 		mergedRoleGroup := r.MergeRoleGroupSpec(roleGroupPrt.Interface())
-
-		roleGroups[key.String()] = mergedRoleGroup
+		name := key.String()
+		roleGroups[name] = mergedRoleGroup
+		logger.Info("Merged field to role group", "role", r.GetName(), "roleGroup", name)
 	}
 
 	return roleGroups, nil
@@ -135,6 +136,7 @@ func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup AnySpec) AnySpec {
 		rightField := rightValue.Field(i)
 
 		if rightField.IsZero() {
+			logger.V(5).Info("Field in role is empty, skipping", "field", rightValue.Type().Field(i).Name)
 			continue // Skip if the right field is zero
 		}
 
@@ -143,8 +145,19 @@ func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup AnySpec) AnySpec {
 
 		// If the left field exists and is zero, perform the merge
 		if leftField.IsValid() && leftField.CanSet() && leftField.IsZero() {
-			leftField.Set(rightField)                                                                      // Copy the field value
-			logger.V(5).Info("Merge role group", "field", rightFieldName, "value", rightField.Interface()) // Log the field and its value
+			leftField.Set(rightField)                                                     // Copy the field value
+			logger.V(5).Info("Merging role filed to role group", "field", rightFieldName) // Log the field and its value
+		} else {
+			logExtra := map[string]interface{}{
+				"isValid": leftField.IsValid(),
+				"canSet":  leftField.CanSet(),
+			}
+
+			if leftField.IsValid() {
+				logExtra["isZero"] = leftField.IsZero()
+			}
+
+			logger.V(5).Info("Can not merge role field to role group, skipping", logExtra)
 		}
 	}
 	return roleGroup

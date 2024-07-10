@@ -4,33 +4,36 @@ import (
 	"context"
 	"math/rand"
 	"strconv"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	"github.com/zncdatadev/operator-go/pkg/util"
+	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// ClusterReconciler reconciles a GiteaCluster object
+// ClusterReconciler reconciles a TrinoCluster object
 // Extends this struct to implement the reconciler,
 // in addition, user can add more fields if needed
 type ClusterReconciler struct {
-	reconciler.BaseCluster[*GiteaClusterSpec]
+	reconciler.BaseCluster[*TrinoClusterSpec]
 	ClusterConfig *ClusterConfigSpec // add more fields in implementation
 }
 
 func NewClusterReconciler(
 	client *client.Client,
-	clusterInfo *reconciler.ClusterInfo,
+	clusterInfo reconciler.ClusterInfo,
 	clusterOperation *apiv1alpha1.ClusterOperationSpec,
-	spec *GiteaClusterSpec,
+	spec *TrinoClusterSpec,
 ) *ClusterReconciler {
 	return &ClusterReconciler{
-		BaseCluster: *reconciler.NewBaseCluster[*GiteaClusterSpec](
+		BaseCluster: *reconciler.NewBaseCluster[*TrinoClusterSpec](
 			client,
 			clusterInfo,
 			clusterOperation,
@@ -45,8 +48,9 @@ func NewClusterReconciler(
 func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 	// If a service resource in cluster level needs to be create,
 	// create a service reconciler and register it
+
 	serviceReconciler := reconciler.NewServiceReconciler(
-		r.Client,
+		r.GetClient(),
 		r.GetName(),
 		r.ClusterInfo.GetLabels(),
 		r.ClusterInfo.GetAnnotations(),
@@ -60,6 +64,23 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 	// Register resources
 	r.AddResource(serviceReconciler)
 
+	role := NewRoleReconciler(
+		r.GetClient(),
+		reconciler.RoleInfo{
+			ClusterInfo: r.ClusterInfo,
+			RoleName:    "coordinator",
+		},
+		r.Spec.ClusterOperation,
+		r.ClusterConfig,
+		*r.Spec.Coordinator,
+	)
+
+	if err := role.RegisterResources(ctx); err != nil {
+		return err
+	}
+
+	r.AddResource(role)
+
 	return nil
 }
 
@@ -67,11 +88,11 @@ var _ = Describe("Cluster reconciler", func() {
 	Context("ClusterReconciler test", func() {
 		var resourceClient *client.Client
 
-		clusterInfo := &reconciler.ClusterInfo{
+		clusterInfo := reconciler.ClusterInfo{
 			GVK: &metav1.GroupVersionKind{
 				Group:   "fake.zncdata.dev",
 				Version: "v1alpha1",
-				Kind:    "GiteaCluster",
+				Kind:    "TrinoCluster",
 			},
 			ClusterName: "fake-owner",
 		}
@@ -79,7 +100,7 @@ var _ = Describe("Cluster reconciler", func() {
 		var namespace string
 		ctx := context.Background()
 
-		giteaCluster := &GiteaClusterSpec{}
+		var trinoCluster *TrinoClusterSpec
 
 		BeforeEach(func() {
 			namespace = "test-" + strconv.Itoa(rand.Intn(10000))
@@ -100,6 +121,19 @@ var _ = Describe("Cluster reconciler", func() {
 			}
 
 			resourceClient = client.NewClient(k8sClient, fakeOwner)
+
+			trinoCluster = &TrinoClusterSpec{
+				ClusterConfig: &ClusterConfigSpec{
+					ListenerClass: "default",
+				},
+				Coordinator: &CoordinatorSpec{
+					RoleGroups: map[string]TrinoRoleGroupSpec{
+						"default": {
+							Replicas: &[]int32{1}[0],
+						},
+					},
+				},
+			}
 		})
 
 		AfterEach(func() {
@@ -112,7 +146,7 @@ var _ = Describe("Cluster reconciler", func() {
 				resourceClient,
 				clusterInfo,
 				&apiv1alpha1.ClusterOperationSpec{},
-				giteaCluster,
+				trinoCluster,
 			)
 			Expect(clusterReconciler).ShouldNot(BeNil())
 
@@ -120,16 +154,10 @@ var _ = Describe("Cluster reconciler", func() {
 			Expect(clusterReconciler.RegisterResources(ctx)).Should(BeNil())
 
 			By("Reconcile")
-			result := clusterReconciler.Reconcile(ctx)
-			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeTrue())
-
-			By("Ready")
-			result = clusterReconciler.Ready(ctx)
-			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeFalse())
+			Eventually(func() bool {
+				result := clusterReconciler.Reconcile(ctx)
+				return result.RequeueOrNot()
+			}, time.Second*15, time.Microsecond*100).Should(BeFalse())
 
 			By("Checking the service resource of cluster level")
 			service := &corev1.Service{}
@@ -137,7 +165,14 @@ var _ = Describe("Cluster reconciler", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: namespace}, service)).Should(Succeed())
 
 			By("Checking the service labels")
-			Expect(service.Labels).Should(HaveKeyWithValue("app.kubernetes.io/instance", clusterInfo.GetClusterName()))
+			Expect(service.Labels).Should(HaveKeyWithValue(util.AppKubernetesInstanceName, clusterInfo.GetClusterName()))
+			Expect(service.Labels).ShouldNot(HaveKey(util.AppKubernetesRoleGroupName))
+			Expect(service.Labels).ShouldNot(HaveKey(util.AppKubernetesComponentName))
+
+			By("Checking Deployment resource of coordinator")
+			coordinatorDeployment := &appv1.Deployment{}
+			coordinatorName := clusterInfo.GetClusterName() + "-coordinator" + "-default"
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: coordinatorName, Namespace: namespace}, coordinatorDeployment)).Should(Succeed())
 
 		})
 	})

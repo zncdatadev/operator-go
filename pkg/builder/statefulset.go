@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -20,23 +21,17 @@ type StatefulSet struct {
 func NewStatefulSetBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
-	affinity *corev1.Affinity,
-	podOverrides *corev1.PodTemplateSpec,
-	terminationGracePeriodSeconds *int64,
 	replicas *int32,
+	image *util.Image,
+	options *WorkloadOptions,
 ) *StatefulSet {
 	return &StatefulSet{
 		BaseWorkloadReplicasBuilder: *NewBaseWorkloadReplicasBuilder(
 			client,
 			name,
-			labels,
-			annotations,
-			affinity,
-			podOverrides,
-			terminationGracePeriodSeconds,
 			replicas,
+			image,
+			options,
 		),
 	}
 }
@@ -49,8 +44,11 @@ func (b *StatefulSet) GetObject() (*appv1.StatefulSet, error) {
 	obj := &appv1.StatefulSet{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: appv1.StatefulSetSpec{
-			Selector: b.GetLabelSelector(),
-			Template: *tpl,
+			Replicas:             b.GetReplicas(),
+			Selector:             b.GetLabelSelector(),
+			ServiceName:          b.GetName(),
+			Template:             *tpl,
+			VolumeClaimTemplates: b.GetVolumeClaimTemplates(),
 		},
 	}
 	return obj, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	resourceClient "github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -20,21 +21,15 @@ type jobBuilder struct {
 func NewGenericJobBuilder(
 	client *resourceClient.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
-	affinity *corev1.Affinity,
-	podOverrides *corev1.PodTemplateSpec,
-	terminationGracePeriodSeconds *int64,
+	image *util.Image,
+	options *WorkloadOptions,
 ) JobBuilder {
 	return &jobBuilder{
 		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(
 			client,
 			name,
-			labels,
-			annotations,
-			affinity,
-			podOverrides,
-			terminationGracePeriodSeconds,
+			image,
+			options,
 		),
 	}
 }
