@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"slices"
 
-	pkgclient "github.com/zncdatadev/operator-go/pkg/client"
-	"github.com/zncdatadev/operator-go/pkg/config"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	pkgclient "github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
 // todo: in future,  all operator should config log, config and data to the same dir, like '/zncdata/log', '/zncdata/config'
@@ -36,41 +38,40 @@ func VectorVolumeMount(vectorConfigVolumeName string, vectorLogVolumeName string
 }
 
 func VectorCommandArgs() []string {
-	return []string{
-		`log_dir="/zncdata/log/_vector"
+	arg := `log_dir="/zncdata/log/_vector"
 data_dir="/zncdata/vector/var"
 if [ ! -d "$data_dir" ]; then
-  mkdir -p "$data_dir"
+	mkdir -p "$data_dir"
 fi
 
 vector --config /zncdata/config/vector.yaml &
 vector_pid=$!
 
 if [ ! -f "$log_dir/shutdown" ]; then
-  mkdir -p "$log_dir"
+	mkdir -p "$log_dir"
 fi
 
 previous_count=$(ls -1 "$log_dir" | wc -l)
 
 while true; do
-    current_count=$(ls -1 "$log_dir" | wc -l)
+	current_count=$(ls -1 "$log_dir" | wc -l)
 
-    if [ "$current_count" -gt "$previous_count" ]; then
-        new_file=$(ls -1 "$log_dir" | tail -n 1)
-        echo "New file created: $new_file"
+	if [ "$current_count" -gt "$previous_count" ]; then
+		new_file=$(ls -1 "$log_dir" | tail -n 1)
+		echo "New file created: $new_file"
 
-        previous_count=$current_count
-    fi
+		previous_count=$current_count
+	fi
 
-    if [ -f "$log_dir/shutdown" ]; then
-        kill $vector_pid
-        break
-    fi
+	if [ -f "$log_dir/shutdown" ]; then
+		kill $vector_pid
+		break
+	fi
 
-    sleep 1
+	sleep 1
 done
-`,
-	}
+`
+	return []string{util.IndentTab4Spaces(arg)}
 }
 
 func VectorCommand() []string {
@@ -89,7 +90,7 @@ func MakeVectorYaml(
 	cluster string,
 	role string,
 	groupName string,
-	vectorAggregatorDiscovery string) *string {
+	vectorAggregatorDiscovery string) (string, error) {
 	data := map[string]interface{}{
 		"LogDir":                  LogDir,
 		"Namespace":               namespace,
@@ -100,50 +101,50 @@ func MakeVectorYaml(
 	}
 	var tmpl = `
 api:
-  enabled: true
+	enabled: true
 data_dir: /zncdata/vector/var
 log_schema:
-  host_key: "pod"
+	host_key: "pod"
 sources:
-  files_airlift:
-    type: "file"
-    include:
-      - "{{.LogDir}}/*/*.airlift.json"
+	files_airlift:
+	type: "file"
+	include:
+		- "{{.LogDir}}/*/*.airlift.json"
 
 transforms:
-  processed_files_airlift:
-    inputs:
-      - files_airlift
-    type: remap
-    source: |
-      parsed_event = parse_json!(string!(.message))
-      .message = join!(compact([parsed_event.message, parsed_event.stackTrace]), "\n")
-      .timestamp = parse_timestamp!(parsed_event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
-      .logger = parsed_event.logger
-      .level = parsed_event.level
-      .thread = parsed_event.thread
-  extended_logs_files:
-    inputs:
-      - processed_files_*
-    type: remap
-    source: |
-      . |= parse_regex!(.file, r'^/zncdata/log/(?P<container>.*?)/(?P<file>.*?)$')
-      del(.source_type)
-  extended_logs:
-    inputs:
-      - extended_logs_*
-    type: remap
-    source: |
-      .namespace = "{{.Namespace}}"
-      .cluster = "{{.Cluster}}"
-      .role = "{{.Role}}"
-      .roleGroup = "{{.GroupName}}"
+	processed_files_airlift:
+	inputs:
+		- files_airlift
+	type: remap
+	source: |
+		parsed_event = parse_json!(string!(.message))
+		.message = join!(compact([parsed_event.message, parsed_event.stackTrace]), "\n")
+		.timestamp = parse_timestamp!(parsed_event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+		.logger = parsed_event.logger
+		.level = parsed_event.level
+		.thread = parsed_event.thread
+	extended_logs_files:
+	inputs:
+		- processed_files_*
+	type: remap
+	source: |
+		. |= parse_regex!(.file, r'^/zncdata/log/(?P<container>.*?)/(?P<file>.*?)$')
+		del(.source_type)
+	extended_logs:
+	inputs:
+		- extended_logs_*
+	type: remap
+	source: |
+		.namespace = "{{.Namespace}}"
+		.cluster = "{{.Cluster}}"
+		.role = "{{.Role}}"
+		.roleGroup = "{{.GroupName}}"
 sinks:
-  aggregator:
-    inputs:
-      - extended_logs
-    type: vector
-    address: "{{.VectorAggregatorAddress}}"
+	aggregator:
+	inputs:
+		- extended_logs
+	type: vector
+	address: "{{.VectorAggregatorAddress}}"
 `
 	parser := config.TemplateParser{
 		Value:    data,
@@ -152,9 +153,10 @@ sinks:
 
 	str, err := parser.Parse()
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	return &str
+	str = util.IndentTab2Spaces(str)
+	return str, nil
 }
 
 func vectorAggregatorDiscoveryURI(
@@ -182,55 +184,57 @@ func vectorAggregatorDiscoveryURI(
 
 // ============= log provider container ================
 
-func LogProviderCommandArgs(entrypointScript string) []string {
-	prepareScript := `
-      prepare_signal_handlers()
-      {
-          unset term_child_pid
-          unset term_kill_needed
-          trap 'handle_term_signal' TERM
-      }
+func LogProviderCommand(entrypointScript string) ([]string, error) {
+	template := `
+prepare_signal_handlers()
+{
+	unset term_child_pid
+	unset term_kill_needed
+	trap 'handle_term_signal' TERM
+}
 
-      handle_term_signal()
-      {
-          if [ "${term_child_pid}" ]; then
-              kill -TERM "${term_child_pid}" 2>/dev/null
-          else
-              term_kill_needed="yes"
-          fi
-      }
+handle_term_signal()
+{
+	if [ "${term_child_pid}" ]; then
+		kill -TERM "${term_child_pid}" 2>/dev/null
+	else
+		term_kill_needed="yes"
+	fi
+}
 
-      wait_for_termination()
-      {
-          set +e
-          term_child_pid=$1
-          if [[ -v term_kill_needed ]]; then
-              kill -TERM "${term_child_pid}" 2>/dev/null
-          fi
-          wait ${term_child_pid} 2>/dev/null
-          trap - TERM
-          wait ${term_child_pid} 2>/dev/null
-          set -e
-      }
+wait_for_termination()
+{
+	set +e
+	term_child_pid=$1
+	if [[ -v term_kill_needed ]]; then
+		kill -TERM "${term_child_pid}" 2>/dev/null
+	fi
+	wait ${term_child_pid} 2>/dev/null
+	trap - TERM
+	wait ${term_child_pid} 2>/dev/null
+	set -e
+}
 
-      rm -f {{ .LogDir }}/_vector/shutdown
-      prepare_signal_handlers
+rm -f {{ .LogDir }}/_vector/shutdown
+prepare_signal_handlers
+
+{{ .EntrypointScript }}
+
+wait_for_termination $!
+mkdir -p {{ .LogDir }}/_vector && touch {{ .LogDir }}/_vector/shutdown
 `
-	termnateScript := `
-      wait_for_termination $!
-      mkdir -p {{ .LogDir }}/_vector && touch {{ .LogDir }}/_vector/shutdown
-`
-	tmpl := fmt.Sprintf("%s\n%s\n%s", prepareScript, entrypointScript, termnateScript)
-	data := map[string]interface{}{"LogDir": LogDir}
+	data := map[string]interface{}{"LogDir": LogDir, "EntrypointScript": entrypointScript}
 	parser := config.TemplateParser{
 		Value:    data,
-		Template: tmpl,
+		Template: template,
 	}
-	if res, err := parser.Parse(); err == nil {
-		return []string{res}
-	} else {
-		panic(err)
+	res, err := parser.Parse()
+	if err != nil {
+		return nil, err
 	}
+	res = util.IndentTab4Spaces(res)
+	return []string{res}, nil
+
 }
 
 type WorkloadDecorator interface {
