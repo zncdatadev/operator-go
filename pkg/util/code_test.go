@@ -27,6 +27,32 @@ func TestIndentTabToSpaces(t *testing.T) {
 			spaces:   4,
 			expected: " func main() {}",
 		},
+		{
+			name:     "Converts tabs to 4 spaces with 8 spaces",
+			code:     "\t\tfunc main() {}",
+			spaces:   4,
+			expected: "        func main() {}",
+		},
+		{
+			name: "Converts tabs to 4 spaces with codeblock",
+			code: `
+def main() {
+	print("Hello, World!")
+	for i in range(10):
+		print(i)
+	}
+}
+`,
+			spaces: 4,
+			expected: `
+def main() {
+    print("Hello, World!")
+    for i in range(10):
+        print(i)
+    }
+}
+`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -63,6 +89,32 @@ func TestIndentSpacesToTab(t *testing.T) {
 			code:     "\tfunc main() {}",
 			spaces:   4,
 			expected: "\tfunc main() {}",
+		},
+		{
+			name:     "Converts 4 spaces to tabs with 2 tab",
+			code:     "        func main() {}",
+			spaces:   4,
+			expected: "\t\tfunc main() {}",
+		},
+		{
+			name: "Converts 4 spaces to tabs with codeblock",
+			code: `
+def main() {
+    print("Hello, World!")
+    for i in range(10):
+        print(i)
+    }
+}
+`,
+			spaces: 4,
+			expected: `
+def main() {
+	print("Hello, World!")
+	for i in range(10):
+		print(i)
+	}
+}
+`,
 		},
 	}
 
