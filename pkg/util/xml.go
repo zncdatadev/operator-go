@@ -1,117 +1,116 @@
 package util
 
 import (
-	"bytes"
 	"encoding/xml"
+	"slices"
+	"strings"
 )
 
-type XmlNameValuePair struct {
-	Name  string `xml:"name"`
-	Value string `xml:"value"`
+const (
+	XMLStylesheet = `<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>` + "\n"
+)
+
+type configuration struct {
+	XMLName    xml.Name   `xml:"configuration"`
+	Properties []Property `xml:"property"`
 }
 
-type XmlConfiguration struct {
-	XMLName    xml.Name           `xml:"configuration"`
-	Properties []XmlNameValuePair `xml:"property"`
+type Property struct {
+	XMLName     xml.Name `xml:"property"`
+	Name        string   `xml:"name"`
+	Value       string   `xml:"value"`
+	Description string   `xml:"description,omitempty"`
 }
 
-func NewXmlConfiguration(properties []XmlNameValuePair) *XmlConfiguration {
-	return &XmlConfiguration{
-		Properties: properties,
+type XMLConfiguration struct {
+	Configuration *configuration
+	Header        string
+}
+
+func NewXMLConfiguration() *XMLConfiguration {
+	return &XMLConfiguration{
+		Configuration: &configuration{},
+		Header:        xml.Header + XMLStylesheet,
 	}
 }
 
-func (c *XmlConfiguration) String(properties []XmlNameValuePair) string {
-	if len(c.Properties) != 0 {
-		c.Properties = c.DistinctProperties(properties)
+func NewXMLConfigurationFromString(xmlData string) (*XMLConfiguration, error) {
+	config := &XMLConfiguration{}
+	headerEnd := strings.Index(xmlData, "<configuration>")
+	if headerEnd != -1 {
+		config.Header = xmlData[:headerEnd]
 	}
-	buf := new(bytes.Buffer)
-	if _, err := buf.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"); err != nil {
-		logger.Error(err, "failed to write xml document head")
+	err := xml.Unmarshal([]byte(xmlData[headerEnd:]), &config.Configuration)
+	if err != nil {
+		return nil, err
 	}
-	enc := xml.NewEncoder(buf)
-	enc.Indent("", "  ")
-	if err := enc.Encode(c); err != nil {
-		logger.Error(err, "failed to encode xml document")
-		panic(err)
-	}
-	return buf.String()
+	return config, nil
 }
 
-// DistinctProperties distinct properties by name,
-func (c *XmlConfiguration) DistinctProperties(properties []XmlNameValuePair) []XmlNameValuePair {
-	var collect []XmlNameValuePair
-	collect = append(collect, c.Properties...)
-	collect = append(collect, properties...)
+func NewXMLConfigurationFromMap(properties map[string]string) *XMLConfiguration {
+	x := NewXMLConfiguration()
+	x.AddPropertiesWithMap(properties)
+	return x
+}
 
-	var distinctProperties []XmlNameValuePair
-	var distinctKeys map[string]int
-	for idx, v := range collect {
-		if distinctKeys == nil {
-			distinctKeys = make(map[string]int)
+func (x *XMLConfiguration) GetProperty(name string) (Property, bool) {
+	for _, p := range x.Configuration.Properties {
+		if p.Name == name {
+			return p, true
 		}
-		if existIdx, ok := distinctKeys[v.Name]; !ok {
-			distinctKeys[v.Name] = idx
-			distinctProperties = append(distinctProperties, v)
-		} else {
-			distinctProperties[existIdx] = v
+	}
+	return Property{}, false
+}
+
+func (x *XMLConfiguration) AddProperty(p Property) {
+	for i, existingProperty := range x.Configuration.Properties {
+		if existingProperty.Name == p.Name {
+			x.Configuration.Properties[i] = p // update
+			return
 		}
 	}
-	return distinctProperties
-
-	//var distinctMap = make(map[string]XmlNameValuePair)
-	//for _, v := range collect {
-	//	distinctMap[v.Name] = v
-	//}
-	//return maps.Values(distinctMap)
+	x.Configuration.Properties = append(x.Configuration.Properties, p) // add
 }
 
-func (c *XmlConfiguration) StringWithProperties(properties map[string]string) string {
-	var pairs []XmlNameValuePair
-	for k, v := range properties {
-		pairs = append(pairs, XmlNameValuePair{
-			Name:  k,
-			Value: v,
-		})
-	}
-	return c.String(pairs)
+func (x *XMLConfiguration) AddPropertyWithString(name, value, description string) {
+	x.AddProperty(Property{Name: name, Value: value, Description: description})
 }
 
-// Append  to exist xml dom
-func Append(originXml string, properties []XmlNameValuePair) string {
-	var xmlDom XmlConfiguration
-	//string -> dom
-	if err := xml.Unmarshal([]byte(originXml), &xmlDom); err != nil {
-		panic(err)
+func (x *XMLConfiguration) AddPropertiesWithMap(properties map[string]string) {
+	for name, value := range properties {
+		x.AddProperty(Property{Name: name, Value: value})
 	}
-	return xmlDom.String(properties)
 }
 
-// OverrideXmlContent overrides the content of a xml file
-// append the override properties to the current xml dom
-func OverrideXmlContent(current string, overrideProperties map[string]string) string {
-	var xmlDom XmlConfiguration
-	//string -> dom
-	if err := xml.Unmarshal([]byte(current), &xmlDom); err != nil {
-		panic(err)
-	}
-	// do override
-	for k, v := range overrideProperties {
-		overridePair := XmlNameValuePair{
-			Name:  k,
-			Value: v,
+func (x *XMLConfiguration) DeleteProperties(names ...string) {
+	s := slices.DeleteFunc(x.Configuration.Properties, func(i Property) bool {
+		for _, name := range names {
+			if i.Name == name {
+				return true
+			}
 		}
-		xmlDom.Properties = append(xmlDom.Properties, overridePair)
+		return false
+	})
+	x.Configuration.Properties = s
+}
+
+func (x *XMLConfiguration) getHeader() string {
+	if x.Header == "" {
+		return xml.Header + XMLStylesheet
 	}
-	// dom -> string
-	var b bytes.Buffer
-	if _, err := b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"); err != nil {
-		logger.Error(err, "failed to write string")
+	return x.Header
+}
+
+func (x *XMLConfiguration) Marshal() (string, error) {
+	data, err := xml.MarshalIndent(x.Configuration, "", "    ")
+	if err != nil {
+		return "", err
 	}
-	encoder := xml.NewEncoder(&b)
-	encoder.Indent("", "  ")
-	if err := encoder.Encode(xmlDom); err != nil {
-		logger.Error(err, "failed to encode xml")
-	}
-	return b.String()
+
+	fullXML := x.getHeader() + string(data) + "\n"
+
+	// replace &#xA; with newline
+	fixedXML := strings.ReplaceAll(fullXML, "&#xA;", "\n")
+
+	return fixedXML, nil
 }
