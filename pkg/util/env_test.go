@@ -3,6 +3,7 @@ package util
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -23,9 +24,5 @@ func TestNewEnvVarsFromMap(t *testing.T) {
 		t.Errorf("Expected %d env vars, but got %d", len(expectedEnvVars), len(envVars))
 	}
 
-	for i, expectedEnvVar := range expectedEnvVars {
-		if envVars[i].Name != expectedEnvVar.Name || envVars[i].Value != expectedEnvVar.Value {
-			t.Errorf("Expected env var %s=%s, but got %s=%s", expectedEnvVar.Name, expectedEnvVar.Value, envVars[i].Name, envVars[i].Value)
-		}
-	}
+	assert.Equal(t, expectedEnvVars, envVars)
 }
