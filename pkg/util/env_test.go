@@ -14,15 +14,13 @@ func TestNewEnvVarsFromMap(t *testing.T) {
 	}
 
 	expectedEnvVars := []corev1.EnvVar{
-		{Name: "KEY1", Value: "VALUE1"},
 		{Name: "KEY2", Value: "VALUE2"},
+		{Name: "KEY1", Value: "VALUE1"},
 	}
 
 	envVars := NewEnvVarsFromMap(envs)
 
-	if len(envVars) != len(expectedEnvVars) {
-		t.Errorf("Expected %d env vars, but got %d", len(expectedEnvVars), len(envVars))
-	}
+	assert.Len(t, expectedEnvVars, len(envVars))
 
-	assert.Equal(t, expectedEnvVars, envVars)
+	assert.ElementsMatch(t, expectedEnvVars, envVars)
 }
