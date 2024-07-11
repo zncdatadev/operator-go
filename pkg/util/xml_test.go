@@ -2,231 +2,324 @@ package util
 
 import "testing"
 
-func TestMarshal(t *testing.T) {
+func TestXMLConfiguration(t *testing.T) {
+	xmlData := `
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?><!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
 
-	tests := []struct {
-		name string
-		x    *XMLConfiguration
-		want string
-	}{
-		{
-			name: "empty",
-			x:    &XMLConfiguration{},
-			want: `<?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
-<configuration></configuration>`,
-		},
-		{
-			name: "one",
-			x: &XMLConfiguration{
-				Properties: []Property{
-					{
-						Name:        "name",
-						Value:       "value",
-						Description: "description",
-						Comment:     "This is a comment",
-					},
-				},
-			},
-			want: `<?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+<configuration>
+    <!-- WARNING!!! This file is auto generated for documentation purposes ONLY! -->
+    <!-- WARNING!!! Any changes you make to this file will be ignored by Hive.   -->
+    <!-- WARNING!!! You must make your changes in hive-site.xml instead.         -->
+    <!-- Hive Execution Parameters -->
+    <property>
+        <name>hive.metastore.warehouse.dir</name>
+        <value>/user/hive/warehouse</value>
+        <description>location of default database for the warehouse</description>
+    </property>
+    <property>
+        <name>javax.jdo.option.ConnectionURL</name>
+        <value>jdbc:derby:;databaseName=metastore_db;create=true</value>
+        <description>
+          JDBC connect string for a JDBC metastore.
+          To use SSL to encrypt/authenticate the connection, provide database-specific SSL flag in the connection URL.
+          For example, jdbc:postgresql://myhost/db?ssl=true for postgres database.
+        </description>
+    </property>
+</configuration>
+`
+
+	expectedXMLData := `
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?><!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
 <configuration>
     <property>
-        <!--This is a comment-->
-        <name>name</name>
-        <value>value</value>
-        <description>description</description>
+        <name>hive.metastore.warehouse.dir</name>
+        <value>/user/hive/warehouse</value>
+        <description>location of default database for the warehouse</description>
     </property>
-</configuration>`,
-		},
-		{
-			name: "two",
-			x: &XMLConfiguration{
-				Properties: []Property{
-					{
-						Name:  "name1",
-						Value: "value1",
-					},
-				},
-			},
-			want: `<?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
-<configuration>
     <property>
-        <name>name1</name>
-        <value>value1</value>
+        <name>javax.jdo.option.ConnectionURL</name>
+        <value>jdbc:derby:;databaseName=metastore_db;create=true</value>
+        <description>
+          JDBC connect string for a JDBC metastore.
+          To use SSL to encrypt/authenticate the connection, provide database-specific SSL flag in the connection URL.
+          For example, jdbc:postgresql://myhost/db?ssl=true for postgres database.
+        </description>
     </property>
-</configuration>`,
-		},
+    <property>
+        <name>hive.metastore.db.type</name>
+        <value>DERBY</value>
+        <description>Expects one of [derby, oracle, mysql, mssql, postgres]. Type of database used by the metastore. Information schema &amp; JDBCStorageHandler depend on it.</description>
+    </property>
+</configuration>
+`
+
+	// Note: Marshalling XML data no blank line
+
+	config, err := NewXMLConfigurationFromString(xmlData)
+	if err != nil {
+		t.Errorf("Failed to create XML configuration from string: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.x.Marshal()
-			if err != nil {
-				t.Errorf("Marshal() error = %v", err)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("Marshal() got = %v, want %v", got, tt.want)
-			}
-		})
+	property, ok := config.GetProperty("hive.metastore.warehouse.dir")
+	if !ok {
+		t.Errorf("Expected property 'hive.metastore.warehouse.dir' not found")
 	}
+
+	if property.Value != "/user/hive/warehouse" {
+		t.Errorf("Property 'hive.metastore.warehouse.dir' has incorrect value. Expected: /user/hive/warehouse, Got: %s", property.Value)
+	}
+
+	config.AddPropertyWithString("hive.metastore.db.type", "DERBY", "Expects one of [derby, oracle, mysql, mssql, postgres]. Type of database used by the metastore. Information schema & JDBCStorageHandler depend on it.")
+
+	xmlData, err = config.Marshal()
+	if err != nil {
+		t.Errorf("Failed to marshal XML configuration: %v", err)
+	}
+
+	if xmlData != expectedXMLData {
+		t.Errorf("Marshalled XML does not match expected XML. Expected:\n%s\nGot:\n%s", expectedXMLData, xmlData)
+	}
+
 }
 
-// func TestNewXMLConfigurationFromString(t *testing.T) {
-// 	xmlString := `<?xml version="1.0" encoding="UTF-8"?>
-// <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
-// <configuration>
-//     <property>
-//         <name>name</name>
-//         <value>value</value>
-//     </property>
-// </configuration>`
+func TestNewXMLConfigurationFromString(t *testing.T) {
+	xmlData := `
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+        <property>
+            <name>property1</name>
+            <value>value1</value>
+        </property>
+        <property>
+            <name>property2</name>
+            <value>value2</value>
+        </property>
+    </configuration>
+    `
 
-// 	x, err := NewXMLConfigurationFromString(xmlString)
-// 	if err != nil {
-// 		t.Errorf("NewXMLConfigurationFromString() error = %v", err)
-// 		return
-// 	}
+	expectedProperties := map[string]string{
+		"property1": "value1",
+		"property2": "value2",
+	}
 
-// 	if len(x.Properties) != 1 {
-// 		t.Errorf("NewXMLConfigurationFromString() failed, expected 1 property, got %d", len(x.Properties))
-// 	} else {
-// 		p := x.Properties[0]
-// 		if p.Name != "name" || p.Value != "value" || p.Description != "description" || p.Comment != "This is a comment" {
-// 			t.Errorf("NewXMLConfigurationFromString() failed, expected property %v, got %v", Property{Name: "name", Value: "value", Description: "description", Comment: "This is a comment"}, p)
-// 		}
-// 	}
-// }
+	config, err := NewXMLConfigurationFromString(xmlData)
+	if err != nil {
+		t.Errorf("Failed to create XML configuration from string: %v", err)
+	}
+
+	for name, value := range expectedProperties {
+		property, ok := config.GetProperty(name)
+		if !ok {
+			t.Errorf("Expected property '%s' not found", name)
+		}
+
+		if property.Value != value {
+			t.Errorf("Property '%s' has incorrect value. Expected: %s, Got: %s", name, value, property.Value)
+		}
+	}
+}
+func TestNewXMLConfigurationFromString_WithHead(t *testing.T) {
+	xmlData := `
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?><!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+<configuration>
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>/user/hive/warehouse</value>
+    <description>location of default database for the warehouse</description>
+  </property>
+  <property>
+    <name>javax.jdo.option.ConnectionURL</name>
+    <value>jdbc:derby:;databaseName=metastore_db;create=true</value>
+    <description>
+      JDBC connect string for a JDBC metastore.
+      To use SSL to encrypt/authenticate the connection, provide database-specific SSL flag in the connection URL.
+      For example, jdbc:postgresql://myhost/db?ssl=true for postgres database.
+    </description>
+  </property>
+</configuration>
+`
+
+	expectedProperties := map[string]string{
+		"hive.metastore.warehouse.dir":   "/user/hive/warehouse",
+		"javax.jdo.option.ConnectionURL": "jdbc:derby:;databaseName=metastore_db;create=true",
+	}
+
+	config, err := NewXMLConfigurationFromString(xmlData)
+	if err != nil {
+		t.Errorf("Failed to create XML configuration from string: %v", err)
+	}
+
+	for name, value := range expectedProperties {
+		property, ok := config.GetProperty(name)
+		if !ok {
+			t.Errorf("Expected property '%s' not found", name)
+		}
+
+		if property.Value != value {
+			t.Errorf("Property '%s' has incorrect value. Expected: %s, Got: %s", name, value, property.Value)
+		}
+	}
+}
 
 func TestNewXMLConfigurationFromMap(t *testing.T) {
 	properties := map[string]string{
-		"name1": "value1",
-		"name2": "value2",
-		"name3": "value3",
+		"property1": "value1",
+		"property2": "value2",
 	}
 
-	x := NewXMLConfigurationFromMap(properties)
+	config := NewXMLConfigurationFromMap(properties)
 
-	if len(x.Properties) != len(properties) {
-		t.Errorf("NewXMLConfigurationFromMap() failed, expected %d properties, got %d", len(properties), len(x.Properties))
-	} else {
-		for name, value := range properties {
-			p, found := x.GetProperty(name)
-			if !found {
-				t.Errorf("NewXMLConfigurationFromMap() failed, property %s not found", name)
-			} else if p.Value != value {
-				t.Errorf("NewXMLConfigurationFromMap() failed, expected property %s value %s, got %s", name, value, p.Value)
-			}
+	for name, value := range properties {
+		property, ok := config.GetProperty(name)
+		if !ok {
+			t.Errorf("Expected property '%s' not found", name)
+		}
+
+		if property.Value != value {
+			t.Errorf("Property '%s' has incorrect value. Expected: %s, Got: %s", name, value, property.Value)
 		}
 	}
 }
 
-func TestAddProperty(t *testing.T) {
-	x := NewXMLConfiguration()
+func TestXMLConfiguration_AddPropertyWithString(t *testing.T) {
+	config := NewXMLConfiguration()
 
-	// Add a new property
-	p1 := Property{Name: "name1", Value: "value1"}
-	x.AddProperty(p1)
-
-	// Verify that the property was added
-	if len(x.Properties) != 1 {
-		t.Errorf("AddProperty() failed, expected 1 property, got %d", len(x.Properties))
-	} else if x.Properties[0] != p1 {
-		t.Errorf("AddProperty() failed, expected property %v, got %v", p1, x.Properties[0])
-	}
-
-	// Add another property with the same name
-	p2 := Property{Name: "name1", Value: "value2"}
-	x.AddProperty(p2)
-
-	// Verify that the existing property was updated
-	if len(x.Properties) != 1 {
-		t.Errorf("AddProperty() failed, expected 1 property, got %d", len(x.Properties))
-	} else if x.Properties[0] != p2 {
-		t.Errorf("AddProperty() failed, expected property %v, got %v", p2, x.Properties[0])
-	}
-
-	// Add a new property
-	p3 := Property{Name: "name2", Value: "value3"}
-	x.AddProperty(p3)
-
-	// Verify that the new property was added
-	if len(x.Properties) != 2 {
-		t.Errorf("AddProperty() failed, expected 2 properties, got %d", len(x.Properties))
-	} else if x.Properties[1] != p3 {
-		t.Errorf("AddProperty() failed, expected property %v, got %v", p3, x.Properties[1])
-	}
-}
-
-func TestAddPropertyWithString(t *testing.T) {
-	x := NewXMLConfiguration()
-
-	// Add a new property with string values
-	name := "name1"
+	name := "property1"
 	value := "value1"
-	description := "description1"
-	comment := "This is a comment"
-	x.AddPropertyWithString(name, value, description, comment)
+	description := "This is property 1"
 
-	// Verify that the property was added
-	if len(x.Properties) != 1 {
-		t.Errorf("AddPropertyWithString() failed, expected 1 property, got %d", len(x.Properties))
-	} else {
-		p := x.Properties[0]
-		if p.Name != name || p.Value != value || p.Description != description || p.Comment != comment {
-			t.Errorf("AddPropertyWithString() failed, expected property %v, got %v", Property{Name: name, Value: value, Description: description, Comment: comment}, p)
-		}
+	config.AddPropertyWithString(name, value, description)
+
+	property, ok := config.GetProperty(name)
+	if !ok {
+		t.Errorf("Expected property '%s' not found", name)
+	}
+
+	if property.Value != value {
+		t.Errorf("Property '%s' has incorrect value. Expected: %s, Got: %s", name, value, property.Value)
+	}
+
+	if property.Description != description {
+		t.Errorf("Property '%s' has incorrect description. Expected: %s, Got: %s", name, description, property.Description)
 	}
 }
 
-func TestAddPropertiesWithMap(t *testing.T) {
-	x := NewXMLConfiguration()
+func TestXMLConfiguration_AddProperty(t *testing.T) {
+	config := NewXMLConfiguration()
 
-	// Define the properties map
+	property := Property{
+		Name:  "property1",
+		Value: "value1",
+	}
+
+	config.AddProperty(property)
+
+	p, ok := config.GetProperty("property1")
+	if !ok {
+		t.Errorf("Expected property 'property1' not found")
+	}
+
+	if p.Value != "value1" {
+		t.Errorf("Property 'property1' has incorrect value. Expected: value1, Got: %s", p.Value)
+	}
+}
+
+func TestXMLConfiguration_DeleteProperties(t *testing.T) {
 	properties := map[string]string{
-		"name1": "value1",
-		"name2": "value2",
-		"name3": "value3",
+		"property1": "value1",
+		"property2": "value2",
 	}
 
-	// Add properties using the map
-	x.AddPropertiesWithMap(properties)
+	config := NewXMLConfigurationFromMap(properties)
 
-	// Verify that the properties were added
-	if len(x.Properties) != len(properties) {
-		t.Errorf("AddPropertiesWithMap() failed, expected %d properties, got %d", len(properties), len(x.Properties))
-	} else {
-		for name, value := range properties {
-			p, found := x.GetProperty(name)
-			if !found {
-				t.Errorf("AddPropertiesWithMap() failed, property %s not found", name)
-			} else if p.Value != value {
-				t.Errorf("AddPropertiesWithMap() failed, expected property %s value %s, got %s", name, value, p.Value)
-			}
-		}
+	config.DeleteProperties("property1")
+
+	_, ok := config.GetProperty("property1")
+	if ok {
+		t.Errorf("Deleted property 'property1' still exists")
+	}
+
+	_, ok = config.GetProperty("property2")
+	if !ok {
+		t.Errorf("Expected property 'property2' not found")
 	}
 }
 
-func TestDeleteProperties(t *testing.T) {
-	x := NewXMLConfiguration()
+func TestXMLConfiguration_Marshal(t *testing.T) {
+	properties := map[string]string{
+		"property1": "value1",
+		"property2": "value2",
+	}
 
-	// Add properties
-	p1 := Property{Name: "name1", Value: "value1"}
-	p2 := Property{Name: "name2", Value: "value2"}
-	p3 := Property{Name: "name3", Value: "value3"}
-	x.AddProperty(p1)
-	x.AddProperty(p2)
-	x.AddProperty(p3)
+	config := NewXMLConfigurationFromMap(properties)
 
-	// Delete properties
-	x.DeleteProperties("name1", "name3")
+	expectedXML := `<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    <property>
+        <name>property1</name>
+        <value>value1</value>
+    </property>
+    <property>
+        <name>property2</name>
+        <value>value2</value>
+    </property>
+</configuration>
+`
 
-	// Verify that the properties were deleted
-	if len(x.Properties) != 1 {
-		t.Errorf("DeleteProperties() failed, expected 1 property, got %d", len(x.Properties))
-	} else if x.Properties[0] != p2 {
-		t.Errorf("DeleteProperties() failed, expected property %v, got %v", p2, x.Properties[0])
+	xmlData, err := config.Marshal()
+	if err != nil {
+		t.Errorf("Failed to marshal XML configuration: %v", err)
+	}
+
+	if xmlData != expectedXML {
+		t.Errorf("Marshalled XML does not match expected XML. Expected:\n%s\nGot:\n%s", expectedXML, xmlData)
 	}
 }

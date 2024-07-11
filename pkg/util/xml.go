@@ -3,6 +3,7 @@ package util
 import (
 	"encoding/xml"
 	"slices"
+	"strings"
 )
 
 const (
@@ -16,31 +17,34 @@ type configuration struct {
 
 type Property struct {
 	XMLName     xml.Name `xml:"property"`
-	Comment     string   `xml:",comment"`
 	Name        string   `xml:"name"`
 	Value       string   `xml:"value"`
 	Description string   `xml:"description,omitempty"`
 }
 
 type XMLConfiguration struct {
-	Properties    []Property
-	XMLStylesheet string
+	Configuration *configuration
+	Header        string
 }
 
 func NewXMLConfiguration() *XMLConfiguration {
 	return &XMLConfiguration{
-		Properties:    []Property{},
-		XMLStylesheet: XMLStylesheet,
+		Configuration: &configuration{},
+		Header:        xml.Header + XMLStylesheet,
 	}
 }
 
-func NewXMLConfigurationFromString(xmlString string) (*XMLConfiguration, error) {
-	x := configuration{}
-	err := xml.Unmarshal([]byte(xmlString), &x)
+func NewXMLConfigurationFromString(xmlData string) (*XMLConfiguration, error) {
+	config := &XMLConfiguration{}
+	headerEnd := strings.Index(xmlData, "<configuration>")
+	if headerEnd != -1 {
+		config.Header = xmlData[:headerEnd]
+	}
+	err := xml.Unmarshal([]byte(xmlData[headerEnd:]), &config.Configuration)
 	if err != nil {
 		return nil, err
 	}
-	return &XMLConfiguration{Properties: x.Properties, XMLStylesheet: XMLStylesheet}, nil
+	return config, nil
 }
 
 func NewXMLConfigurationFromMap(properties map[string]string) *XMLConfiguration {
@@ -50,7 +54,7 @@ func NewXMLConfigurationFromMap(properties map[string]string) *XMLConfiguration 
 }
 
 func (x *XMLConfiguration) GetProperty(name string) (Property, bool) {
-	for _, p := range x.Properties {
+	for _, p := range x.Configuration.Properties {
 		if p.Name == name {
 			return p, true
 		}
@@ -59,17 +63,17 @@ func (x *XMLConfiguration) GetProperty(name string) (Property, bool) {
 }
 
 func (x *XMLConfiguration) AddProperty(p Property) {
-	for i, existingProperty := range x.Properties {
+	for i, existingProperty := range x.Configuration.Properties {
 		if existingProperty.Name == p.Name {
-			x.Properties[i] = p // update
+			x.Configuration.Properties[i] = p // update
 			return
 		}
 	}
-	x.Properties = append(x.Properties, p) // add
+	x.Configuration.Properties = append(x.Configuration.Properties, p) // add
 }
 
-func (x *XMLConfiguration) AddPropertyWithString(name, value, description, comment string) {
-	x.AddProperty(Property{Name: name, Value: value, Description: description, Comment: comment})
+func (x *XMLConfiguration) AddPropertyWithString(name, value, description string) {
+	x.AddProperty(Property{Name: name, Value: value, Description: description})
 }
 
 func (x *XMLConfiguration) AddPropertiesWithMap(properties map[string]string) {
@@ -79,7 +83,7 @@ func (x *XMLConfiguration) AddPropertiesWithMap(properties map[string]string) {
 }
 
 func (x *XMLConfiguration) DeleteProperties(names ...string) {
-	s := slices.DeleteFunc(x.Properties, func(i Property) bool {
+	s := slices.DeleteFunc(x.Configuration.Properties, func(i Property) bool {
 		for _, name := range names {
 			if i.Name == name {
 				return true
@@ -87,24 +91,26 @@ func (x *XMLConfiguration) DeleteProperties(names ...string) {
 		}
 		return false
 	})
-	x.Properties = s
+	x.Configuration.Properties = s
 }
 
 func (x *XMLConfiguration) getHeader() string {
-	if x.XMLStylesheet == "" {
+	if x.Header == "" {
 		return xml.Header + XMLStylesheet
 	}
-	return xml.Header + x.XMLStylesheet
+	return x.Header
 }
 
 func (x *XMLConfiguration) Marshal() (string, error) {
-	c := &configuration{Properties: x.Properties}
-	data, err := xml.MarshalIndent(c, "", "    ")
+	data, err := xml.MarshalIndent(x.Configuration, "", "    ")
 	if err != nil {
 		return "", err
 	}
 
-	fullXML := x.getHeader() + string(data)
+	fullXML := x.getHeader() + string(data) + "\n"
 
-	return fullXML, nil
+	// replace &#xA; with newline
+	fixedXML := strings.ReplaceAll(fullXML, "&#xA;", "\n")
+
+	return fixedXML, nil
 }
