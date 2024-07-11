@@ -1,6 +1,26 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.1 2024-07-11
+
+### features
+
+- Update `EnvsToEnvVars` to `NewEnvVarsFromMap`, because the previous method name was ambiguous
+- Update `XMLConfiguration` functions to support add, delete and marshall and construct from xml string
+- Extract `CreateOrUpdate` from `client.Client`, so you can use alone
+
+### bugs
+
+- Fix `XMLConfiguration` can not unmarshal xml string to struct
+- Fix `XMLConfiguration` can not handle xml string header when unmarshal to marshal
+- Fix `XMLConfiguration` marshal xml string contains escape characters, e.g: \n
+- Update `GenerateRandomStr` to generate random string with length, letters, numbers and special characters, and add `GenerateSimplePassword`
+- Remove the base64 decode of Secret.Data obtained by controller-runtime, because the data is already decoded
+
+### chore
+
+- Remove incorrectly named functions in `util.configuration.go`
+
 ## v0.8.0 2024-07-10
 
 ### features
