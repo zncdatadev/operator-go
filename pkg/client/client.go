@@ -70,6 +70,24 @@ func (c *Client) GetOwnerName() string {
 //
 // Returns:
 //   - error: An error if the operation fails, otherwise nil.
+//
+// Example:
+//
+//	client := &Client{}
+//	// Get a service in the same namespace as the owner object
+//	svcInOwnerNamespace := &corev1.Service{
+//		ObjectMeta: metav1.ObjectMeta{Name: "my-svc"},
+//	}
+//	if err := client.Get(context.Background(), svcInOwnerNamespace); err != nil {
+//		return
+//	}
+//	// Get a service in another namespace
+//	svcInAnotherNamespace := &corev1.Service{
+//		ObjectMeta: metav1.ObjectMeta{Name: "my-svc", Namespace: "another-ns"},
+//	}
+//	if err := client.Get(context.Background(), svcInAnotherNamespace); err != nil {
+//		return
+//	}
 func (c *Client) Get(ctx context.Context, obj ctrlclient.Object) error {
 	name := obj.GetName()
 	namespace := obj.GetNamespace()
@@ -125,21 +143,16 @@ func (c *Client) SetOwnerReference(obj ctrlclient.Object, gvk *schema.GroupVersi
 }
 
 // CreateOrUpdate creates or updates an object in the Kubernetes cluster.
-// It takes a context and an object that implements the `ctrlclient.Object` interface.
-// The function returns a boolean indicating whether a mutation occurred and an error, if any.
-// If the object does not exist, a new one is created. If the object already exists, it is updated.
-// The function first checks if the object exists by calling `Get` on the client.
-// If the object does not exist, it creates a new one by calling `Create` on the client.
-// If the object exists, it calculates the patch to match the current and desired objects using `patch.DefaultPatchMaker.Calculate`.
-// If the patch is not empty, it updates the object by calling `Update` on the client.
-// The function also handles specific logic for `Service` and `StatefulSet` objects.
-// For `Service` objects, it preserves the `ClusterIP` and annotations when updating.
-// For `StatefulSet` objects, it ignores the `VolumeClaimTemplate` type metadata and status when calculating the patch.
-// The function sets the `LastAppliedAnnotation` on the object using `patch.DefaultAnnotator.SetLastAppliedAnnotation`.
-// It also sets the `ResourceVersion` of the object to match the current object before updating.
-// The function returns `true` if a mutation occurred, indicating that the object was created or updated.
-// If no mutation occurred, it returns `false`.
-// If an error occurs during any step, the function returns the error.
+// It takes the following parameters:
+// - ctx: The context.Context object for the operation.
+// - obj: The object to be created or updated.
+// - client: The Kubernetes client used to interact with the cluster.
+// It returns a boolean value indicating whether the object was mutated and an error, if any.
+// The function first checks if the object exists in the cluster. If it doesn't, a new object is created.
+// If the object already exists, it calculates the patch to match the existing object and the desired object.
+// If the patch is not empty, it updates the object with the patch.
+// The function also preserves certain fields and annotations during the update process.
+// If any error occurs during the creation or update, it is returned along with the mutation status.
 // Parameters:
 //   - ctx: The context for the operation.
 //   - obj: The object to create or update.
@@ -148,6 +161,57 @@ func (c *Client) SetOwnerReference(obj ctrlclient.Object, gvk *schema.GroupVersi
 //   - mutation: A boolean indicating whether a mutation occurred.
 //   - error: An error if the operation fails, otherwise nil.
 func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mutation bool, err error) {
+
+	gvk, err := GetObjectGVK(obj)
+	if err != nil {
+		return false, err
+	}
+
+	if err := c.SetOwnerReference(obj, gvk); err != nil {
+		return false, err
+	}
+
+	return CreateOrUpdate(ctx, obj, c.Client)
+}
+
+// GetObjectGVK returns the GroupVersionKind (GVK) of the provided object.
+// It retrieves the GVK by using the scheme.Scheme.ObjectKinds function.
+// If the GVK is not found or there is an error retrieving it, an error is returned.
+func GetObjectGVK(obj ctrlclient.Object) (*schema.GroupVersionKind, error) {
+	gvks, _, err := scheme.Scheme.ObjectKinds(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(gvks) == 0 {
+		return nil, fmt.Errorf("no GroupVersionKind found for object %T", obj)
+	}
+
+	gvk := gvks[0]
+
+	return &gvk, nil
+}
+
+// CreateOrUpdate creates or updates an object in the Kubernetes cluster.
+// It takes the following parameters:
+// - ctx: The context.Context object for the operation.
+// - obj: The object to be created or updated.
+// - client: The Kubernetes client used to interact with the cluster.
+// It returns a boolean value indicating whether the object was mutated and an error, if any.
+// The function first checks if the object exists in the cluster. If it doesn't, a new object is created.
+// If the object already exists, it calculates the patch to match the existing object and the desired object.
+// If the patch is not empty, it updates the object with the patch.
+// The function also preserves certain fields and annotations during the update process.
+// If any error occurs during the creation or update, it is returned along with the mutation status.
+// Parameters:
+//   - ctx: The context for the operation.
+//   - obj: The object to create or update.
+//   - client: The Kubernetes client used to interact with the cluster.
+//
+// Returns:
+//   - mutation: A boolean indicating whether a mutation occurred.
+//   - error: An error if the operation fails, otherwise nil.
+func CreateOrUpdate(ctx context.Context, obj ctrlclient.Object, client ctrlclient.Client) (mutation bool, err error) {
 
 	objectKey := ctrlclient.ObjectKeyFromObject(obj)
 	namespace := obj.GetNamespace()
@@ -159,17 +223,13 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 
 	name := obj.GetName()
 
-	if err := c.SetOwnerReference(obj, gvk); err != nil {
-		return false, err
-	}
-
 	logExtraValues := []any{"gvk", gvk, "namespace", namespace, "name", name}
 
 	clientLogger.V(1).Info("Creating or updating object", logExtraValues...)
 
 	current := obj.DeepCopyObject().(ctrlclient.Object)
 	// Check if the object exists, if not create a new one
-	err = c.Client.Get(ctx, objectKey, current)
+	err = client.Get(ctx, objectKey, current)
 	var calculateOpt = []patch.CalculateOption{
 		patch.IgnoreStatusFields(),
 	}
@@ -178,7 +238,7 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 		if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(obj); err != nil {
 			return false, err
 		}
-		if err := c.Client.Create(ctx, obj); err != nil {
+		if err := client.Create(ctx, obj); err != nil {
 			clientLogger.Error(err, "Failed to create resource", logExtraValues...)
 			return false, err
 		}
@@ -214,7 +274,7 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 			resourceVersion := current.(metav1.ObjectMetaAccessor).GetObjectMeta().GetResourceVersion()
 			obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetResourceVersion(resourceVersion)
 
-			if err := c.Client.Update(ctx, obj); err != nil {
+			if err := client.Update(ctx, obj); err != nil {
 				clientLogger.Error(err, "Failed to update resource", logExtraValues...)
 				return false, err
 			}
@@ -238,7 +298,7 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 			resourceVersion := current.(metav1.ObjectMetaAccessor).GetObjectMeta().GetResourceVersion()
 			obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetResourceVersion(resourceVersion)
 
-			if err = c.Client.Update(ctx, obj); err != nil {
+			if err = client.Update(ctx, obj); err != nil {
 				clientLogger.Error(err, "Failed to update resource", logExtraValues...)
 				return false, err
 			}
@@ -247,22 +307,4 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 		clientLogger.V(1).Info("Skipping update for object", logExtraValues...)
 	}
 	return false, err
-}
-
-// GetObjectGVK returns the GroupVersionKind (GVK) of the provided object.
-// It retrieves the GVK by using the scheme.Scheme.ObjectKinds function.
-// If the GVK is not found or there is an error retrieving it, an error is returned.
-func GetObjectGVK(obj ctrlclient.Object) (*schema.GroupVersionKind, error) {
-	gvks, _, err := scheme.Scheme.ObjectKinds(obj)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(gvks) == 0 {
-		return nil, fmt.Errorf("no GroupVersionKind found for object %T", obj)
-	}
-
-	gvk := gvks[0]
-
-	return &gvk, nil
 }
