@@ -9,7 +9,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dbv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/database/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
 type DataBaseType string
@@ -127,10 +126,10 @@ func (d *DatabaseConfiguration) GetRefDatabaseConnection(name string) (dbv1alpha
 }
 
 func (d *DatabaseConfiguration) GetCredential(name string) (*DatabaseCredential, error) {
-
+	namespace := d.GetNamespace()
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: d.GetNamespace(),
+			Namespace: namespace,
 			Name:      name,
 		},
 	}
@@ -139,14 +138,20 @@ func (d *DatabaseConfiguration) GetCredential(name string) (*DatabaseCredential,
 		return nil, err
 	}
 
-	username, err := util.Base64[[]byte]{Data: secret.Data[DbUsernameName]}.Decode()
-	if err != nil {
-		return nil, err
+	username, ok := secret.Data[DbUsernameName]
+	if !ok {
+		return nil, fmt.Errorf("username not found in secret. Name: %s, Namespace %s", name, namespace)
+	}
+	if username == nil {
+		return nil, fmt.Errorf("username is empty in secret. Name: %s, Namespace %s", name, namespace)
 	}
 
-	password, err := util.Base64[[]byte]{Data: secret.Data[DbPasswordName]}.Decode()
-	if err != nil {
-		return nil, err
+	password, ok := secret.Data[DbPasswordName]
+	if !ok {
+		return nil, fmt.Errorf("password not found in secret. Name: %s, Namespace %s", name, namespace)
+	}
+	if password == nil {
+		return nil, fmt.Errorf("password is empty in secret. Name: %s, Namespace %s", name, namespace)
 	}
 
 	return &DatabaseCredential{
