@@ -3,6 +3,7 @@
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdatadev/operator-go)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdatadev/operator-go)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zncdatadev/operator-go/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/zncdatadev/operator-go)](https://goreportcard.com/report/github.com/zncdatadev/operator-go)
 ![GitHub License](https://img.shields.io/github/license/zncdatadev/commons-operator)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/zncdatadev/operator-go)
 
