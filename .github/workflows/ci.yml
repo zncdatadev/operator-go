@@ -47,6 +47,7 @@ jobs:
 
           LINTER_RULES_PATH: /
           MARKDOWN_CONFIG_FILE: .markdownlint.yml
+
   golang-lint:
     name: golang-lint
     runs-on: ubuntu-latest
@@ -102,3 +103,9 @@ jobs:
       - name: Go Test
         run: |
           make test
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+      
+      
