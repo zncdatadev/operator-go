@@ -3,6 +3,7 @@ package util
 import (
 	"encoding/xml"
 	"slices"
+	"sort"
 	"strings"
 )
 
@@ -36,6 +37,9 @@ func NewXMLConfiguration() *XMLConfiguration {
 
 func NewXMLConfigurationFromString(xmlData string) (*XMLConfiguration, error) {
 	config := &XMLConfiguration{}
+
+	xmlData = strings.TrimLeft(xmlData, " \t\n\r")
+
 	headerEnd := strings.Index(xmlData, "<configuration>")
 	if headerEnd != -1 {
 		config.Header = xmlData[:headerEnd]
@@ -62,7 +66,7 @@ func (x *XMLConfiguration) GetProperty(name string) (Property, bool) {
 	return Property{}, false
 }
 
-func (x *XMLConfiguration) AddProperty(p Property) {
+func (x *XMLConfiguration) addProperty(p Property) {
 	for i, existingProperty := range x.Configuration.Properties {
 		if existingProperty.Name == p.Name {
 			x.Configuration.Properties[i] = p // update
@@ -72,14 +76,27 @@ func (x *XMLConfiguration) AddProperty(p Property) {
 	x.Configuration.Properties = append(x.Configuration.Properties, p) // add
 }
 
+func (x *XMLConfiguration) sort() {
+	sort.Slice(x.Configuration.Properties, func(i, j int) bool {
+		return x.Configuration.Properties[i].Name < x.Configuration.Properties[j].Name
+	})
+}
+
+func (x *XMLConfiguration) AddProperty(p Property) {
+	x.addProperty(p)
+	x.sort()
+}
+
 func (x *XMLConfiguration) AddPropertyWithString(name, value, description string) {
 	x.AddProperty(Property{Name: name, Value: value, Description: description})
 }
 
 func (x *XMLConfiguration) AddPropertiesWithMap(properties map[string]string) {
 	for name, value := range properties {
-		x.AddProperty(Property{Name: name, Value: value})
+		x.addProperty(Property{Name: name, Value: value})
 	}
+
+	x.sort()
 }
 
 func (x *XMLConfiguration) DeleteProperties(names ...string) {
@@ -102,6 +119,7 @@ func (x *XMLConfiguration) getHeader() string {
 }
 
 func (x *XMLConfiguration) Marshal() (string, error) {
+	x.sort()
 	data, err := xml.MarshalIndent(x.Configuration, "", "    ")
 	if err != nil {
 		return "", err
