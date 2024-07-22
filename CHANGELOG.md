@@ -1,6 +1,13 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.2 2024-07-22
+
+### bugs
+
+- Fix `CreateOrUpdate` method can not handle crd
+- Fix xml configurations may not be in the same propretry order after marshal
+
 ## v0.8.1 2024-07-11
 
 ### features
