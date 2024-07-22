@@ -1,6 +1,8 @@
 package util
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestXMLConfiguration(t *testing.T) {
 	xmlData := `
@@ -43,8 +45,7 @@ func TestXMLConfiguration(t *testing.T) {
 </configuration>
 `
 
-	expectedXMLData := `
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+	expectedXMLData := `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?><!--
    Licensed to the Apache Software Foundation (ASF) under one or more
    contributor license agreements.  See the NOTICE file distributed with
@@ -63,6 +64,11 @@ func TestXMLConfiguration(t *testing.T) {
 -->
 <configuration>
     <property>
+        <name>hive.metastore.db.type</name>
+        <value>DERBY</value>
+        <description>Expects one of [derby, oracle, mysql, mssql, postgres]. Type of database used by the metastore. Information schema &amp; JDBCStorageHandler depend on it.</description>
+    </property>
+    <property>
         <name>hive.metastore.warehouse.dir</name>
         <value>/user/hive/warehouse</value>
         <description>location of default database for the warehouse</description>
@@ -75,11 +81,6 @@ func TestXMLConfiguration(t *testing.T) {
           To use SSL to encrypt/authenticate the connection, provide database-specific SSL flag in the connection URL.
           For example, jdbc:postgresql://myhost/db?ssl=true for postgres database.
         </description>
-    </property>
-    <property>
-        <name>hive.metastore.db.type</name>
-        <value>DERBY</value>
-        <description>Expects one of [derby, oracle, mysql, mssql, postgres]. Type of database used by the metastore. Information schema &amp; JDBCStorageHandler depend on it.</description>
     </property>
 </configuration>
 `
@@ -269,6 +270,14 @@ func TestXMLConfiguration_AddProperty(t *testing.T) {
 	if p.Value != "value1" {
 		t.Errorf("Property 'property1' has incorrect value. Expected: value1, Got: %s", p.Value)
 	}
+
+	property.Value = "value2"
+	config.AddProperty(property)
+
+	p, ok = config.GetProperty("property1")
+	if !ok {
+		t.Errorf("Expected property 'property1' not found")
+	}
 }
 
 func TestXMLConfiguration_DeleteProperties(t *testing.T) {
@@ -315,6 +324,41 @@ func TestXMLConfiguration_Marshal(t *testing.T) {
 `
 
 	xmlData, err := config.Marshal()
+	if err != nil {
+		t.Errorf("Failed to marshal XML configuration: %v", err)
+	}
+
+	if xmlData != expectedXML {
+		t.Errorf("Marshalled XML does not match expected XML. Expected:\n%s\nGot:\n%s", expectedXML, xmlData)
+	}
+}
+
+func TestXMLConfiguration_Marshal_NoHeader(t *testing.T) {
+	xmlData := `
+<configuration>
+    <property>
+        <name>property1</name>
+        <value>value1</value>
+    </property>
+</configuration>
+`
+
+	expectedXML := `<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    <property>
+        <name>property1</name>
+        <value>value1</value>
+    </property>
+</configuration>
+`
+
+	config, err := NewXMLConfigurationFromString(xmlData)
+	if err != nil {
+		t.Errorf("Failed to create XML configuration from string: %v", err)
+	}
+
+	xmlData, err = config.Marshal()
 	if err != nil {
 		t.Errorf("Failed to marshal XML configuration: %v", err)
 	}
