@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -162,7 +161,7 @@ func (c *Client) SetOwnerReference(obj ctrlclient.Object, gvk *schema.GroupVersi
 //   - error: An error if the operation fails, otherwise nil.
 func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mutation bool, err error) {
 
-	gvk, err := GetObjectGVK(obj)
+	gvk, err := GetObjectGVK(c.GetCtrlClient().Scheme(), obj)
 	if err != nil {
 		return false, err
 	}
@@ -171,14 +170,14 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 		return false, err
 	}
 
-	return CreateOrUpdate(ctx, obj, c.Client)
+	return CreateOrUpdate(ctx, c.Client, obj)
 }
 
 // GetObjectGVK returns the GroupVersionKind (GVK) of the provided object.
 // It retrieves the GVK by using the scheme.Scheme.ObjectKinds function.
 // If the GVK is not found or there is an error retrieving it, an error is returned.
-func GetObjectGVK(obj ctrlclient.Object) (*schema.GroupVersionKind, error) {
-	gvks, _, err := scheme.Scheme.ObjectKinds(obj)
+func GetObjectGVK(schema *runtime.Scheme, obj ctrlclient.Object) (*schema.GroupVersionKind, error) {
+	gvks, _, err := schema.ObjectKinds(obj)
 	if err != nil {
 		return nil, err
 	}
@@ -205,18 +204,18 @@ func GetObjectGVK(obj ctrlclient.Object) (*schema.GroupVersionKind, error) {
 // If any error occurs during the creation or update, it is returned along with the mutation status.
 // Parameters:
 //   - ctx: The context for the operation.
-//   - obj: The object to create or update.
 //   - client: The Kubernetes client used to interact with the cluster.
+//   - obj: The object to create or update.
 //
 // Returns:
 //   - mutation: A boolean indicating whether a mutation occurred.
 //   - error: An error if the operation fails, otherwise nil.
-func CreateOrUpdate(ctx context.Context, obj ctrlclient.Object, client ctrlclient.Client) (mutation bool, err error) {
+func CreateOrUpdate(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Object) (mutation bool, err error) {
 
 	objectKey := ctrlclient.ObjectKeyFromObject(obj)
 	namespace := obj.GetNamespace()
 
-	gvk, err := GetObjectGVK(obj)
+	gvk, err := GetObjectGVK(client.Scheme(), obj)
 	if err != nil {
 		return false, err
 	}
