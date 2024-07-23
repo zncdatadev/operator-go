@@ -1,6 +1,12 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.3 2024-07-23
+
+### features
+
+- Add listener CRD type to apis
+
 ## v0.8.2 2024-07-22
 
 ### bugs
