@@ -19,23 +19,28 @@ var _ ResourceBuilder = &BaseResourceBuilder{}
 type BaseResourceBuilder struct {
 	Client *client.Client
 
-	name        string
+	name        string // this is resource name when creating
 	labels      map[string]string
 	annotations map[string]string
 
-	roleGroupInfo *RoleGroupInfo
+	clusterName   string
+	roleName      string
+	roleGroupName string
 }
 
 func NewBaseResourceBuilder(
 	client *client.Client,
-	name string,
-	options *ResourceOptions,
+	name string, // this is resource name when creating
+	options *Options,
 ) *BaseResourceBuilder {
 	return &BaseResourceBuilder{
 		Client:        client,
 		name:          name,
 		labels:        options.Labels,
-		roleGroupInfo: options.RoleGroupInfo,
+		annotations:   options.Annotations,
+		clusterName:   options.ClusterName,
+		roleName:      options.RoleName,
+		roleGroupName: options.RoleGroupName,
 	}
 }
 
@@ -67,15 +72,19 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 			util.AppKubernetesManagedByName: util.StackDomain,
 		}
 
-		if b.roleGroupInfo != nil {
-			if b.roleGroupInfo.RoleName != "" {
-				b.labels[util.AppKubernetesComponentName] = b.roleGroupInfo.RoleName
-			}
-			if b.roleGroupInfo.RoleGroupName != "" {
-				b.labels[util.AppKubernetesRoleGroupName] = b.roleGroupInfo.RoleGroupName
-			}
+		if b.clusterName != "" {
+			b.labels[util.AppKubernetesInstanceName] = b.clusterName
+		}
+
+		if b.roleName != "" {
+			b.labels[util.AppKubernetesComponentName] = b.roleName
+		}
+
+		if b.roleGroupName != "" {
+			b.labels[util.AppKubernetesRoleGroupName] = b.roleGroupName
 		}
 	}
+
 	return b.labels
 }
 

@@ -24,7 +24,7 @@ func NewDeployment(
 	name string,
 	replicas *int32,
 	image *util.Image,
-	options *WorkloadOptions,
+	options WorkloadOptions,
 ) *Deployment {
 	return &Deployment{
 		BaseWorkloadReplicasBuilder: *NewBaseWorkloadReplicasBuilder(

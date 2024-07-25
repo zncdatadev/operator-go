@@ -20,9 +20,9 @@ type Job struct {
 
 func NewGenericJobBuilder(
 	client *resourceClient.Client,
-	name string,
+	name string, // this is resource name when creating
 	image *util.Image,
-	options *WorkloadOptions,
+	options WorkloadOptions,
 ) JobBuilder {
 	return &Job{
 		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(

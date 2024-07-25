@@ -23,7 +23,7 @@ func NewStatefulSetBuilder(
 	name string,
 	replicas *int32,
 	image *util.Image,
-	options *WorkloadOptions,
+	options WorkloadOptions,
 ) *StatefulSet {
 	return &StatefulSet{
 		BaseWorkloadReplicasBuilder: *NewBaseWorkloadReplicasBuilder(

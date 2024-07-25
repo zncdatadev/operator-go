@@ -122,15 +122,13 @@ func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconc
 
 func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup *TrinoRoleGroupSpec) (reconciler.Reconciler, error) {
 
-	options := &builder.WorkloadOptions{
-		Labels:           info.GetLabels(),
-		Annotations:      info.GetAnnotations(),
+	options := builder.WorkloadOptions{
+		Options: builder.Options{
+			Labels:      info.GetLabels(),
+			Annotations: info.GetAnnotations(),
+		},
 		EnvOverrides:     roleGroup.EnvOverrides,
 		CommandOverrides: roleGroup.CommandOverrides,
-		RoleGroupInfo: &builder.RoleGroupInfo{
-			RoleName:      info.RoleName,
-			RoleGroupName: info.RoleGroupName,
-		},
 	}
 
 	if roleGroup.Config != nil {

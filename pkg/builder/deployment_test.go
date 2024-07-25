@@ -63,18 +63,19 @@ var _ = Describe("DeploymentBuilder test", func() {
 					"sample-trinocluster-default",
 					&[]int32{1}[0],
 					util.NewImage("trino", "485", "1.0.0"),
-					&builder.WorkloadOptions{
-						Labels: map[string]string{
-							util.AppKubernetesInstanceName:  ownerName,
-							util.AppKubernetesManagedByName: "trino.zncdata.dev",
-							util.AppKubernetesComponentName: "coordinator",
-							util.AppKubernetesNameName:      "TrinoCluster",
-							util.AppKubernetesRoleGroupName: "default",
-						},
-						RoleGroupInfo: &builder.RoleGroupInfo{
+					builder.WorkloadOptions{
+						Options: builder.Options{
 							RoleName:      "coordinator",
 							RoleGroupName: "default",
+							Labels: map[string]string{
+								util.AppKubernetesInstanceName:  ownerName,
+								util.AppKubernetesManagedByName: "trino.zncdata.dev",
+								util.AppKubernetesComponentName: "coordinator",
+								util.AppKubernetesNameName:      "TrinoCluster",
+								util.AppKubernetesRoleGroupName: "default",
+							},
 						},
+
 						Resource: &commonsv1alpha1.ResourcesSpec{
 							CPU: &commonsv1alpha1.CPUResource{
 								Max: resource.MustParse("100m"),
@@ -151,7 +152,11 @@ var _ = Describe("DeploymentBuilder test", func() {
 					"sample-trinocluster-default",
 					&[]int32{1}[0],
 					util.NewImage("trino", "485", "1.0.0"),
-					&builder.WorkloadOptions{
+					builder.WorkloadOptions{
+						Options: builder.Options{
+							RoleName:      "coordinator", // EnvOverrides and CommandOverrides will only applied to the container, which it name eq RoleName
+							RoleGroupName: "default",
+						},
 						CommandOverrides: []string{
 							"bin/launcher",
 							"start",
@@ -159,10 +164,6 @@ var _ = Describe("DeploymentBuilder test", func() {
 						EnvOverrides: map[string]string{
 							"foo": "test",
 							"bar": "test",
-						},
-						RoleGroupInfo: &builder.RoleGroupInfo{
-							RoleName:      "coordinator", // EnvOverrides and CommandOverrides will only applied to the container, which it name eq RoleName
-							RoleGroupName: "default",
 						},
 					},
 				),
@@ -210,7 +211,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 					"sample-trinocluster-default",
 					&[]int32{1}[0],
 					util.NewImage("trino", "485", "1.0.0"),
-					&builder.WorkloadOptions{
+					builder.WorkloadOptions{
 						EnvOverrides: map[string]string{
 							"foo": "test",
 						},
@@ -221,7 +222,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 								},
 							},
 						},
-						RoleGroupInfo: &builder.RoleGroupInfo{
+						Options: builder.Options{
 							RoleName:      "coordinator", // EnvOverrides will only applied to the container, which it name eq RoleName
 							RoleGroupName: "default",
 						},

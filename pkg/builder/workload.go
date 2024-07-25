@@ -54,22 +54,16 @@ type BaseWorkloadBuilder struct {
 
 func NewBaseWorkloadBuilder(
 	client *client.Client,
-	name string,
+	name string, // this is resource name when creating
 	image *util.Image,
-	options *WorkloadOptions,
+	options WorkloadOptions,
 ) *BaseWorkloadBuilder {
-
-	resourceOptions := &ResourceOptions{
-		Labels:        options.Labels,
-		Annotations:   options.Annotations,
-		RoleGroupInfo: options.RoleGroupInfo,
-	}
 
 	return &BaseWorkloadBuilder{
 		BaseResourceBuilder: *NewBaseResourceBuilder(
 			client,
 			name,
-			resourceOptions,
+			&options.Options,
 		),
 		image: image,
 
@@ -134,18 +128,18 @@ func (b *BaseWorkloadBuilder) GetSecurityContext() *corev1.PodSecurityContext {
 func (b *BaseWorkloadBuilder) OverrideCommand() {
 	containers := b.GetContainers()
 
-	if len(containers) == 0 || b.commandOverrides == nil || len(b.commandOverrides) == 0 || b.roleGroupInfo == nil || b.roleGroupInfo.RoleName == "" {
+	if len(containers) == 0 || b.commandOverrides == nil || len(b.commandOverrides) == 0 || b.roleName == "" {
 		containersName := []string{}
 		for _, container := range containers {
 			containersName = append(containersName, container.Name)
 		}
-		logger.V(5).Info("Sikpping command override", "containers", containersName, "commandOverrides", b.commandOverrides, "roleGroupInfo", b.roleGroupInfo)
+		logger.V(5).Info("Sikpping command override", "containers", containersName, "commandOverrides", b.commandOverrides, "roleName", b.roleName)
 		return
 	}
 
 	for i := range containers {
 		container := &containers[i]
-		if container.Name == b.roleGroupInfo.RoleName {
+		if container.Name == b.roleName {
 			// Override the command, clear the args
 			container.Command = b.commandOverrides
 			container.Args = []string{}
@@ -160,18 +154,18 @@ func (b *BaseWorkloadBuilder) OverrideCommand() {
 func (b *BaseWorkloadBuilder) OverrideEnv() {
 	containers := b.GetContainers()
 
-	if len(containers) == 0 || b.envOverrides == nil || len(b.envOverrides) == 0 || b.roleGroupInfo == nil || b.roleGroupInfo.RoleName == "" {
+	if len(containers) == 0 || b.envOverrides == nil || len(b.envOverrides) == 0 || b.roleName == "" {
 		containersName := []string{}
 		for _, container := range containers {
 			containersName = append(containersName, container.Name)
 		}
-		logger.V(5).Info("Sikpping env override", "containers", containersName, "envOverrides", b.envOverrides, "roleGroupInfo", b.roleGroupInfo)
+		logger.V(5).Info("Sikpping env override", "containers", containersName, "envOverrides", b.envOverrides, "roleName", b.roleName)
 		return
 	}
 
 	for i := range containers {
 		container := &containers[i]
-		if container.Name == b.roleGroupInfo.RoleName {
+		if container.Name == b.roleName {
 			// Override the env
 			for key, value := range b.envOverrides {
 				container.Env = append(container.Env, corev1.EnvVar{
@@ -219,7 +213,7 @@ func (b *BaseWorkloadBuilder) GetVolumes() []corev1.Volume {
 	return b.volumes
 }
 
-func (b *BaseWorkloadBuilder) AddAffinity(affinity *corev1.Affinity) {
+func (b *BaseWorkloadBuilder) SetAffinity(affinity *corev1.Affinity) {
 	b.affinity = affinity
 }
 
@@ -227,7 +221,7 @@ func (b *BaseWorkloadBuilder) GetAffinity() *corev1.Affinity {
 	return b.affinity
 }
 
-func (b *BaseWorkloadBuilder) AddTerminationGracePeriod(duration *time.Duration) {
+func (b *BaseWorkloadBuilder) SetTerminationGracePeriod(duration *time.Duration) {
 	b.terminationGracePeriod = duration
 }
 
@@ -332,7 +326,7 @@ func NewBaseWorkloadReplicasBuilder(
 	name string,
 	replicas *int32,
 	image *util.Image,
-	options *WorkloadOptions,
+	options WorkloadOptions,
 ) *BaseWorkloadReplicasBuilder {
 	return &BaseWorkloadReplicasBuilder{
 		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(
