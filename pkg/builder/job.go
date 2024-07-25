@@ -10,9 +10,9 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var _ JobBuilder = &jobBuilder{}
+var _ JobBuilder = &Job{}
 
-type jobBuilder struct {
+type Job struct {
 	BaseWorkloadBuilder
 
 	resetPolicy *corev1.RestartPolicy
@@ -24,7 +24,7 @@ func NewGenericJobBuilder(
 	image *util.Image,
 	options *WorkloadOptions,
 ) JobBuilder {
-	return &jobBuilder{
+	return &Job{
 		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(
 			client,
 			name,
@@ -34,25 +34,30 @@ func NewGenericJobBuilder(
 	}
 }
 
-func (b *jobBuilder) GetObject() (*batchv1.Job, error) {
-	tpl, err := b.getPodTemplate()
+func (b *Job) GetObject() (*batchv1.Job, error) {
+	podTemplate, err := b.getPodTemplate()
 	if err != nil {
 		return nil, err
 	}
+
+	if b.resetPolicy != nil {
+		podTemplate.Spec.RestartPolicy = *b.resetPolicy
+	}
+
 	obj := &batchv1.Job{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: batchv1.JobSpec{
 			Selector: b.GetLabelSelector(),
-			Template: *tpl,
+			Template: *podTemplate,
 		},
 	}
 	return obj, nil
 }
 
-func (b *jobBuilder) SetRestPolicy(policy *corev1.RestartPolicy) {
+func (b *Job) SetRestPolicy(policy *corev1.RestartPolicy) {
 	b.resetPolicy = policy
 }
 
-func (b *jobBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
+func (b *Job) Build(_ context.Context) (ctrlclient.Object, error) {
 	return b.GetObject()
 }
