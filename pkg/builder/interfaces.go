@@ -20,7 +20,7 @@ import (
 type ContainerBuilder interface {
 	Build() *corev1.Container
 
-	SetImagePullPolicy(policy corev1.PullPolicy) ContainerBuilder
+	SetImagePullPolicy(policy *corev1.PullPolicy) ContainerBuilder
 
 	AddVolumeMounts(mounts []corev1.VolumeMount) ContainerBuilder
 	AddVolumeMount(mount *corev1.VolumeMount) ContainerBuilder
@@ -64,7 +64,8 @@ type ResourceBuilder interface {
 
 type WorkloadImage interface {
 	SetImage(image *util.Image)
-	GetImage() string
+	GetImage() *util.Image
+	GetImageWithTag() string
 }
 
 type WorkloadSecurityContext interface {

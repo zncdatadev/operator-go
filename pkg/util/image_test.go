@@ -45,7 +45,7 @@ func TestGetImageTag(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			imageTag := tt.image.GetImageTag()
+			imageTag := tt.image.GetImageWithTag()
 			if imageTag != tt.tag {
 				t.Errorf("Expected tag %s, but got %s", tt.tag, imageTag)
 			}

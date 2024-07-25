@@ -89,8 +89,12 @@ func (b *BaseWorkloadBuilder) SetImage(image *util.Image) {
 	b.image = image
 }
 
-func (b *BaseWorkloadBuilder) GetImage() string {
-	return b.image.String()
+func (b *BaseWorkloadBuilder) GetImage() *util.Image {
+	return b.image
+}
+
+func (b *BaseWorkloadBuilder) GetImageWithTag() string {
+	return b.image.GetImageWithTag()
 }
 
 func (b *BaseWorkloadBuilder) AddContainers(containers []corev1.Container) {

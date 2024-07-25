@@ -22,7 +22,7 @@ type Image struct {
 	ProductName    string
 	StackVersion   string
 	ProductVersion string
-	PullPolicy     corev1.PullPolicy
+	PullPolicy     *corev1.PullPolicy
 	PullSecretName string
 }
 
@@ -31,7 +31,7 @@ type ImageOption func(*ImageOptions)
 type ImageOptions struct {
 	Custom         string
 	Repository     string
-	PullPolicy     corev1.PullPolicy
+	PullPolicy     *corev1.PullPolicy
 	PullSecretName string
 }
 
@@ -77,7 +77,7 @@ func NewImage(
 	}
 }
 
-func (i *Image) GetImageTag() string {
+func (i *Image) GetImageWithTag() string {
 	if i.Custom != "" {
 		return i.Custom
 	}
@@ -98,5 +98,5 @@ func (i *Image) GetImageTag() string {
 }
 
 func (i *Image) String() string {
-	return i.GetImageTag()
+	return i.GetImageWithTag()
 }
