@@ -27,7 +27,7 @@ type TrinoDeploymentBuilder struct {
 
 func (b *TrinoDeploymentBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
 
-	fooContainer := builder.NewContainerBuilder("coordinator", b.GetImage()).
+	fooContainer := builder.NewContainerBuilder("coordinator", b.GetImageWithTag()).
 		SetCommand([]string{"bin/launcher"}).
 		SetArgs([]string{"run"}).
 		AddEnvVar(&corev1.EnvVar{

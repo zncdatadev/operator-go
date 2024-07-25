@@ -31,8 +31,9 @@ type TrinoCoordinatorDeploymentBuilder struct {
 }
 
 func (b *TrinoCoordinatorDeploymentBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
-	trinoContainer := builder.NewContainerBuilder("coordinator", b.GetImage()).
+	trinoContainer := builder.NewContainerBuilder("coordinator", b.GetImageWithTag()).
 		SetCommand([]string{"/usr/lib/trino/bin/launcher", "run"}).
+		SetImagePullPolicy(b.GetImage().PullPolicy).
 		Build()
 
 	b.AddContainer(trinoContainer)
@@ -114,6 +115,13 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
 			Expect(result.RequeueOrNot()).Should(BeFalse())
+
+			By("check the container image pull policy of deployment is default value")
+			deployment = &appv1.Deployment{}
+			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
+			Expect(deployment.Spec.Template.Spec.Containers).ShouldNot(BeNil())
+			Expect(deployment.Spec.Template.Spec.Containers).Should(HaveLen(1))
+			Expect(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy).Should(Equal(*builder.DefaultImagePullPolicy))
 		})
 
 	})

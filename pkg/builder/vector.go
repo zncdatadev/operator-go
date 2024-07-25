@@ -367,7 +367,7 @@ func (v *VectorDecorator) appendVectorContainer(containers *[]corev1.Container) 
 func (v *VectorDecorator) NewVectorContainer() *corev1.Container {
 
 	vectorContainer := NewContainerBuilder(VectorContainerName, VectorImage).
-		SetImagePullPolicy(corev1.PullIfNotPresent).
+		SetImagePullPolicy(DefaultImagePullPolicy).
 		SetCommand(VectorCommand()).
 		SetArgs(VectorCommandArgs()).
 		AddVolumeMounts(VectorVolumeMount(v.VectorConfigVolumeName, v.LogVolumeName)).

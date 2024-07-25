@@ -11,6 +11,7 @@ import (
 var (
 	HTTPGetProbHandler2PortNames = []string{"http", "ui", "metrics", "health"}
 	TCPProbHandler2PortNames     = []string{"master"}
+	DefaultImagePullPolicy       = &[]corev1.PullPolicy{corev1.PullAlways}[0]
 )
 
 var _ ContainerBuilder = &Container{}
@@ -50,7 +51,7 @@ func (b *Container) getObject() *corev1.Container {
 		b.obj = &corev1.Container{
 			Name:            b.Name,
 			Image:           b.Image,
-			ImagePullPolicy: corev1.PullIfNotPresent,
+			ImagePullPolicy: corev1.PullAlways,
 			Resources:       corev1.ResourceRequirements{},
 		}
 	}
@@ -62,8 +63,13 @@ func (b *Container) Build() *corev1.Container {
 	return obj
 }
 
-func (b *Container) SetImagePullPolicy(policy corev1.PullPolicy) ContainerBuilder {
-	b.getObject().ImagePullPolicy = policy
+func (b *Container) SetImagePullPolicy(policy *corev1.PullPolicy) ContainerBuilder {
+	if policy == nil {
+		logger.V(2).Info("Could not set image pull policy, use default value", "policy", policy, "container", b.Name, "image", b.Image, "default", DefaultImagePullPolicy)
+		return b
+	}
+
+	b.getObject().ImagePullPolicy = *policy
 	return b
 }
 
@@ -413,7 +419,6 @@ func (b *Container) SetProbeWithHealth() {
 			b.SetReadinessProbe(readinessProbe)
 			break
 		}
-
 	}
 
 	if !ok {
