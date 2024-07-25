@@ -96,6 +96,7 @@ func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {
 // If a field exists in the left but is zero, it will be replaced by the corresponding field from the right.
 // The left must be a pointer, as the merge operation modifies it.
 // The fields "RoleGroups" and "PodDisruptionBudget" are excluded during the merge.
+// You don't need to use the return value of this method because it directly modifies the passed roleGroup.
 //
 // Example:
 //

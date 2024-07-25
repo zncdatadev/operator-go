@@ -425,7 +425,6 @@ var _ = Describe("Role reconciler", func() {
 			Expect(roleReconciler).ToNot(BeNil())
 
 			By("merge role group spec")
-
 			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupOne)
 			Expect(roleGroupValue).ToNot(BeNil())
 
@@ -455,7 +454,6 @@ var _ = Describe("Role reconciler", func() {
 			Expect(roleReconciler).ToNot(BeNil())
 
 			By("merge role group spec")
-
 			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupTwo)
 			Expect(roleGroupValue).ToNot(BeNil())
 
@@ -471,6 +469,30 @@ var _ = Describe("Role reconciler", func() {
 
 			By("checking role.EnvOverrides merged")
 			Expect(roleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
+		})
+
+		It("should merge itself", func() {
+			By("creating a role reconciler")
+			roleReconciler := NewRoleReconciler(
+				resourceClient,
+				roleInfo,
+				&commonsv1alpha1.ClusterOperationSpec{},
+				&ClusterConfigSpec{},
+				*role,
+			)
+
+			By("merge role group spec")
+			roleReconciler.MergeRoleGroupSpec(roleGroupOne)
+
+			By("checking role.Config merged")
+			Expect(roleGroupOne.Config.GracefulShutdownTimeout).To(Equal(role.Config.GracefulShutdownTimeout))
+
+			By("checking role.CommandOverrides not merged")
+			Expect(roleGroupOne.CommandOverrides).ToNot(Equal(role.CommandOverrides))
+
+			By("checking role.EnvOverrides merged")
+			Expect(roleGroupOne.EnvOverrides).To(Equal(role.EnvOverrides))
+
 		})
 	})
 })
