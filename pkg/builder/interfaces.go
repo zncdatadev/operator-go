@@ -95,7 +95,7 @@ type WorkloadVolumes interface {
 }
 
 type WorkloadAffinity interface {
-	AddAffinity(affinity *corev1.Affinity)
+	SetAffinity(affinity *corev1.Affinity)
 	GetAffinity() *corev1.Affinity
 }
 
@@ -105,7 +105,7 @@ type WorkloadReplicas interface {
 }
 
 type WorkloadTerminationGracePeriodSeconds interface {
-	AddTerminationGracePeriod(duration *time.Duration)
+	SetTerminationGracePeriod(duration *time.Duration)
 	GetTerminationGracePeriod() *time.Duration
 }
 

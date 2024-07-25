@@ -26,7 +26,7 @@ func NewGenericServiceAccountBuilder(
 	return &GenericServiceAccountBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client:      client,
-			name:        name,
+			Name:        name,
 			labels:      labels,
 			annotations: annotations,
 		},
@@ -63,7 +63,7 @@ func NewGenericRoleBuilder(
 	return &GenericRoleBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client:      client,
-			name:        name,
+			Name:        name,
 			labels:      labels,
 			annotations: annotations,
 		},
@@ -100,7 +100,7 @@ func NewGenericRoleBindingBuilder(
 	return &GenericRoleBindingBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client:      client,
-			name:        name,
+			Name:        name,
 			labels:      labels,
 			annotations: annotations,
 		},
@@ -137,7 +137,7 @@ func NewGenericClusterRoleBuilder(
 	return &GenericClusterRoleBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client:      client,
-			name:        name,
+			Name:        name,
 			labels:      labels,
 			annotations: annotations,
 		},
@@ -176,7 +176,7 @@ func NewGenericClusterRoleBindingBuilder(
 	return &GenericClusterRoleBindingBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client:      client,
-			name:        name,
+			Name:        name,
 			labels:      labels,
 			annotations: annotations,
 		},

@@ -35,7 +35,7 @@ func NewBaseConfigBuilder(
 	return &BaseConfigBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client:      client,
-			name:        name,
+			Name:        name,
 			labels:      labels,
 			annotations: annotations,
 		},

@@ -79,7 +79,7 @@ var _ = Describe("Deloyment reconciler", func() {
 					name,
 					&replcias,
 					util.NewImage("trino", "458", "1.0.0"),
-					&builder.WorkloadOptions{},
+					builder.WorkloadOptions{},
 				),
 			}
 		})

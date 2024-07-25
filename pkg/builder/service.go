@@ -79,7 +79,7 @@ func NewServiceBuilder(
 	return &BaseServiceBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
 			Client: client,
-			name:   name,
+			Name:   name,
 			labels: labels,
 		},
 		ports: servicePorts,

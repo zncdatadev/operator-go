@@ -81,7 +81,7 @@ var _ = Describe("Statefulset reconciler", func() {
 						ProductVersion: "458",
 						ProductName:    "nginx",
 					},
-					&builder.WorkloadOptions{},
+					builder.WorkloadOptions{},
 				),
 			}
 		})

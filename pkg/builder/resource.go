@@ -19,23 +19,28 @@ var _ ResourceBuilder = &BaseResourceBuilder{}
 type BaseResourceBuilder struct {
 	Client *client.Client
 
-	name        string
+	Name        string // this is resource name when creating
 	labels      map[string]string
 	annotations map[string]string
 
-	roleGroupInfo *RoleGroupInfo
+	clusterName   string
+	roleName      string
+	roleGroupName string
 }
 
 func NewBaseResourceBuilder(
 	client *client.Client,
-	name string,
-	options *ResourceOptions,
+	name string, // this is resource name when creating
+	options *Options,
 ) *BaseResourceBuilder {
 	return &BaseResourceBuilder{
 		Client:        client,
-		name:          name,
+		Name:          name,
 		labels:        options.Labels,
-		roleGroupInfo: options.RoleGroupInfo,
+		annotations:   options.Annotations,
+		clusterName:   options.ClusterName,
+		roleName:      options.RoleName,
+		roleGroupName: options.RoleGroupName,
 	}
 }
 
@@ -44,11 +49,11 @@ func (b *BaseResourceBuilder) GetClient() *client.Client {
 }
 
 func (b *BaseResourceBuilder) SetName(name string) {
-	b.name = name
+	b.Name = name
 }
 
 func (b *BaseResourceBuilder) GetName() string {
-	return b.name
+	return b.Name
 }
 
 func (b *BaseResourceBuilder) AddLabels(labels map[string]string) {
@@ -67,20 +72,23 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 			util.AppKubernetesManagedByName: util.StackDomain,
 		}
 
-		if b.roleGroupInfo != nil {
-			if b.roleGroupInfo.RoleName != "" {
-				b.labels[util.AppKubernetesComponentName] = b.roleGroupInfo.RoleName
-			}
-			if b.roleGroupInfo.RoleGroupName != "" {
-				b.labels[util.AppKubernetesRoleGroupName] = b.roleGroupInfo.RoleGroupName
-			}
+		if b.clusterName != "" {
+			b.labels[util.AppKubernetesInstanceName] = b.clusterName
+		}
+
+		if b.roleName != "" {
+			b.labels[util.AppKubernetesComponentName] = b.roleName
+		}
+
+		if b.roleGroupName != "" {
+			b.labels[util.AppKubernetesRoleGroupName] = b.roleGroupName
 		}
 	}
+
 	return b.labels
 }
 
 func (o *BaseResourceBuilder) filterLabels(labels map[string]string) map[string]string {
-
 	matchingLabels := make(map[string]string)
 	for _, label := range util.AppMatchingLabelsNames {
 		if value, ok := labels[label]; ok {
