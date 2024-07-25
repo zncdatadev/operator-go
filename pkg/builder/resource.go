@@ -19,7 +19,7 @@ var _ ResourceBuilder = &BaseResourceBuilder{}
 type BaseResourceBuilder struct {
 	Client *client.Client
 
-	name        string // this is resource name when creating
+	Name        string // this is resource name when creating
 	labels      map[string]string
 	annotations map[string]string
 
@@ -35,7 +35,7 @@ func NewBaseResourceBuilder(
 ) *BaseResourceBuilder {
 	return &BaseResourceBuilder{
 		Client:        client,
-		name:          name,
+		Name:          name,
 		labels:        options.Labels,
 		annotations:   options.Annotations,
 		clusterName:   options.ClusterName,
@@ -49,11 +49,11 @@ func (b *BaseResourceBuilder) GetClient() *client.Client {
 }
 
 func (b *BaseResourceBuilder) SetName(name string) {
-	b.name = name
+	b.Name = name
 }
 
 func (b *BaseResourceBuilder) GetName() string {
-	return b.name
+	return b.Name
 }
 
 func (b *BaseResourceBuilder) AddLabels(labels map[string]string) {
@@ -89,7 +89,6 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 }
 
 func (o *BaseResourceBuilder) filterLabels(labels map[string]string) map[string]string {
-
 	matchingLabels := make(map[string]string)
 	for _, label := range util.AppMatchingLabelsNames {
 		if value, ok := labels[label]; ok {
