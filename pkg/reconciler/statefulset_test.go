@@ -87,14 +87,22 @@ var _ = Describe("Statefulset reconciler", func() {
 		})
 
 		It("Should successfully reconcile a whoami statefulset", func() {
+			By("Create a statefulset reconciler")
 			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder)
 			Expect(statusfulSetReconciler).ShouldNot(BeNil())
 
+			By("Reconcile the statefulset")
 			result := statusfulSetReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
 			Expect(result.RequeueOrNot()).Should(BeTrue())
 
+			By("Checking the statefulset spec.replicas is valid")
+			statefulSet := &appv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, statefulSet)).Should(Succeed())
+			Expect(*statefulSet.Spec.Replicas).Should(Equal(replcias))
+
+			By("Check the statefulset is ready or not")
 			result = statusfulSetReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
@@ -102,12 +110,14 @@ var _ = Describe("Statefulset reconciler", func() {
 
 			// Because of the envtest do not handle the pod, we need to mock the statefulset is ready
 			// mock the statefulset is ready, update the ready replicas to 3
-			statefulSet := &appv1.StatefulSet{}
+			By("Mock the statefulset is ready")
+			statefulSet = &appv1.StatefulSet{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, statefulSet)).Should(Succeed())
 			statefulSet.Status.Replicas = replcias
 			statefulSet.Status.ReadyReplicas = replcias
 			Expect(k8sClient.Status().Update(ctx, statefulSet)).Should(Succeed())
 
+			By("Check the statefulset is ready or not")
 			result = statusfulSetReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(result.Error).Should(BeNil())
