@@ -1,6 +1,14 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.5 2024-07-26
+
+### features
+
+### bugs
+
+- Fix formatting errors that still exist in `vector.yaml`
+
 ## v0.8.4 2024-07-26
 
 ### features
