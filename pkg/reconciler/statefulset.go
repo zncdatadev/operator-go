@@ -13,6 +13,8 @@ var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSet{}
 type StatefulSet struct {
 	GenericResourceReconciler[builder.StatefulSetBuilder]
 
+	// When the cluster is stopped, the statefulset will be scaled to 0
+	// and the reconcile will be not executed until the cluster is started
 	Stopped bool
 }
 
@@ -51,6 +53,7 @@ func NewStatefulSet(
 	client *client.Client,
 	name string,
 	stsBuilder builder.StatefulSetBuilder,
+	stopped bool,
 ) *StatefulSet {
 	return &StatefulSet{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
@@ -58,5 +61,6 @@ func NewStatefulSet(
 			name,
 			stsBuilder,
 		),
+		Stopped: stopped,
 	}
 }

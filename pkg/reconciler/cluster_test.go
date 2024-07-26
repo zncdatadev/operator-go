@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/util"
@@ -29,7 +29,7 @@ type ClusterReconciler struct {
 func NewClusterReconciler(
 	client *client.Client,
 	clusterInfo reconciler.ClusterInfo,
-	clusterOperation *apiv1alpha1.ClusterOperationSpec,
+	clusterOperation *commonsv1alpha1.ClusterOperationSpec,
 	spec *TrinoClusterSpec,
 ) *ClusterReconciler {
 	return &ClusterReconciler{
@@ -70,7 +70,7 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 			ClusterInfo: r.ClusterInfo,
 			RoleName:    "coordinator",
 		},
-		r.Spec.ClusterOperation,
+		r.ClusterOperation,
 		r.ClusterConfig,
 		*r.Spec.Coordinator,
 	)
@@ -85,6 +85,11 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 }
 
 var _ = Describe("Cluster reconciler", func() {
+
+	clusterOperation := &commonsv1alpha1.ClusterOperationSpec{
+		Stopped: false,
+	}
+
 	Context("ClusterReconciler test", func() {
 		var resourceClient *client.Client
 
@@ -145,7 +150,7 @@ var _ = Describe("Cluster reconciler", func() {
 			clusterReconciler := NewClusterReconciler(
 				resourceClient,
 				clusterInfo,
-				&apiv1alpha1.ClusterOperationSpec{},
+				clusterOperation,
 				trinoCluster,
 			)
 			Expect(clusterReconciler).ShouldNot(BeNil())

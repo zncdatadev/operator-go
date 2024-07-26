@@ -86,7 +86,7 @@ var _ = Describe("Deloyment reconciler", func() {
 
 		It("Should successfully reconcile a whoami deployment", func() {
 			By("Create a deployment reconciler")
-			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder)
+			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder, false)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
@@ -127,6 +127,50 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(deployment.Spec.Template.Spec.Containers).ShouldNot(BeNil())
 			Expect(deployment.Spec.Template.Spec.Containers).Should(HaveLen(1))
 			Expect(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy).Should(Equal(*builder.DefaultImagePullPolicy))
+		})
+
+		It("Should successfully reconcile a stopped whoami deployment", func() {
+
+			By("Create a stopped deployment reconciler")
+			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder, false)
+			Expect(deploymentReconciler).ShouldNot(BeNil())
+
+			By("reconcile the deployment")
+			result := deploymentReconciler.Reconcile(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(result.Error).Should(BeNil())
+			Expect(result.RequeueOrNot()).Should(BeTrue())
+
+			By("checking the deployment spec replicas is valid")
+			deployment := &appv1.Deployment{}
+			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
+			Expect(*deployment.Spec.Replicas).Should(BeEquivalentTo(int32(3)))
+
+			By("Simulate reconcile again when CR is updated")
+			deploymentBuilder = &TrinoCoordinatorDeploymentBuilder{
+				Deployment: *builder.NewDeployment(
+					resourceClient,
+					name,
+					&replcias,
+					util.NewImage("trino", "458", "1.0.0"),
+					builder.WorkloadOptions{},
+				),
+			}
+			By("create a stopped deployment reconciler")
+			deploymentReconciler = reconciler.NewDeployment(resourceClient, name, deploymentBuilder, true)
+			Expect(deploymentReconciler).ShouldNot(BeNil())
+
+			By("reconcile the deployment")
+			result = deploymentReconciler.Reconcile(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(result.Error).Should(BeNil())
+			Expect(result.RequeueOrNot()).Should(BeTrue())
+
+			By("checking the deployment spec replicas is updated")
+			deployment = &appv1.Deployment{}
+			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
+			Expect(*deployment.Spec.Replicas).Should(BeEquivalentTo(int32(0)))
+
 		})
 	})
 
