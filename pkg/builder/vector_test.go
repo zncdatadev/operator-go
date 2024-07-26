@@ -83,21 +83,21 @@ log_schema:
   host_key: "pod"
 sources:
   files_airlift:
-  type: "file"
-  include:
-    - "zncdata/log/*/*.airlift.json"
+    type: "file"
+    include:
+      - "zncdata/log/*/*.airlift.json"
 transforms:
   processed_files_airlift:
-  inputs:
-    - files_airlift
-  type: remap
-  source: |
-    parsed_event = parse_json!(string!(.message))
-    .message = join!(compact([parsed_event.message, parsed_event.stackTrace]), "\n")
-    .timestamp = parse_timestamp!(parsed_event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
-    .logger = parsed_event.logger
-    .level = parsed_event.level
-    .thread = parsed_event.thread
+    inputs:
+      - files_airlift
+    type: remap
+    source: |
+      parsed_event = parse_json!(string!(.message))
+      .message = join!(compact([parsed_event.message, parsed_event.stackTrace]), "\n")
+      .timestamp = parse_timestamp!(parsed_event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+      .logger = parsed_event.logger
+      .level = parsed_event.level
+      .thread = parsed_event.thread
   extended_logs_files:
     inputs:
       - processed_files_*
