@@ -47,7 +47,7 @@ var _ = Describe("Statefulset reconciler", func() {
 		var namespace string
 		ctx := context.Background()
 
-		replcias := int32(1)
+		replcias := int32(3)
 		BeforeEach(func() {
 
 			// Define a random namespace
@@ -101,7 +101,7 @@ var _ = Describe("Statefulset reconciler", func() {
 			Expect(result.RequeueOrNot()).Should(BeTrue())
 
 			// Because of the envtest do not handle the pod, we need to mock the statefulset is ready
-			// mock the statefulset is ready, update the ready replicas to 1
+			// mock the statefulset is ready, update the ready replicas to 3
 			statefulSet := &appv1.StatefulSet{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, statefulSet)).Should(Succeed())
 			statefulSet.Status.Replicas = replcias

@@ -16,19 +16,13 @@ type StatefulSet struct {
 	Stopped bool
 }
 
-// getReplicas returns the number of replicas for the StatefulSet.
-func (r *StatefulSet) getReplicas() *int32 {
-	if r.Stopped {
-		logger.Info("Cluster operation stopped, set replicas to 0")
-		zero := int32(0)
-		return &zero
-	}
-	return nil
-}
-
 func (r *StatefulSet) Reconcile(ctx context.Context) *Result {
 	resourceBuilder := r.GetBuilder()
-	resourceBuilder.SetReplicas(r.getReplicas())
+
+	if r.Stopped {
+		resourceBuilder.SetReplicas(&[]int32{0}[0])
+	}
+
 	resource, err := resourceBuilder.Build(ctx)
 
 	if err != nil {

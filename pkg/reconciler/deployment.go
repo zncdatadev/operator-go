@@ -16,25 +16,15 @@ type Deployment struct {
 	Stopped bool
 }
 
-// getReplicas returns the number of replicas for the role group.
-// handle cluster operation stopped state.
-func (r *Deployment) getReplicas() *int32 {
-	if r.Stopped {
-		logger.Info("Stopped deployment, set replicas to 0")
-		zero := int32(0)
-		return &zero
-	}
-	return nil
-}
-
 func (r *Deployment) Reconcile(ctx context.Context) *Result {
 	// TODO: Extract a doBuild method to invoke the implementation side's Build method and append some framework logic.
 	// Consider abstracting a WorkloadReconciler on top of DeploymentReconciler to extract some of the logic into it.
 	resourceBuilder := r.GetBuilder()
-	replicas := r.getReplicas()
-	if replicas != nil {
-		resourceBuilder.SetReplicas(replicas)
+
+	if r.Stopped {
+		resourceBuilder.SetReplicas(&[]int32{0}[0])
 	}
+
 	resource, err := resourceBuilder.Build(ctx)
 
 	if err != nil {

@@ -49,7 +49,7 @@ var _ = Describe("Deloyment reconciler", func() {
 		const name = "whoami"
 		var namespace string
 		ctx := context.Background()
-		replcias := int32(1)
+		replcias := int32(3)
 
 		BeforeEach(func() {
 			// Define a random namespace
@@ -102,7 +102,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(result.RequeueOrNot()).Should(BeTrue())
 
 			// Because the envtest does not handle the pod, we need to mock that the statefulset is ready
-			// Mock that the deployment is ready by updating the ready replicas to 1
+			// Mock that the deployment is ready by updating the ready replicas to 3
 			By("mock the deployment is ready")
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
@@ -123,7 +123,6 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(deployment.Spec.Template.Spec.Containers).Should(HaveLen(1))
 			Expect(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy).Should(Equal(*builder.DefaultImagePullPolicy))
 		})
-
 	})
 
 })
