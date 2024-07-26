@@ -91,16 +91,20 @@ func MakeVectorYaml(
 	role string,
 	groupName string,
 	vectorAggregatorDiscovery string) (string, error) {
+	vectorAggregatorDiscoveryURI := vectorAggregatorDiscoveryURI(ctx, client, namespace, vectorAggregatorDiscovery)
 	data := map[string]interface{}{
 		"LogDir":                  LogDir,
 		"Namespace":               namespace,
 		"Cluster":                 cluster,
 		"Role":                    role,
 		"GroupName":               groupName,
-		"VectorAggregatorAddress": vectorAggregatorDiscoveryURI(ctx, client, namespace, vectorAggregatorDiscovery),
+		"VectorAggregatorAddress": vectorAggregatorDiscoveryURI,
 	}
-	var tmpl = `
-api:
+	return ParseVectorYaml(data)
+}
+
+func ParseVectorYaml(data map[string]interface{}) (string, error) {
+	var tmpl = `api:
 	enabled: true
 data_dir: /zncdata/vector/var
 log_schema:
@@ -110,7 +114,6 @@ sources:
 	type: "file"
 	include:
 		- "{{.LogDir}}/*/*.airlift.json"
-
 transforms:
 	processed_files_airlift:
 	inputs:
@@ -124,27 +127,27 @@ transforms:
 		.level = parsed_event.level
 		.thread = parsed_event.thread
 	extended_logs_files:
-	inputs:
-		- processed_files_*
-	type: remap
-	source: |
-		. |= parse_regex!(.file, r'^/zncdata/log/(?P<container>.*?)/(?P<file>.*?)$')
-		del(.source_type)
+		inputs:
+			- processed_files_*
+		type: remap
+		source: |
+			. |= parse_regex!(.file, r'^/zncdata/log/(?P<container>.*?)/(?P<file>.*?)$')
+			del(.source_type)
 	extended_logs:
-	inputs:
-		- extended_logs_*
-	type: remap
-	source: |
-		.namespace = "{{.Namespace}}"
-		.cluster = "{{.Cluster}}"
-		.role = "{{.Role}}"
-		.roleGroup = "{{.GroupName}}"
+		inputs:
+			- extended_logs_*
+		type: remap
+		source: |
+			.namespace = "{{.Namespace}}"
+			.cluster = "{{.Cluster}}"
+			.role = "{{.Role}}"
+			.roleGroup = "{{.GroupName}}"
 sinks:
 	aggregator:
-	inputs:
-		- extended_logs
-	type: vector
-	address: "{{.VectorAggregatorAddress}}"
+		inputs:
+			- extended_logs
+		type: vector
+		address: "{{.VectorAggregatorAddress}}"
 `
 	parser := config.TemplateParser{
 		Value:    data,
