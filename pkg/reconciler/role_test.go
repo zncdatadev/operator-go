@@ -51,37 +51,12 @@ func NewRoleReconciler(
 	}
 }
 
-// RegisterResourcesWithReflect registers resources with reflect
-func (r *RoleReconciler) RegisterResourcesWithReflect(ctx context.Context) error {
-	roleGroup, err := r.GetRoleGroups()
-	if err != nil {
-		return err
-	}
-
-	for roleGroupName, roleGroupSpec := range roleGroup {
-		info := reconciler.RoleGroupInfo{
-			RoleInfo:      r.RoleInfo,
-			RoleGroupName: roleGroupName,
-		}
-
-		reconcilers, err := r.getResourceWithRoleGroup(ctx, info, roleGroupSpec)
-		if err != nil {
-			return err
-		}
-
-		for _, reconciler := range reconcilers {
-			r.AddResource(reconciler)
-			roleLogger.Info("register resource", "role", r.GetName(), "roleGroup", roleGroupName, "reconciler", reconciler.GetName())
-		}
-	}
-	return nil
-}
-
 // RegisterResources registers resources with T
 func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
-	for roleGroupName, roleGroupSpec := range r.Spec.RoleGroups {
-
-		mergedRoleGroup := r.MergeRoleGroupSpec(&roleGroupSpec)
+	for roleGroupName, roleGroup := range r.Spec.RoleGroups {
+		// mergedRoleGroup := roleGroup.DeepCopy()
+		mergedRoleGroup := &roleGroup
+		r.MergeRoleGroupSpec(mergedRoleGroup)
 
 		info := reconciler.RoleGroupInfo{
 			RoleInfo:      r.RoleInfo,
@@ -101,16 +76,13 @@ func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 	return nil
 }
 
-func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconciler.RoleGroupInfo, roleGroupSpec any) ([]reconciler.Reconciler, error) {
-
-	// roleGroupSpec convert to TrinoRoleGroupSpec
-	roleGroup := roleGroupSpec.(*TrinoRoleGroupSpec)
+func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconciler.RoleGroupInfo, roleGroupSpec *TrinoRoleGroupSpec) ([]reconciler.Reconciler, error) {
 
 	reconcilers := []reconciler.Reconciler{}
 
 	reconcilers = append(reconcilers, r.getServiceReconciler(info))
 
-	deploymentReconciler, err := r.getDeployment(info, roleGroup)
+	deploymentReconciler, err := r.getDeployment(info, roleGroupSpec)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +395,6 @@ var _ = Describe("Role reconciler", func() {
 			Expect(roleReconciler).ToNot(BeNil())
 
 			By("merge role group spec")
-
 			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupOne)
 			Expect(roleGroupValue).ToNot(BeNil())
 
@@ -453,7 +424,6 @@ var _ = Describe("Role reconciler", func() {
 			Expect(roleReconciler).ToNot(BeNil())
 
 			By("merge role group spec")
-
 			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupTwo)
 			Expect(roleGroupValue).ToNot(BeNil())
 
@@ -469,6 +439,30 @@ var _ = Describe("Role reconciler", func() {
 
 			By("checking role.EnvOverrides merged")
 			Expect(roleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
+		})
+
+		It("should merge itself", func() {
+			By("creating a role reconciler")
+			roleReconciler := NewRoleReconciler(
+				resourceClient,
+				roleInfo,
+				&commonsv1alpha1.ClusterOperationSpec{},
+				&ClusterConfigSpec{},
+				*role,
+			)
+
+			By("merge role group spec")
+			roleReconciler.MergeRoleGroupSpec(roleGroupOne)
+
+			By("checking role.Config merged")
+			Expect(roleGroupOne.Config.GracefulShutdownTimeout).To(Equal(role.Config.GracefulShutdownTimeout))
+
+			By("checking role.CommandOverrides not merged")
+			Expect(roleGroupOne.CommandOverrides).ToNot(Equal(role.CommandOverrides))
+
+			By("checking role.EnvOverrides merged")
+			Expect(roleGroupOne.EnvOverrides).To(Equal(role.EnvOverrides))
+
 		})
 	})
 })
