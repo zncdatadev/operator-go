@@ -88,7 +88,7 @@ var _ = Describe("Statefulset reconciler", func() {
 
 		It("Should successfully reconcile a whoami statefulset", func() {
 			By("Create a statefulset reconciler")
-			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder)
+			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder, false)
 			Expect(statusfulSetReconciler).ShouldNot(BeNil())
 
 			By("Reconcile the statefulset")
@@ -123,6 +123,54 @@ var _ = Describe("Statefulset reconciler", func() {
 			Expect(result.Error).Should(BeNil())
 			Expect(result.RequeueOrNot()).Should(BeFalse())
 
+		})
+
+		It("Should successfully reconcile a stopped whoami statefulset", func() {
+
+			By("Create a stopped statefulset reconciler")
+			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder, false)
+			Expect(statusfulSetReconciler).ShouldNot(BeNil())
+
+			By("Reconcile the statefulset")
+			result := statusfulSetReconciler.Reconcile(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(result.Error).Should(BeNil())
+			Expect(result.RequeueOrNot()).Should(BeTrue())
+
+			By("Checking the statefulset spec replicas is valid")
+			statefulSet := &appv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, statefulSet)).Should(Succeed())
+			Expect(*statefulSet.Spec.Replicas).Should(BeEquivalentTo(int32(3)))
+
+			By("Simulate reconcile again when CR is updated")
+			statefulSetBuilder = &FooStatefulSetBuilder{
+				StatefulSet: *builder.NewStatefulSetBuilder(
+					resourceClient,
+					name,
+					&replcias,
+					&util.Image{
+						StackVersion:   "1.0.0",
+						ProductVersion: "458",
+						ProductName:    "nginx",
+					},
+					builder.WorkloadOptions{},
+				),
+			}
+
+			By("Update the statefulset spec replicas when cluster is stopped")
+			statusfulSetReconciler = reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder, true)
+			Expect(statusfulSetReconciler).ShouldNot(BeNil())
+
+			By("Reconcile the statefulset")
+			result = statusfulSetReconciler.Reconcile(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(result.Error).Should(BeNil())
+			Expect(result.RequeueOrNot()).Should(BeTrue()) // When the cluster is stopped, the statefulset should not be reconciled
+
+			By("Checking the statefulset spec replicas is updated")
+			statefulSet = &appv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, statefulSet)).Should(Succeed())
+			Expect(*statefulSet.Spec.Replicas).Should(BeEquivalentTo(int32(0)))
 		})
 	})
 

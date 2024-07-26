@@ -13,6 +13,8 @@ var _ ResourceReconciler[builder.DeploymentBuilder] = &Deployment{}
 type Deployment struct {
 	GenericResourceReconciler[builder.DeploymentBuilder]
 
+	// When the cluster is stopped, the deployment will be scaled to 0
+	// and the reconcile will be not executed until the cluster is started
 	Stopped bool
 }
 
@@ -54,6 +56,7 @@ func NewDeployment(
 	client *client.Client,
 	name string,
 	deployBuilder builder.DeploymentBuilder,
+	stopped bool,
 ) *Deployment {
 	return &Deployment{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.DeploymentBuilder](
@@ -61,5 +64,6 @@ func NewDeployment(
 			name,
 			deployBuilder,
 		),
+		Stopped: stopped,
 	}
 }

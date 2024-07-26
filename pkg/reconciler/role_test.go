@@ -136,7 +136,7 @@ func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup 
 		),
 	}
 	// Create a deployment reconciler
-	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder), nil
+	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder, r.ClusterOperation.Stopped), nil
 }
 
 func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) reconciler.Reconciler {
@@ -156,20 +156,24 @@ func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) rec
 
 var _ = Describe("Role reconciler", func() {
 
+	clusterOperation := &commonsv1alpha1.ClusterOperationSpec{
+		Stopped: false,
+	}
+
+	roleInfo := reconciler.RoleInfo{
+		ClusterInfo: reconciler.ClusterInfo{
+			GVK: &metav1.GroupVersionKind{
+				Group:   "fake.zncdata.dev",
+				Version: "v1alpha1",
+				Kind:    "TrinoCluster",
+			},
+			ClusterName: "fake-owner",
+		},
+		RoleName: "trino",
+	}
+
 	Context("RoleReconciler test", func() {
 		var resourceClient *client.Client
-
-		roleInfo := reconciler.RoleInfo{
-			ClusterInfo: reconciler.ClusterInfo{
-				GVK: &metav1.GroupVersionKind{
-					Group:   "fake.zncdata.dev",
-					Version: "v1alpha1",
-					Kind:    "TrinoCluster",
-				},
-				ClusterName: "fake-owner",
-			},
-			RoleName: "trino",
-		}
 
 		var namespace string
 		ctx := context.Background()
@@ -222,7 +226,7 @@ var _ = Describe("Role reconciler", func() {
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&commonsv1alpha1.ClusterOperationSpec{},
+				clusterOperation,
 				&ClusterConfigSpec{},
 				coordinatorRole,
 			)
@@ -300,7 +304,7 @@ var _ = Describe("Role reconciler", func() {
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&commonsv1alpha1.ClusterOperationSpec{},
+				clusterOperation,
 				&ClusterConfigSpec{},
 				*role,
 			)
@@ -339,18 +343,6 @@ var _ = Describe("Role reconciler", func() {
 	})
 
 	Context("RoleReconciler merge roleGroup spec", func() {
-
-		roleInfo := reconciler.RoleInfo{
-			ClusterInfo: reconciler.ClusterInfo{
-				GVK: &metav1.GroupVersionKind{
-					Group:   "fake.zncdata.dev",
-					Version: "v1alpha1",
-					Kind:    "TrinoCluster",
-				},
-				ClusterName: "fake-owner",
-			},
-			RoleName: "coordinator",
-		}
 
 		resourceClient := client.NewClient(k8sClient, nil)
 		var role *CoordinatorSpec
@@ -417,7 +409,7 @@ var _ = Describe("Role reconciler", func() {
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&commonsv1alpha1.ClusterOperationSpec{},
+				clusterOperation,
 				&ClusterConfigSpec{},
 				*role,
 			)
@@ -446,7 +438,7 @@ var _ = Describe("Role reconciler", func() {
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				roleInfo,
-				&commonsv1alpha1.ClusterOperationSpec{},
+				clusterOperation,
 				&ClusterConfigSpec{},
 				*role,
 			)
