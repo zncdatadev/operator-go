@@ -1,6 +1,25 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.4 2024-07-26
+
+### features
+
+- `JobBuilder` default implementation `Job` is public now
+- Remove `builder.RoleGroupInfo`, because it confuses with `reconciler.RoleGroupInfo`
+
+### bugs
+
+- Fix Can not get image pull policy in workload builder, now you can get `util.Image` object.
+- Fix Can not set vaild replicas and the value always be 1
+- Fix the cluster is still running when operation be updated `stopped`
+- Fix the `vectory.yaml` indent format error
+
+### chore
+
+- `MergeRoleGroupSpec` method can modified driectly on the passed roleGroup object, we did not
+  update any code, but add some test cases to ensure it is correct.
+
 ## v0.8.3 2024-07-23
 
 ### features
