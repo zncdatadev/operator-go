@@ -10,8 +10,8 @@ import (
 	. "github.com/onsi/gomega"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
-	"github.com/zncdatadev/operator-go/pkg/util"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -170,9 +170,9 @@ var _ = Describe("Cluster reconciler", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: namespace}, service)).Should(Succeed())
 
 			By("Checking the service labels")
-			Expect(service.Labels).Should(HaveKeyWithValue(util.AppKubernetesInstanceName, clusterInfo.GetClusterName()))
-			Expect(service.Labels).ShouldNot(HaveKey(util.AppKubernetesRoleGroupName))
-			Expect(service.Labels).ShouldNot(HaveKey(util.AppKubernetesComponentName))
+			Expect(service.Labels).Should(HaveKeyWithValue(constants.LabelKubernetesInstance, clusterInfo.GetClusterName()))
+			Expect(service.Labels).ShouldNot(HaveKey(constants.LabelKubernetesRoleGroup))
+			Expect(service.Labels).ShouldNot(HaveKey(constants.LabelKubernetesComponent))
 
 			By("Checking Deployment resource of coordinator")
 			coordinatorDeployment := &appv1.Deployment{}
