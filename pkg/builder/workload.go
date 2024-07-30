@@ -2,6 +2,7 @@ package builder
 
 import (
 	"errors"
+	"maps"
 	"time"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -277,8 +278,8 @@ func (b *BaseWorkloadBuilder) getOverridedPodTemplate() (*corev1.PodTemplateSpec
 	podTemplate := b.podOverrides.DeepCopy()
 
 	meta := &podTemplate.ObjectMeta
-	meta.Labels = util.MergeStringMaps(meta.Labels, b.GetLabels())
-	meta.Annotations = util.MergeStringMaps(meta.Annotations, b.GetAnnotations())
+	maps.Copy(b.GetLabels(), meta.Labels)
+	maps.Copy(b.GetAnnotations(), meta.Annotations)
 
 	pod := &podTemplate.Spec
 

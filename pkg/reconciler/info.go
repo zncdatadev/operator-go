@@ -3,7 +3,7 @@ package reconciler
 import (
 	"strings"
 
-	"github.com/zncdatadev/operator-go/pkg/util"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -34,9 +34,9 @@ func (i *ClusterInfo) AddLabel(key, value string) {
 func (i *ClusterInfo) GetLabels() map[string]string {
 	if i.labels == nil {
 		i.labels = map[string]string{
-			util.AppKubernetesInstanceName:  i.ClusterName,
-			util.AppKubernetesNameName:      strings.ToLower(i.GVK.Kind),
-			util.AppKubernetesManagedByName: i.GVK.Group,
+			constants.LabelKubernetesInstance:  i.ClusterName,
+			constants.LabelKubernetesName:      strings.ToLower(i.GVK.Kind),
+			constants.LabelKubernetesManagedBy: i.GVK.Group,
 		}
 	}
 	return i.labels
@@ -91,7 +91,7 @@ func (i *RoleInfo) GetLabels() map[string]string {
 		}
 	}
 
-	i.labels[util.AppKubernetesComponentName] = i.RoleName
+	i.labels[constants.LabelKubernetesComponent] = i.RoleName
 	return i.labels
 }
 
@@ -140,7 +140,7 @@ func (i *RoleGroupInfo) GetLabels() map[string]string {
 		}
 	}
 
-	i.labels[util.AppKubernetesRoleGroupName] = i.RoleGroupName
+	i.labels[constants.LabelKubernetesRoleGroup] = i.RoleGroupName
 	return i.labels
 }
 

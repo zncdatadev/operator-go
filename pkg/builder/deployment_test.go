@@ -16,6 +16,7 @@ import (
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
@@ -68,11 +69,11 @@ var _ = Describe("DeploymentBuilder test", func() {
 							RoleName:      "coordinator",
 							RoleGroupName: "default",
 							Labels: map[string]string{
-								util.AppKubernetesInstanceName:  ownerName,
-								util.AppKubernetesManagedByName: "trino.zncdata.dev",
-								util.AppKubernetesComponentName: "coordinator",
-								util.AppKubernetesNameName:      "TrinoCluster",
-								util.AppKubernetesRoleGroupName: "default",
+								constants.LabelKubernetesInstance:  ownerName,
+								constants.LabelKubernetesManagedBy: "trino.zncdata.dev",
+								constants.LabelKubernetesComponent: "coordinator",
+								constants.LabelKubernetesName:      "TrinoCluster",
+								constants.LabelKubernetesRoleGroup: "default",
 							},
 						},
 
@@ -104,17 +105,17 @@ var _ = Describe("DeploymentBuilder test", func() {
 
 			By("validating the Deployment object's labels")
 			labels := deployment.Spec.Template.ObjectMeta.Labels
-			Expect(labels).To(HaveKeyWithValue(util.AppKubernetesInstanceName, ownerName))
-			Expect(labels).To(HaveKeyWithValue(util.AppKubernetesManagedByName, "trino.zncdata.dev"))
-			Expect(labels).To(HaveKeyWithValue(util.AppKubernetesComponentName, "coordinator"))
-			Expect(labels).To(HaveKeyWithValue(util.AppKubernetesRoleGroupName, "default"))
+			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesInstance, ownerName))
+			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.zncdata.dev"))
+			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesComponent, "coordinator"))
+			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesRoleGroup, "default"))
 
 			By("validating the Deployment object's match labels")
 			matchLabels := deployment.Spec.Selector.MatchLabels
-			Expect(matchLabels).To(HaveKeyWithValue(util.AppKubernetesInstanceName, ownerName))
-			Expect(matchLabels).To(HaveKeyWithValue(util.AppKubernetesManagedByName, "trino.zncdata.dev"))
-			Expect(matchLabels).To(HaveKeyWithValue(util.AppKubernetesComponentName, "coordinator"))
-			Expect(matchLabels).To(HaveKeyWithValue(util.AppKubernetesRoleGroupName, "default"))
+			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesInstance, ownerName))
+			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.zncdata.dev"))
+			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesComponent, "coordinator"))
+			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesRoleGroup, "default"))
 
 			By("validating the Deployment object's containers")
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/zncdatadev/operator-go/pkg/client"
-	"github.com/zncdatadev/operator-go/pkg/util"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -68,20 +68,20 @@ func (b *BaseResourceBuilder) AddLabels(labels map[string]string) {
 func (b *BaseResourceBuilder) GetLabels() map[string]string {
 	if b.labels == nil {
 		b.labels = map[string]string{
-			util.AppKubernetesInstanceName:  b.Client.GetOwnerName(),
-			util.AppKubernetesManagedByName: util.StackDomain,
+			constants.LabelKubernetesInstance:  b.Client.GetOwnerName(),
+			constants.LabelKubernetesManagedBy: constants.ZncdataDomain,
 		}
 
 		if b.clusterName != "" {
-			b.labels[util.AppKubernetesInstanceName] = b.clusterName
+			b.labels[constants.LabelKubernetesInstance] = b.clusterName
 		}
 
 		if b.roleName != "" {
-			b.labels[util.AppKubernetesComponentName] = b.roleName
+			b.labels[constants.LabelKubernetesComponent] = b.roleName
 		}
 
 		if b.roleGroupName != "" {
-			b.labels[util.AppKubernetesRoleGroupName] = b.roleGroupName
+			b.labels[constants.LabelKubernetesRoleGroup] = b.roleGroupName
 		}
 	}
 
@@ -90,7 +90,7 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 
 func (o *BaseResourceBuilder) filterLabels(labels map[string]string) map[string]string {
 	matchingLabels := make(map[string]string)
-	for _, label := range util.AppMatchingLabelsNames {
+	for _, label := range constants.MatchingLabelsNames() {
 		if value, ok := labels[label]; ok {
 			matchingLabels[label] = value
 		}
