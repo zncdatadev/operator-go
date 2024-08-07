@@ -1,6 +1,17 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.6 2024-08-07
+
+### features
+
+- Added support for logging to standard output and error streams in Vector, including new log sources and transformers.
+- Added log collection for log4j and log4j2 XML log files in Vector, introducing corresponding log sources and transformers.
+- Added listener and secret constants.
+- Added a volume builder for listener and secret.
+
+### bugs
+
 ## v0.8.5 2024-07-26
 
 ### features
@@ -25,7 +36,7 @@
 
 ### chore
 
-- `MergeRoleGroupSpec` method can modified driectly on the passed roleGroup object, we did not
+- `MergeRoleGroupSpec` method can be modified directly on the passed roleGroup object, we did not
   update any code, but add some test cases to ensure it is correct.
 
 ## v0.8.3 2024-07-23
