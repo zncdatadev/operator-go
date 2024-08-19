@@ -1,54 +1,75 @@
 package util_test
 
 import (
-	"testing"
-
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/util"
+	v1 "k8s.io/api/core/v1"
 )
 
-func TestGetImageTag(t *testing.T) {
-	tests := []struct {
-		name  string
+var _ = Describe("GetImageTag", func() {
+	var (
 		image util.Image
-		tag   string
-	}{
-		{
-			name: "Custom tag provided",
-			image: util.Image{
-				Custom:         "myrepo/myimage:latest",
-				ProductName:    "myproduct",
-				StackVersion:   "1.0",
-				ProductVersion: "1.0.0",
-			},
-			tag: "myrepo/myimage:latest",
-		},
-		{
-			name: "Default repository and tag",
-			image: util.Image{
-				ProductName:    "myproduct",
-				StackVersion:   "1.0",
-				ProductVersion: "1.0.0",
-			},
-			tag: "qury.io/zncdatadev/myproduct:1.0.0-stack1.0",
-		},
-		{
-			name: "Custom repository",
-			image: util.Image{
-				Repository:     "example.com",
-				ProductName:    "myproduct",
-				StackVersion:   "1.0",
-				ProductVersion: "1.0.0",
-			},
-			tag: "example.com/myproduct:1.0.0-stack1.0",
-		},
-	}
+		tag   func() string
+	)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			imageTag := tt.image.GetImageWithTag()
-			if imageTag != tt.tag {
-				t.Errorf("Expected tag %s, but got %s", tt.tag, imageTag)
-			}
-		})
-	}
-}
+	BeforeEach(func() {
+		tag = func() string { return image.GetImageWithTag() }
+	})
+
+	It("should return the custom tag if provided", func() {
+		image = util.Image{
+			Custom:         "myrepo/myimage:latest",
+			ProductName:    "myproduct",
+			StackVersion:   "1.0",
+			ProductVersion: "1.0.0",
+		}
+		Expect(tag()).Should(Equal("myrepo/myimage:latest"))
+	})
+
+	It("should return the default repository and tag if not provided", func() {
+		image = util.Image{
+			ProductName:    "myproduct",
+			StackVersion:   "1.0",
+			ProductVersion: "1.0.0",
+		}
+		Expect(tag()).Should(Equal("quay.io/zncdatadev/myproduct:1.0.0-kubedoop1.0"))
+	})
+
+	It("should return the custom repository and tag if provided", func() {
+		image = util.Image{
+			Repository:     "example.com",
+			ProductName:    "myproduct",
+			StackVersion:   "1.0",
+			ProductVersion: "1.0.0",
+		}
+		Expect(tag()).Should(Equal("example.com/myproduct:1.0.0-kubedoop1.0"))
+	})
+})
+
+var _ = Describe("GetPullPolicy", func() {
+	var (
+		image  util.Image
+		policy func() *v1.PullPolicy
+	)
+
+	BeforeEach(func() {
+		policy = func() *v1.PullPolicy {
+			return image.GetPullPolicy()
+		}
+	})
+
+	It("should return the existing PullPolicy when it is not nil", func() {
+		pullPolicy := v1.PullAlways
+		image = util.Image{
+			PullPolicy: &pullPolicy,
+		}
+		Expect(policy()).Should(Equal(&pullPolicy))
+	})
+
+	It("should return PullIfNotPresent when PullPolicy is nil", func() {
+		image = util.Image{}
+		expected := v1.PullIfNotPresent
+		Expect(policy()).Should(Equal(&expected))
+	})
+})

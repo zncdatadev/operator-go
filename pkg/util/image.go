@@ -4,7 +4,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-var DefaultRepository = "qury.io/zncdatadev"
+var DefaultRepository = "quay.io/zncdatadev"
 
 // TODO: add semver validation for version fields
 
@@ -94,9 +94,16 @@ func (i *Image) GetImageWithTag() string {
 		i.Repository = DefaultRepository
 	}
 
-	return i.Repository + "/" + i.ProductName + ":" + i.ProductVersion + "-" + "stack" + i.StackVersion
+	return i.Repository + "/" + i.ProductName + ":" + i.ProductVersion + "-" + "kubedoop" + i.StackVersion
 }
 
 func (i *Image) String() string {
 	return i.GetImageWithTag()
+}
+
+func (i *Image) GetPullPolicy() *corev1.PullPolicy {
+	if i.PullPolicy == nil {
+		return func() *corev1.PullPolicy { p := corev1.PullIfNotPresent; return &p }()
+	}
+	return i.PullPolicy
 }
