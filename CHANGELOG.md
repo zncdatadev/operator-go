@@ -1,6 +1,29 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.8.7 2024-08-020
+
+### features
+
+- Change stack name from `stack` to `kubedoop`
+
+### bugs
+
+### chore
+
+- Add depbot to auto update dependencies
+- Add golang lint to Makefile and update gh action use it
+- Remove manual dispatch workflow
+
+### dependencies
+
+#### upgrade
+
+- golang from 1.22.3 to 1.22.6
+- github.com/onsi/ginkgo/v2 from 2.19.0 to 2.20.0
+- github.com/stretchr/testify from 1.8.4 to 1.9.0
+
+
 ## v0.8.6 2024-08-07
 
 ### features
