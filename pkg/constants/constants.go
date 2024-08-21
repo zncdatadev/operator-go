@@ -14,6 +14,19 @@ const (
 	ZncdataDomain = "zncdata.dev"
 )
 
+const (
+	KubedoopRoot = "/kubedoop"
+
+	KubedoopKerberosDir    = KubedoopRoot + "/kerberos"
+	KubedoopTlsDir         = KubedoopRoot + "/tls"
+	KubedoopListenerDir    = KubedoopRoot + "/listener"
+	KubedoopDataDir        = KubedoopRoot + "/data"
+	KubedoopConfigDir      = KubedoopRoot + "/config"
+	KubedoopLogDir         = KubedoopRoot + "/log"
+	KubedoopConfigDirMount = KubedoopRoot + "/mount/config"
+	KubedoopLogDirMount    = KubedoopRoot + "/mount/log"
+)
+
 func MatchingLabelsNames() []string {
 	return []string{
 		LabelKubernetesName,
