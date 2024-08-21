@@ -10,27 +10,27 @@ var DefaultRepository = "quay.io/zncdatadev"
 
 // Image represents a container image
 // Required fields:
-// - ProductName
-// - StackVersion
-// - ProductVersion
+//   - ProductName
+//   - PlatformVersion
+//   - ProductVersion
 //
 // If Custom is set, it will be used as the image tag,
-// so the Custom field must be a valid image tag, eg. "myrepo/myimage:latest"
+// so the Custom field must be a valid image tag, eg. "my.repo.company.org/namespace/image:tag"
 type Image struct {
-	Custom         string
-	Repository     string
-	ProductName    string
-	StackVersion   string
-	ProductVersion string
-	PullPolicy     *corev1.PullPolicy
-	PullSecretName string
+	Custom          string
+	Repo            string
+	ProductName     string
+	PlatformVersion string
+	ProductVersion  string
+	PullPolicy      *corev1.PullPolicy
+	PullSecretName  string
 }
 
 type ImageOption func(*ImageOptions)
 
 type ImageOptions struct {
 	Custom         string
-	Repository     string
+	Repo           string
 	PullPolicy     *corev1.PullPolicy
 	PullSecretName string
 }
@@ -55,7 +55,7 @@ type ImageOptions struct {
 //	)
 func NewImage(
 	productName string,
-	stackVersion string,
+	platformVersion string,
 	productVersion string,
 	opts ...ImageOption,
 ) *Image {
@@ -67,13 +67,13 @@ func NewImage(
 	}
 
 	return &Image{
-		Custom:         options.Custom,
-		Repository:     options.Repository,
-		ProductName:    productName,
-		StackVersion:   stackVersion,
-		ProductVersion: productVersion,
-		PullPolicy:     options.PullPolicy,
-		PullSecretName: options.PullSecretName,
+		Custom:          options.Custom,
+		Repo:            options.Repo,
+		ProductName:     productName,
+		PlatformVersion: platformVersion,
+		ProductVersion:  productVersion,
+		PullPolicy:      options.PullPolicy,
+		PullSecretName:  options.PullSecretName,
 	}
 }
 
@@ -86,15 +86,15 @@ func (i *Image) GetImageWithTag() string {
 		panic("ProductVersion is required")
 	}
 
-	if i.StackVersion == "" {
-		panic("StackVersion is required")
+	if i.PlatformVersion == "" {
+		panic("PlatformVersion is required")
 	}
 
-	if i.Repository == "" {
-		i.Repository = DefaultRepository
+	if i.Repo == "" {
+		i.Repo = DefaultRepository
 	}
 
-	return i.Repository + "/" + i.ProductName + ":" + i.ProductVersion + "-" + "kubedoop" + i.StackVersion
+	return i.Repo + "/" + i.ProductName + ":" + i.ProductVersion + "-" + "kubedoop" + i.PlatformVersion
 }
 
 func (i *Image) String() string {
