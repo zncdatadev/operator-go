@@ -128,9 +128,9 @@ func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup 
 			info.GetFullName(),
 			roleGroup.Replicas,
 			&util.Image{
-				StackVersion:   "1.0.0",
-				ProductName:    "trino",
-				ProductVersion: "458",
+				PlatformVersion: "1.0.0",
+				ProductName:     "trino",
+				ProductVersion:  "458",
 			},
 			options,
 		),
