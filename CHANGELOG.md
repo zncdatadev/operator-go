@@ -6,6 +6,8 @@
 ### features
 
 - Change stack name from `stack` to `kubedoop`
+- Add directory constants for kubedoop system， directories include data, config, logs, kerberso,tls and so on
+- Add generic bash script utilities and constants for operator, include some reuseful scripts, vector constants and so on
 
 ### bugs
 
@@ -14,6 +16,7 @@
 - Add depbot to auto update dependencies
 - Add golang lint to Makefile and update gh action use it
 - Remove manual dispatch workflow
+- Rename image spec fields, such as `stackVersion` to `platformVersion`
 
 ### dependencies
 
