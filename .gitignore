@@ -187,5 +187,11 @@ Temporary Items
 bin/
 testbin/
 
-**/coverage/
-**/cover*
+# test
+ginkgo.report
+cover.out
+*__debug*
+**/coverage
+
+# ai code local
+.codiumai.toml
