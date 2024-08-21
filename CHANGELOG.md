@@ -8,6 +8,7 @@
 - Change stack name from `stack` to `kubedoop`
 - Add directory constants for kubedoop system， directories include data, config, logs, kerberso,tls and so on
 - Add generic bash script utilities and constants for operator, include some reuseful scripts, vector constants and so on
+- Change `Image` struct field `stackVersion` to `platformVersion`, `Repository` to `Repo`
 
 ### bugs
 
