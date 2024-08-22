@@ -20,6 +20,7 @@ const (
 	KubedoopKerberosDir    = KubedoopRoot + "/kerberos"
 	KubedoopTlsDir         = KubedoopRoot + "/tls"
 	KubedoopListenerDir    = KubedoopRoot + "/listener"
+	KubedoopSecretDir      = KubedoopRoot + "/secret"
 	KubedoopDataDir        = KubedoopRoot + "/data"
 	KubedoopConfigDir      = KubedoopRoot + "/config"
 	KubedoopLogDir         = KubedoopRoot + "/log"
