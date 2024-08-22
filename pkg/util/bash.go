@@ -46,8 +46,7 @@ wait_for_termination()
     trap - TERM
     wait ${term_child_pid} 2>/dev/null
     set -e
-}
-	`
+}`
 
 // Use this command to remove the shutdown file (if it exists) created by [`create_vector_shutdown_file_command`].
 // You should execute this command before starting your application.
