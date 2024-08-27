@@ -62,6 +62,7 @@ var _ = Describe("Service reconciler", func() {
 						Protocol:      corev1.ProtocolTCP,
 					},
 				},
+				nil,
 			)
 			Expect(serviceReconciler).ShouldNot(BeNil())
 
