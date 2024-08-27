@@ -11,7 +11,7 @@ const (
 	LabelKubernetesRoleGroup = "app.kubernetes.io/role-group"
 	LabelKubernetesVersion   = "app.kubernetes.io/version"
 
-	ZncdataDomain = "zncdata.dev"
+	KubedoopDomain = "zncdata.dev"
 )
 
 const (
