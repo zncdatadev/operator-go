@@ -36,6 +36,8 @@ type BaseServiceBuilder struct {
 
 	// if you want to get ports, please use GetPorts() method
 	ports []corev1.ServicePort
+
+	serviceType *corev1.ServiceType
 }
 
 func (b *BaseServiceBuilder) GetObject() *corev1.Service {
@@ -58,7 +60,10 @@ func (b *BaseServiceBuilder) GetPorts() []corev1.ServicePort {
 }
 
 func (b *BaseServiceBuilder) GetServiceType() corev1.ServiceType {
-	return corev1.ServiceTypeClusterIP
+	if b.serviceType == nil {
+		return corev1.ServiceTypeClusterIP
+	}
+	return *b.serviceType
 }
 
 func (b *BaseServiceBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
@@ -72,6 +77,7 @@ func NewServiceBuilder(
 	labels map[string]string,
 	annotations map[string]string,
 	ports []corev1.ContainerPort,
+	serviceType *corev1.ServiceType,
 ) *BaseServiceBuilder {
 
 	servicePorts := ContainerPorts2ServicePorts(ports)
@@ -83,5 +89,7 @@ func NewServiceBuilder(
 			labels: labels,
 		},
 		ports: servicePorts,
+
+		serviceType: serviceType,
 	}
 }

@@ -60,6 +60,7 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 				ContainerPort: 3000,
 			},
 		},
+		nil,
 	)
 	// Register resources
 	r.AddResource(serviceReconciler)
