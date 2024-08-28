@@ -1,7 +1,42 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
-## v0.8.7 2024-08-020
+## v0.9.0 2024-08-28
+
+**BROKENCHANGE:** 
+
+- Bump k8s version to 1.31.0
+- Bump golang version to 1.23.0
+- Remove `Database` API group
+
+### features
+
+- Add `ServiceType` field to service builder
+- Remove include `zncdata` variable
+- Remove `Database` API group
+- Enchance bash util script, insert `shutdown` to script
+
+### bugs
+
+### chore
+
+- Fix dependabot commit message prefix is not `build`
+
+### dependencies
+
+#### upgrade
+
+- sigs.k8s.io/controller-runtime from 0.18.2 to 0.19.0
+- k8s.io/client-go from 0.30.1 to 0.31.0
+- k8s.io/api from 0.30.1 to 0.31.0
+- k8s.io/apimachinery from 0.30.1 to 0.31.0
+- k8s.io/kubectl from 0.30.1 to 0.31.0
+- github.com/cisco-open/k8s-objectmatcher from 1.9.0 to 1.10.0
+- github.com/onsi/ginkgo/v2 from 2.20.0 to 2.20.1
+
+- golang from 1.22.6 to 1.23.0
+
+## v0.8.7 2024-08-20
 
 ### features
 
