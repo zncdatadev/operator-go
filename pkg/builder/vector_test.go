@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 )
 
 func TestLogProviderCommandArgs(t *testing.T) {
@@ -47,7 +48,7 @@ wait_for_termination()
     set -e
 }
 
-rm -f /zncdata/log/_vector/shutdown
+rm -f /kubedoop/log/_vector/shutdown
 prepare_signal_handlers
 
 
@@ -58,7 +59,7 @@ foo() {
 
 
 wait_for_termination $!
-mkdir -p /zncdata/log/_vector && touch /zncdata/log/_vector/shutdown
+mkdir -p /kubedoop/log/_vector && touch /kubedoop/log/_vector/shutdown
 `,
 	}
 
@@ -69,7 +70,7 @@ mkdir -p /zncdata/log/_vector && touch /zncdata/log/_vector/shutdown
 
 func TestVectorYamlFormatter(t *testing.T) {
 	actualYaml, err := builder.ParseVectorYaml(map[string]interface{}{
-		"LogDir":                  "zncdata/log",
+		"LogDir":                  constants.KubedoopLogDir,
 		"Namespace":               "default",
 		"Cluster":                 "simple-trino",
 		"Role":                    "coordinator",
@@ -78,7 +79,7 @@ func TestVectorYamlFormatter(t *testing.T) {
 	})
 	expectYaml := `api:
   enabled: true
-data_dir: /zncdata/vector/var
+data_dir: /kubedoop/vector/var
 log_schema:
   host_key: "pod"
 sources:
@@ -88,17 +89,17 @@ sources:
   files_stdout:
     type: file
     include:
-      - zncdata/log/*/*.stdout.log
+      - /kubedoop/log/*/*.stdout.log
 
   files_stderr:
     type: file
     include:
-      - zncdata/log/*/*.stderr.log
+      - /kubedoop/log/*/*.stderr.log
 
   files_log4j:
     type: file
     include:
-      - zncdata/log/*/*.log4j.xml
+      - /kubedoop/log/*/*.log4j.xml
     line_delimiter: "\r\n"
     multiline:
       mode: halt_before
@@ -109,13 +110,13 @@ sources:
   files_log4j2:
     type: file
     include:
-      - zncdata/log/*/*.log4j2.xml
+      - /kubedoop/log/*/*.log4j2.xml
     line_delimiter: "\r\n"
 
   files_airlift:
     type: "file"
     include:
-      - "zncdata/log/*/*.airlift.json"
+      - "/kubedoop/log/*/*.airlift.json"
 transforms:
   processed_files_stdout:
     inputs:
@@ -349,7 +350,7 @@ transforms:
       - processed_files_*
     type: remap
     source: |
-      . |= parse_regex!(.file, r'^/zncdata/log/(?P<container>.*?)/(?P<file>.*?)$')
+      . |= parse_regex!(.file, r'^/kubedoop/log/(?P<container>.*?)/(?P<file>.*?)$')
       del(.source_type)
   extended_logs:
     inputs:

@@ -13,15 +13,13 @@ import (
 
 	pkgclient "github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
-// todo: in future,  all operator should config log, config and data to the same dir, like '/zncdata/log', '/zncdata/config'
 const (
 	VectorImage         = "timberio/vector:0.38.0-alpine"
 	VectorContainerName = "vector"
-	ConfigDir           = "/zncdata/config"
-	LogDir              = "/zncdata/log"
 	VectorConfigFile    = "vector.yaml"
 
 	VectorConfigVolumeName = "config"
@@ -32,23 +30,23 @@ func VectorVolumeMount(vectorConfigVolumeName string, vectorLogVolumeName string
 	return []corev1.VolumeMount{
 		{
 			Name:      vectorConfigVolumeName,
-			MountPath: ConfigDir,
+			MountPath: constants.KubedoopConfigDir,
 		},
 		{
 			Name:      vectorLogVolumeName,
-			MountPath: LogDir,
+			MountPath: constants.KubedoopLogDir,
 		},
 	}
 }
 
 func VectorCommandArgs() []string {
-	arg := `log_dir="/zncdata/log/_vector"
-data_dir="/zncdata/vector/var"
+	arg := `log_dir="/kubedoop/log/_vector"
+data_dir="/kubedoop/vector/var"
 if [ ! -d "$data_dir" ]; then
 	mkdir -p "$data_dir"
 fi
 
-vector --config /zncdata/config/vector.yaml &
+vector --config /kubedoop/config/vector.yaml &
 vector_pid=$!
 
 if [ ! -f "$log_dir/shutdown" ]; then
@@ -97,7 +95,7 @@ func MakeVectorYaml(
 	vectorAggregatorDiscovery string) (string, error) {
 	vectorAggregatorDiscoveryURI := vectorAggregatorDiscoveryURI(ctx, client, namespace, vectorAggregatorDiscovery)
 	data := map[string]interface{}{
-		"LogDir":                  LogDir,
+		"LogDir":                  constants.KubedoopLogDir,
 		"Namespace":               namespace,
 		"Cluster":                 cluster,
 		"Role":                    role,
@@ -110,7 +108,7 @@ func MakeVectorYaml(
 func ParseVectorYaml(data map[string]interface{}) (string, error) {
 	var tmpl = `api:
 	enabled: true
-data_dir: /zncdata/vector/var
+data_dir: /kubedoop/vector/var
 log_schema:
 	host_key: "pod"
 sources:
@@ -120,17 +118,17 @@ sources:
   files_stdout:
     type: file
     include:
-      - {{.LogDir}}/*/*.stdout.log
+      - {{.LogDir}}*/*.stdout.log
 
   files_stderr:
     type: file
     include:
-      - {{.LogDir}}/*/*.stderr.log
+      - {{.LogDir}}*/*.stderr.log
 
   files_log4j:
     type: file
     include:
-      - {{.LogDir}}/*/*.log4j.xml
+      - {{.LogDir}}*/*.log4j.xml
     line_delimiter: "\r\n"
     multiline:
       mode: halt_before
@@ -141,13 +139,13 @@ sources:
   files_log4j2:
     type: file
     include:
-      - {{.LogDir}}/*/*.log4j2.xml
+      - {{.LogDir}}*/*.log4j2.xml
     line_delimiter: "\r\n"
 
 	files_airlift:
 		type: "file"
 		include:
-			- "{{.LogDir}}/*/*.airlift.json"
+			- "{{.LogDir}}*/*.airlift.json"
 transforms:
   processed_files_stdout:
     inputs:
@@ -381,7 +379,7 @@ transforms:
 			- processed_files_*
 		type: remap
 		source: |
-			. |= parse_regex!(.file, r'^/zncdata/log/(?P<container>.*?)/(?P<file>.*?)$')
+			. |= parse_regex!(.file, r'^/kubedoop/log/(?P<container>.*?)/(?P<file>.*?)$')
 			del(.source_type)
 	extended_logs:
 		inputs:
@@ -468,15 +466,15 @@ wait_for_termination()
 	set -e
 }
 
-rm -f {{ .LogDir }}/_vector/shutdown
+rm -f {{ .LogDir }}_vector/shutdown
 prepare_signal_handlers
 
 {{ .EntrypointScript }}
 
 wait_for_termination $!
-mkdir -p {{ .LogDir }}/_vector && touch {{ .LogDir }}/_vector/shutdown
+mkdir -p {{ .LogDir }}_vector && touch {{ .LogDir }}_vector/shutdown
 `
-	data := map[string]interface{}{"LogDir": LogDir, "EntrypointScript": entrypointScript}
+	data := map[string]interface{}{"LogDir": constants.KubedoopLogDir, "EntrypointScript": entrypointScript}
 	parser := config.TemplateParser{
 		Value:    data,
 		Template: template,
@@ -615,14 +613,14 @@ func (v *VectorDecorator) appendVectorVolumeMounts(container *corev1.Container, 
 	if !v.volumeMountExists(container.VolumeMounts, v.LogVolumeName) { // if log volume mount exists
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      v.LogVolumeName,
-			MountPath: LogDir,
+			MountPath: constants.KubedoopLogDir,
 		})
 		(*containers)[i] = *container
 	}
 	if !v.volumeMountExists(container.VolumeMounts, v.VectorConfigVolumeName) { // if vector config volume mount exists
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      v.VectorConfigVolumeName,
-			MountPath: ConfigDir,
+			MountPath: constants.KubedoopConfigDir,
 		})
 		(*containers)[i] = *container
 	}

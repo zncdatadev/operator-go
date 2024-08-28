@@ -10,7 +10,9 @@ const (
 	LabelKubernetesManagedBy = "app.kubernetes.io/managed-by"
 	LabelKubernetesRoleGroup = "app.kubernetes.io/role-group"
 	LabelKubernetesVersion   = "app.kubernetes.io/version"
+)
 
+const (
 	KubedoopDomain = "zncdata.dev"
 )
 
