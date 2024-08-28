@@ -1,10 +1,10 @@
 package constants
 
 const (
-	ListenerOperatorGroup string = "listeners." + ZncdataDomain
-	ListenerStorageClass  string = ListenerOperatorGroup
+	ListenerAPIGroup     string = "listeners." + KubedoopDomain
+	ListenerStorageClass string = ListenerAPIGroup
 
-	listenerOperatorGroupPrefix string = ListenerOperatorGroup + "/"
+	listenerAPIGroupPrefix string = ListenerAPIGroup + "/"
 )
 
 func ListenerStorageClassPtr() *string {
@@ -21,8 +21,8 @@ const (
 	//	- external-unstable
 	//	- external-stable
 	//	- <other user defined class name>
-	AnnotationListenersClass string = listenerOperatorGroupPrefix + "class"
+	AnnotationListenersClass string = listenerAPIGroupPrefix + "class"
 	// The listener name is used to identify the listener, it is OPTIONAL.
 	// If not set, the listener name will be the same as the pod name.
-	AnnotationListenerName string = listenerOperatorGroupPrefix + "listenerName"
+	AnnotationListenerName string = listenerAPIGroupPrefix + "listenerName"
 )

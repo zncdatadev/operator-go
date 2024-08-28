@@ -69,7 +69,7 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 	if b.labels == nil {
 		b.labels = map[string]string{
 			constants.LabelKubernetesInstance:  b.Client.GetOwnerName(),
-			constants.LabelKubernetesManagedBy: constants.ZncdataDomain,
+			constants.LabelKubernetesManagedBy: constants.KubedoopDomain,
 		}
 
 		if b.clusterName != "" {
