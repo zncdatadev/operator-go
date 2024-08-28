@@ -20,7 +20,7 @@ const (
 	LabelSecretsService string = secretAPIGroupPrefix + "service"
 )
 
-// Zncdata defined annotations for PVCTemplate.
+// Kubedoop defined annotations for PVCTemplate.
 // Then csi driver can extract annotations from PVC to prepare the secret for pod.
 const (
 	AnnotationSecretsClass string = secretAPIGroupPrefix + "class"
@@ -53,7 +53,7 @@ const (
 	AnnotationSecretCertLifeTime      string = secretAPIGroupPrefix + "autoTlsCertLifetime"
 	AnnotationSecretsCertJitterFactor string = secretAPIGroupPrefix + "autoTlsCertJitterFactor"
 
-	// Annotation for expiration time of zncdata secret for pod.
+	// Annotation for expiration time of the secret for pod.
 	// When the secret is created, the expiration time is set to the current time plus the lifetime.
 	// Then we can clean up the secret after expiration time
 	AnnonationSecretExpirationTimeName string = secretAPIGroupPrefix + "expirationTime"

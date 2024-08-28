@@ -12,7 +12,7 @@ func ListenerStorageClassPtr() *string {
 	return &listenersStorageClass
 }
 
-// Zncdata defined annotations for PVCTemplate.
+// Kubeddoop defined annotations for PVCTemplate.
 // Then csi driver can extract annotations from PVC to prepare the listener for pod.
 const (
 	// Specify which network listening rules to use, it is REQUIRED.

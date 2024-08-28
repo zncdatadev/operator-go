@@ -1,6 +1,6 @@
 # operator-go
 
-Operator-go 是 zncdata-stack 中 operator 开发需要用公共类库，主要用于处理 operator 的相关逻辑。
+Operator-go 是 Kubedoop 中 operator 开发需要用公共类库，主要用于处理 operator 的相关逻辑。
 
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdatadev/operator-go)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdatadev/operator-go)
