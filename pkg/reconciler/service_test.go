@@ -63,6 +63,7 @@ var _ = Describe("Service reconciler", func() {
 					},
 				},
 				nil,
+				false,
 			)
 			Expect(serviceReconciler).ShouldNot(BeNil())
 

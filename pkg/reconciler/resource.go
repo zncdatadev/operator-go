@@ -28,7 +28,7 @@ var _ ResourceReconciler[builder.ResourceBuilder] = &GenericResourceReconciler[b
 type GenericResourceReconciler[B builder.ResourceBuilder] struct {
 	BaseReconciler[AnySpec]
 	Builder B
-
+	// todo: remove this, as it can be get from the builder
 	Name string
 }
 

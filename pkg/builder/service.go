@@ -38,15 +38,22 @@ type BaseServiceBuilder struct {
 	ports []corev1.ServicePort
 
 	serviceType *corev1.ServiceType
+
+	headless bool
 }
 
 func (b *BaseServiceBuilder) GetObject() *corev1.Service {
+	clusterIp := ""
+	if b.headless {
+		clusterIp = corev1.ClusterIPNone
+	}
 	return &corev1.Service{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: corev1.ServiceSpec{
-			Ports:    b.GetPorts(),
-			Selector: b.GetMatchingLabels(),
-			Type:     b.GetServiceType(),
+			Ports:     b.GetPorts(),
+			Selector:  b.GetMatchingLabels(),
+			Type:      b.GetServiceType(),
+			ClusterIP: clusterIp,
 		},
 	}
 }
@@ -78,6 +85,7 @@ func NewServiceBuilder(
 	annotations map[string]string,
 	ports []corev1.ContainerPort,
 	serviceType *corev1.ServiceType,
+	headless bool,
 ) *BaseServiceBuilder {
 
 	servicePorts := ContainerPorts2ServicePorts(ports)
@@ -91,5 +99,6 @@ func NewServiceBuilder(
 		ports: servicePorts,
 
 		serviceType: serviceType,
+		headless:    headless,
 	}
 }

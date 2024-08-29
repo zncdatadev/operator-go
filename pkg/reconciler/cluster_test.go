@@ -61,6 +61,7 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 			},
 		},
 		nil,
+		false,
 	)
 	// Register resources
 	r.AddResource(serviceReconciler)
