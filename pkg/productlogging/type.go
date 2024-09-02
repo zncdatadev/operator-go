@@ -2,12 +2,12 @@ package productlogging
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 
 	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/constants"
-	"golang.org/x/exp/maps"
 )
 
 const (

@@ -60,9 +60,14 @@ var _ = Describe("LogbackConfigGenerator", func() {
 			fmt.Println(result)
 
 			Expect(result).ShouldNot(BeEmpty())
-			// todo assert
+			fmt.Println(result)
 
-			// Expect(result).Should(ContainSubstring("<root level=\"INFO\">"))
+			Expect(result).Should(ContainSubstring("<root level=\"INFO\">"))
+			Expect(result).Should(ContainSubstring(`<filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+  <level>INFO</level>
+</filter>`))
+			Expect(result).Should(ContainSubstring("<File>/kubedoop/log/zoo_container/app.log</File>"))
+
 		})
 	})
 
