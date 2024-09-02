@@ -249,6 +249,7 @@ func (b *Container) SetResources(resources *commonsv1alpha1.ResourcesSpec) Conta
 	}
 
 	if resources.Memory != nil {
+		obj.Resources.Requests[corev1.ResourceMemory] = resources.Memory.Limit
 		obj.Resources.Limits[corev1.ResourceMemory] = resources.Memory.Limit
 	}
 
