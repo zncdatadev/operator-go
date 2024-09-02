@@ -303,5 +303,5 @@ func ClusterRoleBindingName(rbacPrefix string) string {
 }
 
 func ClusterRoleName(rbacPrefix string) string {
-	return fmt.Sprintf("%s-clustrolebinding", rbacPrefix)
+	return fmt.Sprintf("%s-clusterrole", rbacPrefix)
 }
