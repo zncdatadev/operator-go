@@ -61,7 +61,7 @@ type OIDCProvider struct {
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Enum=oidc;keycloak;dexidp;authentik
-	ProviderHint string `json:"providerHint"`
+	Provisioner string `json:"provisioner"`
 
 	// +kubebuilder:validation:Optional
 	RootPath string `json:"rootPath,omitempty"`
@@ -70,21 +70,32 @@ type OIDCProvider struct {
 	Scopes []string `json:"scopes,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	TLS *TLS `json:"tls,omitempty"`
+	TLS *OIDCTls `json:"tls,omitempty"`
+}
+
+type OIDCTls struct {
+	// +kubebuilder:validation
+	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification"`
 }
 
 type TLSPrivider struct {
 	// +kubebuilder:validation:Optional
-	SecretClass string `json:"secretClass,omitempty"`
+	CertSecretClass string `json:"certSecretClass,omitempty"`
 }
 
 type StaticProvider struct {
-	CerdentialSecret string `json:"credential"`
+	// +kubebuilder:validation:Required
+	CredentialsSecret *StaticCredentialsSecret `json:"credentialsSecret"`
+}
+
+type StaticCredentialsSecret struct {
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
 }
 
 type LDAPProvider struct {
 	// +kubebuilder:validation:Required
-	Credential *LDAPCredential `json:"credential"`
+	BindCredentials *commonsv1alpha1.Credentials `json:"bindCredentials"`
 
 	// +kubebuilder:validation:Required
 	Hostname string `json:"hostname"`
@@ -95,40 +106,21 @@ type LDAPProvider struct {
 	// +kubebuilder:validation:Optional
 	LDAPFieldNames *LDAPFieldNames `json:"ldapFieldNames,omitempty"`
 
-	// LDAP search base, for example: ou=users,dc=example,dc=org.
+	// LDAP search base, for example: ou=users,dc=example,dc=com.
 	// +kubebuilder:validation:Optional
 	SearchBase string `json:"searchBase,omitempty"`
 
-	// LDAP search filter, for example: (uid=%s).
+	// LDAP search filter, for example: (ou=teams,dc=example,dc=com).
 	// +kubebuilder:validation:Optional
 	SearchFilter string `json:"searchFilter,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	TLS *TLS `json:"tls,omitempty"`
+	TLS *LDAPTLS `json:"tls,omitempty"`
 }
 
-type TLS struct {
-	// +kubebuilder:validation:Optional
-	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification,omitempty"`
-}
-
-type LDAPCredential struct {
-	// +kubebuilder:validation:Optional
-	Scopes *CrendentialScope `json:"scopes,omitempty"`
-
+type LDAPTLS struct {
 	// +kubebuilder:validation:Required
-	SecretClass string `json:"secretClass"`
-}
-
-type CrendentialScope struct {
-	// +kubebuilder:validation:Optional
-	Node string `json:"node,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	Pod string `json:"pod,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	Services []string `json:"services,omitempty"`
+	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification"`
 }
 
 type LDAPFieldNames struct {
