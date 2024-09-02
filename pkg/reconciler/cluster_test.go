@@ -162,9 +162,9 @@ var _ = Describe("Cluster reconciler", func() {
 
 			By("Reconcile")
 			Eventually(func() bool {
-				result := clusterReconciler.Reconcile(ctx)
-				return result.RequeueOrNot()
-			}, time.Second*15, time.Microsecond*100).Should(BeFalse())
+				result, err := clusterReconciler.Reconcile(ctx)
+				return result.IsZero() && err == nil
+			}, time.Second*15, time.Microsecond*100).Should(BeTrue())
 
 			By("Checking the service resource of cluster level")
 			service := &corev1.Service{}

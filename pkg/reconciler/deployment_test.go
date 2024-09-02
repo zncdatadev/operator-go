@@ -90,21 +90,25 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
-			result := deploymentReconciler.Reconcile(ctx)
+			result, err := deploymentReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeTrue())
+			// Expect(result.Error).Should(BeNil())
+			// Expect(result.RequeueOrNot()).Should(BeTrue())
+			Expect(err).Should(BeNil())
+			Expect(result.IsZero()).Should(BeFalse())
+			Expect(result.Requeue).Should(BeTrue())
 
 			By("Checking the deployment spec.replicas is valid")
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
 			Expect(deployment.Spec.Replicas).Should(Equal(&replcias))
 
-			By("check the deployment is ready or not")
-			result = deploymentReconciler.Ready(ctx)
+			By("check the deployment is not ready")
+			result, err = deploymentReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeTrue())
+			Expect(err).Should(BeNil())
+			Expect(result.IsZero()).Should(BeFalse())
+			Expect(result.Requeue).Should(BeTrue())
 
 			// Because the envtest does not handle the pod, we need to mock that the statefulset is ready
 			// Mock that the deployment is ready by updating the ready replicas to 3
@@ -115,11 +119,11 @@ var _ = Describe("Deloyment reconciler", func() {
 			deployment.Status.ReadyReplicas = replcias
 			Expect(k8sClient.Status().Update(ctx, deployment)).Should(Succeed())
 
-			By("check the deployment is ready or not")
-			result = deploymentReconciler.Ready(ctx)
+			By("check the deployment is ready")
+			result, err = deploymentReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeFalse())
+			Expect(err).Should(BeNil())
+			Expect(result.IsZero()).Should(BeTrue())
 
 			By("check the container image pull policy of deployment is default value")
 			deployment = &appv1.Deployment{}
@@ -129,17 +133,18 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy).Should(Equal(*builder.DefaultImagePullPolicy))
 		})
 
-		It("Should successfully reconcile a stopped whoami deployment", func() {
+		It("Should successfully reconcile deployment replicas to 0 when stopped", func() {
 
-			By("Create a stopped deployment reconciler")
+			By("Create a stopped deployment reconciler normal")
 			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder, false)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
-			result := deploymentReconciler.Reconcile(ctx)
+			result, err := deploymentReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeTrue())
+			Expect(err).Should(BeNil())
+			Expect(result.IsZero()).Should(BeFalse())
+			Expect(result.Requeue).Should(BeTrue())
 
 			By("checking the deployment spec replicas is valid")
 			deployment := &appv1.Deployment{}
@@ -156,17 +161,18 @@ var _ = Describe("Deloyment reconciler", func() {
 					builder.WorkloadOptions{},
 				),
 			}
-			By("create a stopped deployment reconciler")
+			By("create deployment reconciler with stopped is true")
 			deploymentReconciler = reconciler.NewDeployment(resourceClient, name, deploymentBuilder, true)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
-			result = deploymentReconciler.Reconcile(ctx)
+			result, err = deploymentReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(result.Error).Should(BeNil())
-			Expect(result.RequeueOrNot()).Should(BeTrue())
+			Expect(err).Should(BeNil())
+			Expect(result.IsZero()).Should(BeFalse())
+			Expect(result.Requeue).Should(BeTrue())
 
-			By("checking the deployment spec replicas is updated")
+			By("checking the deployment spec replicas is updated to 0")
 			deployment = &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
 			Expect(*deployment.Spec.Replicas).Should(BeEquivalentTo(int32(0)))
