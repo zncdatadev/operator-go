@@ -79,8 +79,8 @@ type OIDCTls struct {
 }
 
 type TLSPrivider struct {
-	// +kubebuilder:validation:Optional
-	CertSecretClass string `json:"certSecretClass,omitempty"`
+	// +kubebuilder:validation:Required
+	CertSecretClass string `json:"certSecretClass"`
 }
 
 type StaticProvider struct {
