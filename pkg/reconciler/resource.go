@@ -2,13 +2,13 @@ package reconciler
 
 import (
 	"context"
-	"time"
 
-	"github.com/zncdatadev/operator-go/pkg/builder"
-	"github.com/zncdatadev/operator-go/pkg/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/client"
 )
 
 var (
@@ -20,7 +20,7 @@ type ResourceReconciler[B builder.ResourceBuilder] interface {
 
 	GetObjectMeta() metav1.ObjectMeta
 	GetBuilder() B
-	ResourceReconcile(ctx context.Context, resource ctrlclient.Object) *Result
+	ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error)
 }
 
 var _ ResourceReconciler[builder.ResourceBuilder] = &GenericResourceReconciler[builder.ResourceBuilder]{}
@@ -63,7 +63,7 @@ func (r *GenericResourceReconciler[B]) GetBuilder() B {
 // If the resource is created or updated, it returns a Result with a requeue time of 1 second.
 //
 // Most of the time you should not call this method directly, but call the r.Reconcile() method instead.
-func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) *Result {
+func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error) {
 	logExtraValues := []interface{}{
 		"name", resource.GetName(),
 		"namespace", resource.GetNamespace(),
@@ -72,29 +72,26 @@ func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, re
 
 	if mutation, err := r.Client.CreateOrUpdate(ctx, resource); err != nil {
 		resourceLogger.Error(err, "Failed to create or update resource", logExtraValues...)
-		return NewResult(true, 0, err)
+		return ctrl.Result{}, err
 	} else if mutation {
 		resourceLogger.Info("Resource created or updated", logExtraValues...)
-		// TODO: Different resources may have different retry times based on their characteristics,
-		// for example: the creation time of a Deployment may be longer, so a longer retry time can be set,
-		// while the creation time of a Service may be shorter, so a shorter retry time can be set.
-		return NewResult(true, time.Second, nil)
+		return ctrl.Result{Requeue: true}, nil
 	}
-	return NewResult(false, 0, nil)
+	return ctrl.Result{}, nil
 }
 
-func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) *Result {
+func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	resource, err := r.GetBuilder().Build(ctx)
 
 	if err != nil {
-		return NewResult(true, 0, err)
+		return ctrl.Result{}, err
 	}
 	return r.ResourceReconcile(ctx, resource)
 }
 
 // GenericResourceReconciler[B] does not check anythins, so it is always ready.
-func (r *GenericResourceReconciler[B]) Ready(ctx context.Context) *Result {
-	return NewResult(false, 0, nil)
+func (r *GenericResourceReconciler[B]) Ready(ctx context.Context) (ctrl.Result, error) {
+	return ctrl.Result{}, nil
 }
 
 type SimpleResourceReconciler[B builder.ResourceBuilder] struct {

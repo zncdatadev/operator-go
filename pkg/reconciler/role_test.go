@@ -236,11 +236,11 @@ var _ = Describe("Role reconciler", func() {
 			By("registering resources")
 			Expect(roleReconciler.RegisterResources(ctx)).To(Succeed())
 
-			By("reconciling resources")
+			By("reconciling resources until ready")
 			Eventually(func() bool {
-				result := roleReconciler.Reconcile(ctx)
-				return result.RequeueOrNot()
-			}, time.Second*3, time.Second*1).Should(BeFalse())
+				result, err := roleReconciler.Reconcile(ctx)
+				return result.IsZero() && err == nil
+			}, time.Second*3, time.Second*1).Should(BeTrue())
 
 			By("mock deployment is ready")
 			deployment := &appv1.Deployment{}
@@ -249,11 +249,11 @@ var _ = Describe("Role reconciler", func() {
 			deployment.Status.ReadyReplicas = 1
 			Expect(k8sClient.Status().Update(ctx, deployment)).Should(Succeed())
 
-			By("check resource ready")
+			By("check resource until ready")
 			Eventually(func() bool {
-				result := roleReconciler.Ready(ctx)
-				return result.RequeueOrNot()
-			}, time.Second*3, time.Second*1).Should(BeFalse())
+				result, err := roleReconciler.Ready(ctx)
+				return result.IsZero() && err == nil
+			}, time.Second*3, time.Second*1).Should(BeTrue())
 		})
 	})
 

@@ -3,9 +3,11 @@ package reconciler
 import (
 	"context"
 
+	appv1 "k8s.io/api/apps/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
-	appv1 "k8s.io/api/apps/v1"
 )
 
 var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSet{}
@@ -18,7 +20,7 @@ type StatefulSet struct {
 	Stopped bool
 }
 
-func (r *StatefulSet) Reconcile(ctx context.Context) *Result {
+func (r *StatefulSet) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	resourceBuilder := r.GetBuilder()
 
 	if r.Stopped {
@@ -28,25 +30,25 @@ func (r *StatefulSet) Reconcile(ctx context.Context) *Result {
 	resource, err := resourceBuilder.Build(ctx)
 
 	if err != nil {
-		return NewResult(true, 0, err)
+		return ctrl.Result{}, err
 	}
 	return r.ResourceReconcile(ctx, resource)
 }
 
-func (r *StatefulSet) Ready(ctx context.Context) *Result {
+func (r *StatefulSet) Ready(ctx context.Context) (ctrl.Result, error) {
 	obj := appv1.StatefulSet{
 		ObjectMeta: r.GetObjectMeta(),
 	}
 	logger.V(1).Info("Checking statefulset ready", "namespace", obj.Namespace, "name", obj.Name)
 	if err := r.Client.Get(ctx, &obj); err != nil {
-		return NewResult(true, 0, err)
+		return ctrl.Result{}, err
 	}
 	if obj.Status.ReadyReplicas == *obj.Spec.Replicas {
 		logger.Info("StatefulSet is ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
-		return NewResult(false, 0, nil)
+		return ctrl.Result{}, nil
 	}
 	logger.Info("StatefulSet is not ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
-	return NewResult(false, 5, nil)
+	return ctrl.Result{Requeue: true}, nil
 }
 
 func NewStatefulSet(
