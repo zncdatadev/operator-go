@@ -74,32 +74,33 @@ func (r *BaseCluster[T]) Paused(ctx context.Context) bool {
 	return false
 }
 
-func (r *BaseCluster[T]) Ready(ctx context.Context) *Result {
+func (r *BaseCluster[T]) Ready(ctx context.Context) (ctrl.Result, error) {
 	if r.Paused(ctx) {
 		logger.Info("Reconciliation paused, skip ready check", "cluster", r.GetName(), "namespace", r.GetNamespace())
-		return NewResult(true, 0, nil)
+		return ctrl.Result{}, nil
 	}
 	for _, resource := range r.resources {
-		if result := resource.Ready(ctx); result.RequeueOrNot() {
-			return result
+		logger.Info("Checking resource ready", "cluster", r.GetName(), "namespace", r.GetNamespace(), "resource", resource.GetName())
+		if result, err := resource.Ready(ctx); !result.IsZero() || err != nil {
+			return result, err
 		}
+		logger.Info("Resource is ready", "cluster", r.GetName(), "namespace", r.GetNamespace(), "resource", resource.GetName())
 	}
-	return NewResult(false, 0, nil)
+	return ctrl.Result{}, nil
 }
 
-func (r *BaseCluster[T]) Reconcile(ctx context.Context) *Result {
+func (r *BaseCluster[T]) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	if r.Paused(ctx) {
 		logger.Info("Reconciliation paused, skip reconcile", "cluster", r.GetName(), "namespace", r.GetNamespace())
-		return NewResult(true, 0, nil)
+		return ctrl.Result{}, nil
 	}
 
 	for _, resource := range r.resources {
 		logger.Info("Reconciling resource", "cluster", r.GetName(), "namespace", r.GetNamespace(), "resource", resource.GetName())
-		result := resource.Reconcile(ctx)
-		if result.RequeueOrNot() {
-			return result
+		if result, err := resource.Reconcile(ctx); !result.IsZero() || err != nil {
+			return result, err
 		}
-		logger.Info("Reconcile completed", "cluster", r.GetName(), "namespace", r.GetNamespace())
+		logger.Info("Reconciled resource", "cluster", r.GetName(), "namespace", r.GetNamespace(), "resource", resource.GetName())
 	}
-	return NewResult(false, 0, nil)
+	return ctrl.Result{}, nil
 }
