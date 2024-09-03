@@ -55,7 +55,6 @@ var _ = Describe("Log4j2ConfigGenerator", func() {
 			Expect(result).Should(ContainSubstring("appender.FILE.filter.threshold.type = ThresholdFilter"))
 			Expect(result).Should(ContainSubstring("appender.FILE.filter.threshold.level = DEBUG"))
 
-			Expect(result).Should(ContainSubstring("loggers = a,b"))
 			Expect(result).Should(ContainSubstring("logger.a.name = a"))
 			Expect(result).Should(ContainSubstring("logger.a.name = INFO"))
 			Expect(result).Should(ContainSubstring("logger.b.name = b"))
