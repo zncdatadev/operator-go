@@ -1,12 +1,12 @@
-package builder_test
+package productlogging_test
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/constants"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 )
 
 func TestLogProviderCommandArgs(t *testing.T) {
@@ -63,13 +63,13 @@ mkdir -p /kubedoop/log/_vector && touch /kubedoop/log/_vector/shutdown
 `,
 	}
 
-	args, err := builder.LogProviderCommand(entrypointScript)
+	args, err := productlogging.LogProviderCommand(entrypointScript)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedArgs, args)
 }
 
 func TestVectorYamlFormatter(t *testing.T) {
-	actualYaml, err := builder.ParseVectorYaml(map[string]interface{}{
+	actualYaml, err := productlogging.ParseVectorYaml(map[string]interface{}{
 		"LogDir":                  constants.KubedoopLogDir,
 		"Namespace":               "default",
 		"Cluster":                 "simple-trino",
