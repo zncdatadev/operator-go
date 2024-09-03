@@ -1,8 +1,9 @@
 package productlogging
 
 import (
+	"fmt"
+
 	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/config"
 )
 
 const logbackTemplate = `<configuration>
@@ -54,22 +55,28 @@ func NewLogbackConfigGenerator(
 	return impl
 }
 
+var _ LoggingConfigGenerator = &LogbackConfigGenerator{}
+
 type LogbackConfigGenerator struct {
 	BaseLoggingConfigGenerator
 	configFileName string
 }
 
-// implement LoggingConfigGenerator
-func (l LogbackConfigGenerator) Generate() string {
-	data := l.Config()
-	parser := config.TemplateParser{Value: data, Template: logbackTemplate}
-	config, err := parser.Parse()
-	if err != nil {
-		panic(err)
+// GenerateLoggersConfig implements LoggingConfigGenerator.
+func (l *LogbackConfigGenerator) GenerateLoggersConfig(LoggersSpec map[string]*loggingv1alpha1.LogLevelSpec) string {
+	if len(LoggersSpec) == 0 {
+		return ""
 	}
-	return config
+	return createLoggerConfig(LoggersSpec, func(name, lvl string) string {
+		return fmt.Sprintf("<logger name=\"%s\" level=\"%s\"/>", name, lvl)
+	})
 }
 
-func (l LogbackConfigGenerator) FileName() string {
+// ConfigTemplate implements LoggingConfigGenerator.
+func (l *LogbackConfigGenerator) ConfigTemplate() string {
+	return logbackTemplate
+}
+
+func (l *LogbackConfigGenerator) FileName() string {
 	return l.configFileName
 }

@@ -1,12 +1,12 @@
 package productlogging
 
 import (
-	"fmt"
 	"maps"
 	"math"
 	"strings"
 
 	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constants"
 )
 
@@ -35,7 +35,8 @@ type TemplateData struct {
 
 type LoggingConfigGenerator interface {
 	Generate() string
-
+	GenerateLoggersConfig(LoggersSpec map[string]*loggingv1alpha1.LogLevelSpec) string
+	ConfigTemplate() string
 	FileName() string
 }
 
@@ -45,7 +46,7 @@ func NewBaseLoggingConfigGenerator(
 	consoleConversionPattern string,
 	maxLogFileSizeInMiB *float64,
 	logFileName string,
-	impl any) *BaseLoggingConfigGenerator {
+	impl LoggingConfigGenerator) *BaseLoggingConfigGenerator {
 	return &BaseLoggingConfigGenerator{
 		LoggingConfigSpec:        loggingConfigSpec,
 		contaienrName:            containerName,
@@ -63,7 +64,18 @@ type BaseLoggingConfigGenerator struct {
 	maxLogFileSizeInMiB      *float64
 	logFileName              string
 
-	impl any
+	impl LoggingConfigGenerator
+}
+
+// implement LoggingConfigGenerator
+func (l BaseLoggingConfigGenerator) Generate() string {
+	data := l.Config()
+	parser := config.TemplateParser{Value: data, Template: l.impl.ConfigTemplate()}
+	config, err := parser.Parse()
+	if err != nil {
+		panic(err)
+	}
+	return config
 }
 
 func (b *BaseLoggingConfigGenerator) Config() *TemplateData {
@@ -95,7 +107,7 @@ func (b *BaseLoggingConfigGenerator) Config() *TemplateData {
 			// with a comma and assigns the result to loggerNames.
 			maps.DeleteFunc(cloneLoggers, func(key string, value *loggingv1alpha1.LogLevelSpec) bool { return key == RootLoggerName })
 			if len(cloneLoggers) != 0 {
-				loggerConfig = GetLoggers(b.impl, cloneLoggers)
+				loggerConfig = b.impl.GenerateLoggersConfig(cloneLoggers)
 
 			}
 		}
@@ -128,18 +140,4 @@ func createLoggerConfig(loggers map[string]*loggingv1alpha1.LogLevelSpec, create
 		configs = append(configs, logger)
 	}
 	return strings.Join(configs, "\n")
-}
-
-func GetLoggers(b any, loggers map[string]*loggingv1alpha1.LogLevelSpec) string {
-	switch interface{}(b).(type) {
-	case *LogbackConfigGenerator:
-		return createLoggerConfig(loggers, func(name, lvl string) string {
-			return fmt.Sprintf("<logger name=\"%s\" level=\"%s\"/>", name, lvl)
-		})
-	// case *Log4jConfigGenerator:
-	// }
-	// switch b.(type) {
-	default:
-		return ""
-	}
 }
