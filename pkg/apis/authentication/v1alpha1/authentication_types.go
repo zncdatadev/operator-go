@@ -40,7 +40,7 @@ type AuthenticationProvider struct {
 	OIDC *OIDCProvider `json:"oidc,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	TLS *TLSPrivider `json:"tls,omitempty"`
+	TLS *TLSProvider `json:"tls,omitempty"`
 
 	// +kubebuilder:validation:Optional
 	Static *StaticProvider `json:"static,omitempty"`
@@ -78,14 +78,14 @@ type OIDCTls struct {
 	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification"`
 }
 
-type TLSPrivider struct {
+type TLSProvider struct {
 	// +kubebuilder:validation:Required
-	CertSecretClass string `json:"certSecretClass"`
+	ClientCertSecretClass string `json:"clientCertSecretClass"`
 }
 
 type StaticProvider struct {
 	// +kubebuilder:validation:Required
-	CredentialsSecret *StaticCredentialsSecret `json:"credentialsSecret"`
+	UserCredentialsSecret *StaticCredentialsSecret `json:"userCredentialsSecret"`
 }
 
 type StaticCredentialsSecret struct {
