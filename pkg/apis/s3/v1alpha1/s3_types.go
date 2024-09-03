@@ -27,16 +27,13 @@ type S3ConnectionSpec struct {
 
 	// Provides access credentials for S3Connection through SecretClass. SecretClass only needs to include the ACCESS_KEY and SECRET_KEY fields.
 	// +kubebuilder:validation:Required
-	Credential *S3Credential `json:"credential"`
+	Credentials *commonsv1alpha1.Credentials `json:"credentials"`
 
 	// +kubebuilder:validation:Required
-	Endpoint string `json:"endpoint,omitempty"`
+	Host string `json:"host,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Region string `json:"region,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	SSL bool `json:"ssl,omitempty"`
+	Port int `json:"port,omitempty"`
 
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=false
@@ -51,37 +48,13 @@ type Tls struct {
 	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification,omitempty"`
 }
 
-// S3Credential include `ACCESS_KEY` and `SECRET_KEY` or ExistingSecret.
-type S3Credential struct {
-
-	// +kubebuilder:validation:Optional
-	Scope *S3CredentialScope `json:"scope,omitempty"`
-
-	// +kubebuilder:validation:Required
-	SecretClass string `json:"secretClass"`
-}
-
-type S3CredentialScope struct {
-
-	// +kubebuilder:validation:Optional
-	Node bool `json:"node,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	Pod bool `json:"pod,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	Services []string `json:"services,omitempty"`
-}
-
 type S3ConnectionStatus struct {
-
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"condition,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
-
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // S3Connection is the Schema for the s3connections API
 type S3Connection struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -91,8 +64,7 @@ type S3Connection struct {
 	Status S3ConnectionStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-
+// +kubebuilder:object:root=true
 // S3ConnectionList contains a list of S3Connection
 type S3ConnectionList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -106,22 +78,25 @@ type S3BucketSpec struct {
 	// +kubebuilder:validation:Required
 	BucketName string `json:"bucketName,omitempty"`
 
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
+	Connection string `json:"connection,omitempty"`
+}
+
+type S3BucketConnectionSpec struct {
+	// +kubebuilder:validation:Optional
 	Reference string `json:"reference,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Credential *S3Credential `json:"credential,omitempty"`
+	Inline *S3ConnectionSpec `json:"inline,omitempty"`
 }
 
 type S3BucketStatus struct {
-
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"condition,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
-
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // S3Bucket is the Schema for the s3buckets API
 type S3Bucket struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -131,8 +106,7 @@ type S3Bucket struct {
 	Status S3BucketStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-
+// +kubebuilder:object:root=true
 // S3BucketList contains a list of S3Bucket
 type S3BucketList struct {
 	metav1.TypeMeta `json:",inline"`
