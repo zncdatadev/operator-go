@@ -1,6 +1,27 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.9.1 2024-09-03
+
+### features
+
+- Add `ServiceType` field to service builder, can build `headless` service
+- Add `productlogging` package, and implement logback, log4j, log4j2 configuration
+- Add vector builder for easy integration with vector sidecar
+
+### bugs
+
+- Fix re-reconciler with 0 seconds interval when resource not ready
+- Fix rbac builder could not set subjects and roleRef
+- Fix container builder missing memory request field
+
+### chore
+
+### dependencies
+
+- Bump github.com/onsi/ginkgo/v2 from 2.20.1 to 2.20.2
+- Bump github.com/onsi/gomega from 1.34.1 to 1.34.2
+
 ## v0.9.0 2024-08-28
 
 **BROKENCHANGE:** 
