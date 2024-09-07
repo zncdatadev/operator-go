@@ -13,6 +13,11 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
+const (
+	VectorLogDir       = "_vector"
+	VectorShutdownFile = "shutdown"
+)
+
 func MakeVectorYaml(
 	ctx context.Context,
 	client ctrlclient.Client,
@@ -394,15 +399,20 @@ wait_for_termination()
 	set -e
 }
 
-rm -f {{ .LogDir }}_vector/shutdown
+rm -f {{ .LogDir }}{{.VectorLogDir}}/{{ .VectorShutdownFile }}
 prepare_signal_handlers
 
 {{ .EntrypointScript }}
 
 wait_for_termination $!
-mkdir -p {{ .LogDir }}_vector && touch {{ .LogDir }}_vector/shutdown
+mkdir -p {{ .LogDir }}{{.VectorLogDir}} && touch {{ .LogDir }}{{.VectorLogDir}}/{{ .VectorShutdownFile }}
 `
-	data := map[string]interface{}{"LogDir": constants.KubedoopLogDir, "EntrypointScript": entrypointScript}
+	data := map[string]interface{}{
+		"LogDir":             constants.KubedoopLogDir,
+		"EntrypointScript":   entrypointScript,
+		"VectorLogDir":       VectorLogDir,
+		"VectorShutdownFile": VectorShutdownFile,
+	}
 	parser := config.TemplateParser{
 		Value:    data,
 		Template: template,
