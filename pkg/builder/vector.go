@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	VectorImage         = "timberio/vector:0.38.0-alpine"
 	VectorContainerName = "vector"
 	VectorConfigFile    = "vector.yaml"
 
@@ -24,14 +23,31 @@ const (
 
 var _ productlogging.WorkloadDecorator = &VectorDecorator{}
 
+func NewVectorDecorator(
+	workloadObject ctrlclient.Object,
+	image *util.Image,
+	logVolumeName string,
+	vectorConfigVolumeName string,
+	vectorConfigMapName string,
+) *VectorDecorator {
+	return &VectorDecorator{
+		WorkloadObject:         workloadObject,
+		Image:                  image,
+		LogVolumeName:          logVolumeName,
+		VectorConfigVolumeName: vectorConfigVolumeName,
+		VectorConfigMapName:    vectorConfigMapName,
+	}
+}
+
 type VectorDecorator struct {
 	WorkloadObject ctrlclient.Object
+	Image          *util.Image
 
 	LogVolumeName          string
 	VectorConfigVolumeName string
 	VectorConfigMapName    string
 
-	LogProviderContainerName []string
+	LogProviderContainerName []string //optional
 }
 
 func (v *VectorDecorator) Decorate() error {
@@ -162,9 +178,8 @@ func (v *VectorDecorator) appendVectorContainer(containers *[]corev1.Container) 
 }
 
 func (v *VectorDecorator) NewVectorContainer() *corev1.Container {
-
-	vectorContainer := NewContainerBuilder(VectorContainerName, VectorImage).
-		SetImagePullPolicy(DefaultImagePullPolicy).
+	vectorContainer := NewContainerBuilder(VectorContainerName, v.Image.String()).
+		SetImagePullPolicy(v.Image.GetPullPolicy()).
 		SetCommand(VectorCommand()).
 		SetArgs(VectorCommandArgs()).
 		AddVolumeMounts(VectorVolumeMount(v.VectorConfigVolumeName, v.LogVolumeName)).
@@ -187,45 +202,28 @@ func VectorVolumeMount(vectorConfigVolumeName string, vectorLogVolumeName string
 }
 
 func VectorCommandArgs() []string {
-	arg := `log_dir="/kubedoop/log/_vector"
-data_dir="/kubedoop/vector/var"
-if [ ! -d "$data_dir" ]; then
-	mkdir -p "$data_dir"
+	arg := fmt.Sprintf(`
+# Vector will ignore SIGTERM (as PID != 1) and must be shut down by writing a shutdown trigger file
+CONFIG_DIR=%s
+LOG_DIR=%s
+VECTOR_LOG_DIR=%s
+VECTOR_SHUTDOWN_FILE=%s
+VECTOR_CONFIG_FILE=%s
+vector --config ${CONFIG_DIR}${VECTOR_CONFIG_FILE} & vector_pid=$!
+if [ ! -f "${LOG_DIR}${VECTOR_LOG_DIR}$/${VECTOR_SHUTDOWN_FILE}" ]; then
+  mkdir -p ${LOG_DIR}${VECTOR_LOG_DIR} && \
+  inotifywait -qq --event create ${LOG_DIR}${VECTOR_LOG_DIR}; \
 fi
-
-vector --config /kubedoop/config/vector.yaml &
-vector_pid=$!
-
-if [ ! -f "$log_dir/shutdown" ]; then
-	mkdir -p "$log_dir"
-fi
-
-previous_count=$(ls -1 "$log_dir" | wc -l)
-
-while true; do
-	current_count=$(ls -1 "$log_dir" | wc -l)
-
-	if [ "$current_count" -gt "$previous_count" ]; then
-		new_file=$(ls -1 "$log_dir" | tail -n 1)
-		echo "New file created: $new_file"
-
-		previous_count=$current_count
-	fi
-
-	if [ -f "$log_dir/shutdown" ]; then
-		kill $vector_pid
-		break
-	fi
-
-	sleep 1
-done
-`
+sleep 1
+kill $vector_pid
+`, constants.KubedoopConfigDir, constants.KubedoopLogDir, productlogging.VectorLogDir, productlogging.VectorShutdownFile, VectorConfigFile)
 	return []string{util.IndentTab4Spaces(arg)}
 }
 
 func VectorCommand() []string {
 	return []string{
-		"ash",
+		"/bin/bash",
+		"-x",
 		"-euo",
 		"pipefail",
 		"-c",
