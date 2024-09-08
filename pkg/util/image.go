@@ -1,10 +1,13 @@
 package util
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
 var DefaultRepository = "quay.io/zncdatadev"
+var DefaultImagePullPolicy = corev1.PullIfNotPresent
 
 // TODO: add semver validation for version fields
 
@@ -22,7 +25,7 @@ type Image struct {
 	ProductName     string
 	PlatformVersion string
 	ProductVersion  string
-	PullPolicy      *corev1.PullPolicy
+	PullPolicy      corev1.PullPolicy
 	PullSecretName  string
 }
 
@@ -31,7 +34,7 @@ type ImageOption func(*ImageOptions)
 type ImageOptions struct {
 	Custom         string
 	Repo           string
-	PullPolicy     *corev1.PullPolicy
+	PullPolicy     corev1.PullPolicy
 	PullSecretName string
 }
 
@@ -77,33 +80,37 @@ func NewImage(
 	}
 }
 
-func (i *Image) GetImageWithTag() string {
+func (i *Image) GetImageWithTag() (string, error) {
 	if i.Custom != "" {
-		return i.Custom
+		return i.Custom, nil
 	}
 
 	if i.ProductVersion == "" {
-		panic("ProductVersion is required")
+		return "", fmt.Errorf("ProductVersion is required in Image")
 	}
 
 	if i.PlatformVersion == "" {
-		panic("PlatformVersion is required")
+		return "", fmt.Errorf("PlatformVersion is required in Image")
 	}
 
 	if i.Repo == "" {
 		i.Repo = DefaultRepository
 	}
-
-	return i.Repo + "/" + i.ProductName + ":" + i.ProductVersion + "-" + "kubedoop" + i.PlatformVersion
+	// quay.io/zncdatadev/myproduct:1.0.0-kubedoop1.0
+	return fmt.Sprintf("%s/%s:%s-kubedoop%s", i.Repo, i.ProductName, i.ProductVersion, i.PlatformVersion), nil
 }
 
 func (i *Image) String() string {
-	return i.GetImageWithTag()
+	tag, err := i.GetImageWithTag()
+	if err != nil {
+		panic(err)
+	}
+	return tag
 }
 
-func (i *Image) GetPullPolicy() *corev1.PullPolicy {
-	if i.PullPolicy == nil {
-		return func() *corev1.PullPolicy { p := corev1.PullIfNotPresent; return &p }()
+func (i *Image) GetPullPolicy() corev1.PullPolicy {
+	if i.PullPolicy == "" {
+		return DefaultImagePullPolicy
 	}
 	return i.PullPolicy
 }

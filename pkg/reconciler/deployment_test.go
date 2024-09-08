@@ -31,7 +31,7 @@ type TrinoCoordinatorDeploymentBuilder struct {
 }
 
 func (b *TrinoCoordinatorDeploymentBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
-	trinoContainer := builder.NewContainerBuilder("coordinator", b.GetImageWithTag()).
+	trinoContainer := builder.NewContainerBuilder("coordinator", b.GetImage()).
 		SetCommand([]string{"/usr/lib/trino/bin/launcher", "run"}).
 		SetImagePullPolicy(b.GetImage().PullPolicy).
 		Build()
@@ -130,7 +130,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
 			Expect(deployment.Spec.Template.Spec.Containers).ShouldNot(BeNil())
 			Expect(deployment.Spec.Template.Spec.Containers).Should(HaveLen(1))
-			Expect(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy).Should(Equal(*builder.DefaultImagePullPolicy))
+			Expect(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy).Should(Equal(util.DefaultImagePullPolicy))
 		})
 
 		It("Should successfully reconcile deployment replicas to 0 when stopped", func() {

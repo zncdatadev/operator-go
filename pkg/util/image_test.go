@@ -14,7 +14,11 @@ var _ = Describe("GetImageTag", func() {
 	)
 
 	BeforeEach(func() {
-		tag = func() string { return image.GetImageWithTag() }
+		tag = func() string {
+			image, err := image.GetImageWithTag()
+			Expect(err).ShouldNot(HaveOccurred())
+			return image
+		}
 	})
 
 	It("should return the custom tag if provided", func() {
@@ -50,11 +54,11 @@ var _ = Describe("GetImageTag", func() {
 var _ = Describe("GetPullPolicy", func() {
 	var (
 		image  util.Image
-		policy func() *v1.PullPolicy
+		policy func() v1.PullPolicy
 	)
 
 	BeforeEach(func() {
-		policy = func() *v1.PullPolicy {
+		policy = func() v1.PullPolicy {
 			return image.GetPullPolicy()
 		}
 	})
@@ -62,14 +66,14 @@ var _ = Describe("GetPullPolicy", func() {
 	It("should return the existing PullPolicy when it is not nil", func() {
 		pullPolicy := v1.PullAlways
 		image = util.Image{
-			PullPolicy: &pullPolicy,
+			PullPolicy: pullPolicy,
 		}
-		Expect(policy()).Should(Equal(&pullPolicy))
+		Expect(policy()).Should(Equal(pullPolicy))
 	})
 
 	It("should return PullIfNotPresent when PullPolicy is nil", func() {
 		image = util.Image{}
 		expected := v1.PullIfNotPresent
-		Expect(policy()).Should(Equal(&expected))
+		Expect(policy()).Should(Equal(expected))
 	})
 })

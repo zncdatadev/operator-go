@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -11,21 +12,21 @@ import (
 var (
 	HTTPGetProbHandler2PortNames = []string{"http", "ui", "metrics", "health"}
 	TCPProbHandler2PortNames     = []string{"master"}
-	DefaultImagePullPolicy       = &[]corev1.PullPolicy{corev1.PullAlways}[0]
 )
 
 var _ ContainerBuilder = &Container{}
 
 type Container struct {
 	Name  string
-	Image string
+	Image *util.Image
 
 	obj *corev1.Container
 }
 
 // NewContainer returns a new Container
 func NewContainer(
-	name, image string,
+	name string,
+	image *util.Image,
 ) *Container {
 	return &Container{
 		Name:  name,
@@ -37,11 +38,13 @@ func NewContainer(
 // This method return a ContainerBuilder interface
 // Example:
 //
+//	image := util.Image{Custom: "nginx"}
 //	fooContainer := builder.NewContainerBuilder("foo", "nginx").
 //		SetImagePullPolicy(corev1.PullAlways).
 //		Build()
 func NewContainerBuilder(
-	name, image string,
+	name string,
+	image *util.Image,
 ) ContainerBuilder {
 	return NewContainer(name, image)
 }
@@ -50,8 +53,8 @@ func (b *Container) getObject() *corev1.Container {
 	if b.obj == nil {
 		b.obj = &corev1.Container{
 			Name:            b.Name,
-			Image:           b.Image,
-			ImagePullPolicy: corev1.PullAlways,
+			Image:           b.Image.String(),
+			ImagePullPolicy: b.Image.GetPullPolicy(),
 			Resources:       corev1.ResourceRequirements{},
 		}
 	}
@@ -63,13 +66,13 @@ func (b *Container) Build() *corev1.Container {
 	return obj
 }
 
-func (b *Container) SetImagePullPolicy(policy *corev1.PullPolicy) ContainerBuilder {
-	if policy == nil {
-		logger.V(2).Info("Could not set image pull policy, use default value", "policy", policy, "container", b.Name, "image", b.Image, "default", DefaultImagePullPolicy)
+func (b *Container) SetImagePullPolicy(policy corev1.PullPolicy) ContainerBuilder {
+	if policy == "" {
+		logger.V(2).Info("Could not set image pull policy, use default value", "policy", policy, "container", b.Name, "image", b.Image, "default", b.Image.GetPullPolicy())
 		return b
 	}
 
-	b.getObject().ImagePullPolicy = *policy
+	b.getObject().ImagePullPolicy = policy
 	return b
 }
 
