@@ -1,6 +1,18 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.9.2 2024-09-08
+
+### features
+
+- Add `listenerclass` type to apis
+- Add enrichment and restarter labels to constants
+- Replace vector image with product image, now vector command available in product image
+
+### bugs
+
+- Fix image default policy is `Always`, and can not auto referenct CRD image policy 
+
 ## v0.9.1 2024-09-03
 
 ### features
