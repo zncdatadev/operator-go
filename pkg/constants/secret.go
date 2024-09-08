@@ -53,11 +53,6 @@ const (
 	AnnotationSecretCertLifeTime      string = secretAPIGroupPrefix + "autoTlsCertLifetime"
 	AnnotationSecretsCertJitterFactor string = secretAPIGroupPrefix + "autoTlsCertJitterFactor"
 
-	// Annotation for expiration time of the secret for pod.
-	// When the secret is created, the expiration time is set to the current time plus the lifetime.
-	// Then we can clean up the secret after expiration time
-	AnnonationSecretExpirationTimeName string = secretAPIGroupPrefix + "expirationTime"
-
 	// KerberosServiceNames is the list of Kerberos service names.
 	// It is a comma separated list of Kerberos realms.
 	//
