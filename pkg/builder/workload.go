@@ -88,7 +88,7 @@ func (b *BaseWorkloadBuilder) GetImage() *util.Image {
 	return b.image
 }
 
-func (b *BaseWorkloadBuilder) GetImageWithTag() string {
+func (b *BaseWorkloadBuilder) GetImageWithTag() (string, error) {
 	return b.image.GetImageWithTag()
 }
 

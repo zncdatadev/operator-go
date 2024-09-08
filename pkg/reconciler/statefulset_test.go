@@ -29,7 +29,7 @@ type FooStatefulSetBuilder struct {
 func (b *FooStatefulSetBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
 	containerBuilder := builder.NewContainer(
 		"foo",
-		"nginx",
+		b.GetImage(),
 	)
 
 	b.AddContainer(containerBuilder.Build())
