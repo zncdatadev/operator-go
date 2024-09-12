@@ -52,6 +52,12 @@ const (
 	// golang time.Duration string, it will be used to create certificate expiration time.
 	AnnotationSecretCertLifeTime      string = secretAPIGroupPrefix + "autoTlsCertLifetime"
 	AnnotationSecretsCertJitterFactor string = secretAPIGroupPrefix + "autoTlsCertJitterFactor"
+	// When a large number of Pods restart at a similar time,
+	// because the pod restart time is uncertain, the restart process may be relatively long,
+	// even if there is a time limit for elegant shutdown, there will still be a case of pod late restart
+	// resulting in certificate expiration.
+	// To avoid this, the pod expiration time is checked before this buffer time.
+	AnnotationSecretsCertRestartBuffer string = "secrets.zncdata.dev/" + "autoTlsCertRestartBuffer"
 
 	// KerberosServiceNames is the list of Kerberos service names.
 	// It is a comma separated list of Kerberos realms.
