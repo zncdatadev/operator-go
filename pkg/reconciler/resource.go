@@ -64,7 +64,8 @@ func (r *GenericResourceReconciler[B]) GetBuilder() B {
 //
 // Most of the time you should not call this method directly, but call the r.Reconcile() method instead.
 func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error) {
-	logExtraValues := []interface{}{
+	logger.V(5).Info("Reconciling resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", resource.GetName())
+	logExtraValues := []any{
 		"name", resource.GetName(),
 		"namespace", resource.GetNamespace(),
 		"cluster", r.GetName(),
@@ -81,6 +82,7 @@ func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, re
 }
 
 func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) (ctrl.Result, error) {
+	logger.V(5).Info("Building resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", r.GetName())
 	resource, err := r.GetBuilder().Build(ctx)
 
 	if err != nil {

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"reflect"
 
-	apiv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/client"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 var (
@@ -14,10 +14,14 @@ var (
 )
 
 type RoleReconciler interface {
-	ClusterReconciler
+	Reconciler
+	GetResources() []Reconciler
+	AddResource(resource Reconciler)
+	RegisterResources(ctx context.Context) error
+	IsStopped() bool
+
 	// Get the full name of the role, formatted as `<clusterName>-<roleName>`
 	GetFullName() string
-	// Register resources based on roleGroup
 }
 
 type RoleGroupResourceReconcilersGetter interface {
@@ -27,24 +31,27 @@ type RoleGroupResourceReconcilersGetter interface {
 var _ RoleReconciler = &BaseRoleReconciler[AnySpec]{}
 
 type BaseRoleReconciler[T AnySpec] struct {
-	BaseCluster[T]
-	RoleInfo RoleInfo
+	BaseReconciler[T]
+	ClusterStopped bool
+	ClusterInfo    ClusterInfo
+	resources      []Reconciler
+	RoleInfo       RoleInfo
 }
 
 func NewBaseRoleReconciler[T AnySpec](
 	client *client.Client,
+	clusterStopped bool,
 	roleInfo RoleInfo,
-	clusterOperation *apiv1alpha1.ClusterOperationSpec,
 	spec T, // spec of the role
 ) *BaseRoleReconciler[T] {
 	return &BaseRoleReconciler[T]{
-		BaseCluster: *NewBaseCluster[T](
-			client,
-			roleInfo.ClusterInfo,
-			clusterOperation,
-			spec,
-		),
-		RoleInfo: roleInfo,
+		BaseReconciler: BaseReconciler[T]{
+			Client: client,
+			Spec:   spec,
+		},
+		ClusterStopped: clusterStopped,
+		ClusterInfo:    roleInfo.ClusterInfo,
+		RoleInfo:       roleInfo,
 	}
 }
 
@@ -85,6 +92,40 @@ func (r *BaseRoleReconciler[T]) GetRoleGroups() (map[string]AnySpec, error) {
 
 	return roleGroups, nil
 
+}
+
+func (r *BaseRoleReconciler[T]) AddResource(resource Reconciler) {
+	r.resources = append(r.resources, resource)
+}
+
+func (r *BaseRoleReconciler[T]) GetResources() []Reconciler {
+	return r.resources
+}
+
+func (r *BaseRoleReconciler[T]) IsStopped() bool {
+	return r.ClusterStopped
+}
+
+func (r *BaseRoleReconciler[T]) Reconcile(ctx context.Context) (ctrl.Result, error) {
+	logger.V(5).Info("Reconciling role", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
+	for _, resource := range r.resources {
+		if res, err := resource.Reconcile(ctx); !res.IsZero() || err != nil {
+			return res, err
+		}
+	}
+	logger.V(5).Info("Reconciled role", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
+	return ctrl.Result{}, nil
+}
+
+func (r *BaseRoleReconciler[T]) Ready(ctx context.Context) (ctrl.Result, error) {
+	logger.V(5).Info("Checking readiness of role", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
+	for _, resource := range r.resources {
+		if res, err := resource.Ready(ctx); !res.IsZero() || err != nil {
+			return res, err
+		}
+	}
+	logger.V(5).Info("Role is ready", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
+	return ctrl.Result{}, nil
 }
 
 func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {

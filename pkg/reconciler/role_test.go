@@ -35,16 +35,16 @@ type RoleReconciler struct {
 
 func NewRoleReconciler(
 	client *client.Client,
-	roleInfo reconciler.RoleInfo,
-	clusterOperation *commonsv1alpha1.ClusterOperationSpec,
 	clusterConfig *ClusterConfigSpec,
+	clusterStopped bool,
+	roleInfo reconciler.RoleInfo,
 	spec CoordinatorSpec,
 ) *RoleReconciler {
 	return &RoleReconciler{
 		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler[CoordinatorSpec](
 			client,
+			clusterStopped,
 			roleInfo,
-			clusterOperation,
 			spec,
 		),
 		ClusterConfig: clusterConfig,
@@ -136,7 +136,7 @@ func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup 
 		),
 	}
 	// Create a deployment reconciler
-	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder, r.ClusterOperation.Stopped), nil
+	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder, r.ClusterStopped), nil
 }
 
 func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) reconciler.Reconciler {
@@ -227,9 +227,9 @@ var _ = Describe("Role reconciler", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
-				roleInfo,
-				clusterOperation,
 				&ClusterConfigSpec{},
+				clusterOperation.Stopped,
+				roleInfo,
 				coordinatorRole,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
@@ -305,9 +305,9 @@ var _ = Describe("Role reconciler", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
-				roleInfo,
-				clusterOperation,
 				&ClusterConfigSpec{},
+				clusterOperation.Stopped,
+				roleInfo,
 				*role,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
@@ -381,9 +381,9 @@ var _ = Describe("Role reconciler", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
-				roleInfo,
-				&commonsv1alpha1.ClusterOperationSpec{},
 				&ClusterConfigSpec{},
+				false,
+				roleInfo,
 				*role,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
@@ -410,9 +410,9 @@ var _ = Describe("Role reconciler", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
-				roleInfo,
-				clusterOperation,
 				&ClusterConfigSpec{},
+				clusterOperation.Stopped,
+				roleInfo,
 				*role,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
@@ -439,9 +439,9 @@ var _ = Describe("Role reconciler", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
-				roleInfo,
-				clusterOperation,
 				&ClusterConfigSpec{},
+				clusterOperation.Stopped,
+				roleInfo,
 				*role,
 			)
 
