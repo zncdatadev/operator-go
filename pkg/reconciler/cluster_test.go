@@ -68,12 +68,12 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 
 	role := NewRoleReconciler(
 		r.GetClient(),
+		r.ClusterConfig,
+		r.ClusterOperation.Stopped,
 		reconciler.RoleInfo{
 			ClusterInfo: r.ClusterInfo,
 			RoleName:    "coordinator",
 		},
-		r.ClusterOperation,
-		r.ClusterConfig,
 		*r.Spec.Coordinator,
 	)
 
