@@ -79,7 +79,7 @@ type S3BucketSpec struct {
 	BucketName string `json:"bucketName,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Connection string `json:"connection,omitempty"`
+	Connection *S3BucketConnectionSpec `json:"connection,omitempty"`
 }
 
 type S3BucketConnectionSpec struct {
