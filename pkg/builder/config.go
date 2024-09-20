@@ -11,7 +11,7 @@ import (
 type ConfigBuilder interface {
 	ResourceBuilder
 	AddData(data map[string]string) ConfigBuilder
-	AddDecodeData(data map[string][]byte) ConfigBuilder
+	AddItem(key, value string) ConfigBuilder
 	SetData(data map[string]string) ConfigBuilder
 	ClearData() ConfigBuilder
 	GetData() map[string]string
@@ -49,10 +49,8 @@ func (b *BaseConfigBuilder) AddData(data map[string]string) ConfigBuilder {
 	return b
 }
 
-func (b *BaseConfigBuilder) AddDecodeData(data map[string][]byte) ConfigBuilder {
-	for k, v := range data {
-		b.data[k] = string(v)
-	}
+func (b *BaseConfigBuilder) AddItem(key, value string) ConfigBuilder {
+	b.data[key] = value
 	return b
 }
 
