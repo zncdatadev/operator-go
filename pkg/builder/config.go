@@ -15,7 +15,6 @@ type ConfigBuilder interface {
 	SetData(data map[string]string) ConfigBuilder
 	ClearData() ConfigBuilder
 	GetData() map[string]string
-	GetEncodeData() map[string][]byte
 }
 
 var _ ConfigBuilder = &BaseConfigBuilder{}
@@ -65,14 +64,6 @@ func (b *BaseConfigBuilder) SetData(data map[string]string) ConfigBuilder {
 func (b *BaseConfigBuilder) ClearData() ConfigBuilder {
 	b.data = make(map[string]string)
 	return b
-}
-
-func (b *BaseConfigBuilder) GetEncodeData() map[string][]byte {
-	data := make(map[string][]byte)
-	for k, v := range b.data {
-		data[k] = []byte(v)
-	}
-	return data
 }
 
 func (b *BaseConfigBuilder) GetData() map[string]string {
@@ -137,7 +128,7 @@ func NewSecretBuilder(
 func (b *SecretBuilder) GetObject() *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: b.GetObjectMeta(),
-		Data:       b.GetEncodeData(),
+		StringData: b.GetData(),
 	}
 }
 
