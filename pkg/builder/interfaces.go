@@ -169,7 +169,6 @@ type ServiceBuilder interface {
 	GetObject() *corev1.Service
 	AddPort(port *corev1.ServicePort)
 	GetPorts() []corev1.ServicePort
-	GetServiceType() corev1.ServiceType
 }
 
 type ServiceAccountBuilder interface {

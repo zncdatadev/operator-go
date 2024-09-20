@@ -143,16 +143,16 @@ func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) rec
 	return reconciler.NewServiceReconciler(
 		r.GetClient(),
 		info.GetFullName(),
-		info.GetLabels(),
-		info.GetAnnotations(),
 		[]corev1.ContainerPort{
 			{
 				Name:          "http",
 				ContainerPort: 3000,
 			},
 		},
-		nil,
-		false,
+		func(sbo *builder.ServiceBuilderOption) {
+			sbo.Annotations = info.GetAnnotations()
+			sbo.Labels = info.GetLabels()
+		},
 	)
 }
 

@@ -8,6 +8,14 @@ import (
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
+type Option struct {
+	ClusterName   string
+	RoleName      string
+	RoleGroupName string
+	Labels        map[string]string
+	Annotations   map[string]string
+}
+
 type Options struct {
 	ClusterName   string
 	RoleName      string
