@@ -4,7 +4,6 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	pkgclient "github.com/zncdatadev/operator-go/pkg/client"
@@ -350,13 +349,8 @@ func vectorAggregatorDiscoveryURI(
 	discoveryConfigName string) *string {
 	if discoveryConfigName != "" {
 		cli := pkgclient.Client{Client: client}
-		cm := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      discoveryConfigName,
-				Namespace: namespace,
-			},
-		}
-		err := cli.Get(ctx, cm)
+		cm := &corev1.ConfigMap{}
+		err := cli.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: discoveryConfigName}, cm)
 		if err != nil {
 			return nil
 		}
