@@ -25,7 +25,7 @@ var _ = Describe("GetImageTag", func() {
 		image = util.Image{
 			Custom:          "myrepo/myimage:latest",
 			ProductName:     "myproduct",
-			PlatformVersion: "1.0",
+			KubedoopVersion: "1.0",
 			ProductVersion:  "1.0.0",
 		}
 		Expect(tag()).Should(Equal("myrepo/myimage:latest"))
@@ -34,7 +34,7 @@ var _ = Describe("GetImageTag", func() {
 	It("should return the default repository and tag if not provided", func() {
 		image = util.Image{
 			ProductName:     "myproduct",
-			PlatformVersion: "1.0",
+			KubedoopVersion: "1.0",
 			ProductVersion:  "1.0.0",
 		}
 		Expect(tag()).Should(Equal("quay.io/zncdatadev/myproduct:1.0.0-kubedoop1.0"))
@@ -44,7 +44,7 @@ var _ = Describe("GetImageTag", func() {
 		image = util.Image{
 			Repo:            "example.com",
 			ProductName:     "myproduct",
-			PlatformVersion: "1.0",
+			KubedoopVersion: "1.0",
 			ProductVersion:  "1.0.0",
 		}
 		Expect(tag()).Should(Equal("example.com/myproduct:1.0.0-kubedoop1.0"))

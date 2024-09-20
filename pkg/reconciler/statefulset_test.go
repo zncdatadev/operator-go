@@ -77,7 +77,7 @@ var _ = Describe("Statefulset reconciler", func() {
 					name,
 					&replcias,
 					&util.Image{
-						PlatformVersion: "1.0.0",
+						KubedoopVersion: "1.0.0",
 						ProductVersion:  "458",
 						ProductName:     "nginx",
 					},
@@ -149,7 +149,7 @@ var _ = Describe("Statefulset reconciler", func() {
 					name,
 					&replcias,
 					&util.Image{
-						PlatformVersion: "1.0.0",
+						KubedoopVersion: "1.0.0",
 						ProductVersion:  "458",
 						ProductName:     "nginx",
 					},

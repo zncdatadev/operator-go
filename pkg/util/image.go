@@ -14,7 +14,7 @@ var DefaultImagePullPolicy = corev1.PullIfNotPresent
 // Image represents a container image
 // Required fields:
 //   - ProductName
-//   - PlatformVersion
+//   - KubeoopVersion
 //   - ProductVersion
 //
 // If Custom is set, it will be used as the image tag,
@@ -23,7 +23,7 @@ type Image struct {
 	Custom          string
 	Repo            string
 	ProductName     string
-	PlatformVersion string
+	KubedoopVersion string
 	ProductVersion  string
 	PullPolicy      corev1.PullPolicy
 	PullSecretName  string
@@ -58,7 +58,7 @@ type ImageOptions struct {
 //	)
 func NewImage(
 	productName string,
-	platformVersion string,
+	kubedoopVersion string,
 	productVersion string,
 	opts ...ImageOption,
 ) *Image {
@@ -73,7 +73,7 @@ func NewImage(
 		Custom:          options.Custom,
 		Repo:            options.Repo,
 		ProductName:     productName,
-		PlatformVersion: platformVersion,
+		KubedoopVersion: kubedoopVersion,
 		ProductVersion:  productVersion,
 		PullPolicy:      options.PullPolicy,
 		PullSecretName:  options.PullSecretName,
@@ -89,15 +89,15 @@ func (i *Image) GetImageWithTag() (string, error) {
 		return "", fmt.Errorf("ProductVersion is required in Image")
 	}
 
-	if i.PlatformVersion == "" {
-		return "", fmt.Errorf("PlatformVersion is required in Image")
+	if i.KubedoopVersion == "" {
+		return "", fmt.Errorf("KubedoopVersion is required in Image")
 	}
 
 	if i.Repo == "" {
 		i.Repo = DefaultRepository
 	}
 	// quay.io/zncdatadev/myproduct:1.0.0-kubedoop1.0
-	return fmt.Sprintf("%s/%s:%s-kubedoop%s", i.Repo, i.ProductName, i.ProductVersion, i.PlatformVersion), nil
+	return fmt.Sprintf("%s/%s:%s-kubedoop%s", i.Repo, i.ProductName, i.ProductVersion, i.KubedoopVersion), nil
 }
 
 func (i *Image) String() string {
