@@ -36,11 +36,11 @@ func (r *StatefulSet) Reconcile(ctx context.Context) (ctrl.Result, error) {
 }
 
 func (r *StatefulSet) Ready(ctx context.Context) (ctrl.Result, error) {
-	obj := appv1.StatefulSet{
+	obj := &appv1.StatefulSet{
 		ObjectMeta: r.GetObjectMeta(),
 	}
 	logger.V(1).Info("Checking statefulset ready", "namespace", obj.Namespace, "name", obj.Name)
-	if err := r.Client.Get(ctx, &obj); err != nil {
+	if err := r.Client.GetWithObject(ctx, obj); err != nil {
 		return ctrl.Result{}, err
 	}
 	if obj.Status.ReadyReplicas == *obj.Spec.Replicas {

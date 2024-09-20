@@ -59,49 +59,41 @@ func (c *Client) GetOwnerName() string {
 	return c.OwnerReference.GetName()
 }
 
-// Get retrieves the object specified by the given `obj` from the Kubernetes cluster.
-// It accepts a context `ctx` for cancellation and a `obj` of type `ctrlclient.Object` that represents the object to be retrieved.
-// If the `obj` does not have a namespace specified, it uses the owner's namespace.
-// It returns an error if the retrieval fails, along with additional information about the resource.
+// Get wrapped Get method for the client, and provides logging for the operation when it fails.
 // Parameters:
 //   - ctx: The context for the operation.
+//   - key: The key of the object to retrieve.
 //   - obj: The object to retrieve.
+//   - opts: Additional options for the operation.
 //
 // Returns:
 //   - error: An error if the operation fails, otherwise nil.
-//
-// Example:
-//
-//	client := &Client{}
-//	// Get a service in the same namespace as the owner object
-//	svcInOwnerNamespace := &corev1.Service{
-//		ObjectMeta: metav1.ObjectMeta{Name: "my-svc"},
-//	}
-//	if err := client.Get(context.Background(), svcInOwnerNamespace); err != nil {
-//		return
-//	}
-//	// Get a service in another namespace
-//	svcInAnotherNamespace := &corev1.Service{
-//		ObjectMeta: metav1.ObjectMeta{Name: "my-svc", Namespace: "another-ns"},
-//	}
-//	if err := client.Get(context.Background(), svcInAnotherNamespace); err != nil {
-//		return
-//	}
-func (c *Client) Get(ctx context.Context, obj ctrlclient.Object) error {
-	name := obj.GetName()
-	namespace := obj.GetNamespace()
-	if namespace == "" {
-		namespace = c.GetOwnerNamespace()
-		clientLogger.V(1).Info("ResourceClient.Get accept obj without namespace, try to use owner namespace", "namespace", namespace, "name", name)
-	}
-	kind := obj.GetObjectKind()
-	if err := c.Client.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, obj); err != nil {
-		opt := []any{"ns", namespace, "name", name, "kind", kind}
-		if apierrors.IsNotFound(err) {
-			clientLogger.V(0).Info("Fetch resource NotFound", opt...)
-		} else {
-			clientLogger.Error(err, "Fetch resource occur some unknown err", opt...)
+func (c *Client) Get(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		kind, err := GetObjectGVK(c.GetCtrlClient().Scheme(), obj)
+		if err != nil {
+			clientLogger.Error(err, "Failed to get object GVK", "namespace", key.Namespace, "name", key.Name)
 		}
+		logOpt := []any{"namespace", key.Namespace, "name", key.Name, "gvk", kind}
+		if apierrors.IsNotFound(err) {
+			clientLogger.V(1).Info("Fetch resource not found.", logOpt...)
+			return nil
+		}
+		clientLogger.Error(err, "Fetch resource occur failure.", logOpt...)
+		return err
+	}
+	return nil
+}
+
+func (c *Client) GetWithOwnerNamespace(ctx context.Context, name string, obj ctrlclient.Object, opts ...ctrlclient.GetOption) error {
+	if err := c.Get(ctx, ctrlclient.ObjectKey{Namespace: c.GetOwnerNamespace(), Name: name}, obj, opts...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) GetWithObject(ctx context.Context, obj ctrlclient.Object, opts ...ctrlclient.GetOption) error {
+	if err := c.Get(ctx, ctrlclient.ObjectKeyFromObject(obj), obj, opts...); err != nil {
 		return err
 	}
 	return nil
@@ -120,7 +112,6 @@ func (c *Client) Get(ctx context.Context, obj ctrlclient.Object) error {
 // Returns:
 //   - error: An error if setting the owner reference fails, otherwise nil.
 func (c *Client) SetOwnerReference(obj ctrlclient.Object, gvk *schema.GroupVersionKind) error {
-
 	if obj.GetNamespace() == "" {
 		clientLogger.V(1).Info("Skip setting owner reference for object without namespace, it maybe a cluster-scoped resource", "gvk", gvk, "name", obj.GetName())
 		return nil
