@@ -1,6 +1,34 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.10.0 2024-09-20
+
+### features
+
+- Remove `expirationTime` from constants
+- Add `AnnotationSecretsCertRestartBuffer` to constants
+- Add inline connection to s3 bucket connection
+- Refactor cluster and role reconciler to improve log and error handling, and
+improve the cluster stoppped logic
+- Add CRD doc for LDAP provider credentials
+- Refactor `client.Get`, now it wrapped `ctrlclient.Get` and add `client.GetWithOwnerNamespace` `client.GetWithObject`
+- Refactor config builder, remove `AddDecodeData` and `AddDecodeData`. Secret builder use `stringData` now, it don't need to decode data
+- Add `AddItem` to config builder to add single item to config
+- Add Properties util to config package, support get and set properties, and move xml util to config package.
+- Service builder support listener class
+- Rename image spec fields, such as `platformVersion` to `kubedoopVersion`
+
+### bugs
+
+- Remove `AddDecodeData` and `AddDecodeData` from config builder, because it only convert string to byte, and it is not necessary
+
+### chore
+
+### dependencies
+
+- bump k8s.io/client-go from 0.31.0 to 0.31.1
+- bump k8s.io/kubectl from 0.31.0 to 0.31.1
+
 ## v0.9.2 2024-09-08
 
 ### features
