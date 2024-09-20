@@ -1,4 +1,4 @@
-package util
+package xml
 
 import (
 	"encoding/xml"
