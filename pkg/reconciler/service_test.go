@@ -7,11 +7,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/zncdatadev/operator-go/pkg/client"
-	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/reconciler"
 )
 
 var _ = Describe("Service reconciler", func() {
@@ -53,8 +55,6 @@ var _ = Describe("Service reconciler", func() {
 			serviceReconciler := reconciler.NewServiceReconciler(
 				resourceClient,
 				name,
-				map[string]string{"app.kubernetes.io/name": name},
-				map[string]string{"app.kubernetes.io/name": name},
 				[]corev1.ContainerPort{
 					{
 						Name:          "http",
@@ -62,8 +62,11 @@ var _ = Describe("Service reconciler", func() {
 						Protocol:      corev1.ProtocolTCP,
 					},
 				},
-				nil,
-				false,
+				func(sbo *builder.ServiceBuilderOption) {
+					sbo.Annotations = map[string]string{"app.kubernetes.io/name": name}
+					sbo.Labels = map[string]string{"app.kubernetes.io/name": name}
+
+				},
 			)
 			Expect(serviceReconciler).ShouldNot(BeNil())
 

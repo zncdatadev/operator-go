@@ -3,10 +3,12 @@ package builder
 import (
 	"context"
 
-	"github.com/zncdatadev/operator-go/pkg/client"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/constants"
 )
 
 func ContainerPorts2ServicePorts(port []corev1.ContainerPort) []corev1.ServicePort {
@@ -29,33 +31,56 @@ func ContainerPorts2ServicePorts(port []corev1.ContainerPort) []corev1.ServicePo
 	return ports
 }
 
+// ListenerClass2ServiceType converts listener class to k8s service type
+//
+//	ClusterInternal --> ClusterIP
+//	ExternalUnstable --> NodePort
+//	ExternalStable --> LoadBalancer
+//	Default --> ClusterIP
+func ListenerClass2ServiceType(listenerClass constants.ListenerClass) corev1.ServiceType {
+	switch listenerClass {
+	case constants.ClusterInternal:
+		return corev1.ServiceTypeClusterIP
+	case constants.ExternalUnstable:
+		return corev1.ServiceTypeNodePort
+	case constants.ExternalStable:
+		return corev1.ServiceTypeLoadBalancer
+	default:
+		return corev1.ServiceTypeClusterIP
+	}
+}
+
 var _ ServiceBuilder = &BaseServiceBuilder{}
 
 type BaseServiceBuilder struct {
 	BaseResourceBuilder
 
-	// if you want to get ports, please use GetPorts() method
-	ports []corev1.ServicePort
-
-	serviceType *corev1.ServiceType
-
-	headless bool
+	ports         []corev1.ServicePort
+	listenerClass constants.ListenerClass
+	headless      bool
+	// Setting this parameter will override the default matching labels, generally not needed
+	matchingLabels map[string]string
 }
 
 func (b *BaseServiceBuilder) GetObject() *corev1.Service {
-	clusterIp := ""
-	if b.headless {
-		clusterIp = corev1.ClusterIPNone
+	matchingLabels := b.GetMatchingLabels()
+	if b.matchingLabels != nil {
+		matchingLabels = b.matchingLabels
 	}
-	return &corev1.Service{
+	obj := &corev1.Service{
 		ObjectMeta: b.GetObjectMeta(),
 		Spec: corev1.ServiceSpec{
-			Ports:     b.GetPorts(),
-			Selector:  b.GetMatchingLabels(),
-			Type:      b.GetServiceType(),
-			ClusterIP: clusterIp,
+			Ports:    b.GetPorts(),
+			Selector: matchingLabels,
+			Type:     ListenerClass2ServiceType(b.listenerClass),
 		},
 	}
+
+	if b.headless {
+		obj.Spec.ClusterIP = corev1.ClusterIPNone
+	}
+
+	return obj
 }
 
 func (b *BaseServiceBuilder) AddPort(port *corev1.ServicePort) {
@@ -66,39 +91,46 @@ func (b *BaseServiceBuilder) GetPorts() []corev1.ServicePort {
 	return b.ports
 }
 
-func (b *BaseServiceBuilder) GetServiceType() corev1.ServiceType {
-	if b.serviceType == nil {
-		return corev1.ServiceTypeClusterIP
-	}
-	return *b.serviceType
-}
-
 func (b *BaseServiceBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
 	obj := b.GetObject()
 	return obj, nil
 }
 
+type ServiceBuilderOption struct {
+	Option
+
+	// If not set, ClusterIP will be used
+	ListenerClass  constants.ListenerClass
+	Headless       bool
+	MatchingLabels map[string]string
+}
+
+type ServiceBuilderOptions func(*ServiceBuilderOption)
+
 func NewServiceBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
 	ports []corev1.ContainerPort,
-	serviceType *corev1.ServiceType,
-	headless bool,
+	options ...ServiceBuilderOptions,
 ) *BaseServiceBuilder {
 
-	servicePorts := ContainerPorts2ServicePorts(ports)
+	opt := &ServiceBuilderOption{}
+
+	for _, o := range options {
+		o(opt)
+	}
 
 	return &BaseServiceBuilder{
 		BaseResourceBuilder: BaseResourceBuilder{
-			Client: client,
-			Name:   name,
-			labels: labels,
+			Client:      client,
+			Name:        name,
+			labels:      opt.Labels,
+			annotations: opt.Annotations,
 		},
-		ports: servicePorts,
+		ports: ContainerPorts2ServicePorts(ports),
 
-		serviceType: serviceType,
-		headless:    headless,
+		headless:       opt.Headless,
+		matchingLabels: opt.MatchingLabels,
+		listenerClass:  opt.ListenerClass,
 	}
 }

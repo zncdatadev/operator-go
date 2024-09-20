@@ -8,14 +8,16 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/client"
-	"github.com/zncdatadev/operator-go/pkg/constants"
-	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/constants"
+	"github.com/zncdatadev/operator-go/pkg/reconciler"
 )
 
 // ClusterReconciler reconciles a TrinoCluster object
@@ -52,16 +54,16 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 	serviceReconciler := reconciler.NewServiceReconciler(
 		r.GetClient(),
 		r.GetName(),
-		r.ClusterInfo.GetLabels(),
-		r.ClusterInfo.GetAnnotations(),
 		[]corev1.ContainerPort{
 			{
 				Name:          "http",
 				ContainerPort: 3000,
 			},
 		},
-		nil,
-		false,
+		func(sbo *builder.ServiceBuilderOption) {
+			sbo.Annotations = r.ClusterInfo.GetAnnotations()
+			sbo.Labels = r.ClusterInfo.GetLabels()
+		},
 	)
 	// Register resources
 	r.AddResource(serviceReconciler)
