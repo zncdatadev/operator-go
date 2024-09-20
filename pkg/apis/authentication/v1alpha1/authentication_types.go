@@ -57,6 +57,7 @@ type OIDCProvider struct {
 	// +kubebuilder:validation:Optional
 	Port int `json:"port,omitempty"`
 
+	// +kubebuilder:validation:Required
 	PrincipalClaim string `json:"principalClaim"`
 
 	// +kubebuilder:validation:Required
@@ -89,11 +90,17 @@ type StaticProvider struct {
 }
 
 type StaticCredentialsSecret struct {
+	// The secret name that contains the user credentials.
+	// The data contained in secret is related to the data required for the specific product certification function.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }
 
 type LDAPProvider struct {
+	// Provide ldap credentials mounts for Pods via k8s-search secret-class.
+	// The secret searched by k8s-search must contain the following data:
+	//  - user: bind user, e.g. cn=admin,dc=example,dc=com
+	//  - password: bind password
 	// +kubebuilder:validation:Required
 	BindCredentials *commonsv1alpha1.Credentials `json:"bindCredentials"`
 

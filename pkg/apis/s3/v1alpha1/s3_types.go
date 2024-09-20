@@ -25,7 +25,9 @@ import (
 // S3ConnectionSpec defines the desired credential of S3Connection
 type S3ConnectionSpec struct {
 
-	// Provides access credentials for S3Connection through SecretClass. SecretClass only needs to include the ACCESS_KEY and SECRET_KEY fields.
+	// Provides access credentials for S3Connection through SecretClass. SecretClass only needs to include:
+	//  - ACCESS_KEY
+	//  - SECRET_KEY
 	// +kubebuilder:validation:Required
 	Credentials *commonsv1alpha1.Credentials `json:"credentials"`
 
