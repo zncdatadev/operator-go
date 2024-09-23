@@ -10,6 +10,7 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -162,6 +163,12 @@ type JobBuilder interface {
 	WorkloadResource
 
 	SetRestPolicy(policy *corev1.RestartPolicy)
+}
+
+type IngressBuilder interface {
+	ResourceBuilder
+	GetObject() *netv1.Ingress
+	AddRules(rules []netv1.IngressRule)
 }
 
 type ServiceBuilder interface {
