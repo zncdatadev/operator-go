@@ -52,7 +52,8 @@ var _ RoleBuilder = &GenericRoleBuilder{}
 type GenericRoleBuilder struct {
 	BaseResourceBuilder
 
-	obj *rbacv1.Role
+	obj   *rbacv1.Role
+	rules []rbacv1.PolicyRule
 }
 
 func NewGenericRoleBuilder(
@@ -71,10 +72,28 @@ func NewGenericRoleBuilder(
 	}
 }
 
+func (b *GenericRoleBuilder) AddPolicyRule(rule rbacv1.PolicyRule) {
+	b.rules = append(b.rules, rule)
+}
+
+func (b *GenericRoleBuilder) AddPolicyRules(rules []rbacv1.PolicyRule) {
+	b.rules = append(b.rules, rules...)
+}
+
+func (b *GenericRoleBuilder) ResetPolicyRules(rules []rbacv1.PolicyRule) {
+	b.rules = rules
+}
+
+// set obj
+func (b *GenericRoleBuilder) SetObject(obj *rbacv1.Role) {
+	b.obj = obj
+}
+
 func (b *GenericRoleBuilder) GetObject() *rbacv1.Role {
 	if b.obj == nil {
 		b.obj = &rbacv1.Role{
 			ObjectMeta: b.GetObjectMeta(),
+			Rules:      b.rules,
 		}
 	}
 	return b.obj
@@ -300,6 +319,10 @@ func RoleBindingName(rbacPrefix string) string {
 
 func ClusterRoleBindingName(rbacPrefix string) string {
 	return fmt.Sprintf("%s-clusterrolebinding", rbacPrefix)
+}
+
+func RoleName(rbacPrefix string) string {
+	return fmt.Sprintf("%s-role", rbacPrefix)
 }
 
 func ClusterRoleName(rbacPrefix string) string {
