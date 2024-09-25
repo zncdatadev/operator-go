@@ -19,6 +19,9 @@ const (
 
 	VectorConfigVolumeName = "config"
 	VectorLogVolumeName    = "log"
+
+	vectorDataDirVolumeName = "vector-data"
+	vectorDataDir           = constants.KubedoopRoot + "vector/var"
 )
 
 var _ productlogging.WorkloadDecorator = &VectorDecorator{}
@@ -65,6 +68,9 @@ func (v *VectorDecorator) Decorate() error {
 	default:
 		return fmt.Errorf("unsupported workload object type %T", o)
 	}
+
+	*volumes = append(*volumes, corev1.Volume{
+		Name: vectorDataDirVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 	//append shared log volume to workload
 	if !v.volumeExists(*volumes, v.LogVolumeName) {
 		*volumes = append(*volumes, v.createLogVolume())
@@ -196,6 +202,10 @@ func VectorVolumeMount(vectorConfigVolumeName string, vectorLogVolumeName string
 		{
 			Name:      vectorLogVolumeName,
 			MountPath: constants.KubedoopLogDir,
+		},
+		{
+			Name:      vectorDataDirVolumeName,
+			MountPath: vectorDataDir,
 		},
 	}
 }
