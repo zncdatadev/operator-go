@@ -27,6 +27,8 @@ type ContainerBuilder interface {
 
 	AddEnvVars(envs []corev1.EnvVar) ContainerBuilder
 	AddEnvVar(env *corev1.EnvVar) ContainerBuilder
+	AddEnvs(envs map[string]string) ContainerBuilder
+	AddEnv(name, value string) ContainerBuilder
 
 	AddEnvSource(envs []corev1.EnvFromSource) ContainerBuilder
 

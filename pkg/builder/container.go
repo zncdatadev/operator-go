@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"maps"
 	"slices"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -129,19 +130,15 @@ func (b *Container) GetEnvVars() []corev1.EnvVar {
 	return b.getObject().Env
 }
 
-func (b *Container) AddEnvs(envs map[string]string) {
-	var envVars []corev1.EnvVar
-	for name, value := range envs {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  name,
-			Value: value,
-		})
+func (b *Container) AddEnvs(envs map[string]string) ContainerBuilder {
+	for _, key := range slices.Sorted(maps.Keys(envs)) {
+		b.AddEnv(key, envs[key])
 	}
-	b.AddEnvVars(envVars)
+	return b
 }
 
-func (b *Container) AddEnv(key, value string) {
-	b.AddEnvs(map[string]string{key: value})
+func (b *Container) AddEnv(key, value string) ContainerBuilder {
+	return b.AddEnvVar(&corev1.EnvVar{Name: key, Value: value})
 }
 
 func (b *Container) AddEnvSource(envs []corev1.EnvFromSource) ContainerBuilder {
