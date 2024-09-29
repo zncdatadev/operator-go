@@ -2,8 +2,10 @@ package v1alpha1
 
 type AuthenticationSpec struct {
 	// +kubebuilder:validation:Required
-	AuthenticationClass string    `json:"authenticationClass"`
-	Oidc                *OidcSpec `json:"oidc,omitempty"`
+	AuthenticationClass string `json:"authenticationClass"`
+
+	// +kubebuilder:validation:Optional
+	Oidc *OidcSpec `json:"oidc,omitempty"`
 }
 
 // OidcSpec defines the OIDC spec.
