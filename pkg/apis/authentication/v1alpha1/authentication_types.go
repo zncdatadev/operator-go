@@ -147,8 +147,10 @@ type LDAPFieldNames struct {
 	Uid string `json:"uid,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:path=authenticationclasses,scope=Cluster,shortName=authclass
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AuthenticationClass is the Schema for the authenticationclasses API
 type AuthenticationClass struct {
