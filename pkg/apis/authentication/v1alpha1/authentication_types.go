@@ -61,8 +61,8 @@ type OIDCProvider struct {
 	PrincipalClaim string `json:"principalClaim"`
 
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=oidc;keycloak;dexidp;authentik
-	Provisioner string `json:"provisioner"`
+	// +kubebuilder:validation:Enum=keycloak
+	ProviderHint string `json:"provisionerHint"`
 
 	// +kubebuilder:validation:Optional
 	RootPath string `json:"rootPath,omitempty"`
