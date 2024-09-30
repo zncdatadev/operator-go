@@ -1,5 +1,12 @@
 package v1alpha1
 
+type LoggingSpec struct {
+	// +kubebuilder:validation:Optional
+	Containers map[string]LoggingConfigSpec `json:"containers,omitempty"`
+	// +kubebuilder:validation:Optional
+	EnableVectorAgent *bool `json:"enableVectorAgent,omitempty"`
+}
+
 type LoggingConfigSpec struct {
 	// +kubebuilder:validation:Optional
 	Loggers map[string]*LogLevelSpec `json:"loggers,omitempty"`
@@ -12,18 +19,15 @@ type LoggingConfigSpec struct {
 }
 
 // LogLevelSpec
-// level mapping example:
+// level mapping if app log level is not standard
+//   - FATAL -> CRITICAL
+//   - ERROR -> ERROR
+//   - WARN -> WARNING
+//   - INFO -> INFO
+//   - DEBUG -> DEBUG
+//   - TRACE -> DEBUG
 //
-// |---------------------|-----------------|
-// |  App log level      |  kds log level  |
-// |---------------------|-----------------|
-// |  CRITICAL           |  FATAL          |
-// |  ERROR              |  ERROR          |
-// |  WARNING            |  WARN           |
-// |  INFO               |  INFO           |
-// |  DEBUG              |  DEBUG          |
-// |  DEBUG              |  TRACE          |
-// |---------------------|-----------------|
+// Default log level is INFO
 type LogLevelSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:="INFO"
