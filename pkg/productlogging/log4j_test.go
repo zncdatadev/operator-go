@@ -1,76 +1,58 @@
-package productlogging_test
+package productlogging
 
 import (
-	"fmt"
+	"testing"
 
+	"github.com/stretchr/testify/assert"
 	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/zncdatadev/operator-go/pkg/productlogging"
 )
 
-var _ = Describe("Log4jConfigGenerator", func() {
-	var (
-		generator productlogging.Log4jConfigGenerator
-	)
+func TestLog4jConfig_Content(t *testing.T) {
+	productLogging := &ProductLogging{
+		RootLogLevel:                   "DEBUG",
+		ConsoleHandlerLevel:            "INFO",
+		ConsoleHandlerFormatter:        "%d{ISO8601} %-5p %m%n",
+		RotatingFileHandlerLevel:       "WARN",
+		RotatingFileHandlerFile:        "/var/log/app.log",
+		RotatingFileHandlerMaxBytes:    10 * 1024 * 1024,
+		RotatingFileHandlerBackupCount: 5,
+		Loggers: map[string]loggingv1alpha1.LogLevelSpec{
+			"com.example": {Level: "DEBUG"},
+		},
+	}
 
-	Context("when parsing is successful", func() {
-		It("should return parsed configuration string", func() {
-			loggingConfigSpec := &loggingv1alpha1.LoggingConfigSpec{
-				Loggers: map[string]*loggingv1alpha1.LogLevelSpec{
-					"a": {
-						Level: "INFO",
-					},
-					"b": {
-						Level: "DEBUG",
-					},
-				},
-				Console: &loggingv1alpha1.LogLevelSpec{
-					Level: "INFO",
-				},
-				File: &loggingv1alpha1.LogLevelSpec{
-					Level: "DEBUG",
-				},
-			}
-			generator = *productlogging.NewLog4jConfigGenerator(loggingConfigSpec, "zoo_container", productlogging.DefaultLog4jConversionPattern, nil, "app.log", "logback.xml")
-			result := generator.Generate()
-			Expect(result).Should(ContainSubstring("log4j.rootLogger=INFO, CONSOLE, FILE"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE.Threshold=INFO"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE.layout.ConversionPattern=[%d] %p %m (%c)%n"))
+	log4jConfig := &Log4jConfig{productLogging: productLogging}
+	content, err := log4jConfig.Content()
+	assert.NoError(t, err)
 
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE=org.apache.log4j.RollingFileAppender"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.Threshold=DEBUG"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.File=/kubedoop/log/zoo_container/app.log"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.MaxFileSize=5MB"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.MaxBackupIndex=1"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout"))
+	expectedContent := `log4j.rootLogger=DEBUG, CONSOLE, FILE
 
-			Expect(result).Should(ContainSubstring("log4j.logger.a=INFO"))
-			Expect(result).Should(ContainSubstring("log4j.logger.b=DEBUG"))
-		})
-	})
+log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender
+log4j.appender.CONSOLE.Threshold=INFO
+log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout
+log4j.appender.CONSOLE.layout.ConversionPattern=%d{ISO8601} %-5p %m%n
 
-	Context("when parsing is successful", func() {
-		It("should return default string when loggingConfigSpec is nil", func() {
-			generator = *productlogging.NewLog4jConfigGenerator(nil, "zoo_container", productlogging.DefaultLog4jConversionPattern, nil, "app.log", "logback.xml")
-			result := generator.Generate()
-			fmt.Println(result)
-			Expect(result).Should(ContainSubstring("log4j.rootLogger=INFO, CONSOLE, FILE"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE.Threshold=INFO"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout"))
-			Expect(result).Should(ContainSubstring("log4j.appender.CONSOLE.layout.ConversionPattern=[%d] %p %m (%c)%n"))
+log4j.appender.FILE=org.apache.log4j.RollingFileAppender
+log4j.appender.FILE.Threshold=WARN
+log4j.appender.FILE.File=/var/log/app.log
+log4j.appender.FILE.MaxFileSize=10MB
+log4j.appender.FILE.MaxBackupIndex=5
+log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout
 
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE=org.apache.log4j.RollingFileAppender"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.Threshold=INFO"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.File=/kubedoop/log/zoo_container/app.log"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.MaxFileSize=10MB"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.MaxBackupIndex=1"))
-			Expect(result).Should(ContainSubstring("log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout"))
-		})
-	})
+log4j.logger.com.example=DEBUG
+`
+	assert.Equal(t, expectedContent, content)
+}
 
-})
+func TestLog4jConfig_LoggerFormatter(t *testing.T) {
+	log4jConfig := &Log4jConfig{}
+	formattedLogger := log4jConfig.LoggerFormatter("com.example", "DEBUG")
+	expectedFormattedLogger := "log4j.logger.com.example=DEBUG"
+	assert.Equal(t, expectedFormattedLogger, formattedLogger)
+}
+
+func TestLog4jConfig_Template(t *testing.T) {
+	log4jConfig := &Log4jConfig{}
+	template := log4jConfig.Template()
+	assert.Equal(t, log4jTemplate, template)
+}

@@ -1,10 +1,7 @@
 package productlogging
 
 import (
-	"fmt"
-	"strings"
-
-	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/config"
 )
 
 const log4j2Template = `appenders = FILE, CONSOLE
@@ -13,67 +10,59 @@ appender.CONSOLE.type = Console
 appender.CONSOLE.name = CONSOLE
 appender.CONSOLE.target = SYSTEM_ERR
 appender.CONSOLE.layout.type = PatternLayout
-appender.CONSOLE.layout.pattern = {{.ConsoleConversionPattern}}
+appender.CONSOLE.layout.pattern = {{.ConsoleHandlerFormatter}}
 appender.CONSOLE.filter.threshold.type = ThresholdFilter
-appender.CONSOLE.filter.threshold.level = {{.ConsoleLogLevel}}
+appender.CONSOLE.filter.threshold.level = {{.ConsoleHandlerLevel}}
 
 appender.FILE.type = RollingFile
 appender.FILE.name = FILE
-appender.FILE.fileName = {{.LogDir}}{{.LogFile}}
-appender.FILE.filePattern = {{.LogDir}}{{.LogFile}}.%i
+appender.FILE.fileName = {{.RotatingFileHandlerFile}}
+appender.FILE.filePattern = {{.RotatingFileHandlerFile}}.%i
 appender.FILE.layout.type = XMLLayout
 appender.FILE.policies.type = Policies
 appender.FILE.policies.size.type = SizeBasedTriggeringPolicy
-appender.FILE.policies.size.size = {{.MaxLogFileSizeInMiB}}MB
+appender.FILE.policies.size.size = {{.RotatingFileHandlerMaxSizeInMiB}}MB
 appender.FILE.strategy.type = DefaultRolloverStrategy
-appender.FILE.strategy.max = {{.NumberOfArchivedLogFiles}}
+appender.FILE.strategy.max = {{.RotatingFileHandlerBackupCount}}
 appender.FILE.filter.threshold.type = ThresholdFilter
-appender.FILE.filter.threshold.level = {{.FileLogLevel}}
+appender.FILE.filter.threshold.level = {{.RotatingFileHandlerLevel}}
 {{.Loggers}}
 rootLogger.level={{.RootLogLevel}}
 rootLogger.appenderRefs = CONSOLE, FILE
 rootLogger.appenderRef.CONSOLE.ref = CONSOLE
-rootLogger.appenderRef.FILE.ref = FILE`
+rootLogger.appenderRef.FILE.ref = FILE
+`
 
-func NewLog4j2ConfigGenerator(
-	loggingConfigSpec *loggingv1alpha1.LoggingConfigSpec,
-	containerName string,
-	consoleConversionPattern string,
-	maxLogFileSizeInMiB *float64,
-	logFileName string,
-	configFileName string) *Log4j2ConfigGenerator {
-	impl := &Log4j2ConfigGenerator{configFileName: configFileName}
-	impl.BaseLoggingConfigGenerator = *NewBaseLoggingConfigGenerator(loggingConfigSpec, containerName, consoleConversionPattern, maxLogFileSizeInMiB, logFileName, impl)
-	return impl
+var _ LoggingConfig = &Log4j2Config{}
+
+// Log4j2Config is a struct that contains log4j2 logging configuration
+type Log4j2Config struct {
+	productLogging *ProductLogging
 }
 
-var _ LoggingConfigGenerator = &Log4j2ConfigGenerator{}
+// Content implements the LoggingConfig interface
+func (l *Log4j2Config) Content() (string, error) {
+	values := JavaLogTemplateValue(l, l.productLogging)
 
-type Log4j2ConfigGenerator struct {
-	BaseLoggingConfigGenerator
-	configFileName string
+	p := config.TemplateParser{Template: l.Template(), Value: values}
+	return p.Parse()
 }
 
-// GenerateLoggersConfig implements LoggingConfigGenerator.
-func (l *Log4j2ConfigGenerator) GenerateLoggersConfig(LoggersSpec map[string]*loggingv1alpha1.LogLevelSpec) string {
-	if len(LoggersSpec) == 0 {
-		return ""
+// LoggerFormatter implements the LoggingConfig interface
+func (l *Log4j2Config) LoggerFormatter(name string, level string) string {
+	return `logger.` + name + `.name = ` + name + "\nlogger." + name + `.level = ` + level
+}
+
+// String implements the LoggingConfig interface
+func (l *Log4j2Config) String() string {
+	c, e := l.Content()
+	if e != nil {
+		panic(e)
 	}
-
-	var loggerNames, loggersConfig []string
-	for name, lvl := range LoggersSpec {
-		loggerNames = append(loggerNames, name)
-		loggersConfig = append(loggersConfig, fmt.Sprintf("logger.%s.name = %s", name, name))
-		loggersConfig = append(loggersConfig, fmt.Sprintf("logger.%s.name = %s", name, lvl.Level))
-	}
-	return fmt.Sprintf("loggers = %s\n%s", strings.Join(loggerNames, ","), strings.Join(loggersConfig, "\n"))
+	return c
 }
 
-// ConfigTemplate implements LoggingConfigGenerator.
-func (l *Log4j2ConfigGenerator) ConfigTemplate() string {
+// Template implements the LoggingConfig interface
+func (l *Log4j2Config) Template() string {
 	return log4j2Template
-}
-
-func (l *Log4j2ConfigGenerator) FileName() string {
-	return l.configFileName
 }

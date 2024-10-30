@@ -1,12 +1,11 @@
 package productlogging
 
 import (
-	"maps"
-	"math"
+	"fmt"
+	"path"
 	"strings"
 
 	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constants"
 )
 
@@ -17,127 +16,143 @@ const (
 	DefaultLog4jConversionPattern   = "[%d] %p %m (%c)%n"
 	DefaultLog4j2ConversionPattern  = "%d{ISO8601} %-5p %m%n"
 	DefaultLogbackConversionPattern = "%d{ISO8601} %-5p [%t:%C{1}@%L] - %m%n"
-
-	DefaultMaxLogFileSizeInMiB = 10
 )
 
-type TemplateData struct {
-	RootLogLevel             string
-	ConsoleLogLevel          string
-	ConsoleConversionPattern string
-	FileLogLevel             string
-	LogDir                   string
-	LogFile                  string
-	MaxLogFileSizeInMiB      int
-	NumberOfArchivedLogFiles int
-	Loggers                  string
+type LogType int
+
+const (
+	LogTypeLog4j LogType = iota
+	LogTypeLog4j2
+	LogTypeLogback
+	LogTypePythonLoging
+)
+
+type ProductLogging struct {
+	RootLogLevel string
+	// log msg format
+	ConsoleHandlerFormatter string
+	ConsoleHandlerLevel     string
+
+	RotatingFileHandlerLevel       string
+	RotatingFileHandlerFile        string
+	RotatingFileHandlerMaxBytes    float64
+	RotatingFileHandlerBackupCount int
+
+	Loggers map[string]loggingv1alpha1.LogLevelSpec
 }
 
-type LoggingConfigGenerator interface {
-	Generate() string
-	GenerateLoggersConfig(LoggersSpec map[string]*loggingv1alpha1.LogLevelSpec) string
-	ConfigTemplate() string
-	FileName() string
+type LoggingConfig interface {
+	Template() string
+	LoggerFormatter(name, level string) string
+	String() string
+	Content() (string, error)
 }
 
-func NewBaseLoggingConfigGenerator(
+func NewConfigGenerator(
 	loggingConfigSpec *loggingv1alpha1.LoggingConfigSpec,
 	containerName string,
-	consoleConversionPattern string,
-	maxLogFileSizeInMiB *float64,
+	consoleHandlerFormatter string,
+	logFileMaxBytes *float64,
 	logFileName string,
-	impl LoggingConfigGenerator) *BaseLoggingConfigGenerator {
-	return &BaseLoggingConfigGenerator{
-		LoggingConfigSpec:        loggingConfigSpec,
-		contaienrName:            containerName,
-		consoleConversionPattern: consoleConversionPattern,
-		maxLogFileSizeInMiB:      maxLogFileSizeInMiB,
-		logFileName:              logFileName,
-		impl:                     impl,
+	logType LogType) (*ConfigGenerator, error) {
+
+	return &ConfigGenerator{
+		loggingConfigSpec:       loggingConfigSpec,
+		contaienrName:           containerName,
+		consoleHandlerFormatter: consoleHandlerFormatter,
+		logFileMaxBytes:         logFileMaxBytes,
+		logFileName:             logFileName,
+	}, nil
+}
+
+type ConfigGenerator struct {
+	loggingConfigSpec       *loggingv1alpha1.LoggingConfigSpec
+	contaienrName           string
+	consoleHandlerFormatter string
+	logFileMaxBytes         *float64
+	logFileName             string
+
+	logType LogType
+}
+
+func (b *ConfigGenerator) getLoggingConfig() (LoggingConfig, error) {
+	productLogging := b.getProductLogging()
+	var loggingConfig LoggingConfig
+	switch b.logType {
+	case LogTypeLog4j:
+		loggingConfig = &Log4jConfig{productLogging: productLogging}
+	case LogTypeLog4j2:
+		loggingConfig = &Log4j2Config{productLogging: productLogging}
+	case LogTypeLogback:
+		loggingConfig = &LogbackConfig{productLogging: productLogging}
+	default:
+		return nil, fmt.Errorf("unsupported log type: %v", b.logType)
 	}
+
+	return loggingConfig, nil
 }
 
-type BaseLoggingConfigGenerator struct {
-	*loggingv1alpha1.LoggingConfigSpec
-	contaienrName            string
-	consoleConversionPattern string
-	maxLogFileSizeInMiB      *float64
-	logFileName              string
-
-	impl LoggingConfigGenerator
-}
-
-// implement LoggingConfigGenerator
-func (l BaseLoggingConfigGenerator) Generate() string {
-	data := l.Config()
-	parser := config.TemplateParser{Value: data, Template: l.impl.ConfigTemplate()}
-	config, err := parser.Parse()
+func (l *ConfigGenerator) Content() (string, error) {
+	loggingConfig, err := l.getLoggingConfig()
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	return config
+	return loggingConfig.Content()
 }
 
-func (b *BaseLoggingConfigGenerator) Config() *TemplateData {
-	rootLogLevel := DefalutLoggerLevel
-	consoleLogLevel := DefalutLoggerLevel
-	fileLogLevel := DefalutLoggerLevel
-	numberOfArchivedLogFiles := 1
-	maxLogFileSizeInMiB := 10.0
-	var loggerConfig string
-	if b.LoggingConfigSpec != nil {
-		loggersSpec := b.LoggingConfigSpec.Loggers
-		consoleLogSpec := b.LoggingConfigSpec.Console
-		fileLogSpec := b.LoggingConfigSpec.File
-		// if console or file level is not empty, use it, otherwise use default
-		consoleLogLevel = GetLoggerLevel(consoleLogSpec.Level != "", func() string { return consoleLogSpec.Level }, DefalutLoggerLevel)
-		fileLogLevel = GetLoggerLevel(fileLogSpec.Level != "", func() string { return fileLogSpec.Level }, DefalutLoggerLevel)
-		// extract root log level and logger names
-		if len(loggersSpec) != 0 {
-			// check root logger exists in loggers, if not, use default.
-			if _, ok := loggersSpec[RootLoggerName]; ok {
-				definedRootLogLevel := loggersSpec[RootLoggerName].Level
-				if definedRootLogLevel != "" {
-					rootLogLevel = definedRootLogLevel
+func (b *ConfigGenerator) getProductLogging() *ProductLogging {
+	productLogging := &ProductLogging{
+		RootLogLevel:            DefalutLoggerLevel,
+		ConsoleHandlerLevel:     DefalutLoggerLevel,
+		ConsoleHandlerFormatter: b.consoleHandlerFormatter,
+
+		RotatingFileHandlerLevel: DefalutLoggerLevel,
+		RotatingFileHandlerFile:  path.Join(constants.KubedoopLogDir, strings.ToLower(b.contaienrName), b.logFileName),
+		// Default File size is 10MB
+		RotatingFileHandlerMaxBytes:    10 * 1024 * 1024,
+		RotatingFileHandlerBackupCount: 1,
+
+		Loggers: make(map[string]loggingv1alpha1.LogLevelSpec),
+	}
+
+	if b.loggingConfigSpec != nil {
+		// If console and file log levels are defined, use them. Otherwise, use the default log level.
+		if b.loggingConfigSpec.Console != nil && b.loggingConfigSpec.Console.Level != "" {
+			productLogging.ConsoleHandlerLevel = b.loggingConfigSpec.Console.Level
+		}
+		if b.loggingConfigSpec.File != nil && b.loggingConfigSpec.File.Level != "" {
+			productLogging.RotatingFileHandlerLevel = b.loggingConfigSpec.File.Level
+		}
+
+		if b.loggingConfigSpec.Loggers != nil {
+			for name, level := range b.loggingConfigSpec.Loggers {
+				if name == RootLoggerName {
+					productLogging.RootLogLevel = level.Level
+				} else {
+					productLogging.Loggers[name] = *level
 				}
 			}
-			cloneLoggers := maps.Clone(loggersSpec)
-			// Deletes the logger associated with the RootLogger key from the cloneLoggers map.
-			// If the cloneLoggers map is not empty after deletion, concatenates the keys of the remaining loggers
-			// with a comma and assigns the result to loggerNames.
-			maps.DeleteFunc(cloneLoggers, func(key string, value *loggingv1alpha1.LogLevelSpec) bool { return key == RootLoggerName })
-			if len(cloneLoggers) != 0 {
-				loggerConfig = b.impl.GenerateLoggersConfig(cloneLoggers)
-
-			}
 		}
-		// compute max log file size
-		var maxLogFileSize float64 = DefaultMaxLogFileSizeInMiB
-		if b.maxLogFileSizeInMiB != nil {
-			maxLogFileSize = *b.maxLogFileSizeInMiB
-		}
-		maxLogFileSizeInMiB = math.Max(1, float64(maxLogFileSize)/(1+float64(numberOfArchivedLogFiles)))
 	}
 
-	return &TemplateData{
-		RootLogLevel:             rootLogLevel,
-		ConsoleConversionPattern: b.consoleConversionPattern,
-		ConsoleLogLevel:          consoleLogLevel,
-		FileLogLevel:             fileLogLevel,
-		LogDir:                   constants.KubedoopLogDir + strings.ToLower(string(b.contaienrName)) + "/",
-		LogFile:                  b.logFileName,
-		MaxLogFileSizeInMiB:      int(maxLogFileSizeInMiB),
-		NumberOfArchivedLogFiles: numberOfArchivedLogFiles,
-		Loggers:                  loggerConfig,
-	}
+	return productLogging
 }
 
-// get Loggers
-func createLoggerConfig(loggers map[string]*loggingv1alpha1.LogLevelSpec, createFunc func(name, lvl string) string) string {
-	var configs = make([]string, 0)
-	for name, lvl := range loggers {
-		logger := createFunc(name, lvl.Level)
-		configs = append(configs, logger)
+func JavaLogTemplateValue(loggingConfig LoggingConfig, productLogging *ProductLogging) map[string]interface{} {
+	values := map[string]interface{}{}
+	values["RootLogLevel"] = productLogging.RootLogLevel
+	values["ConsoleHandlerLevel"] = productLogging.ConsoleHandlerLevel
+	values["ConsoleHandlerFormatter"] = productLogging.ConsoleHandlerFormatter
+	values["RotatingFileHandlerLevel"] = productLogging.RotatingFileHandlerLevel
+	values["RotatingFileHandlerFile"] = productLogging.RotatingFileHandlerFile
+	values["RotatingFileHandlerMaxSizeInMiB"] = productLogging.RotatingFileHandlerMaxBytes / 1024 / 1024
+	values["RotatingFileHandlerBackupCount"] = productLogging.RotatingFileHandlerBackupCount
+	loggers := []string{}
+
+	for name, level := range productLogging.Loggers {
+		loggers = append(loggers, loggingConfig.LoggerFormatter(name, level.Level))
 	}
-	return strings.Join(configs, "\n")
+	values["Loggers"] = strings.Join(loggers, "\n")
+
+	return values
 }

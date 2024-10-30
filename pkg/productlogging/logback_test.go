@@ -1,74 +1,73 @@
-package productlogging_test
+package productlogging
 
 import (
-	"fmt"
+	"testing"
 
+	"github.com/stretchr/testify/assert"
 	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/zncdatadev/operator-go/pkg/productlogging"
 )
 
-var _ = Describe("LogbackConfigGenerator", func() {
-	var (
-		generator productlogging.LogbackConfigGenerator
-	)
+func TestLogbackConfig_Content(t *testing.T) {
+	productLogging := &ProductLogging{
+		RootLogLevel:                   "DEBUG",
+		ConsoleHandlerLevel:            "INFO",
+		ConsoleHandlerFormatter:        "%d{ISO8601} %-5p %m%n",
+		RotatingFileHandlerLevel:       "WARN",
+		RotatingFileHandlerFile:        "/var/log/app.log",
+		RotatingFileHandlerMaxBytes:    10 * 1024 * 1024,
+		RotatingFileHandlerBackupCount: 5,
+		Loggers: map[string]loggingv1alpha1.LogLevelSpec{
+			"com.example": {Level: "DEBUG"},
+		},
+	}
 
-	Context("when parsing is successful", func() {
-		It("should return parsed configuration string", func() {
-			loggingConfigSpec := &loggingv1alpha1.LoggingConfigSpec{
-				Loggers: map[string]*loggingv1alpha1.LogLevelSpec{
-					"a": {
-						Level: "INFO",
-					},
-					"b": {
-						Level: "DEBUG",
-					},
-				},
-				Console: &loggingv1alpha1.LogLevelSpec{
-					Level: "INFO",
-				},
-				File: &loggingv1alpha1.LogLevelSpec{
-					Level: "DEBUG",
-				},
-			}
-			generator = *productlogging.NewLogbackConfigGenerator(loggingConfigSpec, "zoo_container", productlogging.DefaultLogbackConversionPattern, nil, "app.log", "logback.xml")
-			result := generator.Generate()
-			fmt.Println(result)
-			Expect(result).ShouldNot(BeEmpty())
-			Expect(result).Should(ContainSubstring("<logger name=\"a\" level=\"INFO\"/>"))
-			Expect(result).Should(ContainSubstring("<logger name=\"b\" level=\"DEBUG\"/>"))
-			Expect(result).Should(ContainSubstring("<root level=\"INFO\">"))
-			Expect(result).Should(ContainSubstring(`<filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-  <level>DEBUG</level>
-</filter>`))
-			Expect(result).Should(ContainSubstring(`<filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-  <level>INFO</level>
-</filter>`))
-			Expect(result).Should(ContainSubstring("<File>/kubedoop/log/zoo_container/app.log</File>"))
-			Expect(result).Should(ContainSubstring("<FileNamePattern>/kubedoop/log/zoo_container/app.log.%i</FileNamePattern>"))
+	logbackConfig := &LogbackConfig{productLogging: productLogging}
+	content, err := logbackConfig.Content()
+	assert.NoError(t, err)
 
-			Expect(generator.FileName()).Should(Equal("logback.xml"))
-		})
-	})
+	expectedContent := `<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>INFO</level>
+    </filter>
+    <encoder>
+      <pattern>%d{ISO8601} %-5p %m%n</pattern>
+    </encoder>
+  </appender>
 
-	Context("when parsing is successful", func() {
-		It("should return default string when loggingConfigSpec is nil", func() {
-			generator = *productlogging.NewLogbackConfigGenerator(nil, "zoo_container", productlogging.DefaultLogbackConversionPattern, nil, "app.log", "logback.xml")
-			result := generator.Generate()
-			fmt.Println(result)
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>/var/log/app.log</file>
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>WARN</level>
+    </filter>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+      <maxFileSize>10MB</maxFileSize>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{ISO8601} %-5p %m%n</pattern>
+    </encoder>
+  </appender>
 
-			Expect(result).ShouldNot(BeEmpty())
-			fmt.Println(result)
+  <root level="DEBUG">
+    <appender-ref ref="CONSOLE" />
+    <appender-ref ref="FILE" />
+  </root>
 
-			Expect(result).Should(ContainSubstring("<root level=\"INFO\">"))
-			Expect(result).Should(ContainSubstring(`<filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-  <level>INFO</level>
-</filter>`))
-			Expect(result).Should(ContainSubstring("<File>/kubedoop/log/zoo_container/app.log</File>"))
+  <logger name="com.example" level="DEBUG" />
+</configuration>
+`
+	assert.Equal(t, expectedContent, content)
+}
 
-		})
-	})
+func TestLogbackConfig_LoggerFormatter(t *testing.T) {
+	logbackConfig := &LogbackConfig{}
+	formattedLogger := logbackConfig.LoggerFormatter("com.example", "DEBUG")
+	expectedFormattedLogger := `<logger name="com.example" level="DEBUG" />`
+	assert.Equal(t, expectedFormattedLogger, formattedLogger)
+}
 
-})
+func TestLogbackConfig_Template(t *testing.T) {
+	logbackConfig := &LogbackConfig{}
+	template := logbackConfig.Template()
+	assert.Equal(t, logbackTemplate, template)
+}
