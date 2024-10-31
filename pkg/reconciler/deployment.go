@@ -4,6 +4,7 @@ import (
 	"context"
 
 	appv1 "k8s.io/api/apps/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/zncdatadev/operator-go/pkg/builder"
@@ -26,7 +27,7 @@ func (r *Deployment) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	resourceBuilder := r.GetBuilder()
 
 	if r.Stopped {
-		resourceBuilder.SetReplicas(&[]int32{0}[0])
+		resourceBuilder.SetReplicas(ptr.To[int32](0))
 	}
 
 	resource, err := resourceBuilder.Build(ctx)

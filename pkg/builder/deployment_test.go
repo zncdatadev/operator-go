@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -61,7 +62,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 				Deployment: *builder.NewDeployment(
 					resourceClient,
 					"sample-trinocluster-default",
-					&[]int32{1}[0],
+					ptr.To[int32](1),
 					util.NewImage("trino", "485", "1.0.0"),
 					builder.WorkloadOptions{
 						Option: builder.Option{
@@ -150,7 +151,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 				Deployment: *builder.NewDeployment(
 					resourceClient,
 					"sample-trinocluster-default",
-					&[]int32{1}[0],
+					ptr.To[int32](1),
 					util.NewImage("trino", "485", "1.0.0"),
 					builder.WorkloadOptions{
 						Option: builder.Option{
@@ -209,7 +210,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 				Deployment: *builder.NewDeployment(
 					resourceClient,
 					"sample-trinocluster-default",
-					&[]int32{1}[0],
+					ptr.To[int32](1),
 					util.NewImage("trino", "485", "1.0.0"),
 					builder.WorkloadOptions{
 						EnvOverrides: map[string]string{

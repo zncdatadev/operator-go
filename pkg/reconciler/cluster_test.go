@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
@@ -138,7 +139,7 @@ var _ = Describe("Cluster reconciler", func() {
 				Coordinator: &CoordinatorSpec{
 					RoleGroups: map[string]TrinoRoleGroupSpec{
 						"default": {
-							Replicas: &[]int32{1}[0],
+							Replicas: ptr.To[int32](1),
 						},
 					},
 				},
