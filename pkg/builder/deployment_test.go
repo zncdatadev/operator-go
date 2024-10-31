@@ -144,7 +144,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 			Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("100m")))
 		})
 
-		It("should return a Deployment object with CommandOverrides and EnvOverrides", func() {
+		It("should return a Deployment object with CliOverrides and EnvOverrides", func() {
 			By("creating a DeploymentBuilder")
 			deploymentBuilder := &TrinoDeploymentBuilder{
 				Deployment: *builder.NewDeployment(
@@ -154,10 +154,10 @@ var _ = Describe("DeploymentBuilder test", func() {
 					util.NewImage("trino", "485", "1.0.0"),
 					builder.WorkloadOptions{
 						Option: builder.Option{
-							RoleName:      "coordinator", // EnvOverrides and CommandOverrides will only applied to the container, which it name eq RoleName
+							RoleName:      "coordinator", // EnvOverrides and CliOverrides will only applied to the container, which it name eq RoleName
 							RoleGroupName: "default",
 						},
-						CommandOverrides: []string{
+						CliOverrides: []string{
 							"bin/launcher",
 							"start",
 						},

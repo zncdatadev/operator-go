@@ -28,7 +28,7 @@ var ErrNoContainers = errors.New("no containers defined")
 
 // WorkloadOptions is a struct to hold the options for a workload
 //
-// Note: The values of envOverrides and commandOverrides will
+// Note: The values of envOverrides and cliOverrides will
 // only be overridden on the container with the same name as roleGroupInfo.RoleName,
 // if roleGroupInfo exists and roleGroupInfo.RoleName has a value.
 type BaseWorkloadBuilder struct {
@@ -38,9 +38,9 @@ type BaseWorkloadBuilder struct {
 
 	affinity *corev1.Affinity
 
-	commandOverrides []string
-	envOverrides     map[string]string
-	podOverrides     *corev1.PodTemplateSpec
+	cliOverrides []string
+	envOverrides map[string]string
+	podOverrides *corev1.PodTemplateSpec
 
 	terminationGracePeriod *time.Duration
 
@@ -75,9 +75,9 @@ func NewBaseWorkloadBuilder(
 		),
 		image: image,
 
-		commandOverrides: options.CommandOverrides,
-		envOverrides:     options.EnvOverrides,
-		affinity:         options.Affinity,
+		cliOverrides: options.CliOverrides,
+		envOverrides: options.EnvOverrides,
+		affinity:     options.Affinity,
 
 		podOverrides: options.PodOverrides,
 
@@ -140,12 +140,12 @@ func (b *BaseWorkloadBuilder) GetSecurityContext() *corev1.PodSecurityContext {
 func (b *BaseWorkloadBuilder) OverrideCommand() {
 	containers := b.GetContainers()
 
-	if len(containers) == 0 || b.commandOverrides == nil || len(b.commandOverrides) == 0 || b.RoleName == "" {
+	if len(containers) == 0 || b.cliOverrides == nil || len(b.cliOverrides) == 0 || b.RoleName == "" {
 		containersName := []string{}
 		for _, container := range containers {
 			containersName = append(containersName, container.Name)
 		}
-		logger.V(5).Info("Sikpping command override", "containers", containersName, "commandOverrides", b.commandOverrides, "roleName", b.RoleName)
+		logger.V(5).Info("Sikpping command override", "containers", containersName, "cliOverrides", b.cliOverrides, "roleName", b.RoleName)
 		return
 	}
 
@@ -153,7 +153,7 @@ func (b *BaseWorkloadBuilder) OverrideCommand() {
 		container := &containers[i]
 		if container.Name == b.RoleName {
 			// Override the command, clear the args
-			container.Command = b.commandOverrides
+			container.Command = b.cliOverrides
 			container.Args = []string{}
 			logger.V(5).Info("Command override", "container", container.Name, "command", container.Command)
 			break
@@ -312,7 +312,7 @@ func (b *BaseWorkloadBuilder) getOverridedPodTemplate() (*corev1.PodTemplateSpec
 
 func (b *BaseWorkloadBuilder) getPodTemplate() (*corev1.PodTemplateSpec, error) {
 
-	if b.commandOverrides != nil {
+	if b.cliOverrides != nil {
 		b.OverrideCommand()
 	}
 

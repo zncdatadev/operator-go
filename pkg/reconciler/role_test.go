@@ -99,8 +99,8 @@ func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup 
 			Labels:      info.GetLabels(),
 			Annotations: info.GetAnnotations(),
 		},
-		EnvOverrides:     roleGroup.EnvOverrides,
-		CommandOverrides: roleGroup.CommandOverrides,
+		EnvOverrides: roleGroup.EnvOverrides,
+		CliOverrides: roleGroup.CliOverrides,
 	}
 
 	if roleGroup.Config != nil {
@@ -281,13 +281,13 @@ var _ = Describe("Role reconciler", func() {
 				Config: &TrinoConfigSpec{
 					GracefulShutdownTimeout: "10s",
 				},
-				CommandOverrides: []string{
+				CliOverrides: []string{
 					"tail",
 				},
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
 						Replicas: &[]int32{1}[0],
-						CommandOverrides: []string{
+						CliOverrides: []string{
 							"echo",
 						},
 					},
@@ -326,8 +326,8 @@ var _ = Describe("Role reconciler", func() {
 			Expect(defaultRoleGroup).ToNot(BeNil())
 			Expect(defaultRoleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
 			Expect(defaultRoleGroup.Config).To(Equal(role.Config))
-			// defaultRoleGroup.CommandOverrides != role.CommandOverrides
-			Expect(defaultRoleGroup.CommandOverrides).ToNot(Equal(role.CommandOverrides))
+			// defaultRoleGroup.CliOverrides != role.CliOverrides
+			Expect(defaultRoleGroup.CliOverrides).ToNot(Equal(role.CliOverrides))
 
 			By("check test role group")
 			testRoleGroupValue, ok := roleGroups["test"]
@@ -339,7 +339,7 @@ var _ = Describe("Role reconciler", func() {
 			Expect(testRoleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
 			// testRoleGroup.Config != role.Config
 			Expect(testRoleGroup.Config).ToNot(Equal(role.Config))
-			Expect(testRoleGroup.CommandOverrides).To(Equal(role.CommandOverrides))
+			Expect(testRoleGroup.CliOverrides).To(Equal(role.CliOverrides))
 
 		})
 	})
@@ -357,14 +357,14 @@ var _ = Describe("Role reconciler", func() {
 				Config: &TrinoConfigSpec{
 					GracefulShutdownTimeout: "10s",
 				},
-				CommandOverrides: []string{
+				CliOverrides: []string{
 					"tail",
 				},
 			}
 
 			roleGroupOne = &TrinoRoleGroupSpec{
 				Replicas: &[]int32{1}[0],
-				CommandOverrides: []string{
+				CliOverrides: []string{
 					"echo",
 				},
 			}
@@ -399,8 +399,8 @@ var _ = Describe("Role reconciler", func() {
 			By("checking role.Config merged")
 			Expect(roleGroup.Config.GracefulShutdownTimeout).To(Equal(role.Config.GracefulShutdownTimeout))
 
-			By("checking role.CommandOverrides not merged")
-			Expect(roleGroup.CommandOverrides).ToNot(Equal(role.CommandOverrides))
+			By("checking role.CliOverrides not merged")
+			Expect(roleGroup.CliOverrides).ToNot(Equal(role.CliOverrides))
 
 			By("checking role.EnvOverrides merged")
 			Expect(roleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
@@ -425,8 +425,8 @@ var _ = Describe("Role reconciler", func() {
 			roleGroup, ok := roleGroupValue.(*TrinoRoleGroupSpec)
 			Expect(ok).To(BeTrue())
 
-			By("checking role.CommandOverrides merged")
-			Expect(roleGroup.CommandOverrides).To(Equal(role.CommandOverrides))
+			By("checking role.CliOverrides merged")
+			Expect(roleGroup.CliOverrides).To(Equal(role.CliOverrides))
 
 			By("checking role.Config not merged")
 			Expect(roleGroup.Config.GracefulShutdownTimeout).ToNot(Equal(role.Config.GracefulShutdownTimeout))
@@ -451,8 +451,8 @@ var _ = Describe("Role reconciler", func() {
 			By("checking role.Config merged")
 			Expect(roleGroupOne.Config.GracefulShutdownTimeout).To(Equal(role.Config.GracefulShutdownTimeout))
 
-			By("checking role.CommandOverrides not merged")
-			Expect(roleGroupOne.CommandOverrides).ToNot(Equal(role.CommandOverrides))
+			By("checking role.CliOverrides not merged")
+			Expect(roleGroupOne.CliOverrides).ToNot(Equal(role.CliOverrides))
 
 			By("checking role.EnvOverrides merged")
 			Expect(roleGroupOne.EnvOverrides).To(Equal(role.EnvOverrides))
