@@ -12,32 +12,28 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
-const (
-	VectorLogDir       = "_vector"
-	VectorShutdownFile = "shutdown"
-)
-
 func MakeVectorYaml(
 	ctx context.Context,
 	client ctrlclient.Client,
 	namespace string,
 	cluster string,
-	role string,
-	groupName string,
-	vectorAggregatorDiscovery string) (string, error) {
+	roleName string,
+	roleGroupName string,
+	vectorAggregatorDiscovery string,
+) (string, error) {
 	vectorAggregatorDiscoveryURI := vectorAggregatorDiscoveryURI(ctx, client, namespace, vectorAggregatorDiscovery)
 	data := map[string]interface{}{
 		"LogDir":                  constants.KubedoopLogDir,
 		"Namespace":               namespace,
 		"Cluster":                 cluster,
-		"Role":                    role,
-		"GroupName":               groupName,
+		"RoleName":                roleName,
+		"RoleGroupName":           roleGroupName,
 		"VectorAggregatorAddress": vectorAggregatorDiscoveryURI,
 	}
-	return ParseVectorYaml(data)
+	return parseVectorYaml(data)
 }
 
-func ParseVectorYaml(data map[string]interface{}) (string, error) {
+func parseVectorYaml(data map[string]interface{}) (string, error) {
 	var tmpl = `api:
 	enabled: true
 data_dir: /kubedoop/vector/var
@@ -320,8 +316,8 @@ transforms:
 		source: |
 			.namespace = "{{.Namespace}}"
 			.cluster = "{{.Cluster}}"
-			.role = "{{.Role}}"
-			.roleGroup = "{{.GroupName}}"
+			.role = "{{.RoleName}}"
+			.roleGroup = "{{.RoleGroupName}}"
 sinks:
 	aggregator:
 		inputs:
@@ -346,7 +342,8 @@ func vectorAggregatorDiscoveryURI(
 	ctx context.Context,
 	client ctrlclient.Client,
 	namespace string,
-	discoveryConfigName string) *string {
+	discoveryConfigName string,
+) *string {
 	if discoveryConfigName != "" {
 		cli := pkgclient.Client{Client: client}
 		cm := &corev1.ConfigMap{}
@@ -358,68 +355,4 @@ func vectorAggregatorDiscoveryURI(
 		return &address
 	}
 	return nil
-}
-
-// ============= log provider container ================
-
-func LogProviderCommand(entrypointScript string) ([]string, error) {
-	template := `
-prepare_signal_handlers()
-{
-	unset term_child_pid
-	unset term_kill_needed
-	trap 'handle_term_signal' TERM
-}
-
-handle_term_signal()
-{
-	if [ "${term_child_pid}" ]; then
-		kill -TERM "${term_child_pid}" 2>/dev/null
-	else
-		term_kill_needed="yes"
-	fi
-}
-
-wait_for_termination()
-{
-	set +e
-	term_child_pid=$1
-	if [[ -v term_kill_needed ]]; then
-		kill -TERM "${term_child_pid}" 2>/dev/null
-	fi
-	wait ${term_child_pid} 2>/dev/null
-	trap - TERM
-	wait ${term_child_pid} 2>/dev/null
-	set -e
-}
-
-rm -f {{ .LogDir }}{{.VectorLogDir}}/{{ .VectorShutdownFile }}
-prepare_signal_handlers
-
-{{ .EntrypointScript }}
-
-wait_for_termination $!
-mkdir -p {{ .LogDir }}{{.VectorLogDir}} && touch {{ .LogDir }}{{.VectorLogDir}}/{{ .VectorShutdownFile }}
-`
-	data := map[string]interface{}{
-		"LogDir":             constants.KubedoopLogDir,
-		"EntrypointScript":   entrypointScript,
-		"VectorLogDir":       VectorLogDir,
-		"VectorShutdownFile": VectorShutdownFile,
-	}
-	parser := config.TemplateParser{
-		Value:    data,
-		Template: template,
-	}
-	res, err := parser.Parse()
-	if err != nil {
-		return nil, err
-	}
-	res = util.IndentTab4Spaces(res)
-	return []string{res}, nil
-
-}
-
-type WorkloadDecorator interface {
-	Decorate() error
 }

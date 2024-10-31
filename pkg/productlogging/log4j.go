@@ -1,61 +1,60 @@
 package productlogging
 
 import (
-	"fmt"
-
-	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/config"
 )
 
 const log4jTemplate = `log4j.rootLogger={{.RootLogLevel}}, CONSOLE, FILE
 
 log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender
-log4j.appender.CONSOLE.Threshold={{.ConsoleLogLevel}}
+log4j.appender.CONSOLE.Threshold={{.ConsoleHandlerLevel}}
 log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout
-log4j.appender.CONSOLE.layout.ConversionPattern={{.ConsoleConversionPattern}}
+log4j.appender.CONSOLE.layout.ConversionPattern={{.ConsoleHandlerFormatter}}
 
 log4j.appender.FILE=org.apache.log4j.RollingFileAppender
-log4j.appender.FILE.Threshold={{.FileLogLevel}}
-log4j.appender.FILE.File={{.LogDir}}{{.LogFile}}
-log4j.appender.FILE.MaxFileSize={{.MaxLogFileSizeInMiB}}MB
-log4j.appender.FILE.MaxBackupIndex={{.NumberOfArchivedLogFiles}}
+log4j.appender.FILE.Threshold={{.RotatingFileHandlerLevel}}
+log4j.appender.FILE.File={{.RotatingFileHandlerFile}}
+log4j.appender.FILE.MaxFileSize={{.RotatingFileHandlerMaxSizeInMiB}}MB
+log4j.appender.FILE.MaxBackupIndex={{.RotatingFileHandlerBackupCount}}
 log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout
 
-{{.Loggers}}`
+{{.Loggers}}
+`
 
-func NewLog4jConfigGenerator(
-	loggingConfigSpec *loggingv1alpha1.LoggingConfigSpec,
-	containerName string,
-	consoleConversionPattern string,
-	maxLogFileSizeInMiB *float64,
-	logFileName string,
-	configFileName string) *Log4jConfigGenerator {
-	impl := &Log4jConfigGenerator{configFileName: configFileName}
-	impl.BaseLoggingConfigGenerator = *NewBaseLoggingConfigGenerator(loggingConfigSpec, containerName, consoleConversionPattern, maxLogFileSizeInMiB, logFileName, impl)
-	return impl
+var _ LoggingConfig = &Log4jConfig{}
+
+// Log4jConfig is a struct that holds the configuration for log4j logging
+type Log4jConfig struct {
+	productLogging *ProductLogging
 }
 
-var _ LoggingConfigGenerator = &Log4jConfigGenerator{}
+// Content implements LoggingConfig.
+func (l *Log4jConfig) Content() (string, error) {
+	values := JavaLogTemplateValue(l, l.productLogging)
 
-type Log4jConfigGenerator struct {
-	BaseLoggingConfigGenerator
-	configFileName string
-}
-
-// GenerateLoggersConfig implements LoggingConfigGenerator.
-func (l *Log4jConfigGenerator) GenerateLoggersConfig(LoggersSpec map[string]*loggingv1alpha1.LogLevelSpec) string {
-	if len(LoggersSpec) == 0 {
-		return ""
+	p := config.TemplateParser{Template: l.Template(), Value: values}
+	content, err := p.Parse()
+	if err != nil {
+		return "", err
 	}
-	return createLoggerConfig(LoggersSpec, func(name, lvl string) string {
-		return fmt.Sprintf("log4j.logger.%s=%s", name, lvl)
-	})
+	return content, nil
 }
 
-// ConfigTemplate implements LoggingConfigGenerator.
-func (l *Log4jConfigGenerator) ConfigTemplate() string {
+// LoggerFormatter implements LoggingConfig.
+func (l *Log4jConfig) LoggerFormatter(name string, level string) string {
+	return `log4j.logger.` + name + `=` + level
+}
+
+// String implements LoggingConfig.
+func (l *Log4jConfig) String() string {
+	c, e := l.Content()
+	if e != nil {
+		panic(e)
+	}
+	return c
+}
+
+// Template implements LoggingConfig.
+func (l *Log4jConfig) Template() string {
 	return log4jTemplate
-}
-
-func (l *Log4jConfigGenerator) FileName() string {
-	return l.configFileName
 }

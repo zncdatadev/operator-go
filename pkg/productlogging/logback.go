@@ -1,82 +1,71 @@
 package productlogging
 
 import (
-	"fmt"
-
-	loggingv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/config"
 )
 
 const logbackTemplate = `<configuration>
-<appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-<encoder>
-  <pattern>{{.ConsoleConversionPattern}}</pattern>
-</encoder>
-<filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-  <level>{{.ConsoleLogLevel}}</level>
-</filter>
-</appender>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>{{.ConsoleHandlerLevel}}</level>
+    </filter>
+    <encoder>
+      <pattern>{{.ConsoleHandlerFormatter}}</pattern>
+    </encoder>
+  </appender>
 
-<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-<File>{{.LogDir}}{{.LogFile}}</File>
-<encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-  <layout class="ch.qos.logback.classic.log4j.XMLLayout" />
-</encoder>
-<filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-  <level>{{.FileLogLevel}}</level>
-</filter>
-<rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
-  <minIndex>1</minIndex>
-  <maxIndex>{{.NumberOfArchivedLogFiles}}</maxIndex>
-  <FileNamePattern>{{.LogDir}}{{.LogFile}}.%i</FileNamePattern>
-</rollingPolicy>
-<triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
-  <MaxFileSize>{{.MaxLogFileSizeInMiB}}MB</MaxFileSize>
-</triggeringPolicy>
-</appender>
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>{{.RotatingFileHandlerFile}}</file>
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>{{.RotatingFileHandlerLevel}}</level>
+    </filter>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+      <maxFileSize>{{.RotatingFileHandlerMaxSizeInMiB}}MB</maxFileSize>
+    </rollingPolicy>
+    <encoder>
+      <pattern>{{.ConsoleHandlerFormatter}}</pattern>
+    </encoder>
+  </appender>
 
-{{.Loggers}}
+  <root level="{{.RootLogLevel}}">
+    <appender-ref ref="CONSOLE" />
+    <appender-ref ref="FILE" />
+  </root>
 
-<root level="{{.RootLogLevel}}">
-<appender-ref ref="CONSOLE" />
-<appender-ref ref="FILE" />
-</root>
+  {{.Loggers}}
 </configuration>
 `
 
-func NewLogbackConfigGenerator(
-	loggingConfigSpec *loggingv1alpha1.LoggingConfigSpec,
-	containerName string,
-	consoleConversionPattern string,
-	maxLogFileSizeInMiB *float64,
-	logFileName string,
-	configFileName string) *LogbackConfigGenerator {
-	impl := &LogbackConfigGenerator{configFileName: configFileName}
-	impl.BaseLoggingConfigGenerator = *NewBaseLoggingConfigGenerator(loggingConfigSpec, containerName, consoleConversionPattern, maxLogFileSizeInMiB, logFileName, impl)
-	return impl
+var _ LoggingConfig = &LogbackConfig{}
+
+// LogbackConfig is a struct that contains logback logging configuration
+type LogbackConfig struct {
+	productLogging *ProductLogging
 }
 
-var _ LoggingConfigGenerator = &LogbackConfigGenerator{}
+// Content implements the LoggingConfig interface
+func (l *LogbackConfig) Content() (string, error) {
+	values := JavaLogTemplateValue(l, l.productLogging)
 
-type LogbackConfigGenerator struct {
-	BaseLoggingConfigGenerator
-	configFileName string
+	p := config.TemplateParser{Template: l.Template(), Value: values}
+	return p.Parse()
 }
 
-// GenerateLoggersConfig implements LoggingConfigGenerator.
-func (l *LogbackConfigGenerator) GenerateLoggersConfig(LoggersSpec map[string]*loggingv1alpha1.LogLevelSpec) string {
-	if len(LoggersSpec) == 0 {
-		return ""
+// LoggerFormatter implements the LoggingConfig interface
+func (l *LogbackConfig) LoggerFormatter(name string, level string) string {
+	return `<logger name="` + name + `" level="` + level + `" />`
+}
+
+// String implements the LoggingConfig interface
+func (l *LogbackConfig) String() string {
+	c, e := l.Content()
+	if e != nil {
+		panic(e)
 	}
-	return createLoggerConfig(LoggersSpec, func(name, lvl string) string {
-		return fmt.Sprintf("<logger name=\"%s\" level=\"%s\"/>", name, lvl)
-	})
+	return c
 }
 
-// ConfigTemplate implements LoggingConfigGenerator.
-func (l *LogbackConfigGenerator) ConfigTemplate() string {
+// Template implements the LoggingConfig interface
+func (l *LogbackConfig) Template() string {
 	return logbackTemplate
-}
-
-func (l *LogbackConfigGenerator) FileName() string {
-	return l.configFileName
 }
