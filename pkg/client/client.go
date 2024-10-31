@@ -69,19 +69,18 @@ func (c *Client) GetOwnerName() string {
 // Returns:
 //   - error: An error if the operation fails, otherwise nil.
 func (c *Client) Get(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption) error {
+	kind, err := GetObjectGVK(c.GetCtrlClient().Scheme(), obj)
+	if err != nil {
+		clientLogger.Error(err, "Failed to get object GVK", "namespace", key.Namespace, "name", key.Name)
+		return err
+	}
+
 	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
-		kind, err := GetObjectGVK(c.GetCtrlClient().Scheme(), obj)
-		if err != nil {
-			clientLogger.Error(err, "Failed to get object GVK", "namespace", key.Namespace, "name", key.Name)
-		}
 		logOpt := []any{"namespace", key.Namespace, "name", key.Name, "gvk", kind}
-		if apierrors.IsNotFound(err) {
-			clientLogger.V(1).Info("Fetch resource not found.", logOpt...)
-			return nil
-		}
 		clientLogger.Error(err, "Fetch resource occur failure.", logOpt...)
 		return err
 	}
+	clientLogger.V(5).Info("Fetch resource successfully.", "namespace", key.Namespace, "name", key.Name, "gvk", kind)
 	return nil
 }
 
