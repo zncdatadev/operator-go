@@ -8,14 +8,13 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/constants"
 )
 
-
 func TestVectorYamlFormatter(t *testing.T) {
 	actualYaml, err := parseVectorYaml(map[string]interface{}{
 		"LogDir":                  constants.KubedoopLogDir,
 		"Namespace":               "default",
 		"Cluster":                 "simple-trino",
-		"Role":                    "coordinator",
-		"GroupName":               "default",
+		"RoleName":                "coordinator",
+		"RoleGroupName":           "default",
 		"VectorAggregatorAddress": "localhost:8080",
 	})
 	expectYaml := `api:
