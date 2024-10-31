@@ -95,7 +95,7 @@ func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconc
 func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup *TrinoRoleGroupSpec) (reconciler.Reconciler, error) {
 
 	options := builder.WorkloadOptions{
-		Options: builder.Options{
+		Option: builder.Option{
 			Labels:      info.GetLabels(),
 			Annotations: info.GetAnnotations(),
 		},
