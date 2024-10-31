@@ -64,7 +64,14 @@ func NewBaseWorkloadBuilder(
 		BaseResourceBuilder: *NewBaseResourceBuilder(
 			client,
 			name,
-			&options.Options,
+			func(o Option) Option {
+				o.Labels = options.Labels
+				o.Annotations = options.Annotations
+				o.ClusterName = options.ClusterName
+				o.RoleName = options.RoleName
+				o.RoleGroupName = options.RoleGroupName
+				return o
+			},
 		),
 		image: image,
 
@@ -133,18 +140,18 @@ func (b *BaseWorkloadBuilder) GetSecurityContext() *corev1.PodSecurityContext {
 func (b *BaseWorkloadBuilder) OverrideCommand() {
 	containers := b.GetContainers()
 
-	if len(containers) == 0 || b.commandOverrides == nil || len(b.commandOverrides) == 0 || b.roleName == "" {
+	if len(containers) == 0 || b.commandOverrides == nil || len(b.commandOverrides) == 0 || b.RoleName == "" {
 		containersName := []string{}
 		for _, container := range containers {
 			containersName = append(containersName, container.Name)
 		}
-		logger.V(5).Info("Sikpping command override", "containers", containersName, "commandOverrides", b.commandOverrides, "roleName", b.roleName)
+		logger.V(5).Info("Sikpping command override", "containers", containersName, "commandOverrides", b.commandOverrides, "roleName", b.RoleName)
 		return
 	}
 
 	for i := range containers {
 		container := &containers[i]
-		if container.Name == b.roleName {
+		if container.Name == b.RoleName {
 			// Override the command, clear the args
 			container.Command = b.commandOverrides
 			container.Args = []string{}
@@ -159,18 +166,18 @@ func (b *BaseWorkloadBuilder) OverrideCommand() {
 func (b *BaseWorkloadBuilder) OverrideEnv() {
 	containers := b.GetContainers()
 
-	if len(containers) == 0 || b.envOverrides == nil || len(b.envOverrides) == 0 || b.roleName == "" {
+	if len(containers) == 0 || b.envOverrides == nil || len(b.envOverrides) == 0 || b.RoleName == "" {
 		containersName := []string{}
 		for _, container := range containers {
 			containersName = append(containersName, container.Name)
 		}
-		logger.V(5).Info("Sikpping env override", "containers", containersName, "envOverrides", b.envOverrides, "roleName", b.roleName)
+		logger.V(5).Info("Sikpping env override", "containers", containersName, "envOverrides", b.envOverrides, "roleName", b.RoleName)
 		return
 	}
 
 	for i := range containers {
 		container := &containers[i]
-		if container.Name == b.roleName {
+		if container.Name == b.RoleName {
 			// Override the env
 			for key, value := range b.envOverrides {
 				container.Env = append(container.Env, corev1.EnvVar{

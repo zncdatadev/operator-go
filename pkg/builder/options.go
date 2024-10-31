@@ -16,16 +16,10 @@ type Option struct {
 	Annotations   map[string]string
 }
 
-type Options struct {
-	ClusterName   string
-	RoleName      string
-	RoleGroupName string
-	Labels        map[string]string
-	Annotations   map[string]string
-}
+type Options func(Option) Option
 
 type WorkloadOptions struct {
-	Options
+	Option
 
 	Affinity               *corev1.Affinity
 	PodOverrides           *corev1.PodTemplateSpec

@@ -23,24 +23,31 @@ type BaseResourceBuilder struct {
 	labels      map[string]string
 	annotations map[string]string
 
-	clusterName   string
-	roleName      string
-	roleGroupName string
+	ClusterName   string
+	RoleName      string
+	RoleGroupName string
 }
 
 func NewBaseResourceBuilder(
 	client *client.Client,
 	name string, // this is resource name when creating
-	options *Options,
+	options ...Options,
 ) *BaseResourceBuilder {
+
+	var opt Option
+
+	for _, o := range options {
+		opt = o(opt)
+	}
+
 	return &BaseResourceBuilder{
 		Client:        client,
 		Name:          name,
-		labels:        options.Labels,
-		annotations:   options.Annotations,
-		clusterName:   options.ClusterName,
-		roleName:      options.RoleName,
-		roleGroupName: options.RoleGroupName,
+		labels:        opt.Labels,
+		annotations:   opt.Annotations,
+		ClusterName:   opt.ClusterName,
+		RoleName:      opt.RoleName,
+		RoleGroupName: opt.RoleGroupName,
 	}
 }
 
@@ -72,16 +79,16 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 			constants.LabelKubernetesManagedBy: constants.KubedoopDomain,
 		}
 
-		if b.clusterName != "" {
-			b.labels[constants.LabelKubernetesInstance] = b.clusterName
+		if b.ClusterName != "" {
+			b.labels[constants.LabelKubernetesInstance] = b.ClusterName
 		}
 
-		if b.roleName != "" {
-			b.labels[constants.LabelKubernetesComponent] = b.roleName
+		if b.RoleName != "" {
+			b.labels[constants.LabelKubernetesComponent] = b.RoleName
 		}
 
-		if b.roleGroupName != "" {
-			b.labels[constants.LabelKubernetesRoleGroup] = b.roleGroupName
+		if b.RoleGroupName != "" {
+			b.labels[constants.LabelKubernetesRoleGroup] = b.RoleGroupName
 		}
 	}
 
