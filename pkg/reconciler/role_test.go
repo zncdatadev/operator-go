@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
@@ -193,7 +194,7 @@ var _ = Describe("Role reconciler", func() {
 			},
 			RoleGroups: map[string]TrinoRoleGroupSpec{
 				"default": {
-					Replicas: &[]int32{1}[0],
+					Replicas: ptr.To[int32](1),
 				},
 			},
 		}
@@ -286,13 +287,13 @@ var _ = Describe("Role reconciler", func() {
 				},
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
-						Replicas: &[]int32{1}[0],
+						Replicas: ptr.To[int32](1),
 						CliOverrides: []string{
 							"echo",
 						},
 					},
 					"test": {
-						Replicas: &[]int32{2}[0],
+						Replicas: ptr.To[int32](2),
 						Config: &TrinoConfigSpec{
 							GracefulShutdownTimeout: "20s",
 						},
@@ -363,14 +364,14 @@ var _ = Describe("Role reconciler", func() {
 			}
 
 			roleGroupOne = &TrinoRoleGroupSpec{
-				Replicas: &[]int32{1}[0],
+				Replicas: ptr.To[int32](1),
 				CliOverrides: []string{
 					"echo",
 				},
 			}
 
 			roleGroupTwo = &TrinoRoleGroupSpec{
-				Replicas: &[]int32{2}[0],
+				Replicas: ptr.To[int32](2),
 				Config: &TrinoConfigSpec{
 					GracefulShutdownTimeout: "20s",
 				},
