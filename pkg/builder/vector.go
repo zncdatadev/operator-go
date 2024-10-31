@@ -2,10 +2,11 @@ package builder
 
 import (
 	"fmt"
+	"path"
 	"slices"
 
+	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constants"
-	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/util"
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -24,7 +25,12 @@ const (
 	vectorDataDir           = constants.KubedoopRoot + "vector/var"
 )
 
-var _ productlogging.WorkloadDecorator = &VectorDecorator{}
+var (
+	VectorLogDir       = path.Join(constants.KubedoopLogDir, "_vector")
+	VectorShutdownFile = path.Join(VectorLogDir, "shutdown")
+)
+
+var _ WorkloadDecorator = &VectorDecorator{}
 
 func NewVectorDecorator(
 	workloadObject ctrlclient.Object,
@@ -225,7 +231,7 @@ if [ ! -f "${LOG_DIR}${VECTOR_LOG_DIR}$/${VECTOR_SHUTDOWN_FILE}" ]; then
 fi
 sleep 1
 kill $vector_pid
-`, constants.KubedoopConfigDir, constants.KubedoopLogDir, productlogging.VectorLogDir, productlogging.VectorShutdownFile, VectorConfigFile)
+`, constants.KubedoopConfigDir, constants.KubedoopLogDir, VectorLogDir, VectorShutdownFile, VectorConfigFile)
 	return []string{util.IndentTab4Spaces(arg)}
 }
 
@@ -237,4 +243,68 @@ func VectorCommand() []string {
 		"pipefail",
 		"-c",
 	}
+}
+
+// ============= log provider container ================
+
+func LogProviderCommand(entrypointScript string) ([]string, error) {
+	template := `
+prepare_signal_handlers()
+{
+	unset term_child_pid
+	unset term_kill_needed
+	trap 'handle_term_signal' TERM
+}
+
+handle_term_signal()
+{
+	if [ "${term_child_pid}" ]; then
+		kill -TERM "${term_child_pid}" 2>/dev/null
+	else
+		term_kill_needed="yes"
+	fi
+}
+
+wait_for_termination()
+{
+	set +e
+	term_child_pid=$1
+	if [[ -v term_kill_needed ]]; then
+		kill -TERM "${term_child_pid}" 2>/dev/null
+	fi
+	wait ${term_child_pid} 2>/dev/null
+	trap - TERM
+	wait ${term_child_pid} 2>/dev/null
+	set -e
+}
+
+rm -f {{ .VectorShutdownFile }}
+prepare_signal_handlers
+
+{{ .EntrypointScript }}
+
+wait_for_termination $!
+mkdir -p {{ .VectorLogDir }} && touch {{ .VectorShutdownFile }}
+`
+	data := map[string]interface{}{
+		"LogDir":             constants.KubedoopLogDir,
+		"EntrypointScript":   entrypointScript,
+		"VectorLogDir":       VectorLogDir,
+		"VectorShutdownFile": VectorShutdownFile,
+	}
+	parser := config.TemplateParser{
+		Value:    data,
+		Template: template,
+	}
+	res, err := parser.Parse()
+	if err != nil {
+		return nil, err
+	}
+	res = util.IndentTab4Spaces(res)
+	return []string{res}, nil
+
+}
+
+type WorkloadDecorator interface {
+	Decorate() error
 }
