@@ -150,14 +150,14 @@ func (r *BaseRoleReconciler[T]) RegisterResources(ctx context.Context) error {
 //	right := RoleSpec{
 //		RoleGroups:        rolegroups,            // this field is excluded
 //		EnvOverrides:      envOverridesRole,
-//		CommandOverrides:  commandOverrides,
+//		CliOverrides:  cliOverrides,
 //	}
 //
 //	result := &RoleGroupSpec{
 //		Replicas:          1,
 //		Config:            config,
 //		EnvOverrides:      envOverridesRoleGroup,   // `EnvOverrides` exists in left, so it is not replaced
-//		CommandOverrides:  commandOverrides,        // Add RoleSpec.CommandOverrides to left
+//		CliOverrides:  cliOverrides,        // Add RoleSpec.CliOverrides to left
 //	}
 func (b *BaseRoleReconciler[T]) MergeRoleGroupSpec(roleGroup AnySpec) AnySpec {
 	leftValue := reflect.ValueOf(roleGroup)

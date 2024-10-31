@@ -87,21 +87,21 @@ type ClusterConfigSpec struct {
 }
 
 type CoordinatorSpec struct {
-	RoleGroups       map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
-	Config           *TrinoConfigSpec              `json:"config,omitempty"`
-	CommandOverrides []string                      `json:"commandOverrides,omitempty"`
-	EnvOverrides     map[string]string             `json:"envOverrides,omitempty"`
-	ConfigOverrides  map[string]string             `json:"configOverrides,omitempty"`
-	PodOverrides     *corev1.PodTemplateSpec       `json:"podOverrides,omitempty"`
+	RoleGroups      map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
+	Config          *TrinoConfigSpec              `json:"config,omitempty"`
+	CliOverrides    []string                      `json:"cliOverrides,omitempty"`
+	EnvOverrides    map[string]string             `json:"envOverrides,omitempty"`
+	ConfigOverrides map[string]string             `json:"configOverrides,omitempty"`
+	PodOverrides    *corev1.PodTemplateSpec       `json:"podOverrides,omitempty"`
 }
 
 type TrinoRoleGroupSpec struct {
-	Replicas         *int32                  `json:"replicas,omitempty"`
-	Config           *TrinoConfigSpec        `json:"config,omitempty"`
-	CommandOverrides []string                `json:"commandOverrides,omitempty"`
-	EnvOverrides     map[string]string       `json:"envOverrides,omitempty"`
-	ConfigOverrides  map[string]string       `json:"configOverrides,omitempty"`
-	PodOverrides     *corev1.PodTemplateSpec `json:"podOverrides,omitempty"`
+	Replicas        *int32                  `json:"replicas,omitempty"`
+	Config          *TrinoConfigSpec        `json:"config,omitempty"`
+	CliOverrides    []string                `json:"CliOverrides,omitempty"`
+	EnvOverrides    map[string]string       `json:"envOverrides,omitempty"`
+	ConfigOverrides map[string]string       `json:"configOverrides,omitempty"`
+	PodOverrides    *corev1.PodTemplateSpec `json:"podOverrides,omitempty"`
 }
 
 type TrinoConfigSpec struct {

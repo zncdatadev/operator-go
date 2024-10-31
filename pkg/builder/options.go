@@ -24,7 +24,7 @@ type WorkloadOptions struct {
 	Affinity               *corev1.Affinity
 	PodOverrides           *corev1.PodTemplateSpec
 	EnvOverrides           map[string]string
-	CommandOverrides       []string
+	CliOverrides           []string
 	TerminationGracePeriod *time.Duration
 	// Workload cpu and memory resource limits and requests
 	Resource *commonsv1alpha1.ResourcesSpec
