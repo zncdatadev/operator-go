@@ -19,6 +19,8 @@ func TestVectorYamlFormatter(t *testing.T) {
 	})
 	expectYaml := `api:
   enabled: true
+  address: 0.0.0.0:8686
+  playground: false
 data_dir: /kubedoop/vector/var
 log_schema:
   host_key: "pod"
