@@ -33,9 +33,23 @@ func MakeVectorYaml(
 	return parseVectorYaml(data)
 }
 
+// ```yaml
+// api:
+//
+//	enabled: true
+//	address: 0.0.0.0:8686
+//	playground: false
+//
+// ```
+// This config above describes the configuration options for the GraphQL API.
+// - `enabled`: Indicates whether the GraphQL API is enabled.
+// - `address`: The network address to which the API should bind. If running Vector in a Docker container, ensure it binds to 0.0.0.0 to be accessible outside the container.
+// - `playground`: Specifies whether the GraphQL Playground is enabled.
 func parseVectorYaml(data map[string]interface{}) (string, error) {
 	var tmpl = `api:
 	enabled: true
+	address: 0.0.0.0:8686
+	playground: false
 data_dir: /kubedoop/vector/var
 log_schema:
 	host_key: "pod"

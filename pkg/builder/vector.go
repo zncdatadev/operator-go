@@ -11,6 +11,7 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -23,6 +24,7 @@ const (
 
 	vectorDataDirVolumeName = "vector-data"
 	vectorDataDir           = constants.KubedoopRoot + "vector/var"
+	vectorApiPort           = 8686
 )
 
 var (
@@ -190,9 +192,32 @@ func (v *VectorDecorator) appendVectorContainer(containers *[]corev1.Container) 
 }
 
 func (v *VectorDecorator) NewVectorContainer() *corev1.Container {
+	// see https://vector.dev/docs/reference/api/
+	// and see https://github.com/vectordotdev/helm-charts/blob/develop/charts/vector/values.yaml
+	// requires api.enabled to be set to true.
+	var vectorReadinessProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Port: intstr.FromInt(vectorApiPort),
+				Path: "/health",
+			},
+		},
+		InitialDelaySeconds: 5,
+		PeriodSeconds:       10,
+		SuccessThreshold:    1,
+		FailureThreshold:    3,
+		TimeoutSeconds:      1,
+	}
 	vectorContainer := NewContainerBuilder(VectorContainerName, v.Image).
 		SetCommand(VectorCommand()).
 		SetArgs(VectorCommandArgs()).
+		SetReadinessProbe(vectorReadinessProbe).
+		AddPorts([]corev1.ContainerPort{
+			{
+				Name:          "api",
+				ContainerPort: vectorApiPort,
+			},
+		}).
 		AddVolumeMounts(VectorVolumeMount(v.VectorConfigVolumeName, v.LogVolumeName)).
 		Build()
 
