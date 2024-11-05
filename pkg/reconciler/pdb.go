@@ -1,0 +1,84 @@
+package reconciler
+
+import (
+	"context"
+
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/client"
+)
+
+var _ ResourceReconciler[builder.PodDisruptionBudgetBuilder] = &PDB{}
+
+type PDB struct {
+	GenericResourceReconciler[builder.PodDisruptionBudgetBuilder]
+}
+
+func NewPDBReconciler(
+	client *client.Client,
+	name string,
+	options ...builder.PDBBuilderOption,
+) (*PDB, error) {
+	b, err := builder.NewDefaultPDBBuilder(
+		client,
+		name,
+		options...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &PDB{
+		GenericResourceReconciler: *NewGenericResourceReconciler[builder.PodDisruptionBudgetBuilder](
+			client,
+			name,
+			b,
+		),
+	}, nil
+}
+
+func (r *PDB) Reconcile(ctx context.Context) (ctrl.Result, error) {
+	logger.V(5).Info("Building resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", r.GetName())
+	resource, err := r.GetBuilder().Build(ctx)
+
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	logger.V(5).Info("Reconciling resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", resource.GetName())
+	logExtraValues := []any{
+		"name", resource.GetName(),
+		"namespace", resource.GetNamespace(),
+		"cluster", r.GetName(),
+	}
+
+	obj := &policyv1.PodDisruptionBudget{}
+	if err := r.GetClient().Get(ctx, ctrlclient.ObjectKey{Namespace: resource.GetNamespace(), Name: resource.GetName()}, obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(5).Info("Creating resource", logExtraValues...)
+			if err := r.GetClient().Client.Create(ctx, resource); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	logger.V(5).Info("Updating resource", logExtraValues...)
+
+	newPdb := resource.(*policyv1.PodDisruptionBudget).DeepCopy()
+	objDeepCopy := obj.DeepCopy()
+	objDeepCopy.Spec = newPdb.Spec
+	objDeepCopy.ObjectMeta.Labels = newPdb.ObjectMeta.Labels
+	objDeepCopy.ObjectMeta.Annotations = newPdb.ObjectMeta.Annotations
+
+	if err := r.GetClient().Client.Patch(ctx, objDeepCopy, ctrlclient.MergeFrom(obj)); err != nil {
+		logger.Error(err, "Failed to update resource", logExtraValues...)
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}

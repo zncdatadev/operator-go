@@ -10,8 +10,10 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -196,4 +198,11 @@ type ClusterRoleBuilder interface {
 type ClusterRoleBindingBuilder interface {
 	ResourceBuilder
 	GetObject() *rbacv1.ClusterRoleBinding
+}
+
+type PodDisruptionBudgetBuilder interface {
+	ResourceBuilder
+	GetObject() (*policyv1.PodDisruptionBudget, error)
+	SetMaxUnavailable(max intstr.IntOrString)
+	SetMinAvailable(min intstr.IntOrString)
 }

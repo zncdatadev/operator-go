@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -108,6 +110,14 @@ func (r *BaseRoleReconciler[T]) IsStopped() bool {
 
 func (r *BaseRoleReconciler[T]) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	logger.V(5).Info("Reconciling role", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
+	// add pdb resource for the role
+	if pdbReconciler, err := r.getPdbReconciler(ctx); err == nil && pdbReconciler != nil {
+		r.resources = append(r.resources, pdbReconciler)
+	} else {
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	for _, resource := range r.resources {
 		if res, err := resource.Reconcile(ctx); !res.IsZero() || err != nil {
 			return res, err
@@ -115,6 +125,42 @@ func (r *BaseRoleReconciler[T]) Reconcile(ctx context.Context) (ctrl.Result, err
 	}
 	logger.V(5).Info("Reconciled role", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
 	return ctrl.Result{}, nil
+}
+
+// reconcile pdb resource for the role
+func (r *BaseRoleReconciler[T]) getPdbReconciler(_ context.Context) (Reconciler, error) {
+	logger.V(5).Info("get pdb for role", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName())
+	value := reflect.ValueOf(r.Spec)
+	if value.Kind() == reflect.Ptr {
+		value = value.Elem()
+	}
+	RoleConfigReflect := value.FieldByName("RoleConfig")
+	// check if the RoleConfig field exists
+	if !RoleConfigReflect.IsValid() {
+		logger.V(5).Info("RoleConfig field does not exist, skipping pdb reconciliation")
+		return nil, nil
+	}
+	// transform the RoleConfigReflect to RoleConfigSpec
+	RoleConfigSpec := RoleConfigReflect.Interface().(*commonsv1alpha1.RoleConfigSpec)
+	pdb := RoleConfigSpec.PodDisruptionBudget
+	// check if the PodDisruptionBudget field exists
+	if pdb == nil {
+		logger.V(5).Info("PDB field does not exist, skipping pdb reconciliation")
+		return nil, nil
+	}
+	// check if the pdb is enabled
+	if !pdb.Enabled {
+		logger.V(5).Info("PDB is disabled, skipping pdb reconciliation")
+		return nil, nil
+	}
+	option := func(opt *builder.PDBBuilderOptions) {
+		opt.Labels = r.RoleInfo.labels
+		opt.Annotations = r.RoleInfo.annotations
+		opt.MaxUnavailableAmount = pdb.MaxUnavailable
+	}
+	logger.V(5).Info("get pdb success", "namespace", r.GetNamespace(), "cluster", r.ClusterInfo.GetClusterName(), "role", r.GetName(),
+		"maxUnavailable", pdb.MaxUnavailable)
+	return NewPDBReconciler(r.Client, r.GetFullName(), option)
 }
 
 func (r *BaseRoleReconciler[T]) Ready(ctx context.Context) (ctrl.Result, error) {
