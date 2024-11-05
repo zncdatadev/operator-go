@@ -1,6 +1,43 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.11.0 2024-11-05
+
+### features
+
+- Added PodDisruptionBudget support and reconciliation logic (#227)
+- Added readiness probe for vector (#224)
+- Added LoggingSpec support (#210)
+- Added AuthenticationSpec support (#209)
+- Enhanced rbac builder to add policy rules (#196)
+
+### improvements
+
+- Refactored log config generation in productlogging (#220)
+- Replaced slice dereference with ptr.To for replica counts (#223)
+- Renamed CommandOverrides to CliOverrides for consistency (#222)
+- Unified Options struct to Option type for consistency in builder (#221)
+- Changed AuthenticationClass to cluster scope in api (#208)
+- Changed authentication.oidc.provisioner to providerHint in api (#207)
+
+### bugs
+
+- Fixed client.Get to reset err and ignore object does not exist error (#219)
+- Fixed container env out of order in build (#211)
+- Appended vector data dir volume (#199)
+
+### dependencies
+
+- Bumped github.com/onsi/gomega from 1.34.2 to 1.35.1 (#225)
+- Bumped github.com/onsi/ginkgo/v2 from 2.20.2 to 2.21.0 (#226)
+- Bumped k8s.io/kubectl from 0.31.1 to 0.31.2 (#216)
+- Bumped k8s.io/client-go from 0.31.1 to 0.31.2 (#215)
+- Bumped sigs.k8s.io/controller-runtime from 0.19.0 to 0.19.1 (#218)
+
+### ci
+
+- Removed doc issue template in GitHub Actions (#206)
+
 ## v0.10.0 2024-09-20
 
 ### features
@@ -39,7 +76,7 @@ improve the cluster stoppped logic
 
 ### bugs
 
-- Fix image default policy is `Always`, and can not auto referenct CRD image policy 
+- Fix image default policy is `Always`, and can not auto referenct CRD image policy
 
 ## v0.9.1 2024-09-03
 
@@ -64,7 +101,7 @@ improve the cluster stoppped logic
 
 ## v0.9.0 2024-08-28
 
-**BROKENCHANGE:** 
+**BROKENCHANGE:**
 
 - Bump k8s version to 1.31.0
 - Bump golang version to 1.23.0
