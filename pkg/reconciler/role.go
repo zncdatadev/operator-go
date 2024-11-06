@@ -142,6 +142,10 @@ func (r *BaseRoleReconciler[T]) getPdbReconciler(_ context.Context) (Reconciler,
 	}
 	// transform the RoleConfigReflect to RoleConfigSpec
 	RoleConfigSpec := RoleConfigReflect.Interface().(*commonsv1alpha1.RoleConfigSpec)
+	if RoleConfigSpec == nil {
+		logger.V(5).Info("RoleConfig field is nil, skipping pdb reconciliation")
+		return nil, nil
+	}
 	pdb := RoleConfigSpec.PodDisruptionBudget
 	// check if the PodDisruptionBudget field exists
 	if pdb == nil {
