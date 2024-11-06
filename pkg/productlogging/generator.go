@@ -11,12 +11,14 @@ import (
 )
 
 const (
-	DefalutLoggerLevel = "INFO"
+	DefaultLoggerLevel = "INFO"
 	RootLoggerName     = "ROOT"
 
 	DefaultLog4jConversionPattern   = "[%d] %p %m (%c)%n"
 	DefaultLog4j2ConversionPattern  = "%d{ISO8601} %-5p %m%n"
 	DefaultLogbackConversionPattern = "%d{ISO8601} %-5p [%t:%C{1}@%L] - %m%n"
+
+	DefaultRotatingFileHandlerMaxBytes float64 = 10.0 * 1024 * 1024
 )
 
 type LogType int
@@ -25,7 +27,7 @@ const (
 	LogTypeLog4j LogType = iota
 	LogTypeLog4j2
 	LogTypeLogback
-	LogTypePythonLoging
+	LogTypePythonLogging
 )
 
 type ProductLogging struct {
@@ -49,27 +51,42 @@ type LoggingConfig interface {
 	Content() (string, error)
 }
 
+type ConfigGeneratorOption struct {
+	LogFileMaxBytes         *float64
+	ConsoleHandlerFormatter *string
+}
+
+type ConfigGeneratorOptionFunc func(*ConfigGeneratorOption)
+
 func NewConfigGenerator(
 	loggingConfigSpec *loggingv1alpha1.LoggingConfigSpec,
 	containerName string,
-	consoleHandlerFormatter string,
-	logFileMaxBytes *float64,
 	logFileName string,
-	logType LogType) (*ConfigGenerator, error) {
+	logType LogType,
+	opts ...ConfigGeneratorOptionFunc,
+) (*ConfigGenerator, error) {
+
+	opt := &ConfigGeneratorOption{}
+
+	for _, o := range opts {
+		o(opt)
+	}
 
 	return &ConfigGenerator{
-		loggingConfigSpec:       loggingConfigSpec,
-		contaienrName:           containerName,
-		consoleHandlerFormatter: consoleHandlerFormatter,
-		logFileMaxBytes:         logFileMaxBytes,
-		logFileName:             logFileName,
+		loggingConfigSpec: loggingConfigSpec,
+		containerName:     containerName,
+		logFileName:       logFileName,
+		logType:           logType,
+
+		logFileMaxBytes:         opt.LogFileMaxBytes,
+		consoleHandlerFormatter: opt.ConsoleHandlerFormatter,
 	}, nil
 }
 
 type ConfigGenerator struct {
 	loggingConfigSpec       *loggingv1alpha1.LoggingConfigSpec
-	contaienrName           string
-	consoleHandlerFormatter string
+	containerName           string
+	consoleHandlerFormatter *string
 	logFileMaxBytes         *float64
 	logFileName             string
 
@@ -77,7 +94,10 @@ type ConfigGenerator struct {
 }
 
 func (b *ConfigGenerator) getLoggingConfig() (LoggingConfig, error) {
-	productLogging := b.getProductLogging()
+	productLogging, err := b.getProductLogging()
+	if err != nil {
+		return nil, err
+	}
 	var loggingConfig LoggingConfig
 	switch b.logType {
 	case LogTypeLog4j:
@@ -93,24 +113,38 @@ func (b *ConfigGenerator) getLoggingConfig() (LoggingConfig, error) {
 	return loggingConfig, nil
 }
 
-func (l *ConfigGenerator) Content() (string, error) {
-	loggingConfig, err := l.getLoggingConfig()
-	if err != nil {
-		return "", err
+func (b *ConfigGenerator) getProductLogging() (*ProductLogging, error) {
+	handlerFormatter := ""
+	rotatingFileHandlerMaxBytes := DefaultRotatingFileHandlerMaxBytes
+
+	if b.consoleHandlerFormatter == nil {
+		switch b.logType {
+		case LogTypeLog4j:
+			handlerFormatter = DefaultLog4jConversionPattern
+		case LogTypeLog4j2:
+			handlerFormatter = DefaultLog4j2ConversionPattern
+		case LogTypeLogback:
+			handlerFormatter = DefaultLogbackConversionPattern
+		default:
+			return nil, fmt.Errorf("unsupported log type: %v", b.logType)
+		}
+	} else {
+		handlerFormatter = *b.consoleHandlerFormatter
 	}
-	return loggingConfig.Content()
-}
 
-func (b *ConfigGenerator) getProductLogging() *ProductLogging {
+	if b.logFileMaxBytes != nil {
+		rotatingFileHandlerMaxBytes = *b.logFileMaxBytes
+	}
+
 	productLogging := &ProductLogging{
-		RootLogLevel:            DefalutLoggerLevel,
-		ConsoleHandlerLevel:     DefalutLoggerLevel,
-		ConsoleHandlerFormatter: b.consoleHandlerFormatter,
+		RootLogLevel:            DefaultLoggerLevel,
+		ConsoleHandlerLevel:     DefaultLoggerLevel,
+		ConsoleHandlerFormatter: handlerFormatter,
 
-		RotatingFileHandlerLevel: DefalutLoggerLevel,
-		RotatingFileHandlerFile:  path.Join(constants.KubedoopLogDir, strings.ToLower(b.contaienrName), b.logFileName),
+		RotatingFileHandlerLevel: DefaultLoggerLevel,
+		RotatingFileHandlerFile:  path.Join(constants.KubedoopLogDir, strings.ToLower(b.containerName), b.logFileName),
 		// Default File size is 10MB
-		RotatingFileHandlerMaxBytes:    10 * 1024 * 1024,
+		RotatingFileHandlerMaxBytes:    rotatingFileHandlerMaxBytes,
 		RotatingFileHandlerBackupCount: 1,
 
 		Loggers: make(map[string]loggingv1alpha1.LogLevelSpec),
@@ -136,7 +170,15 @@ func (b *ConfigGenerator) getProductLogging() *ProductLogging {
 		}
 	}
 
-	return productLogging
+	return productLogging, nil
+}
+
+func (l *ConfigGenerator) Content() (string, error) {
+	loggingConfig, err := l.getLoggingConfig()
+	if err != nil {
+		return "", err
+	}
+	return loggingConfig.Content()
 }
 
 func JavaLogTemplateValue(loggingConfig LoggingConfig, productLogging *ProductLogging) map[string]interface{} {
