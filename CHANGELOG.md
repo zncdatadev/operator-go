@@ -1,6 +1,12 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.0 2024-11-06
+
+### bugs
+
+- Fixed nil `RoleConfigSpec` handling in `PodDisruptionBudget` reconciliation
+
 ## v0.11.0 2024-11-05
 
 ### features
