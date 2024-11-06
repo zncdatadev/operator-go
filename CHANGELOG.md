@@ -1,7 +1,7 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
-## v0.12.0 2024-11-06
+## v0.11.1 2024-11-06
 
 ### bugs
 
