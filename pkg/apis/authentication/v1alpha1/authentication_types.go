@@ -62,7 +62,7 @@ type OIDCProvider struct {
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Enum=keycloak
-	ProviderHint string `json:"provisionerHint"`
+	ProviderHint string `json:"providerHint"`
 
 	// +kubebuilder:validation:Optional
 	RootPath string `json:"rootPath,omitempty"`
