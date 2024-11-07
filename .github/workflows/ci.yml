@@ -1,36 +1,23 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
+    branches:
+      - main
+    tags:
+      - "*"
   pull_request:
 
 
 jobs:
-  build:
-    name: Set up Build
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Set up Build
-        uses: docker/setup-buildx-action@v2
-      - run: |
-          ls -l
-
   markdown-lint:
     name: markdown-lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          # Full git history is needed to get a proper list of changed files within `super-linter`
           fetch-depth: 0
       - name: Lint Code Base
         uses: github/super-linter@v4
@@ -39,32 +26,34 @@ jobs:
           VALIDATE_ALL_CODEBASE: false
           DEFAULT_BRANCH: main
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
           LINTER_RULES_PATH: /
           MARKDOWN_CONFIG_FILE: .markdownlint.yml
+
+
   golang-lint:
     name: golang-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          cache: false
+          go-version-file: "go.mod"
       - name: golangci-lint
         run: |
           make lint
 
+
   go-test:
     name: Go Test
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          # Full git history is needed to get a proper list of changed files within `super-linter`
           fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
       - name: Go Test
         run: |
           make test
