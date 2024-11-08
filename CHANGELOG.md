@@ -1,6 +1,22 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.11.2 2024-11-08
+
+### bugs
+
+- Fixed typo `providerHint` in auth (#234)
+- Added the missed `logType` field and corrected typo in productlogging (#231)
+
+### dependencies
+
+- Bumped toolchain in Makefile to latest version (#233)
+- Bumped golang from 1.23.0 to 1.23.2 (#232)
+
+### chore
+
+- Refactored GitHub Action (#235)
+
 ## v0.11.1 2024-11-06
 
 ### bugs
