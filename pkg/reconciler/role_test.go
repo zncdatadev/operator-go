@@ -30,7 +30,7 @@ var (
 )
 
 type RoleReconciler struct {
-	reconciler.BaseRoleReconciler[CoordinatorSpec]
+	reconciler.BaseRoleReconciler[TrinoCoordinatorSpec]
 	ClusterConfig *ClusterConfigSpec // add more fields in implementation
 }
 
@@ -39,10 +39,10 @@ func NewRoleReconciler(
 	clusterConfig *ClusterConfigSpec,
 	clusterStopped bool,
 	roleInfo reconciler.RoleInfo,
-	spec CoordinatorSpec,
+	spec TrinoCoordinatorSpec,
 ) *RoleReconciler {
 	return &RoleReconciler{
-		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler[CoordinatorSpec](
+		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler[TrinoCoordinatorSpec](
 			client,
 			clusterStopped,
 			roleInfo,
@@ -119,7 +119,7 @@ func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup 
 
 		options.TerminationGracePeriod = &gracefulShutdownTimeout
 
-		options.Affinity = roleGroup.Config.Affinity
+		// options.Affinity = roleGroup.Config.Affinity
 	}
 
 	// Create a deployment builder
@@ -181,8 +181,10 @@ var _ = Describe("Role reconciler", func() {
 		var namespace string
 		ctx := context.Background()
 
-		coordinatorRole := CoordinatorSpec{
-			EnvOverrides: map[string]string{"TEST": "test"},
+		coordinatorRole := TrinoCoordinatorSpec{
+			OverridesSpec: OverridesSpec{
+				EnvOverrides: map[string]string{"TEST": "test"},
+			},
 			Config: &TrinoConfigSpec{
 				Resources: &commonsv1alpha1.ResourcesSpec{
 					CPU: &commonsv1alpha1.CPUResource{
@@ -274,23 +276,21 @@ var _ = Describe("Role reconciler", func() {
 		}
 
 		resourceClient := client.NewClient(k8sClient, nil)
-		var role *CoordinatorSpec
+		var role *TrinoCoordinatorSpec
 
 		BeforeEach(func() {
-			role = &CoordinatorSpec{
-				EnvOverrides: map[string]string{"TEST": "test"},
+			role = &TrinoCoordinatorSpec{
+				OverridesSpec: OverridesSpec{
+					EnvOverrides: map[string]string{"TEST": "test"},
+					CliOverrides: []string{"tail"},
+				},
 				Config: &TrinoConfigSpec{
 					GracefulShutdownTimeout: "10s",
 				},
-				CliOverrides: []string{
-					"tail",
-				},
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
-						Replicas: ptr.To[int32](1),
-						CliOverrides: []string{
-							"echo",
-						},
+						Replicas:      ptr.To[int32](1),
+						OverridesSpec: OverridesSpec{CliOverrides: []string{"echo"}},
 					},
 					"test": {
 						Replicas: ptr.To[int32](2),
@@ -348,26 +348,24 @@ var _ = Describe("Role reconciler", func() {
 	Context("RoleReconciler merge roleGroup spec", func() {
 
 		resourceClient := client.NewClient(k8sClient, nil)
-		var role *CoordinatorSpec
+		var role *TrinoCoordinatorSpec
 		var roleGroupOne *TrinoRoleGroupSpec
 		var roleGroupTwo *TrinoRoleGroupSpec
 
 		BeforeEach(func() {
-			role = &CoordinatorSpec{
-				EnvOverrides: map[string]string{"TEST": "test"},
+			role = &TrinoCoordinatorSpec{
+				OverridesSpec: OverridesSpec{
+					EnvOverrides: map[string]string{"TEST": "test"},
+					CliOverrides: []string{"tail"},
+				},
 				Config: &TrinoConfigSpec{
 					GracefulShutdownTimeout: "10s",
-				},
-				CliOverrides: []string{
-					"tail",
 				},
 			}
 
 			roleGroupOne = &TrinoRoleGroupSpec{
-				Replicas: ptr.To[int32](1),
-				CliOverrides: []string{
-					"echo",
-				},
+				Replicas:      ptr.To[int32](1),
+				OverridesSpec: OverridesSpec{CliOverrides: []string{"echo"}},
 			}
 
 			roleGroupTwo = &TrinoRoleGroupSpec{

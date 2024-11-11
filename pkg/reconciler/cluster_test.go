@@ -136,7 +136,7 @@ var _ = Describe("Cluster reconciler", func() {
 				ClusterConfig: &ClusterConfigSpec{
 					ListenerClass: "default",
 				},
-				Coordinator: &CoordinatorSpec{
+				Coordinator: &TrinoCoordinatorSpec{
 					RoleGroups: map[string]TrinoRoleGroupSpec{
 						"default": {
 							Replicas: ptr.To[int32](1),

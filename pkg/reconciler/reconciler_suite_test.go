@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/kubectl/pkg/scheme"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -68,47 +68,69 @@ var _ = AfterSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 })
 
+// =================================================================================================
+// Test data structures
+
 type TrinoClusterSpec struct {
 	Image            *ImageSpec                            `json:"image,omitempty"`
 	ClusterConfig    *ClusterConfigSpec                    `json:"clusterConfig,omitempty"`
 	ClusterOperation *commonsv1alpha1.ClusterOperationSpec `json:"clusterOperation,omitempty"`
-	Coordinator      *CoordinatorSpec                      `json:"Coordinator,omitempty"`
+	Coordinator      *TrinoCoordinatorSpec                 `json:"Coordinator,omitempty"`
+	Worker           *TrinoWorkerSpec                      `json:"worker,omitempty"`
 }
 
 type ImageSpec struct {
-	Custom         string `json:"custom,omitempty"`
-	Repo           string `json:"repo,omitempty"`
-	StackVersion   string `json:"stackVersion,omitempty"`
-	ProductVersion string `json:"productVersion,omitempty"`
+	Custom          string `json:"custom,omitempty"`
+	Repository      string `json:"repository,omitempty"`
+	KubedoopVersion string `json:"kubedoopVersion,omitempty"`
+	ProductVersion  string `json:"productVersion,omitempty"`
+	PullPolicy      string `json:"pullPolicy,omitempty"`
+	PullSecretName  string `json:"pullSecretName,omitempty"`
 }
 
 type ClusterConfigSpec struct {
 	ListenerClass string `json:"listenerClass,omitempty"`
 }
 
-type CoordinatorSpec struct {
-	RoleGroups      map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
-	Config          *TrinoConfigSpec              `json:"config,omitempty"`
-	CliOverrides    []string                      `json:"cliOverrides,omitempty"`
-	EnvOverrides    map[string]string             `json:"envOverrides,omitempty"`
-	ConfigOverrides map[string]string             `json:"configOverrides,omitempty"`
-	PodOverrides    *corev1.PodTemplateSpec       `json:"podOverrides,omitempty"`
+type TrinoRoleConfigSpec struct {
+	PodDisruptionBudget *commonsv1alpha1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+}
+
+type OverridesSpec struct {
+	CliOverrides    []string                     `json:"cliOverrides,omitempty"`
+	EnvOverrides    map[string]string            `json:"envOverrides,omitempty"`
+	ConfigOverrides map[string]map[string]string `json:"configOverrides,omitempty"`
+	PodOverrides    *k8sruntime.RawExtension     `json:"podOverrides,omitempty"`
+}
+
+type TrinoCoordinatorSpec struct {
+	RoleGroups    map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
+	OverridesSpec `json:",inline"`
+	Config        *TrinoConfigSpec     `json:"config,omitempty"`
+	RoleConfig    *TrinoRoleConfigSpec `json:"roleConfig,omitempty"`
+}
+
+type TrinoWorkerSpec struct {
+	RoleGroups    map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
+	OverridesSpec `json:",inline"`
+	Config        *TrinoConfigSpec     `json:"config,omitempty"`
+	RoleConfig    *TrinoRoleConfigSpec `json:"roleConfig,omitempty"`
 }
 
 type TrinoRoleGroupSpec struct {
-	Replicas        *int32                  `json:"replicas,omitempty"`
-	Config          *TrinoConfigSpec        `json:"config,omitempty"`
-	CliOverrides    []string                `json:"CliOverrides,omitempty"`
-	EnvOverrides    map[string]string       `json:"envOverrides,omitempty"`
-	ConfigOverrides map[string]string       `json:"configOverrides,omitempty"`
-	PodOverrides    *corev1.PodTemplateSpec `json:"podOverrides,omitempty"`
+	Replicas      *int32 `json:"replicas,omitempty"`
+	OverridesSpec `json:",inline"`
+	Config        *TrinoConfigSpec `json:"config,omitempty"`
 }
 
 type TrinoConfigSpec struct {
-	Affinity            *corev1.Affinity                         `json:"affinity,omitempty"`
-	PodDisruptionBudget *commonsv1alpha1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
-	// ParseDuration parses a duration string.
+	Affinity                *k8sruntime.RawExtension           `json:"affinity,omitempty"`
 	GracefulShutdownTimeout string                             `json:"gracefulShutdownTimeout,omitempty"`
 	Logging                 *commonsv1alpha1.LoggingConfigSpec `json:"logging,omitempty"`
 	Resources               *commonsv1alpha1.ResourcesSpec     `json:"resources,omitempty"`
+	QueryMaxMemory          string                             `json:"queryMaxMemory,omitempty"`
+	QueryMaxMemoryPerNode   string                             `json:"queryMaxMemoryPerNode,omitempty"`
 }
+
+// end of Test data structures
+// =================================================================================================
