@@ -1,22 +1,19 @@
 package builder
 
 import (
-	"context"
-
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/constants"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
 	logger = ctrl.Log.WithName("builder")
 )
 
-var _ ResourceBuilder = &BaseResourceBuilder{}
+var _ ObjectMetaBuilder = &ObjectMeta{}
 
-type BaseResourceBuilder struct {
+type ObjectMeta struct {
 	Client *client.Client
 
 	Name        string // this is resource name when creating
@@ -28,42 +25,41 @@ type BaseResourceBuilder struct {
 	RoleGroupName string
 }
 
-func NewBaseResourceBuilder(
+func NewObjectMeta(
 	client *client.Client,
 	name string, // this is resource name when creating
-	options ...Options,
-) *BaseResourceBuilder {
+	options ...Option,
+) *ObjectMeta {
 
-	var opt Option
-
-	for _, o := range options {
-		opt = o(opt)
+	opts := &Options{}
+	for _, opt := range options {
+		opt(opts)
 	}
 
-	return &BaseResourceBuilder{
+	return &ObjectMeta{
 		Client:        client,
 		Name:          name,
-		labels:        opt.Labels,
-		annotations:   opt.Annotations,
-		ClusterName:   opt.ClusterName,
-		RoleName:      opt.RoleName,
-		RoleGroupName: opt.RoleGroupName,
+		labels:        opts.Labels,
+		annotations:   opts.Annotations,
+		ClusterName:   opts.ClusterName,
+		RoleName:      opts.RoleName,
+		RoleGroupName: opts.RoleGroupName,
 	}
 }
 
-func (b *BaseResourceBuilder) GetClient() *client.Client {
+func (b *ObjectMeta) GetClient() *client.Client {
 	return b.Client
 }
 
-func (b *BaseResourceBuilder) SetName(name string) {
+func (b *ObjectMeta) SetName(name string) {
 	b.Name = name
 }
 
-func (b *BaseResourceBuilder) GetName() string {
+func (b *ObjectMeta) GetName() string {
 	return b.Name
 }
 
-func (b *BaseResourceBuilder) AddLabels(labels map[string]string) {
+func (b *ObjectMeta) AddLabels(labels map[string]string) {
 	if b.labels == nil {
 		b.labels = make(map[string]string)
 	}
@@ -72,7 +68,7 @@ func (b *BaseResourceBuilder) AddLabels(labels map[string]string) {
 	}
 }
 
-func (b *BaseResourceBuilder) GetLabels() map[string]string {
+func (b *ObjectMeta) GetLabels() map[string]string {
 	if b.labels == nil {
 		b.labels = map[string]string{
 			constants.LabelKubernetesInstance:  b.Client.GetOwnerName(),
@@ -95,7 +91,7 @@ func (b *BaseResourceBuilder) GetLabels() map[string]string {
 	return b.labels
 }
 
-func (o *BaseResourceBuilder) filterLabels(labels map[string]string) map[string]string {
+func (o *ObjectMeta) filterLabels(labels map[string]string) map[string]string {
 	matchingLabels := make(map[string]string)
 	for _, label := range constants.MatchingLabelsNames() {
 		if value, ok := labels[label]; ok {
@@ -105,17 +101,17 @@ func (o *BaseResourceBuilder) filterLabels(labels map[string]string) map[string]
 	return matchingLabels
 }
 
-func (b *BaseResourceBuilder) GetMatchingLabels() map[string]string {
+func (b *ObjectMeta) GetMatchingLabels() map[string]string {
 	return b.filterLabels(b.GetLabels())
 }
 
-func (b *BaseResourceBuilder) GetLabelSelector() *metav1.LabelSelector {
+func (b *ObjectMeta) GetLabelSelector() *metav1.LabelSelector {
 	return &metav1.LabelSelector{
 		MatchLabels: b.GetMatchingLabels(),
 	}
 }
 
-func (b *BaseResourceBuilder) AddAnnotations(annotations map[string]string) {
+func (b *ObjectMeta) AddAnnotations(annotations map[string]string) {
 	if b.annotations == nil {
 		b.annotations = make(map[string]string)
 	}
@@ -124,11 +120,11 @@ func (b *BaseResourceBuilder) AddAnnotations(annotations map[string]string) {
 	}
 }
 
-func (b *BaseResourceBuilder) GetAnnotations() map[string]string {
+func (b *ObjectMeta) GetAnnotations() map[string]string {
 	return b.annotations
 }
 
-func (b *BaseResourceBuilder) GetObjectMeta() metav1.ObjectMeta {
+func (b *ObjectMeta) GetObjectMeta() metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Name:        b.GetName(),
 		Namespace:   b.Client.GetOwnerNamespace(),
@@ -139,18 +135,10 @@ func (b *BaseResourceBuilder) GetObjectMeta() metav1.ObjectMeta {
 
 // GetObjectMetaWithClusterScope returns the object meta with cluster scope,
 // meaning that the object is not namespaced.
-func (b *BaseResourceBuilder) GetObjectMetaWithClusterScope() metav1.ObjectMeta {
+func (b *ObjectMeta) GetObjectMetaWithClusterScope() metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Name:        b.GetName(),
 		Labels:      b.GetLabels(),
 		Annotations: b.annotations,
 	}
-}
-
-func (b *BaseResourceBuilder) GetObject() (ctrlclient.Object, error) {
-	panic("implement me")
-}
-
-func (b *BaseResourceBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
-	panic("implement me")
 }

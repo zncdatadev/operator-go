@@ -34,7 +34,6 @@ func NewPDBReconciler(
 	return &PDB{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.PodDisruptionBudgetBuilder](
 			client,
-			name,
 			b,
 		),
 	}, nil

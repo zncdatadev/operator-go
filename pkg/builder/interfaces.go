@@ -13,7 +13,6 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -54,10 +53,13 @@ type ContainerBuilder interface {
 	SetSecurityContext(user int64, group int64, nonRoot bool) ContainerBuilder
 }
 
-type ResourceBuilder interface {
-	Build(ctx context.Context) (ctrlclient.Object, error)
-	GetObjectMeta() metav1.ObjectMeta
+type Clienter interface {
 	GetClient() *client.Client
+}
+
+type ObjectMetaBuilder interface {
+	Clienter
+	GetObjectMeta() metav1.ObjectMeta
 	SetName(name string)
 	GetName() string
 	AddLabels(labels map[string]string)
@@ -66,15 +68,9 @@ type ResourceBuilder interface {
 	GetAnnotations() map[string]string
 }
 
-type WorkloadImage interface {
-	SetImage(image *util.Image)
-	GetImage() *util.Image
-	GetImageWithTag() (string, error)
-}
-
-type WorkloadSecurityContext interface {
-	SetSecurityContext(user int64, group int64, nonRoot bool)
-	GetSecurityContext() *corev1.PodSecurityContext
+type ObjectBuilder interface {
+	ObjectMetaBuilder
+	Build(ctx context.Context) (ctrlclient.Object, error)
 }
 
 type WorkloadContainers interface {
@@ -82,9 +78,7 @@ type WorkloadContainers interface {
 	AddContainer(container *corev1.Container)
 	ResetContainers(containers []corev1.Container)
 	GetContainers() []corev1.Container
-}
 
-type WorkloadInitContainers interface {
 	AddInitContainers(containers []corev1.Container)
 	AddInitContainer(container *corev1.Container)
 	ResetInitContainers(containers []corev1.Container)
@@ -98,37 +92,36 @@ type WorkloadVolumes interface {
 	GetVolumes() []corev1.Volume
 }
 
-type WorkloadAffinity interface {
-	SetAffinity(affinity *corev1.Affinity)
-	GetAffinity() *corev1.Affinity
-}
-
 type WorkloadReplicas interface {
 	SetReplicas(replicas *int32)
 	GetReplicas() *int32
 }
 
-type WorkloadTerminationGracePeriodSeconds interface {
-	SetTerminationGracePeriod(duration *time.Duration)
-	GetTerminationGracePeriod() *time.Duration
-}
+type WorkloadBuilder interface {
+	ObjectBuilder
+	WorkloadContainers
+	WorkloadVolumes
 
-type WorkloadResource interface {
+	SetImage(image *util.Image)
+	GetImage() *util.Image
+	GetImageWithTag() (string, error)
+
+	SetSecurityContext(user int64, group int64, nonRoot bool)
+	GetSecurityContext() *corev1.PodSecurityContext
+
+	SetAffinity(affinity *corev1.Affinity)
+	GetAffinity() (*corev1.Affinity, error)
+
 	SetResources(resources *commonsv1alpha1.ResourcesSpec)
 	GetResources() *commonsv1alpha1.ResourcesSpec
+
+	GetTerminationGracePeriod() (*time.Duration, error)
+	GetTerminationGracePeriodSeconds() (*int64, error)
 }
 
 type StatefulSetBuilder interface {
-	ResourceBuilder
-
+	WorkloadBuilder
 	WorkloadReplicas
-	WorkloadContainers
-	WorkloadInitContainers
-	WorkloadVolumes
-	WorkloadAffinity
-	WorkloadTerminationGracePeriodSeconds
-	WorkloadSecurityContext
-	WorkloadResource
 
 	GetObject() (*appv1.StatefulSet, error)
 
@@ -139,70 +132,55 @@ type StatefulSetBuilder interface {
 }
 
 type DeploymentBuilder interface {
-	ResourceBuilder
+	WorkloadBuilder
+	WorkloadReplicas
 
 	GetObject() (*appv1.Deployment, error)
-
-	WorkloadReplicas
-	WorkloadContainers
-	WorkloadInitContainers
-	WorkloadVolumes
-	WorkloadAffinity
-	WorkloadTerminationGracePeriodSeconds
-	WorkloadSecurityContext
-	WorkloadResource
 }
 
 type JobBuilder interface {
-	ResourceBuilder
-	GetObject() (*batchv1.Job, error)
+	WorkloadBuilder
 
-	WorkloadContainers
-	WorkloadInitContainers
-	WorkloadVolumes
-	WorkloadAffinity
-	WorkloadTerminationGracePeriodSeconds
-	WorkloadSecurityContext
-	WorkloadResource
+	GetObject() (*batchv1.Job, error)
 
 	SetRestPolicy(policy *corev1.RestartPolicy)
 }
 
 type ServiceBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() *corev1.Service
 	AddPort(port *corev1.ServicePort)
 	GetPorts() []corev1.ServicePort
 }
 
 type ServiceAccountBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() *corev1.ServiceAccount
 }
 
 type RoleBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() *rbacv1.Role
 }
 
 type RoleBindingBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() *rbacv1.RoleBinding
 }
 
 type ClusterRoleBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() *rbacv1.ClusterRole
 }
 
 type ClusterRoleBindingBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() *rbacv1.ClusterRoleBinding
 }
 
 type PodDisruptionBudgetBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	GetObject() (*policyv1.PodDisruptionBudget, error)
-	SetMaxUnavailable(max intstr.IntOrString)
-	SetMinAvailable(min intstr.IntOrString)
+	SetMaxUnavailable(max *int32)
+	SetMinAvailable(min *int32)
 }

@@ -9,7 +9,7 @@ import (
 )
 
 type ConfigBuilder interface {
-	ResourceBuilder
+	ObjectBuilder
 	AddData(data map[string]string) ConfigBuilder
 	AddItem(key, value string) ConfigBuilder
 	SetData(data map[string]string) ConfigBuilder
@@ -20,7 +20,7 @@ type ConfigBuilder interface {
 var _ ConfigBuilder = &BaseConfigBuilder{}
 
 type BaseConfigBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	data map[string]string
 }
@@ -32,7 +32,7 @@ func NewBaseConfigBuilder(
 	annotations map[string]string,
 ) *BaseConfigBuilder {
 	return &BaseConfigBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
+		ObjectMeta: ObjectMeta{
 			Client:      client,
 			Name:        name,
 			labels:      labels,
@@ -66,6 +66,10 @@ func (b *BaseConfigBuilder) ClearData() ConfigBuilder {
 
 func (b *BaseConfigBuilder) GetData() map[string]string {
 	return b.data
+}
+
+func (b *BaseConfigBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
+	panic("implement me")
 }
 
 var _ ConfigBuilder = &ConfigMapBuilder{}

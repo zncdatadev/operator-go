@@ -2,6 +2,7 @@ package builder_test
 
 import (
 	"context"
+	"encoding/json"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -10,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -64,20 +66,9 @@ var _ = Describe("DeploymentBuilder test", func() {
 					"sample-trinocluster-default",
 					ptr.To[int32](1),
 					util.NewImage("trino", "485", "1.0.0"),
-					builder.WorkloadOptions{
-						Option: builder.Option{
-							RoleName:      "coordinator",
-							RoleGroupName: "default",
-							Labels: map[string]string{
-								constants.LabelKubernetesInstance:  ownerName,
-								constants.LabelKubernetesManagedBy: "trino.zncdata.dev",
-								constants.LabelKubernetesComponent: "coordinator",
-								constants.LabelKubernetesName:      "TrinoCluster",
-								constants.LabelKubernetesRoleGroup: "default",
-							},
-						},
-
-						Resource: &commonsv1alpha1.ResourcesSpec{
+					nil,
+					&commonsv1alpha1.RoleGroupConfigSpec{
+						Resources: &commonsv1alpha1.ResourcesSpec{
 							CPU: &commonsv1alpha1.CPUResource{
 								Max: resource.MustParse("100m"),
 								Min: resource.MustParse("50m"),
@@ -86,6 +77,19 @@ var _ = Describe("DeploymentBuilder test", func() {
 								Limit: resource.MustParse("100Mi"),
 							},
 						},
+					},
+					func(o *builder.Options) {
+						o.ClusterName = ownerName
+						o.RoleName = "coordinator"
+						o.RoleGroupName = "default"
+						o.Labels = map[string]string{
+							constants.LabelKubernetesInstance:  ownerName,
+							constants.LabelKubernetesManagedBy: "trino.zncdata.dev",
+							constants.LabelKubernetesComponent: "coordinator",
+							constants.LabelKubernetesName:      "TrinoCluster",
+							constants.LabelKubernetesRoleGroup: "default",
+						}
+
 					},
 				),
 			}
@@ -153,11 +157,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 					"sample-trinocluster-default",
 					ptr.To[int32](1),
 					util.NewImage("trino", "485", "1.0.0"),
-					builder.WorkloadOptions{
-						Option: builder.Option{
-							RoleName:      "coordinator", // EnvOverrides and CliOverrides will only applied to the container, which it name eq RoleName
-							RoleGroupName: "default",
-						},
+					&commonsv1alpha1.OverridesSpec{
 						CliOverrides: []string{
 							"bin/launcher",
 							"start",
@@ -166,6 +166,12 @@ var _ = Describe("DeploymentBuilder test", func() {
 							"foo": "test",
 							"bar": "test",
 						},
+					},
+					nil,
+					func(o *builder.Options) {
+						o.ClusterName = ownerName
+						o.RoleName = "coordinator"
+						o.RoleGroupName = "default"
 					},
 				),
 			}
@@ -206,27 +212,41 @@ var _ = Describe("DeploymentBuilder test", func() {
 
 		It("should return a Deployment object with PodOverrides", func() {
 			By("creating a DeploymentBuilder")
+
+			overridesPodTemplate := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					NodeSelector: map[string]string{
+						"foo": "bar",
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "foo",
+							Image: "bar",
+						},
+					},
+				},
+			}
+
+			overridesPodTemplateBytes, err := json.Marshal(overridesPodTemplate)
+			Expect(err).ToNot(HaveOccurred())
+
 			deploymentBuilder := &TrinoDeploymentBuilder{
 				Deployment: *builder.NewDeployment(
 					resourceClient,
 					"sample-trinocluster-default",
 					ptr.To[int32](1),
 					util.NewImage("trino", "485", "1.0.0"),
-					builder.WorkloadOptions{
+					&commonsv1alpha1.OverridesSpec{
 						EnvOverrides: map[string]string{
 							"foo": "test",
 						},
-						PodOverrides: &corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								NodeSelector: map[string]string{
-									"foo": "bar",
-								},
-							},
-						},
-						Option: builder.Option{
-							RoleName:      "coordinator", // EnvOverrides will only applied to the container, which it name eq RoleName
-							RoleGroupName: "default",
-						},
+						PodOverrides: &runtime.RawExtension{Raw: overridesPodTemplateBytes},
+					},
+					nil,
+					func(o *builder.Options) {
+						o.ClusterName = ownerName
+						o.RoleName = "coordinator"
+						o.RoleGroupName = "default"
 					},
 				),
 			}
@@ -240,15 +260,23 @@ var _ = Describe("DeploymentBuilder test", func() {
 			Expect(ok).To(BeTrue())
 
 			By("validating the Deployment object's containers")
-			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(2))
 
 			By("validating the Deployment object's pod overrides")
 			Expect(deployment.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("foo", "bar"))
 
-			container := deployment.Spec.Template.Spec.Containers[0]
+			var mainContainer *corev1.Container
+			for _, container := range deployment.Spec.Template.Spec.Containers {
+				if container.Name == "coordinator" {
+					mainContainer = &container
+					break
+				}
+			}
+
+			Expect(mainContainer).ToNot(BeNil())
 
 			By("validating the Deployment object's container env overrides")
-			containerEnv := container.Env
+			containerEnv := mainContainer.Env
 			Expect(len(containerEnv)).To(BeNumerically(">=", 1))
 			Expect(containerEnv).To(ContainElement(corev1.EnvVar{
 				Name:      "foo",

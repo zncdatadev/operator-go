@@ -9,7 +9,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/kubectl/pkg/scheme"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -92,44 +91,33 @@ type ClusterConfigSpec struct {
 	ListenerClass string `json:"listenerClass,omitempty"`
 }
 
-type TrinoRoleConfigSpec struct {
-	PodDisruptionBudget *commonsv1alpha1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
-}
-
-type OverridesSpec struct {
-	CliOverrides    []string                     `json:"cliOverrides,omitempty"`
-	EnvOverrides    map[string]string            `json:"envOverrides,omitempty"`
-	ConfigOverrides map[string]map[string]string `json:"configOverrides,omitempty"`
-	PodOverrides    *k8sruntime.RawExtension     `json:"podOverrides,omitempty"`
-}
-
 type TrinoCoordinatorSpec struct {
-	RoleGroups    map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
-	OverridesSpec `json:",inline"`
-	Config        *TrinoConfigSpec     `json:"config,omitempty"`
-	RoleConfig    *TrinoRoleConfigSpec `json:"roleConfig,omitempty"`
+	RoleGroups map[string]TrinoRoleGroupSpec   `json:"roleGroups,omitempty"`
+	Config     *TrinoConfigSpec                `json:"config,omitempty"`
+	RoleConfig *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
+
+	commonsv1alpha1.OverridesSpec `json:",inline"`
 }
 
 type TrinoWorkerSpec struct {
-	RoleGroups    map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
-	OverridesSpec `json:",inline"`
-	Config        *TrinoConfigSpec     `json:"config,omitempty"`
-	RoleConfig    *TrinoRoleConfigSpec `json:"roleConfig,omitempty"`
+	RoleGroups map[string]TrinoRoleGroupSpec   `json:"roleGroups,omitempty"`
+	Config     *TrinoConfigSpec                `json:"config,omitempty"`
+	RoleConfig *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
+
+	commonsv1alpha1.OverridesSpec `json:",inline"`
 }
 
 type TrinoRoleGroupSpec struct {
-	Replicas      *int32 `json:"replicas,omitempty"`
-	OverridesSpec `json:",inline"`
-	Config        *TrinoConfigSpec `json:"config,omitempty"`
+	commonsv1alpha1.OverridesSpec `json:",inline"`
+
+	Replicas *int32           `json:"replicas,omitempty"`
+	Config   *TrinoConfigSpec `json:"config,omitempty"`
 }
 
 type TrinoConfigSpec struct {
-	Affinity                *k8sruntime.RawExtension           `json:"affinity,omitempty"`
-	GracefulShutdownTimeout string                             `json:"gracefulShutdownTimeout,omitempty"`
-	Logging                 *commonsv1alpha1.LoggingConfigSpec `json:"logging,omitempty"`
-	Resources               *commonsv1alpha1.ResourcesSpec     `json:"resources,omitempty"`
-	QueryMaxMemory          string                             `json:"queryMaxMemory,omitempty"`
-	QueryMaxMemoryPerNode   string                             `json:"queryMaxMemoryPerNode,omitempty"`
+	commonsv1alpha1.RoleGroupConfigSpec `json:",inline"`
+	QueryMaxMemory                      string `json:"queryMaxMemory,omitempty"`
+	QueryMaxMemoryPerNode               string `json:"queryMaxMemoryPerNode,omitempty"`
 }
 
 // end of Test data structures

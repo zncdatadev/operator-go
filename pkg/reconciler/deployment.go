@@ -56,14 +56,12 @@ func (r *Deployment) Ready(ctx context.Context) (ctrl.Result, error) {
 
 func NewDeployment(
 	client *client.Client,
-	name string,
 	deployBuilder builder.DeploymentBuilder,
 	stopped bool,
 ) *Deployment {
 	return &Deployment{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.DeploymentBuilder](
 			client,
-			name,
 			deployBuilder,
 		),
 		Stopped: stopped,

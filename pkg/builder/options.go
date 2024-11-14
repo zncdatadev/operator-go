@@ -1,14 +1,10 @@
 package builder
 
-import (
-	"time"
+type Optioner interface {
+	Apply(opts *Options)
+}
 
-	corev1 "k8s.io/api/core/v1"
-
-	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-)
-
-type Option struct {
+type Options struct {
 	ClusterName   string
 	RoleName      string
 	RoleGroupName string
@@ -16,16 +12,35 @@ type Option struct {
 	Annotations   map[string]string
 }
 
-type Options func(Option) Option
-
-type WorkloadOptions struct {
-	Option
-
-	Affinity               *corev1.Affinity
-	PodOverrides           *corev1.PodTemplateSpec
-	EnvOverrides           map[string]string
-	CliOverrides           []string
-	TerminationGracePeriod *time.Duration
-	// Workload cpu and memory resource limits and requests
-	Resource *commonsv1alpha1.ResourcesSpec
+func (o *Options) Apply(opts *Options) {
+	if opts == nil {
+		return
+	}
+	if opts.ClusterName != "" {
+		o.ClusterName = opts.ClusterName
+	}
+	if opts.RoleName != "" {
+		o.RoleName = opts.RoleName
+	}
+	if opts.RoleGroupName != "" {
+		o.RoleGroupName = opts.RoleGroupName
+	}
+	if opts.Labels != nil {
+		if o.Labels == nil {
+			o.Labels = make(map[string]string)
+		}
+		for k, v := range opts.Labels {
+			o.Labels[k] = v
+		}
+	}
+	if opts.Annotations != nil {
+		if o.Annotations == nil {
+			o.Annotations = make(map[string]string)
+		}
+		for k, v := range opts.Annotations {
+			o.Annotations[k] = v
+		}
+	}
 }
+
+type Option func(*Options)

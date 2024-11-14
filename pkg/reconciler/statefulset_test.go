@@ -81,14 +81,15 @@ var _ = Describe("Statefulset reconciler", func() {
 						ProductVersion:  "458",
 						ProductName:     "nginx",
 					},
-					builder.WorkloadOptions{},
+					nil,
+					nil,
 				),
 			}
 		})
 
 		It("Should successfully reconcile a whoami statefulset", func() {
 			By("Create a statefulset reconciler")
-			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder, false)
+			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, statefulSetBuilder, false)
 			Expect(statusfulSetReconciler).ShouldNot(BeNil())
 
 			By("Reconcile the statefulset")
@@ -128,7 +129,7 @@ var _ = Describe("Statefulset reconciler", func() {
 		It("Should successfully reconcile statefulset replicas to 0 when stopped", func() {
 
 			By("Create a stopped statefulset reconciler normal")
-			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder, false)
+			statusfulSetReconciler := reconciler.NewStatefulSet(resourceClient, statefulSetBuilder, false)
 			Expect(statusfulSetReconciler).ShouldNot(BeNil())
 
 			By("Reconcile the statefulset")
@@ -153,12 +154,13 @@ var _ = Describe("Statefulset reconciler", func() {
 						ProductVersion:  "458",
 						ProductName:     "nginx",
 					},
-					builder.WorkloadOptions{},
+					nil,
+					nil,
 				),
 			}
 
 			By("Update the statefulset spec replicas when cluster is stopped")
-			statusfulSetReconciler = reconciler.NewStatefulSet(resourceClient, name, statefulSetBuilder, true)
+			statusfulSetReconciler = reconciler.NewStatefulSet(resourceClient, statefulSetBuilder, true)
 			Expect(statusfulSetReconciler).ShouldNot(BeNil())
 
 			By("Reconcile the statefulset")

@@ -2,7 +2,6 @@ package reconciler_test
 
 import (
 	"context"
-	"errors"
 	"math/rand"
 	"strconv"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,7 +42,7 @@ func NewRoleReconciler(
 	spec TrinoCoordinatorSpec,
 ) *RoleReconciler {
 	return &RoleReconciler{
-		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler[TrinoCoordinatorSpec](
+		BaseRoleReconciler: *reconciler.NewBaseRoleReconciler(
 			client,
 			clusterStopped,
 			roleInfo,
@@ -55,16 +55,22 @@ func NewRoleReconciler(
 // RegisterResources registers resources with T
 func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 	for roleGroupName, roleGroup := range r.Spec.RoleGroups {
-		// mergedRoleGroup := roleGroup.DeepCopy()
-		mergedRoleGroup := &roleGroup
-		r.MergeRoleGroupSpec(mergedRoleGroup)
+		mergedRoleGroup, err := util.MergeObject(r.Spec.Config, roleGroup.Config)
+		if err != nil {
+			return err
+		}
+
+		overrides, err := util.MergeObject(&r.Spec.OverridesSpec, &roleGroup.OverridesSpec)
+		if err != nil {
+			return err
+		}
 
 		info := reconciler.RoleGroupInfo{
 			RoleInfo:      r.RoleInfo,
 			RoleGroupName: roleGroupName,
 		}
 
-		reconcilers, err := r.getResourceWithRoleGroup(ctx, info, mergedRoleGroup)
+		reconcilers, err := r.getResourceWithRoleGroup(info, mergedRoleGroup, overrides, roleGroup.Replicas)
 		if err != nil {
 			return err
 		}
@@ -77,13 +83,18 @@ func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 	return nil
 }
 
-func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconciler.RoleGroupInfo, roleGroupSpec *TrinoRoleGroupSpec) ([]reconciler.Reconciler, error) {
+func (r *RoleReconciler) getResourceWithRoleGroup(
+	info reconciler.RoleGroupInfo,
+	config *TrinoConfigSpec,
+	overrides *commonsv1alpha1.OverridesSpec,
+	replicas *int32,
+) ([]reconciler.Reconciler, error) {
 
 	reconcilers := []reconciler.Reconciler{}
 
 	reconcilers = append(reconcilers, r.getServiceReconciler(info))
 
-	deploymentReconciler, err := r.getDeployment(info, roleGroupSpec)
+	deploymentReconciler, err := r.getDeployment(info, config, overrides, replicas)
 	if err != nil {
 		return nil, err
 	}
@@ -93,33 +104,17 @@ func (r *RoleReconciler) getResourceWithRoleGroup(_ context.Context, info reconc
 	return reconcilers, nil
 }
 
-func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup *TrinoRoleGroupSpec) (reconciler.Reconciler, error) {
+func (r *RoleReconciler) getDeployment(
+	info reconciler.RoleGroupInfo,
+	config *TrinoConfigSpec,
+	overrides *commonsv1alpha1.OverridesSpec,
+	replicas *int32,
+) (reconciler.Reconciler, error) {
 
-	options := builder.WorkloadOptions{
-		Option: builder.Option{
-			Labels:      info.GetLabels(),
-			Annotations: info.GetAnnotations(),
-		},
-		EnvOverrides: roleGroup.EnvOverrides,
-		CliOverrides: roleGroup.CliOverrides,
-	}
+	var roleGroupConfig *commonsv1alpha1.RoleGroupConfigSpec
 
-	if roleGroup.Config != nil {
-
-		var gracefulShutdownTimeout time.Duration
-		var err error
-
-		if roleGroup.Config.GracefulShutdownTimeout != "" {
-			gracefulShutdownTimeout, err = time.ParseDuration(roleGroup.Config.GracefulShutdownTimeout)
-
-			if err != nil {
-				return nil, errors.New("failed to parse graceful shutdown")
-			}
-		}
-
-		options.TerminationGracePeriod = &gracefulShutdownTimeout
-
-		// options.Affinity = roleGroup.Config.Affinity
+	if config != nil {
+		roleGroupConfig = &config.RoleGroupConfigSpec
 	}
 
 	// Create a deployment builder
@@ -127,17 +122,25 @@ func (r *RoleReconciler) getDeployment(info reconciler.RoleGroupInfo, roleGroup 
 		Deployment: *builder.NewDeployment(
 			r.GetClient(),
 			info.GetFullName(),
-			roleGroup.Replicas,
+			replicas,
 			&util.Image{
 				KubedoopVersion: "1.0.0",
 				ProductName:     "trino",
 				ProductVersion:  "458",
 			},
-			options,
+			overrides,
+			roleGroupConfig,
+			func(o *builder.Options) {
+				o.ClusterName = info.ClusterName
+				o.RoleName = info.RoleName
+				o.RoleGroupName = info.RoleGroupName
+				o.Labels = info.GetLabels()
+				o.Annotations = info.GetAnnotations()
+			},
 		),
 	}
 	// Create a deployment reconciler
-	return reconciler.NewDeployment(r.Client, info.GetFullName(), deploymentBuilder, r.ClusterStopped), nil
+	return reconciler.NewDeployment(r.Client, deploymentBuilder, r.ClusterStopped()), nil
 }
 
 func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) reconciler.Reconciler {
@@ -150,9 +153,12 @@ func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) rec
 				ContainerPort: 3000,
 			},
 		},
-		func(sbo *builder.ServiceBuilderOption) {
-			sbo.Annotations = info.GetAnnotations()
-			sbo.Labels = info.GetLabels()
+		func(o *builder.ServiceBuilderOptions) {
+			o.ClusterName = info.ClusterName
+			o.RoleName = info.RoleName
+			o.RoleGroupName = info.RoleGroupName
+			o.Labels = info.GetLabels()
+			o.Annotations = info.GetAnnotations()
 		},
 	)
 }
@@ -172,28 +178,17 @@ var _ = Describe("Role reconciler", func() {
 			},
 			ClusterName: "fake-owner",
 		},
-		RoleName: "trino",
+		RoleName: "coordinator",
 	}
 
-	Context("RoleReconciler test", func() {
+	Context("RoleReconciler test success", func() {
 		var resourceClient *client.Client
 
-		var namespace string
+		var namespace *corev1.Namespace
+		var fakeOwner *corev1.ServiceAccount
 		ctx := context.Background()
 
 		coordinatorRole := TrinoCoordinatorSpec{
-			OverridesSpec: OverridesSpec{
-				EnvOverrides: map[string]string{"TEST": "test"},
-			},
-			Config: &TrinoConfigSpec{
-				Resources: &commonsv1alpha1.ResourcesSpec{
-					CPU: &commonsv1alpha1.CPUResource{
-						Max: resource.Quantity{
-							Format: "100m",
-						},
-					},
-				},
-			},
 			RoleGroups: map[string]TrinoRoleGroupSpec{
 				"default": {
 					Replicas: ptr.To[int32](1),
@@ -202,28 +197,27 @@ var _ = Describe("Role reconciler", func() {
 		}
 
 		BeforeEach(func() {
-			namespace = "test-" + strconv.Itoa(rand.Intn(10000))
-			ns := &corev1.Namespace{
+			namespace = &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: namespace,
+					Name: "test-" + strconv.Itoa(rand.Intn(10000)),
 				},
 			}
 
-			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
-
-			fakeOwner := &corev1.Pod{
+			Expect(k8sClient.Create(ctx, namespace)).Should(Succeed())
+			fakeOwner = &corev1.ServiceAccount{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      roleInfo.GetClusterName(),
-					Namespace: namespace,
-					UID:       types.UID("fake-uid"),
+					Name:      "fake-owner",
+					Namespace: namespace.GetName(),
 				},
 			}
-
 			resourceClient = client.NewClient(k8sClient, fakeOwner)
+
+			Expect(resourceClient.Client.Create(ctx, fakeOwner)).Should(Succeed())
 		})
 
 		AfterEach(func() {
-
+			Expect(k8sClient.Delete(ctx, fakeOwner)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, namespace)).Should(Succeed())
 		})
 
 		It("should reconcile role resource", func() {
@@ -240,15 +234,16 @@ var _ = Describe("Role reconciler", func() {
 			By("registering resources")
 			Expect(roleReconciler.RegisterResources(ctx)).To(Succeed())
 
-			By("reconciling resources until ready")
+			By("reconciling resources")
 			Eventually(func() bool {
 				result, err := roleReconciler.Reconcile(ctx)
 				return result.IsZero() && err == nil
 			}, time.Second*3, time.Second*1).Should(BeTrue())
 
-			By("mock deployment is ready")
 			deployment := &appv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
+
+			By("mock deployment is ready")
 			deployment.Status.Replicas = 1
 			deployment.Status.ReadyReplicas = 1
 			Expect(k8sClient.Status().Update(ctx, deployment)).Should(Succeed())
@@ -259,203 +254,162 @@ var _ = Describe("Role reconciler", func() {
 				return result.IsZero() && err == nil
 			}, time.Second*3, time.Second*1).Should(BeTrue())
 		})
-	})
 
-	Context("RoleReconciler role and roleGroup merge", func() {
-
-		roleInfo := reconciler.RoleInfo{
-			ClusterInfo: reconciler.ClusterInfo{
-				GVK: &metav1.GroupVersionKind{
-					Group:   "fake.zncdata.dev",
-					Version: "v1alpha1",
-					Kind:    "TrinoCluster",
+		It("should reconcile role pdb", func() {
+			coordinatorRole := TrinoCoordinatorSpec{
+				RoleGroups: map[string]TrinoRoleGroupSpec{
+					"default": {Replicas: ptr.To[int32](3)},
 				},
-				ClusterName: "fake-owner",
-			},
-			RoleName: "Trino",
-		}
-
-		resourceClient := client.NewClient(k8sClient, nil)
-		var role *TrinoCoordinatorSpec
-
-		BeforeEach(func() {
-			role = &TrinoCoordinatorSpec{
-				OverridesSpec: OverridesSpec{
-					EnvOverrides: map[string]string{"TEST": "test"},
-					CliOverrides: []string{"tail"},
+				RoleConfig: &commonsv1alpha1.RoleConfigSpec{
+					PodDisruptionBudget: &commonsv1alpha1.PodDisruptionBudgetSpec{
+						Enabled:        true,
+						MaxUnavailable: ptr.To[int32](1),
+					},
 				},
-				Config: &TrinoConfigSpec{
-					GracefulShutdownTimeout: "10s",
+			}
+
+			By("creating a role reconciler")
+			roleReconciler := NewRoleReconciler(
+				resourceClient,
+				&ClusterConfigSpec{},
+				clusterOperation.Stopped,
+				roleInfo,
+				coordinatorRole,
+			)
+			Expect(roleReconciler).ToNot(BeNil())
+
+			By("registering resources")
+			Expect(roleReconciler.RegisterResources(ctx)).To(Succeed())
+
+			By("reconciling resources")
+			Eventually(func() bool {
+				result, err := roleReconciler.Reconcile(ctx)
+				return result.IsZero() && err == nil
+			}, time.Second*3, time.Second*1).Should(BeTrue())
+
+			By("check pdb resource with role")
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName()}, pdb)).Should(Succeed())
+			Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
+
+		})
+
+		It("should reconcile role resource with overrides", func() {
+			coordinatorRole = TrinoCoordinatorSpec{
+				OverridesSpec: commonsv1alpha1.OverridesSpec{
+					EnvOverrides: map[string]string{"test1": "test1", "test2": "test2"},
+					CliOverrides: []string{"test1"},
+					// ConfigOverrides: map[string]map[string]string{
+					// 	"hdfs-site.xml": {"test1": "test1", "test2": "test2"},
+					// 	"core-site.xml": {"test1": "test1"},
+					// },
 				},
+
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
-						Replicas:      ptr.To[int32](1),
-						OverridesSpec: OverridesSpec{CliOverrides: []string{"echo"}},
-					},
-					"test": {
-						Replicas: ptr.To[int32](2),
-						Config: &TrinoConfigSpec{
-							GracefulShutdownTimeout: "20s",
+						Replicas: ptr.To[int32](1),
+						OverridesSpec: commonsv1alpha1.OverridesSpec{
+							EnvOverrides: map[string]string{"test1": "test11", "test3": "test3"},
+							CliOverrides: []string{"test2"},
+							// ConfigOverrides: map[string]map[string]string{
+							// 	"hdfs-site.xml":   {"test1": "test11", "test3": "test3"},
+							// 	"mapred-site.xml": {"test1": "test11"},
+							// },
 						},
 					},
 				},
 			}
-		})
 
-		It("should merged role to roleGroup spec", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				&ClusterConfigSpec{},
 				clusterOperation.Stopped,
 				roleInfo,
-				*role,
+				coordinatorRole,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
 
-			By("get role groups")
-			roleGroups, err := roleReconciler.GetRoleGroups()
-			Expect(err).To(BeNil())
-			Expect(roleGroups).ToNot(BeNil())
+			By("registering resources")
+			Expect(roleReconciler.RegisterResources(ctx)).To(Succeed())
 
-			By("check default role group")
-			defaultRoleGroupValue, ok := roleGroups["default"]
-			Expect(ok).To(BeTrue())
-			Expect(defaultRoleGroupValue).ToNot(BeNil())
-			defaultRoleGroup, ok := defaultRoleGroupValue.(*TrinoRoleGroupSpec)
-			Expect(ok).To(BeTrue())
-			Expect(defaultRoleGroup).ToNot(BeNil())
-			Expect(defaultRoleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
-			Expect(defaultRoleGroup.Config).To(Equal(role.Config))
-			// defaultRoleGroup.CliOverrides != role.CliOverrides
-			Expect(defaultRoleGroup.CliOverrides).ToNot(Equal(role.CliOverrides))
+			By("reconciling resources")
+			Eventually(func() bool {
+				result, err := roleReconciler.Reconcile(ctx)
+				return result.IsZero() && err == nil
+			}, time.Second*10, time.Second*2).Should(BeTrue())
 
-			By("check test role group")
-			testRoleGroupValue, ok := roleGroups["test"]
-			Expect(ok).To(BeTrue())
-			Expect(testRoleGroupValue).ToNot(BeNil())
-			testRoleGroup, ok := testRoleGroupValue.(*TrinoRoleGroupSpec)
-			Expect(ok).To(BeTrue())
-			Expect(testRoleGroup).ToNot(BeNil())
-			Expect(testRoleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
-			// testRoleGroup.Config != role.Config
-			Expect(testRoleGroup.Config).ToNot(Equal(role.Config))
-			Expect(testRoleGroup.CliOverrides).To(Equal(role.CliOverrides))
+			deployment := &appv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
+
+			By("check env overrides")
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "test1", Value: "test11"}))
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "test2", Value: "test2"}))
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "test3", Value: "test3"}))
+
+			By("check cli overrides")
+			Expect(container.Command).To(ContainElement("test2"))
 
 		})
-	})
 
-	Context("RoleReconciler merge roleGroup spec", func() {
-
-		resourceClient := client.NewClient(k8sClient, nil)
-		var role *TrinoCoordinatorSpec
-		var roleGroupOne *TrinoRoleGroupSpec
-		var roleGroupTwo *TrinoRoleGroupSpec
-
-		BeforeEach(func() {
-			role = &TrinoCoordinatorSpec{
-				OverridesSpec: OverridesSpec{
-					EnvOverrides: map[string]string{"TEST": "test"},
-					CliOverrides: []string{"tail"},
-				},
+		It("should reconcile role resource with config", func() {
+			coordinatorRole = TrinoCoordinatorSpec{
 				Config: &TrinoConfigSpec{
-					GracefulShutdownTimeout: "10s",
+					RoleGroupConfigSpec: commonsv1alpha1.RoleGroupConfigSpec{
+						Resources: &commonsv1alpha1.ResourcesSpec{
+							CPU: &commonsv1alpha1.CPUResource{
+								Max: resource.MustParse("100m"),
+							},
+						},
+					},
+				},
+				RoleGroups: map[string]TrinoRoleGroupSpec{
+					"default": {
+						Replicas: ptr.To[int32](1),
+						Config: &TrinoConfigSpec{
+							RoleGroupConfigSpec: commonsv1alpha1.RoleGroupConfigSpec{
+								Resources: &commonsv1alpha1.ResourcesSpec{
+									CPU: &commonsv1alpha1.CPUResource{
+										Max: resource.MustParse("200m"),
+										Min: resource.MustParse("50m"),
+									},
+								},
+							},
+						},
+					},
 				},
 			}
 
-			roleGroupOne = &TrinoRoleGroupSpec{
-				Replicas:      ptr.To[int32](1),
-				OverridesSpec: OverridesSpec{CliOverrides: []string{"echo"}},
-			}
-
-			roleGroupTwo = &TrinoRoleGroupSpec{
-				Replicas: ptr.To[int32](2),
-				Config: &TrinoConfigSpec{
-					GracefulShutdownTimeout: "20s",
-				},
-			}
-		})
-
-		It("should merged role to roleGroup spec with Role.Config when RoleGroup.config not exist", func() {
-			By("creating a role reconciler")
-			roleReconciler := NewRoleReconciler(
-				resourceClient,
-				&ClusterConfigSpec{},
-				false,
-				roleInfo,
-				*role,
-			)
-			Expect(roleReconciler).ToNot(BeNil())
-
-			By("merge role group spec")
-			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupOne)
-			Expect(roleGroupValue).ToNot(BeNil())
-
-			By("assert roleGroupValue is TrinoRoleGroupSpec")
-			roleGroup, ok := roleGroupValue.(*TrinoRoleGroupSpec)
-			Expect(ok).To(BeTrue())
-
-			By("checking role.Config merged")
-			Expect(roleGroup.Config.GracefulShutdownTimeout).To(Equal(role.Config.GracefulShutdownTimeout))
-
-			By("checking role.CliOverrides not merged")
-			Expect(roleGroup.CliOverrides).ToNot(Equal(role.CliOverrides))
-
-			By("checking role.EnvOverrides merged")
-			Expect(roleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
-		})
-
-		It("should not merged role to roleGroup spec with Role.Config when RoleGroup.config exist", func() {
 			By("creating a role reconciler")
 			roleReconciler := NewRoleReconciler(
 				resourceClient,
 				&ClusterConfigSpec{},
 				clusterOperation.Stopped,
 				roleInfo,
-				*role,
+				coordinatorRole,
 			)
 			Expect(roleReconciler).ToNot(BeNil())
 
-			By("merge role group spec")
-			roleGroupValue := roleReconciler.MergeRoleGroupSpec(roleGroupTwo)
-			Expect(roleGroupValue).ToNot(BeNil())
+			By("registering resources")
+			Expect(roleReconciler.RegisterResources(ctx)).To(Succeed())
 
-			By("assert roleGroupValue is TrinoRoleGroupSpec")
-			roleGroup, ok := roleGroupValue.(*TrinoRoleGroupSpec)
-			Expect(ok).To(BeTrue())
+			By("reconciling resources")
+			Eventually(func() bool {
+				result, err := roleReconciler.Reconcile(ctx)
+				return result.IsZero() && err == nil
+			}, time.Second*3, time.Second*1).Should(BeTrue())
 
-			By("checking role.CliOverrides merged")
-			Expect(roleGroup.CliOverrides).To(Equal(role.CliOverrides))
+			deployment := &appv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
 
-			By("checking role.Config not merged")
-			Expect(roleGroup.Config.GracefulShutdownTimeout).ToNot(Equal(role.Config.GracefulShutdownTimeout))
+			container := deployment.Spec.Template.Spec.Containers[0]
 
-			By("checking role.EnvOverrides merged")
-			Expect(roleGroup.EnvOverrides).To(Equal(role.EnvOverrides))
-		})
-
-		It("should merge itself", func() {
-			By("creating a role reconciler")
-			roleReconciler := NewRoleReconciler(
-				resourceClient,
-				&ClusterConfigSpec{},
-				clusterOperation.Stopped,
-				roleInfo,
-				*role,
-			)
-
-			By("merge role group spec")
-			roleReconciler.MergeRoleGroupSpec(roleGroupOne)
-
-			By("checking role.Config merged")
-			Expect(roleGroupOne.Config.GracefulShutdownTimeout).To(Equal(role.Config.GracefulShutdownTimeout))
-
-			By("checking role.CliOverrides not merged")
-			Expect(roleGroupOne.CliOverrides).ToNot(Equal(role.CliOverrides))
-
-			By("checking role.EnvOverrides merged")
-			Expect(roleGroupOne.EnvOverrides).To(Equal(role.EnvOverrides))
-
+			By("check role group config")
+			Expect(container.Resources.Limits).To(HaveKey(corev1.ResourceCPU))
+			Expect(container.Resources.Limits.Cpu().String()).To(Equal("200m"))
+			Expect(container.Resources.Requests).To(HaveKey(corev1.ResourceCPU))
+			Expect(container.Resources.Requests.Cpu().String()).To(Equal("50m"))
 		})
 	})
 })

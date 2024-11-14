@@ -3,11 +3,13 @@ package builder
 import (
 	"context"
 
-	resourceClient "github.com/zncdatadev/operator-go/pkg/client"
-	"github.com/zncdatadev/operator-go/pkg/util"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	resourceClient "github.com/zncdatadev/operator-go/pkg/client"
+	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
 var _ JobBuilder = &Job{}
@@ -22,20 +24,24 @@ func NewGenericJobBuilder(
 	client *resourceClient.Client,
 	name string, // this is resource name when creating
 	image *util.Image,
-	options WorkloadOptions,
+	overrides *commonsv1alpha1.OverridesSpec,
+	roleGroupConfig *commonsv1alpha1.RoleGroupConfigSpec,
+	options ...Option,
 ) JobBuilder {
 	return &Job{
 		BaseWorkloadBuilder: *NewBaseWorkloadBuilder(
 			client,
 			name,
 			image,
-			options,
+			overrides,
+			roleGroupConfig,
+			options...,
 		),
 	}
 }
 
 func (b *Job) GetObject() (*batchv1.Job, error) {
-	podTemplate, err := b.getPodTemplate()
+	podTemplate, err := b.GetPodTemplate()
 	if err != nil {
 		return nil, err
 	}

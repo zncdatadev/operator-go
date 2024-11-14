@@ -48,13 +48,11 @@ func (r *Job) Ready(ctx context.Context) (ctrl.Result, error) {
 
 func NewJob(
 	client *client.Client,
-	name string,
 	jobBuilder builder.JobBuilder,
 ) *Job {
 	return &Job{
 		GenericResourceReconciler: NewGenericResourceReconciler[builder.JobBuilder](
 			client,
-			name,
 			jobBuilder,
 		),
 	}
