@@ -62,7 +62,7 @@ var _ = Describe("Service reconciler", func() {
 						Protocol:      corev1.ProtocolTCP,
 					},
 				},
-				func(sbo *builder.ServiceBuilderOption) {
+				func(sbo *builder.ServiceBuilderOptions) {
 					sbo.Annotations = map[string]string{"app.kubernetes.io/name": name}
 					sbo.Labels = map[string]string{"app.kubernetes.io/name": name}
 

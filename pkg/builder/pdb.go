@@ -12,7 +12,7 @@ import (
 )
 
 type PDBBuilderOptions struct {
-	Option
+	Options
 	MaxUnavailableAmount *int32
 	MinAvailableAmount   *int32
 }
@@ -28,80 +28,87 @@ func NewDefaultPDBBuilder(
 	for _, o := range options {
 		o(opt)
 	}
-	maxUnavailableAmount := opt.MaxUnavailableAmount
-	minAvailableAmount := opt.MinAvailableAmount
-	// verify that only one of maxUnavailable and minAvailable is set
-	if maxUnavailableAmount != nil && minAvailableAmount != nil {
-		return nil, errors.New("you can specify only one of maxUnavailable and minAvailable in a single PodDisruptionBudget")
-	}
-
-	var maxUnavailable, minAvailable *intstr.IntOrString
-	if maxUnavailableAmount != nil {
-		maxUnavailable = ptr.To(intstr.FromInt(int(*maxUnavailableAmount)))
-	}
-	if minAvailableAmount != nil {
-		minAvailable = ptr.To(intstr.FromInt(int(*minAvailableAmount)))
-	}
 
 	return &DefaultPDBBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
-			Client:      client,
-			Name:        name,
-			labels:      opt.Labels,
-			annotations: opt.Annotations,
-		},
-		maxUnavailable: maxUnavailable,
-		minAvailable:   minAvailable,
+		ObjectMeta: *NewObjectMeta(
+			client,
+			name,
+			// func(o *Options) {
+			// 	o.Apply(&opt.Options)
+			// },
+			func(o *Options) {
+				o.Labels = opt.Labels
+				o.Annotations = opt.Annotations
+				o.ClusterName = opt.ClusterName
+				o.RoleName = opt.RoleName
+				o.RoleGroupName = opt.RoleGroupName
+			},
+		),
+		maxUnavailable: opt.MaxUnavailableAmount,
+		minAvailable:   opt.MinAvailableAmount,
 	}, nil
 }
 
 var _ PodDisruptionBudgetBuilder = &DefaultPDBBuilder{}
 
 type DefaultPDBBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
-	maxUnavailable *intstr.IntOrString
-	minAvailable   *intstr.IntOrString
+	maxUnavailable *int32
+	minAvailable   *int32
 }
 
 // Build implements PodDisruptionBudgetBuilder.
-// Subtle: this method shadows the method (BaseResourceBuilder).Build of DefaultPodDisruptionBudgetBuilder.BaseResourceBuilder.
+// Subtle: this method shadows the method (BaseObjectBuilder).Build of DefaultPodDisruptionBudgetBuilder.BaseObjectBuilder.
 func (d *DefaultPDBBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
 	return d.GetObject()
 }
 
-// GetObject implements PodDisruptionBudgetBuilder.
-// Subtle: this method shadows the method (BaseResourceBuilder).GetObject of DefaultPodDisruptionBudgetBuilder.BaseResourceBuilder.
-
 // You can specify only one of maxUnavailable and minAvailable in a single PodDisruptionBudget.
 // maxUnavailable can only be used to control the eviction of pods that have an associated controller managing them.
 func (d *DefaultPDBBuilder) GetObject() (*policyv1.PodDisruptionBudget, error) {
-	// verify Either minUnavailable or maxUnavailable must be set at this point!
-	if d.maxUnavailable == nil && d.minAvailable == nil {
-		return nil, errors.Errorf("maxUnavailable or minUnavailable must be set,but both are nil, role: %s, roleGroup: %s, namespace: %s",
-			d.RoleName, d.RoleGroupName, d.ClusterName)
+	if err := d.verify(); err != nil {
+		return nil, err
 	}
-	//verify only one of minUnavailable or maxUnavailable must be set at this point!
-	if d.maxUnavailable != nil && d.minAvailable != nil {
-		return nil, errors.Errorf("either minUnavailable or maxUnavailable must be set,but both are set, role: %s, roleGroup: %s, namespace: %s",
-			d.RoleName, d.RoleGroupName, d.ClusterName)
+
+	var maxUnavailable, minAvailable *intstr.IntOrString
+
+	if d.maxUnavailable != nil {
+		maxUnavailable = ptr.To(intstr.FromInt32(*d.maxUnavailable))
 	}
+
+	if d.minAvailable != nil {
+		minAvailable = ptr.To(intstr.FromInt32(*d.minAvailable))
+	}
+
 	return &policyv1.PodDisruptionBudget{
 		ObjectMeta: d.GetObjectMeta(),
 		Spec: policyv1.PodDisruptionBudgetSpec{
-			MaxUnavailable: d.maxUnavailable,
-			MinAvailable:   d.minAvailable,
+			MaxUnavailable: maxUnavailable,
+			MinAvailable:   minAvailable,
 			Selector:       d.GetLabelSelector(),
 		},
 	}, nil
 }
 
+func (b *DefaultPDBBuilder) verify() error {
+	// // verify that only one of maxUnavailable and minAvailable is set
+	if b.maxUnavailable != nil && b.minAvailable != nil {
+		return errors.New("you can specify only one of maxUnavailable and minAvailable in a single PodDisruptionBudget")
+	}
+
+	if b.maxUnavailable == nil && b.minAvailable == nil {
+		return errors.New("maxUnavailable or minAvailable must be set")
+	}
+	return nil
+}
+
 // SetMaxUnavailable implements PodDisruptionBudgetBuilder.
-func (d *DefaultPDBBuilder) SetMaxUnavailable(max intstr.IntOrString) {
-	d.maxUnavailable = &max
+func (d *DefaultPDBBuilder) SetMaxUnavailable(value *int32) {
+	d.maxUnavailable = value
 }
 
 // SetMinAvailable implements PodDisruptionBudgetBuilder.
-func (d *DefaultPDBBuilder) SetMinAvailable(min intstr.IntOrString) {
-	d.minAvailable = &min
+func (d *DefaultPDBBuilder) SetMinAvailable(value *int32) {
+	d.minAvailable = value
 }

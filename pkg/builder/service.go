@@ -11,7 +11,12 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/constants"
 )
 
+// Deprecated: Use PortsConverter instead
 func ContainerPorts2ServicePorts(port []corev1.ContainerPort) []corev1.ServicePort {
+	return PortsConverter(port)
+}
+
+func PortsConverter(port []corev1.ContainerPort) []corev1.ServicePort {
 	ports := make([]corev1.ServicePort, 0)
 	for _, p := range port {
 		target := intstr.FromString(p.Name)
@@ -53,13 +58,52 @@ func ListenerClass2ServiceType(listenerClass constants.ListenerClass) corev1.Ser
 var _ ServiceBuilder = &BaseServiceBuilder{}
 
 type BaseServiceBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	ports         []corev1.ServicePort
 	listenerClass constants.ListenerClass
 	headless      bool
 	// Setting this parameter will override the default matching labels, generally not needed
 	matchingLabels map[string]string
+}
+
+type ServiceBuilderOptions struct {
+	Options
+
+	// If not set, ClusterIP will be used
+	ListenerClass  constants.ListenerClass
+	Headless       bool
+	MatchingLabels map[string]string
+}
+
+type ServiceBuilderOption func(*ServiceBuilderOptions)
+
+func NewServiceBuilder(
+	client *client.Client,
+	name string,
+	ports []corev1.ContainerPort,
+	options ...ServiceBuilderOption,
+) *BaseServiceBuilder {
+
+	opts := &ServiceBuilderOptions{}
+
+	for _, o := range options {
+		o(opts)
+	}
+
+	return &BaseServiceBuilder{
+		ObjectMeta: ObjectMeta{
+			Client:      client,
+			Name:        name,
+			labels:      opts.Labels,
+			annotations: opts.Annotations,
+		},
+		ports: PortsConverter(ports),
+
+		headless:       opts.Headless,
+		matchingLabels: opts.MatchingLabels,
+		listenerClass:  opts.ListenerClass,
+	}
 }
 
 func (b *BaseServiceBuilder) GetObject() *corev1.Service {
@@ -94,43 +138,4 @@ func (b *BaseServiceBuilder) GetPorts() []corev1.ServicePort {
 func (b *BaseServiceBuilder) Build(_ context.Context) (ctrlclient.Object, error) {
 	obj := b.GetObject()
 	return obj, nil
-}
-
-type ServiceBuilderOption struct {
-	Option
-
-	// If not set, ClusterIP will be used
-	ListenerClass  constants.ListenerClass
-	Headless       bool
-	MatchingLabels map[string]string
-}
-
-type ServiceBuilderOptions func(*ServiceBuilderOption)
-
-func NewServiceBuilder(
-	client *client.Client,
-	name string,
-	ports []corev1.ContainerPort,
-	options ...ServiceBuilderOptions,
-) *BaseServiceBuilder {
-
-	opt := &ServiceBuilderOption{}
-
-	for _, o := range options {
-		o(opt)
-	}
-
-	return &BaseServiceBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
-			Client:      client,
-			Name:        name,
-			labels:      opt.Labels,
-			annotations: opt.Annotations,
-		},
-		ports: ContainerPorts2ServicePorts(ports),
-
-		headless:       opt.Headless,
-		matchingLabels: opt.MatchingLabels,
-		listenerClass:  opt.ListenerClass,
-	}
 }

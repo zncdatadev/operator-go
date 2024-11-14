@@ -21,6 +21,20 @@ type StatefulSet struct {
 	Stopped bool
 }
 
+func NewStatefulSet(
+	client *client.Client,
+	statefulset builder.StatefulSetBuilder,
+	stopped bool,
+) *StatefulSet {
+	return &StatefulSet{
+		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
+			client,
+			statefulset,
+		),
+		Stopped: stopped,
+	}
+}
+
 func (r *StatefulSet) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	resourceBuilder := r.GetBuilder()
 
@@ -50,20 +64,4 @@ func (r *StatefulSet) Ready(ctx context.Context) (ctrl.Result, error) {
 	}
 	logger.Info("StatefulSet is not ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
 	return ctrl.Result{Requeue: true}, nil
-}
-
-func NewStatefulSet(
-	client *client.Client,
-	name string,
-	stsBuilder builder.StatefulSetBuilder,
-	stopped bool,
-) *StatefulSet {
-	return &StatefulSet{
-		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
-			client,
-			name,
-			stsBuilder,
-		),
-		Stopped: stopped,
-	}
 }

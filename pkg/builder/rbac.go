@@ -10,10 +10,12 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// TODO: remove Generic prefix in next release
+
 var _ ServiceAccountBuilder = &GenericServiceAccountBuilder{}
 
 type GenericServiceAccountBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	obj *corev1.ServiceAccount
 }
@@ -25,7 +27,7 @@ func NewGenericServiceAccountBuilder(
 	annotations map[string]string,
 ) *GenericServiceAccountBuilder {
 	return &GenericServiceAccountBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
+		ObjectMeta: ObjectMeta{
 			Client:      client,
 			Name:        name,
 			labels:      labels,
@@ -50,7 +52,7 @@ func (b *GenericServiceAccountBuilder) Build(ctx context.Context) (ctrlclient.Ob
 var _ RoleBuilder = &GenericRoleBuilder{}
 
 type GenericRoleBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	obj   *rbacv1.Role
 	rules []rbacv1.PolicyRule
@@ -63,7 +65,7 @@ func NewGenericRoleBuilder(
 	annotations map[string]string,
 ) *GenericRoleBuilder {
 	return &GenericRoleBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
+		ObjectMeta: ObjectMeta{
 			Client:      client,
 			Name:        name,
 			labels:      labels,
@@ -106,7 +108,7 @@ func (b *GenericRoleBuilder) Build(ctx context.Context) (ctrlclient.Object, erro
 var _ RoleBindingBuilder = &GenericRoleBindingBuilder{}
 
 type GenericRoleBindingBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	obj      *rbacv1.RoleBinding
 	subjects []rbacv1.Subject
@@ -120,7 +122,7 @@ func NewGenericRoleBindingBuilder(
 	annotations map[string]string,
 ) *GenericRoleBindingBuilder {
 	return &GenericRoleBindingBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
+		ObjectMeta: ObjectMeta{
 			Client:      client,
 			Name:        name,
 			labels:      labels,
@@ -188,7 +190,7 @@ func (b *GenericRoleBindingBuilder) Build(ctx context.Context) (ctrlclient.Objec
 var _ ClusterRoleBuilder = &GenericClusterRoleBuilder{}
 
 type GenericClusterRoleBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	obj *rbacv1.ClusterRole
 }
@@ -200,7 +202,7 @@ func NewGenericClusterRoleBuilder(
 	annotations map[string]string,
 ) *GenericClusterRoleBuilder {
 	return &GenericClusterRoleBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
+		ObjectMeta: ObjectMeta{
 			Client:      client,
 			Name:        name,
 			labels:      labels,
@@ -225,7 +227,7 @@ func (b *GenericClusterRoleBuilder) Build(ctx context.Context) (ctrlclient.Objec
 var _ ClusterRoleBindingBuilder = &GenericClusterRoleBindingBuilder{}
 
 type GenericClusterRoleBindingBuilder struct {
-	BaseResourceBuilder
+	ObjectMeta
 
 	obj *rbacv1.ClusterRoleBinding
 
@@ -240,7 +242,7 @@ func NewGenericClusterRoleBindingBuilder(
 	annotations map[string]string,
 ) *GenericClusterRoleBindingBuilder {
 	return &GenericClusterRoleBindingBuilder{
-		BaseResourceBuilder: BaseResourceBuilder{
+		ObjectMeta: ObjectMeta{
 			Client:      client,
 			Name:        name,
 			labels:      labels,
@@ -309,22 +311,27 @@ func (b *GenericClusterRoleBindingBuilder) Build(ctx context.Context) (ctrlclien
 	return b.GetObject(), nil
 }
 
+// Deprecated: will be removed in next release
 func ServiceAccountName(rbacPrefix string) string {
 	return fmt.Sprintf("%s-serviceaccount", rbacPrefix)
 }
 
+// Deprecated: will be removed in next release
 func RoleBindingName(rbacPrefix string) string {
 	return fmt.Sprintf("%s-rolebinding", rbacPrefix)
 }
 
+// Deprecated: will be removed in next release
 func ClusterRoleBindingName(rbacPrefix string) string {
 	return fmt.Sprintf("%s-clusterrolebinding", rbacPrefix)
 }
 
+// Deprecated: will be removed in next release
 func RoleName(rbacPrefix string) string {
 	return fmt.Sprintf("%s-role", rbacPrefix)
 }
 
+// Deprecated: will be removed in next release
 func ClusterRoleName(rbacPrefix string) string {
 	return fmt.Sprintf("%s-clusterrole", rbacPrefix)
 }

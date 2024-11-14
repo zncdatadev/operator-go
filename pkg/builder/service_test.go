@@ -50,8 +50,8 @@ func TestNewServiceBuilder(t *testing.T) {
 	})
 
 	t.Run("with options", func(t *testing.T) {
-		options := []builder.ServiceBuilderOptions{
-			func(opt *builder.ServiceBuilderOption) {
+		options := []builder.ServiceBuilderOption{
+			func(opt *builder.ServiceBuilderOptions) {
 				opt.ListenerClass = constants.ExternalStable
 				opt.Headless = true
 				opt.MatchingLabels = map[string]string{"app": "test"}

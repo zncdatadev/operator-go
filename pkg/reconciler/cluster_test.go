@@ -61,9 +61,8 @@ func (r *ClusterReconciler) RegisterResources(ctx context.Context) error {
 				ContainerPort: 3000,
 			},
 		},
-		func(sbo *builder.ServiceBuilderOption) {
-			sbo.Annotations = r.ClusterInfo.GetAnnotations()
-			sbo.Labels = r.ClusterInfo.GetLabels()
+		func(o *builder.ServiceBuilderOptions) {
+			o.ClusterName = r.GetName()
 		},
 	)
 	// Register resources
@@ -122,13 +121,14 @@ var _ = Describe("Cluster reconciler", func() {
 
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
-			fakeOwner := &corev1.Pod{
+			fakeOwner := &corev1.ServiceAccount{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      clusterInfo.GetClusterName(),
 					Namespace: namespace,
-					UID:       types.UID("fake-uid"),
 				},
 			}
+
+			Expect(k8sClient.Create(ctx, fakeOwner)).Should(Succeed())
 
 			resourceClient = client.NewClient(k8sClient, fakeOwner)
 
@@ -136,7 +136,7 @@ var _ = Describe("Cluster reconciler", func() {
 				ClusterConfig: &ClusterConfigSpec{
 					ListenerClass: "default",
 				},
-				Coordinator: &CoordinatorSpec{
+				Coordinator: &TrinoCoordinatorSpec{
 					RoleGroups: map[string]TrinoRoleGroupSpec{
 						"default": {
 							Replicas: ptr.To[int32](1),
@@ -167,7 +167,7 @@ var _ = Describe("Cluster reconciler", func() {
 			Eventually(func() bool {
 				result, err := clusterReconciler.Reconcile(ctx)
 				return result.IsZero() && err == nil
-			}, time.Second*15, time.Microsecond*100).Should(BeTrue())
+			}, time.Second*15, time.Microsecond*50).Should(BeTrue())
 
 			By("Checking the service resource of cluster level")
 			service := &corev1.Service{}

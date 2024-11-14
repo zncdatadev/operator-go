@@ -17,7 +17,7 @@ func NewServiceReconciler(
 	client *client.Client,
 	name string,
 	ports []corev1.ContainerPort,
-	options ...builder.ServiceBuilderOptions,
+	options ...builder.ServiceBuilderOption,
 ) *Service {
 	svcBuilder := builder.NewServiceBuilder(
 		client,
@@ -28,7 +28,6 @@ func NewServiceReconciler(
 	return &Service{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.ServiceBuilder](
 			client,
-			name,
 			svcBuilder,
 		),
 	}

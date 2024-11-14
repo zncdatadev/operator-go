@@ -15,47 +15,62 @@ var (
 	resourceLogger = ctrl.Log.WithName("reconciler").WithName("resource")
 )
 
-type ResourceReconciler[B builder.ResourceBuilder] interface {
+type ResourceReconciler[B builder.ObjectBuilder] interface {
 	Reconciler
 
+	// Deprecated: Use GetObjectKey instead.
+	// this method is marked deprecated in `v0.12.0` and will be removed in next release.
 	GetObjectMeta() metav1.ObjectMeta
+	GetObjectKey() ctrlclient.ObjectKey
 	GetBuilder() B
 	ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error)
 }
 
-var _ ResourceReconciler[builder.ResourceBuilder] = &GenericResourceReconciler[builder.ResourceBuilder]{}
+var _ ResourceReconciler[builder.ObjectBuilder] = &GenericResourceReconciler[builder.ObjectBuilder]{}
 
-type GenericResourceReconciler[B builder.ResourceBuilder] struct {
-	BaseReconciler[AnySpec]
-	Builder B
-	// todo: remove this, as it can be get from the builder
-	Name string
+type GenericResourceReconciler[T builder.ObjectBuilder] struct {
+	// Do not use ptr, to avoid other packages to modify the client
+	Client *client.Client
+
+	Builder T
 }
 
-func NewGenericResourceReconciler[B builder.ResourceBuilder](
+func NewGenericResourceReconciler[T builder.ObjectBuilder](
 	client *client.Client,
-	name string,
-	builder B,
-) *GenericResourceReconciler[B] {
-	return &GenericResourceReconciler[B]{
-		BaseReconciler: BaseReconciler[AnySpec]{
-			Client: client,
-			Spec:   nil,
-		},
+	builder T,
+) *GenericResourceReconciler[T] {
+	return &GenericResourceReconciler[T]{
+		Client:  client,
 		Builder: builder,
-		Name:    name,
 	}
 }
 
-func (r *GenericResourceReconciler[B]) GetName() string {
-	return r.Name
+func (r *GenericResourceReconciler[T]) GetName() string {
+	return r.Builder.GetName()
 }
 
-func (r *GenericResourceReconciler[b]) GetObjectMeta() metav1.ObjectMeta {
+func (r *GenericResourceReconciler[T]) GetNamespace() string {
+	return r.Client.GetOwnerNamespace()
+}
+
+func (r *GenericResourceReconciler[T]) GetClient() *client.Client {
+	return r.Client
+}
+
+// Deprecated: Use r.GetObjectKey instead.
+// This method is marked deprecated in `v0.12.0` and will be removed in next release.
+func (r *GenericResourceReconciler[T]) GetObjectMeta() metav1.ObjectMeta {
 	return r.Builder.GetObjectMeta()
 }
 
-func (r *GenericResourceReconciler[B]) GetBuilder() B {
+func (r *GenericResourceReconciler[T]) GetObjectKey() ctrlclient.ObjectKey {
+	return ctrlclient.ObjectKey{
+		Namespace: r.GetNamespace(),
+		Name:      r.GetName(),
+	}
+}
+
+func (r *GenericResourceReconciler[T]) GetBuilder() T {
 	return r.Builder
 }
 
@@ -63,7 +78,7 @@ func (r *GenericResourceReconciler[B]) GetBuilder() B {
 // If the resource is created or updated, it returns a Result with a requeue time of 1 second.
 //
 // Most of the time you should not call this method directly, but call the r.Reconcile() method instead.
-func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error) {
+func (r *GenericResourceReconciler[T]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error) {
 	logger.V(5).Info("Reconciling resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", resource.GetName())
 	logExtraValues := []any{
 		"name", resource.GetName(),
@@ -81,7 +96,7 @@ func (r *GenericResourceReconciler[B]) ResourceReconcile(ctx context.Context, re
 	return ctrl.Result{}, nil
 }
 
-func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) (ctrl.Result, error) {
+func (r *GenericResourceReconciler[T]) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	logger.V(5).Info("Building resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", r.GetName())
 	resource, err := r.GetBuilder().Build(ctx)
 
@@ -91,26 +106,24 @@ func (r *GenericResourceReconciler[B]) Reconcile(ctx context.Context) (ctrl.Resu
 	return r.ResourceReconcile(ctx, resource)
 }
 
-// GenericResourceReconciler[B] does not check anythins, so it is always ready.
-func (r *GenericResourceReconciler[B]) Ready(ctx context.Context) (ctrl.Result, error) {
+// GenericResourceReconciler[T] does not check anythins, so it is always ready.
+func (r *GenericResourceReconciler[T]) Ready(ctx context.Context) (ctrl.Result, error) {
 	return ctrl.Result{}, nil
 }
 
-type SimpleResourceReconciler[B builder.ResourceBuilder] struct {
-	GenericResourceReconciler[B]
+type SimpleResourceReconciler[T builder.ObjectBuilder] struct {
+	GenericResourceReconciler[T]
 }
 
 // NewSimpleResourceReconciler creates a new resource reconciler with a simple builder
 // that does not require a spec, and can not use the spec.
-func NewSimpleResourceReconciler[B builder.ResourceBuilder](
+func NewSimpleResourceReconciler[T builder.ObjectBuilder](
 	client *client.Client,
-	name string,
-	builder B,
-) *SimpleResourceReconciler[B] {
-	return &SimpleResourceReconciler[B]{
-		GenericResourceReconciler: *NewGenericResourceReconciler[B](
+	builder T,
+) *SimpleResourceReconciler[T] {
+	return &SimpleResourceReconciler[T]{
+		GenericResourceReconciler: *NewGenericResourceReconciler[T](
 			client,
-			name,
 			builder,
 		),
 	}

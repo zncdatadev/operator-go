@@ -79,14 +79,15 @@ var _ = Describe("Deloyment reconciler", func() {
 					name,
 					&replcias,
 					util.NewImage("trino", "458", "1.0.0"),
-					builder.WorkloadOptions{},
+					nil,
+					nil,
 				),
 			}
 		})
 
 		It("Should successfully reconcile a whoami deployment", func() {
 			By("Create a deployment reconciler")
-			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder, false)
+			deploymentReconciler := reconciler.NewDeployment(resourceClient, deploymentBuilder, false)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
@@ -136,7 +137,7 @@ var _ = Describe("Deloyment reconciler", func() {
 		It("Should successfully reconcile deployment replicas to 0 when stopped", func() {
 
 			By("Create a stopped deployment reconciler normal")
-			deploymentReconciler := reconciler.NewDeployment(resourceClient, name, deploymentBuilder, false)
+			deploymentReconciler := reconciler.NewDeployment(resourceClient, deploymentBuilder, false)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
@@ -158,11 +159,12 @@ var _ = Describe("Deloyment reconciler", func() {
 					name,
 					&replcias,
 					util.NewImage("trino", "458", "1.0.0"),
-					builder.WorkloadOptions{},
+					nil,
+					nil,
 				),
 			}
 			By("create deployment reconciler with stopped is true")
-			deploymentReconciler = reconciler.NewDeployment(resourceClient, name, deploymentBuilder, true)
+			deploymentReconciler = reconciler.NewDeployment(resourceClient, deploymentBuilder, true)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 
 			By("reconcile the deployment")
