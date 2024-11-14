@@ -25,35 +25,44 @@ func TestLogbackConfig_Content(t *testing.T) {
 	content, err := logbackConfig.Content()
 	assert.NoError(t, err)
 
-	expectedContent := `<configuration>
-  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-      <level>INFO</level>
-    </filter>
-    <encoder>
-      <pattern>%d{ISO8601} %-5p %m%n</pattern>
-    </encoder>
-  </appender>
+	expectedContent := `
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{ISO8601} %-5p %m%n</pattern>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>INFO</level>
+        </filter>
+    </appender>
 
-  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-    <file>/var/log/app.log</file>
-    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-      <level>WARN</level>
-    </filter>
-    <rollingPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
-      <maxFileSize>10MB</maxFileSize>
-    </rollingPolicy>
-    <encoder>
-      <pattern>%d{ISO8601} %-5p %m%n</pattern>
-    </encoder>
-  </appender>
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <File>/var/log/app.log</File>
+        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+            <layout class="ch.qos.logback.classic.log4j.XMLLayout" />
+        </encoder>
 
-  <root level="DEBUG">
-    <appender-ref ref="CONSOLE" />
-    <appender-ref ref="FILE" />
-  </root>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>WARN</level>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+            <minIndex>1</minIndex>
+            <maxIndex>5</maxIndex>
+            <FileNamePattern>/var/log/app.log.%i</FileNamePattern>
+        </rollingPolicy>
 
-  <logger name="com.example" level="DEBUG" />
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <MaxFileSize>10MB</MaxFileSize>
+        </triggeringPolicy>
+    </appender>
+
+    <logger name="com.example" level="DEBUG" />
+
+    <root level="DEBUG">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="FILE" />
+    </root>
+
 </configuration>
 `
 	assert.Equal(t, expectedContent, content)
