@@ -68,6 +68,8 @@ import (
 //		fmt.Println(merged)
 //		return nil
 //	}
+
+// MergeObject merges the original config with the override config
 func MergeObject[T any](original, override *T) (*T, error) {
 	if reflect.ValueOf(original).IsNil() {
 		return override, nil
@@ -140,6 +142,8 @@ func mergeSlices(original, override []interface{}) []interface{} {
 	return append(original, override...)
 }
 
+// MergeObjectWithJson merges the original config with the override config
+// It uses json merge patch to merge the two configs.
 func MergeObjectWithJson[T any](original, override *T) (*T, error) {
 	if reflect.ValueOf(original).IsNil() {
 		return override, nil
