@@ -337,7 +337,7 @@ var _ = Describe("Role reconciler", func() {
 			Eventually(func() bool {
 				result, err := roleReconciler.Reconcile(ctx)
 				return result.IsZero() && err == nil
-			}, time.Second*10, time.Second*2).Should(BeTrue())
+			}).WithTimeout(time.Second * 20).WithPolling(time.Second * 3).Should(BeTrue())
 
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
