@@ -161,7 +161,7 @@ var _ = Describe("Cluster reconciler", func() {
 			Expect(clusterReconciler).ShouldNot(BeNil())
 
 			By("Register resources")
-			Expect(clusterReconciler.RegisterResources(ctx)).Should(BeNil())
+			Expect(clusterReconciler.RegisterResources(ctx)).Should(Succeed())
 
 			By("Reconcile")
 			Eventually(func() bool {

@@ -33,7 +33,10 @@ func TestBuilder(t *testing.T) {
 	}
 	if asserts := os.Getenv("KUBEBUILDER_ASSETS"); asserts == "" {
 		logf.Log.Info("KUBEBUILDER_ASSETS is not set, using default version " + testK8sVersion)
-		os.Setenv("KUBEBUILDER_ASSETS", filepath.Join("..", "..", "bin", "k8s", fmt.Sprintf("%s-%s-%s", testK8sVersion, runtime.GOOS, runtime.GOARCH)))
+		err := os.Setenv("KUBEBUILDER_ASSETS", filepath.Join("..", "..", "bin", "k8s", fmt.Sprintf("%s-%s-%s", testK8sVersion, runtime.GOOS, runtime.GOARCH)))
+		if err != nil {
+			logf.Log.Error(err, "Failed to set KUBEBUILDER_ASSETS")
+		}
 	}
 
 	RegisterFailHandler(Fail)

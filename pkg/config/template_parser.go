@@ -2,8 +2,9 @@ package config
 
 import (
 	"bytes"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"text/template"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 var logging = ctrl.Log.WithName("template-parser")

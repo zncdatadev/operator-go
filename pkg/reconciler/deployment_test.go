@@ -95,7 +95,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(result).ShouldNot(BeNil())
 			// Expect(result.Error).Should(BeNil())
 			// Expect(result.RequeueOrNot()).Should(BeTrue())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
 			Expect(result.Requeue).Should(BeTrue())
 
@@ -107,7 +107,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			By("check the deployment is not ready")
 			result, err = deploymentReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
 			Expect(result.Requeue).Should(BeTrue())
 
@@ -123,7 +123,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			By("check the deployment is ready")
 			result, err = deploymentReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeTrue())
 
 			By("check the container image pull policy of deployment is default value")
@@ -143,7 +143,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			By("reconcile the deployment")
 			result, err := deploymentReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
 			Expect(result.Requeue).Should(BeTrue())
 
@@ -170,7 +170,7 @@ var _ = Describe("Deloyment reconciler", func() {
 			By("reconcile the deployment")
 			result, err = deploymentReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
 			Expect(result.Requeue).Should(BeTrue())
 

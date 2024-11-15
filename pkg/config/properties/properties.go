@@ -40,7 +40,11 @@ func (p *Properties) LoadFromFile(filename string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if e := file.Close(); e != nil {
+			err = e
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

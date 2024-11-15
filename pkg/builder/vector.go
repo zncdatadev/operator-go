@@ -58,7 +58,7 @@ type VectorDecorator struct {
 	VectorConfigVolumeName string
 	VectorConfigMapName    string
 
-	LogProviderContainerName []string //optional
+	LogProviderContainerName []string // optional
 }
 
 func (v *VectorDecorator) Decorate() error {
@@ -79,7 +79,7 @@ func (v *VectorDecorator) Decorate() error {
 
 	*volumes = append(*volumes, corev1.Volume{
 		Name: vectorDataDirVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
-	//append shared log volume to workload
+	// append shared log volume to workload
 	if !v.volumeExists(*volumes, v.LogVolumeName) {
 		*volumes = append(*volumes, v.createLogVolume())
 	}

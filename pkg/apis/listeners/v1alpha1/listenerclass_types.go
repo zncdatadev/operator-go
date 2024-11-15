@@ -48,7 +48,7 @@ type ListenerClass struct {
 	Status ListenerClassStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // ListenerClassList contains a list of ListenerClass
 type ListenerClassList struct {

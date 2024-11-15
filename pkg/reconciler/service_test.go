@@ -72,12 +72,12 @@ var _ = Describe("Service reconciler", func() {
 
 			result, err := serviceReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.Requeue).Should(BeTrue())
 
 			result, err = serviceReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeTrue())
 
 		})

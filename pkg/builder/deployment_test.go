@@ -55,6 +55,8 @@ var _ = Describe("DeploymentBuilder test", func() {
 		},
 	}
 	resourceClient := client.NewClient(k8sClient, fakeOwner)
+	roleName := "coordinator"
+	roleGroupName := "default"
 
 	Context("DeploymentBuilder", func() {
 
@@ -80,14 +82,14 @@ var _ = Describe("DeploymentBuilder test", func() {
 					},
 					func(o *builder.Options) {
 						o.ClusterName = ownerName
-						o.RoleName = "coordinator"
-						o.RoleGroupName = "default"
+						o.RoleName = roleName
+						o.RoleGroupName = roleGroupName
 						o.Labels = map[string]string{
 							constants.LabelKubernetesInstance:  ownerName,
 							constants.LabelKubernetesManagedBy: "trino.kubedoop.dev",
-							constants.LabelKubernetesComponent: "coordinator",
+							constants.LabelKubernetesComponent: roleName,
 							constants.LabelKubernetesName:      "TrinoCluster",
-							constants.LabelKubernetesRoleGroup: "default",
+							constants.LabelKubernetesRoleGroup: roleGroupName,
 						}
 
 					},
@@ -170,8 +172,8 @@ var _ = Describe("DeploymentBuilder test", func() {
 					nil,
 					func(o *builder.Options) {
 						o.ClusterName = ownerName
-						o.RoleName = "coordinator"
-						o.RoleGroupName = "default"
+						o.RoleName = roleName
+						o.RoleGroupName = roleGroupName
 					},
 				),
 			}
@@ -197,7 +199,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 
 			By("validating the Deployment object's container env overrides")
 			containerEnv := container.Env
-			Expect(len(containerEnv)).To(BeNumerically(">=", 2))
+			Expect(containerEnv).ToNot(BeEmpty())
 			Expect(containerEnv).To(ContainElement(corev1.EnvVar{
 				Name:      "foo",
 				Value:     "test",
@@ -245,8 +247,8 @@ var _ = Describe("DeploymentBuilder test", func() {
 					nil,
 					func(o *builder.Options) {
 						o.ClusterName = ownerName
-						o.RoleName = "coordinator"
-						o.RoleGroupName = "default"
+						o.RoleName = roleName
+						o.RoleGroupName = roleGroupName
 					},
 				),
 			}
@@ -267,7 +269,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 
 			var mainContainer *corev1.Container
 			for _, container := range deployment.Spec.Template.Spec.Containers {
-				if container.Name == "coordinator" {
+				if container.Name == roleName {
 					mainContainer = &container
 					break
 				}
@@ -277,7 +279,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 
 			By("validating the Deployment object's container env overrides")
 			containerEnv := mainContainer.Env
-			Expect(len(containerEnv)).To(BeNumerically(">=", 1))
+			Expect(containerEnv).ToNot(BeEmpty())
 			Expect(containerEnv).To(ContainElement(corev1.EnvVar{
 				Name:      "foo",
 				Value:     "test",

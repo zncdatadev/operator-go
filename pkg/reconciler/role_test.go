@@ -70,10 +70,7 @@ func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 			RoleGroupName: roleGroupName,
 		}
 
-		reconcilers, err := r.getResourceWithRoleGroup(info, mergedRoleGroup, overrides, roleGroup.Replicas)
-		if err != nil {
-			return err
-		}
+		reconcilers := r.getResourceWithRoleGroup(info, mergedRoleGroup, overrides, roleGroup.Replicas)
 
 		for _, reconciler := range reconcilers {
 			r.AddResource(reconciler)
@@ -88,20 +85,17 @@ func (r *RoleReconciler) getResourceWithRoleGroup(
 	config *TrinoConfigSpec,
 	overrides *commonsv1alpha1.OverridesSpec,
 	replicas *int32,
-) ([]reconciler.Reconciler, error) {
+) []reconciler.Reconciler {
 
 	reconcilers := []reconciler.Reconciler{}
 
 	reconcilers = append(reconcilers, r.getServiceReconciler(info))
 
-	deploymentReconciler, err := r.getDeployment(info, config, overrides, replicas)
-	if err != nil {
-		return nil, err
-	}
+	deploymentReconciler := r.getDeployment(info, config, overrides, replicas)
 
 	reconcilers = append(reconcilers, deploymentReconciler)
 
-	return reconcilers, nil
+	return reconcilers
 }
 
 func (r *RoleReconciler) getDeployment(
@@ -109,7 +103,7 @@ func (r *RoleReconciler) getDeployment(
 	config *TrinoConfigSpec,
 	overrides *commonsv1alpha1.OverridesSpec,
 	replicas *int32,
-) (reconciler.Reconciler, error) {
+) reconciler.Reconciler {
 
 	var roleGroupConfig *commonsv1alpha1.RoleGroupConfigSpec
 
@@ -140,7 +134,7 @@ func (r *RoleReconciler) getDeployment(
 		),
 	}
 	// Create a deployment reconciler
-	return reconciler.NewDeployment(r.Client, deploymentBuilder, r.ClusterStopped()), nil
+	return reconciler.NewDeployment(r.Client, deploymentBuilder, r.ClusterStopped())
 }
 
 func (r *RoleReconciler) getServiceReconciler(info reconciler.RoleGroupInfo) reconciler.Reconciler {
