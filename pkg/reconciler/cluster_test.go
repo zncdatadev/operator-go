@@ -99,7 +99,7 @@ var _ = Describe("Cluster reconciler", func() {
 
 		clusterInfo := reconciler.ClusterInfo{
 			GVK: &metav1.GroupVersionKind{
-				Group:   "fake.zncdata.dev",
+				Group:   "fake.kubedoop.dev",
 				Version: "v1alpha1",
 				Kind:    "TrinoCluster",
 			},

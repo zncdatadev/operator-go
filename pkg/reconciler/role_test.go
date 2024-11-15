@@ -172,7 +172,7 @@ var _ = Describe("Role reconciler", func() {
 	roleInfo := reconciler.RoleInfo{
 		ClusterInfo: reconciler.ClusterInfo{
 			GVK: &metav1.GroupVersionKind{
-				Group:   "fake.zncdata.dev",
+				Group:   "fake.kubedoop.dev",
 				Version: "v1alpha1",
 				Kind:    "TrinoCluster",
 			},
