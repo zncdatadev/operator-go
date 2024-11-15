@@ -84,7 +84,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 						o.RoleGroupName = "default"
 						o.Labels = map[string]string{
 							constants.LabelKubernetesInstance:  ownerName,
-							constants.LabelKubernetesManagedBy: "trino.zncdata.dev",
+							constants.LabelKubernetesManagedBy: "trino.kubedoop.dev",
 							constants.LabelKubernetesComponent: "coordinator",
 							constants.LabelKubernetesName:      "TrinoCluster",
 							constants.LabelKubernetesRoleGroup: "default",
@@ -110,14 +110,14 @@ var _ = Describe("DeploymentBuilder test", func() {
 			By("validating the Deployment object's labels")
 			labels := deployment.Spec.Template.ObjectMeta.Labels
 			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesInstance, ownerName))
-			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.zncdata.dev"))
+			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.kubedoop.dev"))
 			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesComponent, "coordinator"))
 			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesRoleGroup, "default"))
 
 			By("validating the Deployment object's match labels")
 			matchLabels := deployment.Spec.Selector.MatchLabels
 			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesInstance, ownerName))
-			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.zncdata.dev"))
+			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.kubedoop.dev"))
 			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesComponent, "coordinator"))
 			Expect(matchLabels).To(HaveKeyWithValue(constants.LabelKubernetesRoleGroup, "default"))
 

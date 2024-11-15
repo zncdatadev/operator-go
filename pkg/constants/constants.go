@@ -13,7 +13,7 @@ const (
 )
 
 const (
-	KubedoopDomain = "zncdata.dev"
+	KubedoopDomain = "kubedoop.dev"
 )
 
 const (
@@ -31,7 +31,7 @@ const (
 	KubedoopLogDirMount    = KubedoopRoot + "mount/log/"
 )
 
-// When a pod has the label `enrichment.zncdata.dev/enable=true`,
+// When a pod has the label `enrichment.kubedoop.dev/enable=true`,
 // the enrichment controller will set the node address to the pod annotation when the pod is created.
 const (
 	LabelEnrichmentEnable      = "enrichment." + KubedoopDomain + "/enable"
@@ -43,7 +43,7 @@ const (
 //
 // Workload restarter:
 //
-//	If a workload has the label `restarter.zncdata.dev/enable=true`,
+//	If a workload has the label `restarter.kubedoop.dev/enable=true`,
 //	 and a configmap or secret is updated when mounted as a volume in the pod,
 //	 the restarter will update the annotations in the workload podTemplate.
 //	 The workload controller will update all the pods of the workload.
@@ -61,14 +61,14 @@ const (
 	LabelRestarterEnableValue = "true"
 
 	// eg:
-	// 	- secret.restarter.zncdata.dev/foo-secret: <secret-uuid>/<secret-resourceversion>
-	// 	- configmap.restarter.zncdata.dev/foo-configmap: <configmap-uuid>/<configmap-resourceversion>
+	// 	- secret.restarter.kubedoop.dev/foo-secret: <secret-uuid>/<secret-resourceversion>
+	// 	- configmap.restarter.kubedoop.dev/foo-configmap: <configmap-uuid>/<configmap-resourceversion>
 
 	AnnotationSecretRestarterPrefix    = "secret.restarter." + KubedoopDomain + "/"
 	AnnotationConfigmapRestarterPrefix = "configmap.restarter." + KubedoopDomain + "/"
 
 	// eg:
-	// 	- restarter.zncdata.dev/expires-at.<RFC3339>: <volume-id>
+	// 	- restarter.kubedoop.dev/expires-at.<RFC3339>: <volume-id>
 	// RFC3339: 2006-01-02T15:04:05Z07:00
 	PrefixLabelRestarterExpiresAt = "restarter." + KubedoopDomain + "/expires-at."
 )
