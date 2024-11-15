@@ -104,7 +104,7 @@ func (b *Container) GetVolumeMounts() []corev1.VolumeMount {
 func (b *Container) AddEnvVars(envVars []corev1.EnvVar) ContainerBuilder {
 	envs := b.getObject().Env
 	envs = append(envs, envVars...)
-	var envNames []string
+	envNames := make([]string, 0)
 	for _, env := range envs {
 		if slices.Contains(envNames, env.Name) {
 			logger.V(2).Info("EnvVar already exists, it may be overwritten", "env", env.Name)

@@ -19,7 +19,10 @@ func TestSave(t *testing.T) {
 	// Create a temporary file to save properties
 	file, err := os.CreateTemp("", "test_save.properties")
 	assert.NoError(t, err)
-	defer os.Remove(file.Name())
+	defer func() {
+		err := os.Remove(file.Name())
+		assert.NoError(t, err)
+	}()
 
 	// Load properties from the map
 	props := properties.NewProperties()
@@ -46,7 +49,10 @@ func TestSaveWithEmptyProperties(t *testing.T) {
 	// Create a temporary file to save properties
 	file, err := os.CreateTemp("", "test_save_empty.properties")
 	assert.NoError(t, err)
-	defer os.Remove(file.Name())
+	defer func() {
+		err := os.Remove(file.Name())
+		assert.NoError(t, err)
+	}()
 
 	// Create empty properties
 	props := properties.NewProperties()
@@ -224,7 +230,10 @@ func TestNewPropertiesFromFile(t *testing.T) {
 	// Create a temporary properties file
 	file, err := os.CreateTemp("", "test_new_properties_from_file.properties")
 	assert.NoError(t, err)
-	defer os.Remove(file.Name())
+	defer func() {
+		err := os.Remove(file.Name())
+		assert.NoError(t, err)
+	}()
 
 	// Write sample data to the file
 	content := `
@@ -235,7 +244,8 @@ key3=value3
 `
 	_, err = file.WriteString(content)
 	assert.NoError(t, err)
-	file.Close()
+	err = file.Close()
+	assert.NoError(t, err)
 
 	// Create properties from the file
 	props, err := properties.NewPropertiesFromFile(file.Name())
@@ -258,7 +268,10 @@ func TestNewPropertiesFromFileWithEmptyFile(t *testing.T) {
 	// Create a temporary empty properties file
 	file, err := os.CreateTemp("", "test_new_properties_from_file_empty.properties")
 	assert.NoError(t, err)
-	defer os.Remove(file.Name())
+	defer func() {
+		err := os.Remove(file.Name())
+		assert.NoError(t, err)
+	}()
 
 	// Create properties from the empty file
 	props, err := properties.NewPropertiesFromFile(file.Name())

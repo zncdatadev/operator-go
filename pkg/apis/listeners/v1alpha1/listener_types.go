@@ -70,8 +70,8 @@ type IngressAddressSpec struct {
 	Ports map[string]int32 `json:"ports,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 
 // Listener is the Schema for the listeners API
 type Listener struct {
@@ -82,7 +82,7 @@ type Listener struct {
 	Status ListenerStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // ListenerList contains a list of Listener
 type ListenerList struct {

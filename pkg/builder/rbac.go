@@ -145,7 +145,7 @@ func (b *GenericRoleBindingBuilder) AddSubject(saName string) RoleBindingBuilder
 // set subjects
 // after the  resource is applied, the subjects can be set continuously
 func (b *GenericRoleBindingBuilder) SetSubjects(saNames []string) RoleBindingBuilder {
-	var subjects []rbacv1.Subject
+	subjects := make([]rbacv1.Subject, 0, len(saNames))
 	for _, saName := range saNames {
 		subject := rbacv1.Subject{
 			Kind:      "ServiceAccount",
@@ -271,7 +271,7 @@ func (b *GenericClusterRoleBindingBuilder) AddSubject(saName string) ClusterRole
 // set subjects
 // after the  resource is applied, the subjects can be set continuously
 func (b *GenericClusterRoleBindingBuilder) SetSubjects(saNames []string) ClusterRoleBindingBuilder {
-	var subjects []rbacv1.Subject
+	subjects := make([]rbacv1.Subject, 0, len(saNames))
 	for _, saName := range saNames {
 		subject := rbacv1.Subject{
 			Kind:      "ServiceAccount",

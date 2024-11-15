@@ -165,7 +165,7 @@ type AuthenticationClass struct {
 type AuthenticationClassStatus struct {
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // AuthenticationClassList contains a list of AuthenticationClass
 type AuthenticationClassList struct {
