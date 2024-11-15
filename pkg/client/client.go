@@ -163,6 +163,19 @@ func (c *Client) CreateOrUpdate(ctx context.Context, obj ctrlclient.Object) (mut
 	return CreateOrUpdate(ctx, c.Client, obj)
 }
 
+func (c *Client) CreateDoesNotExist(ctx context.Context, obj ctrlclient.Object) error {
+	gvk, err := GetObjectGVK(c.GetCtrlClient().Scheme(), obj)
+	if err != nil {
+		return err
+	}
+
+	if err := c.SetOwnerReference(obj, gvk); err != nil {
+		return err
+	}
+
+	return CreateDoesNotExist(ctx, c.Client, obj)
+}
+
 // GetObjectGVK returns the GroupVersionKind (GVK) of the provided object.
 // It retrieves the GVK by using the scheme.Scheme.ObjectKinds function.
 // If the GVK is not found or there is an error retrieving it, an error is returned.
@@ -198,7 +211,7 @@ func GetObjectGVK(schema *runtime.Scheme, obj ctrlclient.Object) (*schema.GroupV
 //   - obj: The object to create or update.
 //
 // Returns:
-//   - mutation: A boolean indicating whether a mutation occurred.
+//   - mutation: A boolean indicating whether a resource changed.
 //   - error: An error if the operation fails, otherwise nil.
 func CreateOrUpdate(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Object) (mutation bool, err error) {
 
@@ -296,4 +309,36 @@ func CreateOrUpdate(ctx context.Context, client ctrlclient.Client, obj ctrlclien
 		clientLogger.V(1).Info("Skipping update for object", logExtraValues...)
 	}
 	return false, err
+}
+
+// CreateDoesNotExist attempts to create a Kubernetes resource.
+// If the resource does not exist, it creates it; if it already exists, it skips.
+// Parameters:
+//   - ctx: The context for the operation.
+//   - client: The Kubernetes client used to interact with the cluster.
+//   - obj: The resource object to create.
+//
+// Returns:
+//   - error: Returns an error if the operation fails, otherwise nil.
+func CreateDoesNotExist(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Object) error {
+	gvk, err := GetObjectGVK(client.Scheme(), obj)
+	if err != nil {
+		return err
+	}
+
+	key := ctrlclient.ObjectKeyFromObject(obj)
+
+	if err := client.Get(ctx, key, obj); apierrors.IsNotFound(err) {
+		if err := client.Create(ctx, obj); err != nil {
+			clientLogger.Error(err, "Create resource error", "gvk", gvk, "namespace", obj.GetNamespace(), "name", obj.GetName())
+			return err
+		}
+		clientLogger.Info("Create resource success", "gvk", gvk, "namespace", obj.GetNamespace(), "name", obj.GetName())
+		return nil
+	} else if err != nil {
+		clientLogger.Error(err, "Fetch resource error", "gvk", gvk, "namespace", obj.GetNamespace(), "name", obj.GetName())
+		return err
+	}
+	clientLogger.Info("Resource esixt, skipping create", "gvk", gvk, "namespace", obj.GetNamespace(), "name", obj.GetName())
+	return nil
 }
