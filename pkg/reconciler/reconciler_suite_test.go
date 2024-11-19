@@ -99,22 +99,25 @@ type TrinoCoordinatorSpec struct {
 	Config     *TrinoConfigSpec                `json:"config,omitempty"`
 	RoleConfig *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
 
-	commonsv1alpha1.OverridesSpec `json:",inline"`
+	*commonsv1alpha1.OverridesSpec `json:",inline"`
 }
 
 type TrinoWorkerSpec struct {
-	RoleGroups map[string]TrinoRoleGroupSpec   `json:"roleGroups,omitempty"`
-	Config     *TrinoConfigSpec                `json:"config,omitempty"`
+	RoleGroups map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
+
+	Config *TrinoConfigSpec `json:"config,omitempty"`
+
 	RoleConfig *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
 
-	commonsv1alpha1.OverridesSpec `json:",inline"`
+	*commonsv1alpha1.OverridesSpec `json:",inline"`
 }
 
 type TrinoRoleGroupSpec struct {
-	commonsv1alpha1.OverridesSpec `json:",inline"`
+	*commonsv1alpha1.OverridesSpec `json:",inline"`
 
-	Replicas *int32           `json:"replicas,omitempty"`
-	Config   *TrinoConfigSpec `json:"config,omitempty"`
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	Config *TrinoConfigSpec `json:"config,omitempty"`
 }
 
 type TrinoConfigSpec struct {
