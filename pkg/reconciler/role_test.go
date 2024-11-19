@@ -55,12 +55,17 @@ func NewRoleReconciler(
 // RegisterResources registers resources with T
 func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 	for roleGroupName, roleGroup := range r.Spec.RoleGroups {
-		mergedRoleGroup, err := util.MergeObject(r.Spec.Config, roleGroup.Config)
+		// It accepts struct or pointer to struct
+		// If pass pointer to struct, it will handles nil pointer.
+		// 	- if original is nil, it will return override
+		// 	- if override is nil, it will return original
+		// 	- if both are nil, it will return nil
+		mergedConfig, err := util.MergeObject(r.Spec.Config, roleGroup.Config)
 		if err != nil {
 			return err
 		}
 
-		overrides, err := util.MergeObject(&r.Spec.OverridesSpec, &roleGroup.OverridesSpec)
+		overrides, err := util.MergeObject(r.Spec.OverridesSpec, roleGroup.OverridesSpec)
 		if err != nil {
 			return err
 		}
@@ -70,7 +75,7 @@ func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 			RoleGroupName: roleGroupName,
 		}
 
-		reconcilers := r.getResourceWithRoleGroup(info, mergedRoleGroup, overrides, roleGroup.Replicas)
+		reconcilers := r.getResourceWithRoleGroup(info, mergedConfig, overrides, roleGroup.Replicas)
 
 		for _, reconciler := range reconcilers {
 			r.AddResource(reconciler)
@@ -285,12 +290,11 @@ var _ = Describe("Role reconciler", func() {
 			pdb := &policyv1.PodDisruptionBudget{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName()}, pdb)).Should(Succeed())
 			Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
-
 		})
 
 		It("should reconcile role resource with overrides", func() {
 			coordinatorRole = TrinoCoordinatorSpec{
-				OverridesSpec: commonsv1alpha1.OverridesSpec{
+				OverridesSpec: &commonsv1alpha1.OverridesSpec{
 					EnvOverrides: map[string]string{"test1": "test1", "test2": "test2"},
 					CliOverrides: []string{"test1"},
 					// ConfigOverrides: map[string]map[string]string{
@@ -302,7 +306,7 @@ var _ = Describe("Role reconciler", func() {
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
 						Replicas: ptr.To[int32](1),
-						OverridesSpec: commonsv1alpha1.OverridesSpec{
+						OverridesSpec: &commonsv1alpha1.OverridesSpec{
 							EnvOverrides: map[string]string{"test1": "test11", "test3": "test3"},
 							CliOverrides: []string{"test2"},
 							// ConfigOverrides: map[string]map[string]string{
