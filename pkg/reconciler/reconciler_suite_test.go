@@ -95,32 +95,35 @@ type ClusterConfigSpec struct {
 }
 
 type TrinoCoordinatorSpec struct {
-	RoleGroups map[string]TrinoRoleGroupSpec   `json:"roleGroups,omitempty"`
-	Config     *TrinoConfigSpec                `json:"config,omitempty"`
-	RoleConfig *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
+	RoleGroups     map[string]TrinoRoleGroupSpec   `json:"roleGroups,omitempty"`
+	ConfigSpec     *TrinoConfigSpec                `json:"config,omitempty"`
+	RoleConfigSpec *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
 
-	commonsv1alpha1.OverridesSpec `json:",inline"`
+	*commonsv1alpha1.OverridesSpec `json:",inline"`
 }
 
 type TrinoWorkerSpec struct {
-	RoleGroups map[string]TrinoRoleGroupSpec   `json:"roleGroups,omitempty"`
-	Config     *TrinoConfigSpec                `json:"config,omitempty"`
-	RoleConfig *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
+	RoleGroups map[string]TrinoRoleGroupSpec `json:"roleGroups,omitempty"`
 
-	commonsv1alpha1.OverridesSpec `json:",inline"`
+	ConfigSpec *TrinoConfigSpec `json:"config,omitempty"`
+
+	RoleConfigSpec *commonsv1alpha1.RoleConfigSpec `json:"roleConfig,omitempty"`
+
+	*commonsv1alpha1.OverridesSpec `json:",inline"`
 }
 
 type TrinoRoleGroupSpec struct {
-	commonsv1alpha1.OverridesSpec `json:",inline"`
+	*commonsv1alpha1.OverridesSpec `json:",inline"`
 
-	Replicas *int32           `json:"replicas,omitempty"`
-	Config   *TrinoConfigSpec `json:"config,omitempty"`
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	ConfigSpec *TrinoConfigSpec `json:"config,omitempty"`
 }
 
 type TrinoConfigSpec struct {
-	commonsv1alpha1.RoleGroupConfigSpec `json:",inline"`
-	QueryMaxMemory                      string `json:"queryMaxMemory,omitempty"`
-	QueryMaxMemoryPerNode               string `json:"queryMaxMemoryPerNode,omitempty"`
+	*commonsv1alpha1.RoleGroupConfigSpec `json:",inline"`
+	QueryMaxMemory                       string `json:"queryMaxMemory,omitempty"`
+	QueryMaxMemoryPerNode                string `json:"queryMaxMemoryPerNode,omitempty"`
 }
 
 // end of Test data structures

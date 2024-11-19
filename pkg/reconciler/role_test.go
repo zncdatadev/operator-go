@@ -55,12 +55,17 @@ func NewRoleReconciler(
 // RegisterResources registers resources with T
 func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 	for roleGroupName, roleGroup := range r.Spec.RoleGroups {
-		mergedRoleGroup, err := util.MergeObject(r.Spec.Config, roleGroup.Config)
+		// It accepts struct or pointer to struct
+		// If pass pointer to struct, it will handles nil pointer.
+		// 	- if original is nil, it will return override
+		// 	- if override is nil, it will return original
+		// 	- if both are nil, it will return nil
+		mergedConfig, err := util.MergeObject(r.Spec.ConfigSpec, roleGroup.ConfigSpec)
 		if err != nil {
 			return err
 		}
 
-		overrides, err := util.MergeObject(&r.Spec.OverridesSpec, &roleGroup.OverridesSpec)
+		overrides, err := util.MergeObject(r.Spec.OverridesSpec, roleGroup.OverridesSpec)
 		if err != nil {
 			return err
 		}
@@ -70,7 +75,10 @@ func (r *RoleReconciler) RegisterResources(ctx context.Context) error {
 			RoleGroupName: roleGroupName,
 		}
 
-		reconcilers := r.getResourceWithRoleGroup(info, mergedRoleGroup, overrides, roleGroup.Replicas)
+		// Note:
+		// 	- mergedConfig may be nil
+		// 	- overrides may be nil
+		reconcilers := r.getResourceWithRoleGroup(info, mergedConfig, overrides, roleGroup.Replicas)
 
 		for _, reconciler := range reconcilers {
 			r.AddResource(reconciler)
@@ -105,10 +113,10 @@ func (r *RoleReconciler) getDeployment(
 	replicas *int32,
 ) reconciler.Reconciler {
 
-	var roleGroupConfig *commonsv1alpha1.RoleGroupConfigSpec
-
+	// handle config is nil
+	var commonsRoleGroupConfig *commonsv1alpha1.RoleGroupConfigSpec
 	if config != nil {
-		roleGroupConfig = &config.RoleGroupConfigSpec
+		commonsRoleGroupConfig = config.RoleGroupConfigSpec
 	}
 
 	// Create a deployment builder
@@ -123,7 +131,7 @@ func (r *RoleReconciler) getDeployment(
 				ProductVersion:  "458",
 			},
 			overrides,
-			roleGroupConfig,
+			commonsRoleGroupConfig,
 			func(o *builder.Options) {
 				o.ClusterName = info.ClusterName
 				o.RoleName = info.RoleName
@@ -254,7 +262,7 @@ var _ = Describe("Role reconciler", func() {
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {Replicas: ptr.To[int32](3)},
 				},
-				RoleConfig: &commonsv1alpha1.RoleConfigSpec{
+				RoleConfigSpec: &commonsv1alpha1.RoleConfigSpec{
 					PodDisruptionBudget: &commonsv1alpha1.PodDisruptionBudgetSpec{
 						Enabled:        true,
 						MaxUnavailable: ptr.To[int32](1),
@@ -285,12 +293,11 @@ var _ = Describe("Role reconciler", func() {
 			pdb := &policyv1.PodDisruptionBudget{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName()}, pdb)).Should(Succeed())
 			Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
-
 		})
 
 		It("should reconcile role resource with overrides", func() {
 			coordinatorRole = TrinoCoordinatorSpec{
-				OverridesSpec: commonsv1alpha1.OverridesSpec{
+				OverridesSpec: &commonsv1alpha1.OverridesSpec{
 					EnvOverrides: map[string]string{"test1": "test1", "test2": "test2"},
 					CliOverrides: []string{"test1"},
 					// ConfigOverrides: map[string]map[string]string{
@@ -302,7 +309,7 @@ var _ = Describe("Role reconciler", func() {
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
 						Replicas: ptr.To[int32](1),
-						OverridesSpec: commonsv1alpha1.OverridesSpec{
+						OverridesSpec: &commonsv1alpha1.OverridesSpec{
 							EnvOverrides: map[string]string{"test1": "test11", "test3": "test3"},
 							CliOverrides: []string{"test2"},
 							// ConfigOverrides: map[string]map[string]string{
@@ -349,8 +356,8 @@ var _ = Describe("Role reconciler", func() {
 
 		It("should reconcile role resource with config", func() {
 			coordinatorRole = TrinoCoordinatorSpec{
-				Config: &TrinoConfigSpec{
-					RoleGroupConfigSpec: commonsv1alpha1.RoleGroupConfigSpec{
+				ConfigSpec: &TrinoConfigSpec{
+					RoleGroupConfigSpec: &commonsv1alpha1.RoleGroupConfigSpec{
 						Resources: &commonsv1alpha1.ResourcesSpec{
 							CPU: &commonsv1alpha1.CPUResource{
 								Max: resource.MustParse("100m"),
@@ -361,8 +368,8 @@ var _ = Describe("Role reconciler", func() {
 				RoleGroups: map[string]TrinoRoleGroupSpec{
 					"default": {
 						Replicas: ptr.To[int32](1),
-						Config: &TrinoConfigSpec{
-							RoleGroupConfigSpec: commonsv1alpha1.RoleGroupConfigSpec{
+						ConfigSpec: &TrinoConfigSpec{
+							RoleGroupConfigSpec: &commonsv1alpha1.RoleGroupConfigSpec{
 								Resources: &commonsv1alpha1.ResourcesSpec{
 									CPU: &commonsv1alpha1.CPUResource{
 										Max: resource.MustParse("200m"),

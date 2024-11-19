@@ -128,19 +128,19 @@ func (r *BaseRoleReconciler[T]) getPdbReconciler(_ context.Context) (Reconciler,
 	if value.Kind() == reflect.Ptr {
 		value = value.Elem()
 	}
-	RoleConfigReflect := value.FieldByName("RoleConfig")
+	roleConfigValue := value.FieldByName("RoleConfigSpec")
 	// check if the RoleConfig field exists
-	if !RoleConfigReflect.IsValid() {
+	if !roleConfigValue.IsValid() {
 		logger.V(5).Info("RoleConfig field does not exist, skipping pdb reconciliation")
 		return nil, nil
 	}
 	// transform the RoleConfigReflect to RoleConfigSpec
-	RoleConfigSpec := RoleConfigReflect.Interface().(*commonsv1alpha1.RoleConfigSpec)
-	if RoleConfigSpec == nil {
+	roleConfig := roleConfigValue.Interface().(*commonsv1alpha1.RoleConfigSpec)
+	if roleConfig == nil {
 		logger.V(5).Info("RoleConfig field is nil, skipping pdb reconciliation")
 		return nil, nil
 	}
-	pdb := RoleConfigSpec.PodDisruptionBudget
+	pdb := roleConfig.PodDisruptionBudget
 	// check if the PodDisruptionBudget field exists
 	if pdb == nil {
 		logger.V(5).Info("PDB field does not exist, skipping pdb reconciliation")
