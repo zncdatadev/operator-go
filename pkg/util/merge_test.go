@@ -16,7 +16,7 @@ import (
 )
 
 func TestMergePodTemplate(t *testing.T) {
-	original := &corev1.PodTemplateSpec{
+	original := corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
@@ -26,7 +26,7 @@ func TestMergePodTemplate(t *testing.T) {
 			},
 		},
 	}
-	override := &corev1.PodTemplateSpec{
+	override := corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
@@ -48,12 +48,50 @@ func TestMergePodTemplate(t *testing.T) {
 		},
 	}
 
-	merged, err := util.MergeObjectWithStrategic(original, override)
+	// process struct
+	merged, err := util.MergeObjectWithStrategic(original, corev1.PodTemplateSpec{})
+	assert.NoError(t, err)
+	assert.Equal(t, len(merged.Spec.Containers), 1)
+	assert.Equal(t, merged.Spec.Containers, original.Spec.Containers)
+
+	merged, err = util.MergeObjectWithStrategic(corev1.PodTemplateSpec{}, override)
+	assert.NoError(t, err)
+	assert.Equal(t, len(merged.Spec.Containers), 1)
+	assert.Equal(t, merged.Spec.Containers, override.Spec.Containers)
+
+	merged, err = util.MergeObjectWithStrategic(original, override)
 	assert.NoError(t, err)
 
 	assert.Equal(t, len(merged.Spec.Containers), 2)
 	assert.Equal(t, merged.Spec.Containers, expectedContainers)
 
+	// process empty struct
+	merged, err = util.MergeObjectWithStrategic(corev1.PodTemplateSpec{}, corev1.PodTemplateSpec{})
+	assert.NoError(t, err)
+	assert.Nil(t, merged.Spec.Containers)
+
+	// process ptr
+	mergedPtr, err := util.MergeObjectWithStrategic(&original, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, len(mergedPtr.Spec.Containers), 1)
+	assert.Equal(t, mergedPtr.Spec.Containers, original.Spec.Containers)
+
+	mergedPtr, err = util.MergeObjectWithStrategic(nil, &override)
+	assert.NoError(t, err)
+	assert.Equal(t, len(mergedPtr.Spec.Containers), 1)
+	assert.Equal(t, mergedPtr.Spec.Containers, override.Spec.Containers)
+
+	mergedPtr, err = util.MergeObjectWithStrategic(&original, &override)
+	assert.NoError(t, err)
+
+	assert.Equal(t, len(mergedPtr.Spec.Containers), 2)
+	assert.Equal(t, mergedPtr.Spec.Containers, expectedContainers)
+
+	// process nil
+	foo := commonsv1alpha1.RoleGroupConfigSpec{}
+	nilRes, err := util.MergeObjectWithStrategic(foo.Affinity, foo.Affinity)
+	assert.NoError(t, err)
+	assert.Nil(t, nilRes)
 }
 
 var _ = Describe("MergeObject", func() {

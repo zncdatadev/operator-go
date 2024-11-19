@@ -70,12 +70,22 @@ import (
 //	}
 
 // MergeObject merges the original config with the override config
-func MergeObject[T any](original, override *T) (*T, error) {
-	if reflect.ValueOf(original).IsNil() {
+func MergeObject[T any](original, override T) (T, error) {
+
+	if empty, err := validateStruct(original, override); err != nil {
+		return original, err
+	} else if empty {
+		return original, nil
+	}
+
+	originalValue := reflect.ValueOf(original)
+	overrideValue := reflect.ValueOf(override)
+
+	if originalValue.Kind() == reflect.Ptr && originalValue.IsNil() {
 		return override, nil
 	}
 
-	if reflect.ValueOf(override).IsNil() {
+	if overrideValue.Kind() == reflect.Ptr && overrideValue.IsNil() {
 		return original, nil
 	}
 
@@ -109,7 +119,7 @@ func MergeObject[T any](original, override *T) (*T, error) {
 		return original, err
 	}
 
-	return &merged, nil
+	return merged, nil
 }
 
 func mergeMaps(original, override map[string]interface{}) map[string]interface{} {
@@ -142,14 +152,56 @@ func mergeSlices(original, override []interface{}) []interface{} {
 	return append(original, override...)
 }
 
+// validateStruct validates the original and override structs
+// It returns an error if the original or override is not a struct or pointer to struct
+// It returns true if the original and override are both nil
+func validateStruct[T any](origin, override T) (empty bool, err error) {
+	originValue := reflect.ValueOf(origin)
+	overrideValue := reflect.ValueOf(override)
+
+	if originValue.Kind() == reflect.Ptr {
+		if originValue.IsNil() {
+			if overrideValue.Kind() == reflect.Ptr && overrideValue.IsNil() {
+				return true, nil
+			}
+			return false, nil
+		}
+		originValue = originValue.Elem()
+	}
+	if originValue.Kind() != reflect.Struct {
+		return false, fmt.Errorf("original must be a struct or pointer to struct")
+	}
+
+	if overrideValue.Kind() == reflect.Ptr {
+		if overrideValue.IsNil() {
+			return false, nil
+		}
+		overrideValue = overrideValue.Elem()
+	}
+	if overrideValue.Kind() != reflect.Struct {
+		return false, fmt.Errorf("override must be a struct or pointer to struct")
+	}
+	return false, nil
+}
+
 // MergeObjectWithJson merges the original config with the override config
 // It uses json merge patch to merge the two configs.
-func MergeObjectWithJson[T any](original, override *T) (*T, error) {
-	if reflect.ValueOf(original).IsNil() {
+func MergeObjectWithJson[T any](original, override T) (T, error) {
+
+	if empty, err := validateStruct(original, override); err != nil {
+		return original, err
+	} else if empty {
+		return original, nil
+	}
+
+	originalValue := reflect.ValueOf(original)
+	overrideValue := reflect.ValueOf(override)
+
+	if originalValue.Kind() == reflect.Ptr && originalValue.IsNil() {
 		return override, nil
 	}
 
-	if reflect.ValueOf(override).IsNil() {
+	if overrideValue.Kind() == reflect.Ptr && overrideValue.IsNil() {
 		return original, nil
 	}
 
@@ -173,18 +225,28 @@ func MergeObjectWithJson[T any](original, override *T) (*T, error) {
 		return original, err
 	}
 
-	return &merged, nil
+	return merged, nil
 }
 
 // MergeObjectWithStrategic merges the original config with the override config
 // It uses strategic merge patch to merge the two configs.
 // Some k8s resources define a merge strategy for their fields, strategic merge patch is used to merge these fields.
-func MergeObjectWithStrategic[T any](original, override *T) (*T, error) {
-	if reflect.ValueOf(original).IsNil() {
+func MergeObjectWithStrategic[T any](original, override T) (T, error) {
+
+	if empty, err := validateStruct(original, override); err != nil {
+		return original, err
+	} else if empty {
+		return original, nil
+	}
+
+	originalValue := reflect.ValueOf(original)
+	overrideValue := reflect.ValueOf(override)
+
+	if originalValue.Kind() == reflect.Ptr && originalValue.IsNil() {
 		return override, nil
 	}
 
-	if reflect.ValueOf(override).IsNil() {
+	if overrideValue.Kind() == reflect.Ptr && overrideValue.IsNil() {
 		return original, nil
 	}
 
@@ -203,18 +265,15 @@ func MergeObjectWithStrategic[T any](original, override *T) (*T, error) {
 		return original, err
 	}
 
-	fmt.Printf("Patch: %s\n", string(patch))
-
 	mergedJson, err := jsonpatch.MergePatch(originalJson, patch)
 	if err != nil {
 		return original, err
 	}
 
-	fmt.Printf("Merged: %s\n", string(mergedJson))
 	var merged T
 	if err := json.Unmarshal(mergedJson, &merged); err != nil {
 		return original, err
 	}
 
-	return &merged, nil
+	return merged, nil
 }
