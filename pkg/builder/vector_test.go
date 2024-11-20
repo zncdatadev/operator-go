@@ -69,7 +69,7 @@ func TestVectorCommandArgs(t *testing.T) {
 	expectedArgs := []string{
 		`
 # Vector will ignore SIGTERM (as PID != 1) and must be shut down by writing a shutdown trigger file
-vector --config /kubedoop/config/vector.toml & vector_pid=$!
+vector --config /kubedoop/config/vector.yaml & vector_pid=$!
 if [ ! -f /kubedoop/log/_vector/shutdown ]; then
     mkdir -p /kubedoop/log/_vector
     inotifywait -qq --event create /kubedoop/log/_vector
