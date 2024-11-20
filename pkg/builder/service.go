@@ -120,7 +120,7 @@ func (b *BaseServiceBuilder) GetObject() *corev1.Service {
 		},
 	}
 
-	if b.headless {
+	if b.headless && b.listenerClass == constants.ClusterInternal {
 		obj.Spec.ClusterIP = corev1.ClusterIPNone
 	}
 

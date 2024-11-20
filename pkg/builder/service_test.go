@@ -62,11 +62,40 @@ func TestNewServiceBuilder(t *testing.T) {
 
 		assert.Equal(t, name, service.Name)
 		assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
-		assert.Equal(t, corev1.ClusterIPNone, service.Spec.ClusterIP)
+		// assert.Equal(t, corev1.ClusterIPNone, service.Spec.ClusterIP)
+		assert.Empty(t, service.Spec.ClusterIP)
 		assert.Equal(t, map[string]string{"app": "test"}, service.Spec.Selector)
 
 		obj, err := builder.Build(context.Background())
 		assert.Nil(t, err)
 		assert.NotNil(t, obj)
+	})
+
+	t.Run("headless service with ClusterInternal", func(t *testing.T) {
+		options := []builder.ServiceBuilderOption{
+			func(opt *builder.ServiceBuilderOptions) {
+				opt.ListenerClass = constants.ClusterInternal
+				opt.Headless = true
+			},
+		}
+		builder := builder.NewServiceBuilder(mockClient, name, ports, options...)
+		service := builder.GetObject()
+
+		assert.Equal(t, corev1.ServiceTypeClusterIP, service.Spec.Type)
+		assert.Equal(t, corev1.ClusterIPNone, service.Spec.ClusterIP)
+	})
+
+	t.Run("headless service with non-ClusterInternal", func(t *testing.T) {
+		options := []builder.ServiceBuilderOption{
+			func(opt *builder.ServiceBuilderOptions) {
+				opt.ListenerClass = constants.ExternalStable
+				opt.Headless = true
+			},
+		}
+		builder := builder.NewServiceBuilder(mockClient, name, ports, options...)
+		service := builder.GetObject()
+
+		assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
+		assert.Empty(t, service.Spec.ClusterIP)
 	})
 }
