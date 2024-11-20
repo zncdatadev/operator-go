@@ -21,13 +21,16 @@ const (
 	VectorConfigVolumeName = "config"
 	VectorLogVolumeName    = "log"
 
+	VectorConfigFileName = "vector.yaml"
+
 	vectorDataDirVolumeName = "vector-data"
-	vectorDataDir           = constants.KubedoopRoot + "vector/var"
 	vectorApiPort           = 8686
 )
 
 var (
-	VectorConfigFile   = path.Join(constants.KubedoopConfigDir, "vector.toml")
+	vectorDataDir = path.Join(constants.KubedoopRoot, "vector", "var")
+
+	VectorConfigFile   = path.Join(constants.KubedoopConfigDir, VectorConfigFileName)
 	VectorWatcherDir   = path.Join(constants.KubedoopLogDir, "_vector")
 	VectorShutdownFile = path.Join(VectorWatcherDir, "shutdown")
 )
