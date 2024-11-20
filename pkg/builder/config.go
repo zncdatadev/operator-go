@@ -28,17 +28,17 @@ type BaseConfigBuilder struct {
 func NewBaseConfigBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *BaseConfigBuilder {
+
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
+
 	return &BaseConfigBuilder{
-		ObjectMeta: ObjectMeta{
-			Client:      client,
-			Name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
-		data: make(map[string]string),
+		ObjectMeta: *NewObjectMeta(client, name, options...),
+		data:       make(map[string]string),
 	}
 }
 
@@ -81,15 +81,13 @@ type ConfigMapBuilder struct {
 func NewConfigMapBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *ConfigMapBuilder {
 	return &ConfigMapBuilder{
 		BaseConfigBuilder: *NewBaseConfigBuilder(
 			client,
 			name,
-			labels,
-			annotations,
+			options...,
 		),
 	}
 }
@@ -114,15 +112,13 @@ var _ ConfigBuilder = &SecretBuilder{}
 func NewSecretBuilder(
 	client *client.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *SecretBuilder {
 	return &SecretBuilder{
 		BaseConfigBuilder: *NewBaseConfigBuilder(
 			client,
 			name,
-			labels,
-			annotations,
+			options...,
 		),
 	}
 }

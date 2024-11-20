@@ -2,7 +2,6 @@ package builder
 
 import (
 	"context"
-	"fmt"
 
 	resourceClient "github.com/zncdatadev/operator-go/pkg/client"
 	corev1 "k8s.io/api/core/v1"
@@ -23,16 +22,16 @@ type GenericServiceAccountBuilder struct {
 func NewGenericServiceAccountBuilder(
 	client *resourceClient.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *GenericServiceAccountBuilder {
+
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
+
 	return &GenericServiceAccountBuilder{
-		ObjectMeta: ObjectMeta{
-			Client:      client,
-			Name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
+		ObjectMeta: *NewObjectMeta(client, name, options...),
 	}
 }
 
@@ -61,16 +60,16 @@ type GenericRoleBuilder struct {
 func NewGenericRoleBuilder(
 	client *resourceClient.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *GenericRoleBuilder {
+
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
+
 	return &GenericRoleBuilder{
-		ObjectMeta: ObjectMeta{
-			Client:      client,
-			Name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
+		ObjectMeta: *NewObjectMeta(client, name, options...),
 	}
 }
 
@@ -118,16 +117,16 @@ type GenericRoleBindingBuilder struct {
 func NewGenericRoleBindingBuilder(
 	client *resourceClient.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *GenericRoleBindingBuilder {
+
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
+
 	return &GenericRoleBindingBuilder{
-		ObjectMeta: ObjectMeta{
-			Client:      client,
-			Name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
+		ObjectMeta: *NewObjectMeta(client, name, options...),
 	}
 }
 
@@ -198,16 +197,16 @@ type GenericClusterRoleBuilder struct {
 func NewGenericClusterRoleBuilder(
 	client *resourceClient.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *GenericClusterRoleBuilder {
+
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
+
 	return &GenericClusterRoleBuilder{
-		ObjectMeta: ObjectMeta{
-			Client:      client,
-			Name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
+		ObjectMeta: *NewObjectMeta(client, name, options...),
 	}
 }
 
@@ -238,16 +237,16 @@ type GenericClusterRoleBindingBuilder struct {
 func NewGenericClusterRoleBindingBuilder(
 	client *resourceClient.Client,
 	name string,
-	labels map[string]string,
-	annotations map[string]string,
+	options ...Option,
 ) *GenericClusterRoleBindingBuilder {
+
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
+
 	return &GenericClusterRoleBindingBuilder{
-		ObjectMeta: ObjectMeta{
-			Client:      client,
-			Name:        name,
-			labels:      labels,
-			annotations: annotations,
-		},
+		ObjectMeta: *NewObjectMeta(client, name, options...),
 	}
 }
 
@@ -309,29 +308,4 @@ func (b *GenericClusterRoleBindingBuilder) GetObject() *rbacv1.ClusterRoleBindin
 
 func (b *GenericClusterRoleBindingBuilder) Build(ctx context.Context) (ctrlclient.Object, error) {
 	return b.GetObject(), nil
-}
-
-// Deprecated: will be removed in next release
-func ServiceAccountName(rbacPrefix string) string {
-	return fmt.Sprintf("%s-serviceaccount", rbacPrefix)
-}
-
-// Deprecated: will be removed in next release
-func RoleBindingName(rbacPrefix string) string {
-	return fmt.Sprintf("%s-rolebinding", rbacPrefix)
-}
-
-// Deprecated: will be removed in next release
-func ClusterRoleBindingName(rbacPrefix string) string {
-	return fmt.Sprintf("%s-clusterrolebinding", rbacPrefix)
-}
-
-// Deprecated: will be removed in next release
-func RoleName(rbacPrefix string) string {
-	return fmt.Sprintf("%s-role", rbacPrefix)
-}
-
-// Deprecated: will be removed in next release
-func ClusterRoleName(rbacPrefix string) string {
-	return fmt.Sprintf("%s-clusterrole", rbacPrefix)
 }
