@@ -30,7 +30,7 @@ func TestReconciler(t *testing.T) {
 	testK8sVersion := os.Getenv("ENVTEST_K8S_VERSION")
 	if testK8sVersion == "" {
 		logf.Log.Info("ENVTEST_K8S_VERSION is not set, using default version")
-		testK8sVersion = "1.28.3"
+		testK8sVersion = "1.26.1"
 	}
 	if asserts := os.Getenv("KUBEBUILDER_ASSETS"); asserts == "" {
 		logf.Log.Info("KUBEBUILDER_ASSETS is not set, using default version " + testK8sVersion)

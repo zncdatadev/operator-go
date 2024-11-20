@@ -269,6 +269,9 @@ func (b *BaseWorkloadBuilder) overridedEnv(container *corev1.Container) {
 }
 
 func (b *BaseWorkloadBuilder) overridedCli(container *corev1.Container) {
+	if len(b.Overrides.CliOverrides) == 0 {
+		return
+	}
 	container.Command = b.Overrides.CliOverrides
 	container.Args = []string{}
 	logger.V(5).Info("Command override", "container", container.Name, "command", container.Command)
