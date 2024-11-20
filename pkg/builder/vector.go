@@ -17,7 +17,6 @@ import (
 
 const (
 	VectorContainerName = "vector"
-	VectorConfigFile    = "vector.yaml"
 
 	VectorConfigVolumeName = "config"
 	VectorLogVolumeName    = "log"
@@ -28,8 +27,9 @@ const (
 )
 
 var (
-	VectorLogDir       = path.Join(constants.KubedoopLogDir, "_vector")
-	VectorShutdownFile = path.Join(VectorLogDir, "shutdown")
+	VectorConfigFile   = path.Join(constants.KubedoopConfigDir, "vector.toml")
+	VectorWatcherDir   = path.Join(constants.KubedoopLogDir, "_vector")
+	VectorShutdownFile = path.Join(VectorWatcherDir, "shutdown")
 )
 
 var _ WorkloadDecorator = &VectorDecorator{}
@@ -242,21 +242,18 @@ func VectorVolumeMount(vectorConfigVolumeName string, vectorLogVolumeName string
 }
 
 func VectorCommandArgs() []string {
-	arg := fmt.Sprintf(`
+	arg := `
 # Vector will ignore SIGTERM (as PID != 1) and must be shut down by writing a shutdown trigger file
-CONFIG_DIR=%s
-LOG_DIR=%s
-VECTOR_LOG_DIR=%s
-VECTOR_SHUTDOWN_FILE=%s
-VECTOR_CONFIG_FILE=%s
-vector --config ${CONFIG_DIR}${VECTOR_CONFIG_FILE} & vector_pid=$!
-if [ ! -f "${LOG_DIR}${VECTOR_LOG_DIR}$/${VECTOR_SHUTDOWN_FILE}" ]; then
-  mkdir -p ${LOG_DIR}${VECTOR_LOG_DIR} && \
-  inotifywait -qq --event create ${LOG_DIR}${VECTOR_LOG_DIR}; \
+vector --config ` + VectorConfigFile + ` & vector_pid=$!
+if [ ! -f ` + VectorShutdownFile + ` ]; then
+    mkdir -p ` + VectorWatcherDir + `
+    inotifywait -qq --event create ` + VectorWatcherDir + `
 fi
+
 sleep 1
+
 kill $vector_pid
-`, constants.KubedoopConfigDir, constants.KubedoopLogDir, VectorLogDir, VectorShutdownFile, VectorConfigFile)
+`
 	return []string{util.IndentTab4Spaces(arg)}
 }
 
@@ -309,12 +306,12 @@ prepare_signal_handlers
 {{ .EntrypointScript }}
 
 wait_for_termination $!
-mkdir -p {{ .VectorLogDir }} && touch {{ .VectorShutdownFile }}
+mkdir -p {{ .VectorWatcherDir }} && touch {{ .VectorShutdownFile }}
 `
 	data := map[string]interface{}{
 		"LogDir":             constants.KubedoopLogDir,
 		"EntrypointScript":   entrypointScript,
-		"VectorLogDir":       VectorLogDir,
+		"VectorWatcherDir":   VectorWatcherDir,
 		"VectorShutdownFile": VectorShutdownFile,
 	}
 	parser := config.TemplateParser{
