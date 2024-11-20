@@ -346,15 +346,17 @@ func (b *BaseWorkloadBuilder) GetAffinity() (*corev1.Affinity, error) {
 }
 
 func (b *BaseWorkloadBuilder) GetTerminationGracePeriod() (*time.Duration, error) {
-	if b.RoleGroupConfig != nil && b.RoleGroupConfig.GracefulShutdownTimeout != "" {
-		timeout := b.RoleGroupConfig.GracefulShutdownTimeout
-		t, err := time.ParseDuration(timeout)
-		if err != nil {
-			return nil, err
+	if b.terminationGracePeriod == nil {
+		if b.RoleGroupConfig != nil && b.RoleGroupConfig.GracefulShutdownTimeout != "" {
+			timeout := b.RoleGroupConfig.GracefulShutdownTimeout
+			t, err := time.ParseDuration(timeout)
+			if err != nil {
+				return nil, err
+			}
+			b.terminationGracePeriod = &t
 		}
-		return &t, nil
 	}
-	return nil, nil
+	return b.terminationGracePeriod, nil
 }
 
 func (b *BaseWorkloadBuilder) GetTerminationGracePeriodSeconds() (*int64, error) {
@@ -363,7 +365,7 @@ func (b *BaseWorkloadBuilder) GetTerminationGracePeriodSeconds() (*int64, error)
 		return nil, err
 	}
 	if terminationGracePeriod != nil {
-		seconds := int64(b.terminationGracePeriod.Seconds())
+		seconds := int64(terminationGracePeriod.Seconds())
 		return &seconds, nil
 	}
 	return nil, nil

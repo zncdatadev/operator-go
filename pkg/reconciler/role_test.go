@@ -360,6 +360,7 @@ var _ = Describe("Role reconciler", func() {
 								Max: resource.MustParse("100m"),
 							},
 						},
+						GracefulShutdownTimeout: "10s",
 					},
 				},
 				RoleGroups: map[string]TrinoRoleGroupSpec{
@@ -401,9 +402,12 @@ var _ = Describe("Role reconciler", func() {
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
 
-			container := deployment.Spec.Template.Spec.Containers[0]
+			podSpec := deployment.Spec.Template.Spec
+			container := podSpec.Containers[0]
 
 			By("check role group config")
+			Expect(podSpec.TerminationGracePeriodSeconds).ToNot(BeNil())
+			Expect(*podSpec.TerminationGracePeriodSeconds).To(Equal(int64(10)))
 			Expect(container.Resources.Limits).To(HaveKey(corev1.ResourceCPU))
 			Expect(container.Resources.Limits.Cpu().String()).To(Equal("200m"))
 			Expect(container.Resources.Requests).To(HaveKey(corev1.ResourceCPU))
