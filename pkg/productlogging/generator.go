@@ -114,6 +114,9 @@ func (b *ConfigGenerator) getLoggingConfig() (LoggingConfig, error) {
 }
 
 func (b *ConfigGenerator) getProductLogging() (*ProductLogging, error) {
+	if b.containerName == "" {
+		return nil, fmt.Errorf("container name is required to generate logging configuration")
+	}
 	handlerFormatter := ""
 	rotatingFileHandlerMaxBytes := DefaultRotatingFileHandlerMaxBytes
 
