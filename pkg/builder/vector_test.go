@@ -64,3 +64,23 @@ mkdir -p /kubedoop/log/_vector && touch /kubedoop/log/_vector/shutdown
 	assert.NoError(t, err)
 	assert.Equal(t, expectedArgs, args)
 }
+
+func TestVectorCommandArgs(t *testing.T) {
+	expectedArgs := []string{
+		`
+# Vector will ignore SIGTERM (as PID != 1) and must be shut down by writing a shutdown trigger file
+vector --config /kubedoop/config/vector.toml & vector_pid=$!
+if [ ! -f /kubedoop/log/_vector/shutdown ]; then
+    mkdir -p /kubedoop/log/_vector
+    inotifywait -qq --event create /kubedoop/log/_vector
+fi
+
+sleep 1
+
+kill $vector_pid
+`,
+	}
+
+	args := VectorCommandArgs()
+	assert.Equal(t, expectedArgs, args)
+}
