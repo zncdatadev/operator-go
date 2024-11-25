@@ -8,7 +8,7 @@ updates:
   - package-ecosystem: "gomod"
     directory: "/" # Location of package manifests
     schedule:
-      interval: "weekly"
+      interval: "daily"
     commit-message:
       include: scope
       prefix: build
