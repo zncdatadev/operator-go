@@ -1,6 +1,50 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.0 2024-11-25
+
+### features
+
+- Added API `CreateDoesNotExist` in client package (#241)
+
+### refactor
+
+- Added option argument to rbac and config in builder (#251)
+- Refactored GitHub Action (#244)
+- Refactored Makefile to be more standardized (#243)
+- Bumped domain to kubedoop.dev (#242)
+- Added merge role-group from role support (#239)
+- Refactored code base to pass Go lint (#246)
+- Merge supports structs and safely handles struct pointers (#247)
+
+### dependencies
+
+- Bumped `k8s.io/kubectl` from 0.31.2 to 0.31.3 (#264)
+- Bumped `github.com/stretchr/testify` from 1.9.0 to 1.10.0 (#262)
+- Bumped `k8s.io/client-go` from 0.31.2 to 0.31.3 (#263)
+- Bumped `k8s.io/api` from 0.31.2 to 0.31.3 (#261)
+
+### bugs
+
+- Fixed the origin cli-args override to empty when `cliOverrides` is nil in builder (#256)
+- Fixed `clusterIp` is None when `serviceType` is nodePort in builder (#255)
+- Fixed vector config name error (#254)
+- Checked container name is passed for log config in productlogging (#253)
+- Fixed vector watcher path error (#252)
+- Fixed set `gracefulShutdownTimeout` panic in builder (#250)
+- Fixed logback render some nil value in productlogging (#240)
+
+### tests
+
+- Updated example data in reconciler tests (#249)
+
+### chore
+
+- Updated shields in README (#245)
+- Added code of conduct (#258)
+- Changed update interval from weekly to daily (#260)
+- Updated project license (#257)
+
 ## v0.11.2 2024-11-08
 
 ### bugs
