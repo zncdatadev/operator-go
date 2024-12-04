@@ -168,8 +168,8 @@ func (r *BaseRoleReconciler[T]) getPdbReconciler(_ context.Context) (Reconciler,
 		return nil, nil
 	}
 	option := func(opt *builder.PDBBuilderOptions) {
-		opt.Labels = r.RoleInfo.labels
-		opt.Annotations = r.RoleInfo.annotations
+		opt.Labels = r.RoleInfo.GetLabels()
+		opt.Annotations = r.RoleInfo.GetAnnotations()
 		opt.MaxUnavailableAmount = pdb.MaxUnavailable
 	}
 	logger.V(5).Info("get pdb success", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName(),
