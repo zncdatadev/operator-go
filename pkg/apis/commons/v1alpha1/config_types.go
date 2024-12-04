@@ -25,8 +25,6 @@ type RoleConfigSpec struct {
 
 type RoleGroupConfigSpec struct {
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:EmbeddedResource
 	// +kubebuilder:validation:Type=object
 	Affinity *k8sruntime.RawExtension `json:"affinity,omitempty"`
 	// +kubebuilder:validation:Optional
