@@ -36,7 +36,7 @@ const (
 
 	VectorConfigFileName = "vector.yaml"
 
-	vectorPort = 8686
+	vectorPort int32 = 8686
 )
 
 var (
@@ -95,6 +95,10 @@ func NewVector(
 }
 
 func (v *Vector) GetContainer() *corev1.Container {
+	if v.Port == 0 {
+		v.Port = vectorPort
+	}
+
 	container := NewContainer(VectorContainerName, v.Image)
 	container.AddVolumeMounts(v.getVolumeMounts())
 	container.AddPort(corev1.ContainerPort{ContainerPort: v.Port, Name: "vector", Protocol: corev1.ProtocolTCP})

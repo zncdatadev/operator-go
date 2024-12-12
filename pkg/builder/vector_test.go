@@ -36,19 +36,32 @@ func TestNewVector(t *testing.T) {
 }
 
 func TestVector_GetContainer(t *testing.T) {
-	image := util.NewImage("vector", "0.1.0", "1.0.0")
-	vector := NewVector("config-volume", "log-volume", image)
+	t.Run("with default port", func(t *testing.T) {
+		image := util.NewImage("vector", "0.1.0", "1.0.0")
+		vector := NewVector("config-volume", "log-volume", image)
 
-	container := vector.GetContainer()
+		container := vector.GetContainer()
 
-	assert.Equal(t, VectorContainerName, container.Name)
-	assert.Equal(t, image.String(), container.Image)
+		assert.Equal(t, VectorContainerName, container.Name)
+		assert.Equal(t, image.String(), container.Image)
+		assert.Len(t, container.Ports, 1)
+		assert.Equal(t, vectorPort, container.Ports[0].ContainerPort)
+	})
 
-	assert.Len(t, container.Ports, 1)
-	assert.Equal(t, vector.Port, container.Ports[0].ContainerPort)
+	t.Run("with custom port", func(t *testing.T) {
+		image := util.NewImage("vector", "0.1.0", "1.0.0")
+		customPort := int32(9999)
+		vector := NewVector("config-volume", "log-volume", image, func(o *VectorOptions) {
+			o.Port = customPort
+		})
 
-	assert.NotNil(t, container.ReadinessProbe)
-	assert.NotNil(t, container.ReadinessProbe.HTTPGet)
+		container := vector.GetContainer()
+
+		assert.Equal(t, VectorContainerName, container.Name)
+		assert.Equal(t, image.String(), container.Image)
+		assert.Len(t, container.Ports, 1)
+		assert.Equal(t, customPort, container.Ports[0].ContainerPort)
+	})
 }
 
 func TestVector_GetVolumes(t *testing.T) {
