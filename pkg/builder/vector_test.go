@@ -20,83 +20,71 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/zncdatadev/operator-go/pkg/constants"
+	"github.com/zncdatadev/operator-go/pkg/util"
 )
 
-func TestLogProviderCommandArgs(t *testing.T) {
-	entrypointScript := `
-echo 'Hello, World!'
-foo() {
-    echo 'foo'
-}
-`
+func TestNewVector(t *testing.T) {
+	image := util.NewImage("vector", "0.1.0", "1.0.0")
+	vector := NewVector("config-volume", "log-volume", image)
 
-	expectedArgs := []string{
-		`
-prepare_signal_handlers()
-{
-    unset term_child_pid
-    unset term_kill_needed
-    trap 'handle_term_signal' TERM
+	assert.Equal(t, "config-volume", vector.VectorConfigVolumeName)
+	assert.Equal(t, "log-volume", vector.LogDataVolumeName)
+	assert.Equal(t, image, vector.Image)
 }
 
-handle_term_signal()
-{
-    if [ "${term_child_pid}" ]; then
-        kill -TERM "${term_child_pid}" 2>/dev/null
-    else
-        term_kill_needed="yes"
-    fi
+func TestVector_GetContainer(t *testing.T) {
+	image := util.NewImage("vector", "0.1.0", "1.0.0")
+	vector := NewVector("config-volume", "log-volume", image)
+
+	container := vector.GetContainer()
+
+	assert.Equal(t, VectorContainerName, container.Name)
+	assert.Equal(t, image.String(), container.Image)
+
+	// 验证端口配置
+	assert.Len(t, container.Ports, 1)
+	assert.Equal(t, vector.Port, container.Ports[0].ContainerPort)
+
+	// 验证健康检查
+	assert.NotNil(t, container.ReadinessProbe)
+	assert.NotNil(t, container.ReadinessProbe.HTTPGet)
 }
 
-wait_for_termination()
-{
-    set +e
-    term_child_pid=$1
-    if [[ -v term_kill_needed ]]; then
-        kill -TERM "${term_child_pid}" 2>/dev/null
-    fi
-    wait ${term_child_pid} 2>/dev/null
-    trap - TERM
-    wait ${term_child_pid} 2>/dev/null
-    set -e
+func TestVector_GetVolumes(t *testing.T) {
+	image := util.NewImage("vector", "0.1.0", "1.0.0")
+	customSize := resource.NewQuantity(100*1024*1024, resource.BinarySI)
+	vector := NewVector("config-volume", "log-volume", image, func(o *VectorOptions) {
+		o.VectorDataSize = customSize
+	})
+
+	volumes := vector.GetVolumes()
+
+	assert.Len(t, volumes, 1)
+	assert.Equal(t, vectorDataDir, volumes[0].Name)
+	assert.NotNil(t, volumes[0].EmptyDir)
+	assert.Equal(t, customSize, volumes[0].EmptyDir.SizeLimit)
 }
 
-rm -f /kubedoop/log/_vector/shutdown
-prepare_signal_handlers
+func TestVector_getVolumeMounts(t *testing.T) {
+	image := util.NewImage("vector", "0.1.0", "1.0.0")
+	vector := NewVector("config-volume", "log-volume", image)
 
+	mounts := vector.getVolumeMounts()
 
-echo 'Hello, World!'
-foo() {
-    echo 'foo'
-}
-
-
-wait_for_termination $!
-mkdir -p /kubedoop/log/_vector && touch /kubedoop/log/_vector/shutdown
-`,
+	assert.Len(t, mounts, 3)
+	// 验证必要的挂载点
+	expectedMounts := map[string]string{
+		vector.LogDataVolumeName: constants.KubedoopLogDir,
+		VectorConfigVolumeName:   constants.KubedoopConfigDir,
+		vectorDataVolumeName:     vectorDataDir,
 	}
 
-	args, err := LogProviderCommand(entrypointScript)
-	assert.NoError(t, err)
-	assert.Equal(t, expectedArgs, args)
-}
-
-func TestVectorCommandArgs(t *testing.T) {
-	expectedArgs := []string{
-		`
-# Vector will ignore SIGTERM (as PID != 1) and must be shut down by writing a shutdown trigger file
-vector --config /kubedoop/config/vector.yaml & vector_pid=$!
-if [ ! -f /kubedoop/log/_vector/shutdown ]; then
-    mkdir -p /kubedoop/log/_vector
-    inotifywait -qq --event create /kubedoop/log/_vector
-fi
-
-sleep 1
-
-kill $vector_pid
-`,
+	for _, mount := range mounts {
+		expectedPath, exists := expectedMounts[mount.Name]
+		assert.True(t, exists)
+		assert.Equal(t, expectedPath, mount.MountPath)
 	}
-
-	args := VectorCommandArgs()
-	assert.Equal(t, expectedArgs, args)
 }
