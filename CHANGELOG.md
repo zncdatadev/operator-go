@@ -1,6 +1,23 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.1 2024-12-12
+
+### refactor
+
+- Improved secret volume scope interface readable (#286)
+- Refactored vector build to make it easier to use (#284)
+- Used getter methods for labels and annotations in PDB options (#274)
+- Removed kubebuilder validation tags to fix CR installation failure (#273)
+
+### dependencies
+
+- Bumped golang from 1.23.2 to 1.23.4 (#283)
+- Bumped k8s.io/client-go from 0.31.3 to 0.31.4 (#276)
+- Bumped github.com/onsi/gomega from 1.35.1 to 1.36.1 (#275, #269)
+- Bumped sigs.k8s.io/controller-runtime from 0.19.1 to 0.19.3 (#272, #267)
+- Bumped github.com/onsi/ginkgo/v2 from 2.21.0 to 2.22.0 (#268)
+
 ## v0.12.0 2024-11-25
 
 ### features
