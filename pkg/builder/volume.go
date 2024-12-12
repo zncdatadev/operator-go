@@ -30,18 +30,18 @@ type VolumeBuilder interface {
 	Builde() *corev1.Volume
 }
 
-type scopeOptions struct {
+type SecretVolumeScope struct {
 	Pod            bool
 	Node           bool
-	Service        string
-	ListenerVolume string
+	Service        []string
+	ListenerVolume []string
 }
 
 type SecretOperatorVolume struct {
 	Name        string
 	SecretClass string
 
-	scope                *scopeOptions
+	scope                *SecretVolumeScope
 	kerberosServiceNames []string
 	formatName           constants.SecretFormat
 	pkcs12Password       string
@@ -86,20 +86,29 @@ func (s *SecretOperatorVolume) getPVCAnnotations() map[string]string {
 	}
 
 	if s.scope != nil {
-		var scopes []string
+		scopes := make([]string, 0)
 		if s.scope.Pod {
 			scopes = append(scopes, string(constants.PodScope))
 		}
 		if s.scope.Node {
 			scopes = append(scopes, string(constants.NodeScope))
 		}
-		if s.scope.Service != "" {
-			scopes = append(scopes, fmt.Sprintf("%s=%s", constants.ServiceScope, s.scope.Service))
+
+		for _, service := range s.scope.Service {
+			if service != "" {
+				scopes = append(scopes, fmt.Sprintf("%s=%s", constants.ServiceScope, service))
+			}
 		}
-		if s.scope.ListenerVolume != "" {
-			scopes = append(scopes, fmt.Sprintf("%s=%s", constants.ListenerVolumeScope, s.scope.ListenerVolume))
+
+		for _, listener := range s.scope.ListenerVolume {
+			if listener != "" {
+				scopes = append(scopes, fmt.Sprintf("%s=%s", constants.ListenerVolumeScope, listener))
+			}
 		}
-		annotations[constants.AnnotationSecretsScope] = strings.Join(scopes, ",")
+
+		if len(scopes) > 0 {
+			annotations[constants.AnnotationSecretsScope] = strings.Join(scopes, ",")
+		}
 	}
 
 	if len(s.kerberosServiceNames) > 0 {
@@ -125,13 +134,8 @@ func (s *SecretOperatorVolume) getPVCAnnotations() map[string]string {
 	return annotations
 }
 
-func (s *SecretOperatorVolume) SetScope(pod, node bool, service, listenerVolume string) {
-	s.scope = &scopeOptions{
-		Pod:            pod,
-		Node:           node,
-		Service:        service,
-		ListenerVolume: listenerVolume,
-	}
+func (s *SecretOperatorVolume) SetScope(scope *SecretVolumeScope) {
+	s.scope = scope
 }
 
 func (s *SecretOperatorVolume) SetKerberosServiceNames(service string, services ...string) {

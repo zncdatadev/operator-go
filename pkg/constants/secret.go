@@ -45,15 +45,15 @@ const (
 	// It can be one of the following values:
 	//	- pod
 	//	- node
-	//	- service
-	//	- listener-volume
+	//	- service	// can be multiple
+	//	- listener-volume	// can be multiple
 	//
 	// Example:
 	//	- "secrets.kubedoop.dev/scope": "pod"
 	//	- "secrets.kubedoop.dev/scope": "node"
 	//	- "secrets.kubedoop.dev/scope": "service=foo"
 	//	- "secrets.kubedoop.dev/scope": "listener-volume=foo"
-	//	- "secrets.kubedoop.dev/scope": "pod,service=foo,bar,listner-volume=xyz"
+	//	- "secrets.kubedoop.dev/scope": "pod,service=foo,service=bar,listner-volume=xyz"
 	AnnotationSecretsScope string = secretAPIGroupPrefix + "scope"
 
 	// Format is mounted format of the secret.
