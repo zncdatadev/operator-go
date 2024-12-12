@@ -32,13 +32,23 @@ func TestSecretOperatorVolume_getPVCAnnotations(t *testing.T) {
 	assert.Equal(t, "test-class", annotations[constants.AnnotationSecretsClass])
 
 	// Test with scope options
-	vol.SetScope(true, false, "test-service", "test-listener")
+	vol.SetScope(&SecretVolumeScope{
+		Pod:            true,
+		Node:           false,
+		Service:        []string{"test-service"},
+		ListenerVolume: []string{"test-listener"},
+	})
 	annotations = vol.getPVCAnnotations()
 	assert.Equal(t, "test-class", annotations[constants.AnnotationSecretsClass])
 	assert.Equal(t, "pod,service=test-service,listener-volume=test-listener", annotations[constants.AnnotationSecretsScope])
 
 	// Test with scope options
-	vol.SetScope(false, true, "", "test-listener")
+	vol.SetScope(&SecretVolumeScope{
+		Pod:            false,
+		Node:           true,
+		Service:        []string{},
+		ListenerVolume: []string{"test-listener"},
+	})
 	annotations = vol.getPVCAnnotations()
 	assert.Equal(t, "node,listener-volume=test-listener", annotations[constants.AnnotationSecretsScope])
 
@@ -66,6 +76,28 @@ func TestSecretOperatorVolume_getPVCAnnotations(t *testing.T) {
 	vol.SetCertJitterFactor("0.5")
 	annotations = vol.getPVCAnnotations()
 	assert.Equal(t, "0.5", annotations[constants.AnnotationSecretsCertJitterFactor])
+
+	// Test with multiple services and listener volumes
+	vol.SetScope(&SecretVolumeScope{
+		Pod:            true,
+		Node:           false,
+		Service:        []string{"service1", "service2", "service3"},
+		ListenerVolume: []string{"listener1", "listener2"},
+	})
+	annotations = vol.getPVCAnnotations()
+	assert.Equal(t, "pod,service=service1,service=service2,service=service3,listener-volume=listener1,listener-volume=listener2",
+		annotations[constants.AnnotationSecretsScope])
+
+	// Test with empty string in services and listener volumes
+	vol.SetScope(&SecretVolumeScope{
+		Pod:            false,
+		Node:           true,
+		Service:        []string{"service1", "", "service2"},
+		ListenerVolume: []string{"listener1", "", "listener2"},
+	})
+	annotations = vol.getPVCAnnotations()
+	assert.Equal(t, "node,service=service1,service=service2,listener-volume=listener1,listener-volume=listener2",
+		annotations[constants.AnnotationSecretsScope])
 }
 
 func TestListenerOperatorVolume_getPVCAnnotations(t *testing.T) {
@@ -81,7 +113,12 @@ func TestListenerOperatorVolume_getPVCAnnotations(t *testing.T) {
 }
 func TestSecretOperatorVolume_Builde(t *testing.T) {
 	vol := NewSecretOperatorVolume("test-volume", "test-class")
-	vol.SetScope(true, false, "test-service", "test-listener")
+	vol.SetScope(&SecretVolumeScope{
+		Pod:            true,
+		Node:           false,
+		Service:        []string{"test-service"},
+		ListenerVolume: []string{"test-listener"},
+	})
 	volume := vol.Builde()
 
 	assert.Equal(t, "test-volume", volume.Name)
