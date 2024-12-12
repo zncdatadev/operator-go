@@ -44,11 +44,9 @@ func TestVector_GetContainer(t *testing.T) {
 	assert.Equal(t, VectorContainerName, container.Name)
 	assert.Equal(t, image.String(), container.Image)
 
-	// 验证端口配置
 	assert.Len(t, container.Ports, 1)
 	assert.Equal(t, vector.Port, container.Ports[0].ContainerPort)
 
-	// 验证健康检查
 	assert.NotNil(t, container.ReadinessProbe)
 	assert.NotNil(t, container.ReadinessProbe.HTTPGet)
 }
@@ -75,7 +73,6 @@ func TestVector_getVolumeMounts(t *testing.T) {
 	mounts := vector.getVolumeMounts()
 
 	assert.Len(t, mounts, 3)
-	// 验证必要的挂载点
 	expectedMounts := map[string]string{
 		vector.LogDataVolumeName: constants.KubedoopLogDir,
 		VectorConfigVolumeName:   constants.KubedoopConfigDir,
