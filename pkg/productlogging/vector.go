@@ -100,10 +100,16 @@ sources:
       - {{.LogDir}}*/*.log4j2.xml
     line_delimiter: "\r\n"
 
-	files_airlift:
-		type: "file"
-		include:
-			- "{{.LogDir}}*/*.airlift.json"
+  files_py:
+    type: file
+    include:
+      - {{.LogDir}}*/*.py.json
+
+  files_airlift:
+    type: "file"
+    include:
+      - "{{.LogDir}}*/*.airlift.json"
+
 transforms:
   processed_files_stdout:
     inputs:
@@ -318,6 +324,73 @@ transforms:
             .errors = push(.errors, "Message not found.")
           {{"}}"}}
           .message = join!(compact([message, exception]), "\n")
+        {{"}}"}}
+      {{"}}"}}
+
+  processed_files_py:
+    inputs:
+      - files_py
+    type: remap
+    source: |
+      raw_message = string!(.message)
+
+      .timestamp = now()
+      .logger = ""
+      .level = "INFO"
+      .message = ""
+      .errors = []
+
+      parsed_event, err = parse_json(raw_message)
+      if err != null {{"{{"}}
+        error = "JSON not parsable: " + err
+        .errors = push(.errors, error)
+        log(error, level: "warn")
+        .message = raw_message
+      {{"}}"}} else if !is_object(parsed_event) {{"{{"}}
+        error = "Parsed event is not a JSON object."
+        .errors = push(.errors, error)
+        log(error, level: "warn")
+        .message = raw_message
+      {{"}}"}} else {{"{{"}}
+        event = object!(parsed_event)
+
+        asctime, err = string(event.asctime)
+        if err == null {{"{{"}}
+          parsed_timestamp, err = parse_timestamp(asctime, "%F %T,%3f")
+          if err == null {{"{{"}}
+            .timestamp = parsed_timestamp
+          {{"}}"}} else {{"{{"}}
+            .errors = push(.errors, "Timestamp not parsable, using current time instead: "+ err)
+          {{"}}"}}
+        {{"}}"}} else {{"{{"}}
+          .errors = push(.errors, "Timestamp not found, using current time instead.")
+        {{"}}"}}
+
+        .logger, err = string(event.name)
+        if err != null || is_empty(.logger) {{"{{"}}
+          .errors = push(.errors, "Logger not found.")
+        {{"}}"}}
+
+        level, err = string(event.levelname)
+        if err != null {{"{{"}}
+          .errors = push(.errors, "Level not found, using \"" + .level + "\" instead.")
+        {{"}}"}} else if level == "DEBUG" {{"{{"}}
+          .level = "DEBUG"
+        {{"}}"}} else if level == "INFO" {{"{{"}}
+          .level = "INFO"
+        {{"}}"}} else if level == "WARNING" {{"{{"}}
+          .level = "WARN"
+        {{"}}"}} else if level == "ERROR" {{"{{"}}
+          .level = "ERROR"
+        {{"}}"}} else if level == "CRITICAL" {{"{{"}}
+          .level = "FATAL"
+        {{"}}"}} else {{"{{"}}
+          .errors = push(.errors, "Level \"" + level + "\" unknown, using \"" + .level + "\" instead.")
+        {{"}}"}}
+
+        .message, err = string(event.message)
+        if err != null || is_empty(.message) {{"{{"}}
+          .errors = push(.errors, "Message not found.")
         {{"}}"}}
       {{"}}"}}
 
