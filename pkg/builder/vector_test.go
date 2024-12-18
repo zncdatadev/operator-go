@@ -74,9 +74,10 @@ func TestVector_GetVolumes(t *testing.T) {
 	volumes := vector.GetVolumes()
 
 	assert.Len(t, volumes, 1)
-	assert.Equal(t, vectorDataDir, volumes[0].Name)
+	assert.Equal(t, "vector-data", volumes[0].Name)
 	assert.NotNil(t, volumes[0].EmptyDir)
 	assert.Equal(t, customSize, volumes[0].EmptyDir.SizeLimit)
+
 }
 
 func TestVector_getVolumeMounts(t *testing.T) {
@@ -87,9 +88,9 @@ func TestVector_getVolumeMounts(t *testing.T) {
 
 	assert.Len(t, mounts, 3)
 	expectedMounts := map[string]string{
-		vector.LogDataVolumeName: constants.KubedoopLogDir,
-		VectorConfigVolumeName:   constants.KubedoopConfigDir,
-		vectorDataVolumeName:     vectorDataDir,
+		"log-volume":    constants.KubedoopLogDir,
+		"config-volume": constants.KubedoopConfigDir,
+		"vector-data":   vectorDataDir,
 	}
 
 	for _, mount := range mounts {
