@@ -28,8 +28,7 @@ import (
 )
 
 const (
-	VectorContainerName = "vector"
-
+	VectorContainerName    = "vector"
 	VectorConfigVolumeName = "vector-config"
 	vectorDataVolumeName   = "vector-data"
 	LogDataVolumeName      = "log"
@@ -148,7 +147,7 @@ func (v *Vector) GetVolumes() []corev1.Volume {
 
 	objs := []corev1.Volume{
 		{
-			Name: vectorDataDir,
+			Name: vectorDataVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: v.vectorDataSize},
 			},
@@ -158,13 +157,14 @@ func (v *Vector) GetVolumes() []corev1.Volume {
 }
 
 func (v *Vector) getVolumeMounts() []corev1.VolumeMount {
+
 	objs := []corev1.VolumeMount{
 		{
 			Name:      v.LogDataVolumeName,
 			MountPath: constants.KubedoopLogDir,
 		},
 		{
-			Name:      VectorConfigVolumeName,
+			Name:      v.VectorConfigVolumeName,
 			MountPath: constants.KubedoopConfigDir,
 		},
 		{
