@@ -26,6 +26,10 @@ type AddressType string
 const (
 	AddressTypeHostname AddressType = "Hostname"
 	AddressTypeIP       AddressType = "IP"
+	// When preferredAddressType is set to HostnameConservative, the controller will
+	// attempt to use the ip only `ListenerClassSpec.ServiceType` is NodePort,
+	// otherwise it will use the hostname.
+	AddressTypeHostnameConservative AddressType = "HostnameConservative"
 )
 
 // ListenerSpec defines the desired state of Listener
