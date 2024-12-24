@@ -29,6 +29,19 @@ type ListenerClassSpec struct {
 
 	// +kubebuilder:validation:Optional
 	ServiceAnnotations map[string]string `json:"serviceAnnotations,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=Local
+	// +kubebuilder:validation:Enum=Local;Cluster
+	ServiceExternalTrafficPolicy corev1.ServiceExternalTrafficPolicyType `json:"serviceExternalTrafficPolicy,omitempty"`
+
+	// When preferredAddressType is set to HostnameConservative, the controller will
+	// attempt to use the ip only `ListenerClassSpec.ServiceType` is NodePort,
+	// otherwise it will use the hostname.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=HostnameConservative
+	// +kubebuilder:validation:Enum=HostnameConservative;Hostname;IP
+	PreferredAddressType AddressType `json:"preferredAddressType,omitempty"`
 }
 
 // ListenerClassStatus defines the observed state of ListenerClass
