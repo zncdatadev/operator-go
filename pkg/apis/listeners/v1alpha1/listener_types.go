@@ -34,10 +34,14 @@ type ListenerSpec struct {
 	ClassName string `json:"className,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	ExtraPodMatchLabels map[string]string `json:"extraPodMatchLabels,omitempty"`
+	ExtraPodSelectorLabels map[string]string `json:"extraPodSelectorLabels,omitempty"`
 
 	// +kubebuilder:validation:Optional
 	Ports []PortSpec `json:"ports,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	PublishNotReadyAddresses bool `json:"publishNotReadyAddresses,omitempty"`
 }
 
 type PortSpec struct {
