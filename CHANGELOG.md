@@ -1,6 +1,26 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.2 2025-01-10
+
+### features
+
+- Added support for processing Python log files in Vector (#291)
+
+### refactor
+
+- Added service traffic policy and preferred address type to listener class (#294)
+- Added listener read field and updated pod select field (#293)
+
+### bugs
+
+- Fixed incorrect vector data volume name (#289)
+
+### dependencies
+
+- Bumped github.com/onsi/gomega from 1.36.1 to 1.36.2 (#295)
+- Bumped github.com/onsi/ginkgo/v2 from 2.22.0 to 2.22.1 (#292)
+
 ## v0.12.1 2024-12-12
 
 ### refactor
