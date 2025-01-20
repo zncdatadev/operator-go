@@ -20,7 +20,7 @@ help: ## Display this help.
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 # You can find the list of released envtest-k8s versions with `Release envtest` from https://github.com/kubernetes-sigs/controller-tools/releases
-ENVTEST_K8S_VERSION = 1.26.1
+ENVTEST_K8S_VERSION ?= 1.26.1
 
 ##@ Development
 
