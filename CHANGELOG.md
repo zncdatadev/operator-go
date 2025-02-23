@@ -9,6 +9,7 @@
 
 ### dependencies
 
+- Bumped sigs.k8s.io/controller-runtime from 0.20.1 to 0.20.2 (#315)
 - Bumped k8s.io/kubectl from 0.32.1 to 0.32.2 (#313)
 - Bumped k8s.io/client-go from 0.32.1 to 0.32.2 (#314)
 - Bumped sigs.k8s.io/controller-runtime from 0.20.0 to 0.20.1 (#308)
