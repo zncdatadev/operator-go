@@ -1,6 +1,25 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.3 2025-01-25
+
+### tests
+
+- Enabled k8s matrix testing (#304)
+
+### dependencies
+
+- Bumped sigs.k8s.io/controller-runtime from 0.20.1 to 0.20.2 (#315)
+- Bumped k8s.io/kubectl from 0.32.1 to 0.32.2 (#313)
+- Bumped k8s.io/client-go from 0.32.1 to 0.32.2 (#314)
+- Bumped sigs.k8s.io/controller-runtime from 0.20.0 to 0.20.1 (#308)
+- Bumped github.com/onsi/ginkgo/v2 from 2.22.1 to 2.22.2 (#306)
+- Bumped github.com/evanphx/json-patch (#310)
+- Bumped k8s.io/kubectl from 0.31.3 to 0.32.1 (#300)
+- Updated dependencies version in Makefile (#303)
+- Bumped k8s.io/client-go from 0.31.4 to 0.32.1 (#298)
+- Bumped sigs.k8s.io/controller-runtime from 0.19.3 to 0.20.0 (#301)
+
 ## v0.12.2 2025-01-10
 
 ### features
