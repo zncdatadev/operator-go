@@ -87,8 +87,8 @@ func (r *PDB) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	newPdb := resource.(*policyv1.PodDisruptionBudget).DeepCopy()
 	objDeepCopy := obj.DeepCopy()
 	objDeepCopy.Spec = newPdb.Spec
-	objDeepCopy.ObjectMeta.Labels = newPdb.ObjectMeta.Labels
-	objDeepCopy.ObjectMeta.Annotations = newPdb.ObjectMeta.Annotations
+	objDeepCopy.Labels = newPdb.Labels
+	objDeepCopy.Annotations = newPdb.Annotations
 
 	if err := r.GetClient().Client.Patch(ctx, objDeepCopy, ctrlclient.MergeFrom(obj)); err != nil {
 		logger.Error(err, "Failed to update resource", logExtraValues...)

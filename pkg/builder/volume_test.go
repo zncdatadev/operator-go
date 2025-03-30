@@ -122,13 +122,13 @@ func TestSecretOperatorVolume_Builde(t *testing.T) {
 	volume := vol.Builde()
 
 	assert.Equal(t, "test-volume", volume.Name)
-	assert.NotNil(t, volume.VolumeSource.Ephemeral)
-	assert.NotNil(t, volume.VolumeSource.Ephemeral.VolumeClaimTemplate)
-	assert.Equal(t, constants.SecretStorageClassPtr(), volume.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.StorageClassName)
-	assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, volume.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.AccessModes)
-	assert.Equal(t, resource.MustParse("1Mi"), volume.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage])
+	assert.NotNil(t, volume.Ephemeral)
+	assert.NotNil(t, volume.Ephemeral.VolumeClaimTemplate)
+	assert.Equal(t, constants.SecretStorageClassPtr(), volume.Ephemeral.VolumeClaimTemplate.Spec.StorageClassName)
+	assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, volume.Ephemeral.VolumeClaimTemplate.Spec.AccessModes)
+	assert.Equal(t, resource.MustParse("1Mi"), volume.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage])
 
-	annonations := volume.VolumeSource.Ephemeral.VolumeClaimTemplate.ObjectMeta.Annotations
+	annonations := volume.Ephemeral.VolumeClaimTemplate.Annotations
 	assert.NotNil(t, annonations)
 	assert.Equal(t, "test-class", annonations[constants.AnnotationSecretsClass])
 	assert.Equal(t, "pod,service=test-service,listener-volume=test-listener", annonations[constants.AnnotationSecretsScope])
@@ -140,13 +140,13 @@ func TestListenerOperatorVolume_Builde(t *testing.T) {
 	volume := vol.Builde()
 
 	assert.Equal(t, "test-volume", volume.Name)
-	assert.NotNil(t, volume.VolumeSource.Ephemeral)
-	assert.NotNil(t, volume.VolumeSource.Ephemeral.VolumeClaimTemplate)
-	assert.Equal(t, constants.ListenerStorageClassPtr(), volume.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.StorageClassName)
-	assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, volume.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.AccessModes)
-	assert.Equal(t, resource.MustParse("1Mi"), volume.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage])
+	assert.NotNil(t, volume.Ephemeral)
+	assert.NotNil(t, volume.Ephemeral.VolumeClaimTemplate)
+	assert.Equal(t, constants.ListenerStorageClassPtr(), volume.Ephemeral.VolumeClaimTemplate.Spec.StorageClassName)
+	assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, volume.Ephemeral.VolumeClaimTemplate.Spec.AccessModes)
+	assert.Equal(t, resource.MustParse("1Mi"), volume.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage])
 
-	annonations := volume.VolumeSource.Ephemeral.VolumeClaimTemplate.ObjectMeta.Annotations
+	annonations := volume.Ephemeral.VolumeClaimTemplate.Annotations
 	assert.NotNil(t, annonations)
 	assert.Equal(t, "test-class", annonations[constants.AnnotationListenersClass])
 	assert.Equal(t, "test-listener", annonations[constants.AnnotationListenerName])
