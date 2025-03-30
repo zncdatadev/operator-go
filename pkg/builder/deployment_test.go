@@ -110,7 +110,7 @@ var _ = Describe("DeploymentBuilder test", func() {
 			Expect(*deployment.Spec.Replicas).To(BeNumerically("==", 1))
 
 			By("validating the Deployment object's labels")
-			labels := deployment.Spec.Template.ObjectMeta.Labels
+			labels := deployment.Spec.Template.Labels
 			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesInstance, ownerName))
 			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesManagedBy, "trino.kubedoop.dev"))
 			Expect(labels).To(HaveKeyWithValue(constants.LabelKubernetesComponent, "coordinator"))
