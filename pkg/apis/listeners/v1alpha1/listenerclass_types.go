@@ -28,6 +28,7 @@ type ListenerClassSpec struct {
 	ServiceType *corev1.ServiceType `json:"serviceType,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
 	ServiceAnnotations map[string]string `json:"serviceAnnotations,omitempty"`
 
 	// +kubebuilder:validation:Optional
