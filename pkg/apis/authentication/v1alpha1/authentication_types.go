@@ -55,6 +55,7 @@ type OIDCProvider struct {
 	Hostname string `json:"hostname"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
 	Port int `json:"port,omitempty"`
 
 	// +kubebuilder:validation:Required
@@ -65,6 +66,7 @@ type OIDCProvider struct {
 	ProviderHint string `json:"providerHint"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="/"
 	RootPath string `json:"rootPath,omitempty"`
 
 	// +kubebuilder:validation:Optional
@@ -80,8 +82,8 @@ type OIDCTls struct {
 }
 
 type TLSProvider struct {
-	// +kubebuilder:validation:Required
-	ClientCertSecretClass string `json:"clientCertSecretClass"`
+	// +kubebuilder:validation:Optional
+	ClientCertSecretClass string `json:"clientCertSecretClass,omitempty"`
 }
 
 type StaticProvider struct {
@@ -101,24 +103,28 @@ type LDAPProvider struct {
 	// The secret searched by k8s-search must contain the following data:
 	//  - user: bind user, e.g. cn=admin,dc=example,dc=com
 	//  - password: bind password
-	// +kubebuilder:validation:Required
 	BindCredentials *commonsv1alpha1.Credentials `json:"bindCredentials"`
 
 	// +kubebuilder:validation:Required
 	Hostname string `json:"hostname"`
 
+	// LDAP server port. Default is 389, if tls default is 636.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
 	Port int `json:"port,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={"email": "mail", "givenName": "givenName", "group": "memberOf", "surname": "sn", "uid": "uid"}
 	LDAPFieldNames *LDAPFieldNames `json:"ldapFieldNames,omitempty"`
 
 	// LDAP search base, for example: ou=users,dc=example,dc=com.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=""
 	SearchBase string `json:"searchBase,omitempty"`
 
 	// LDAP search filter, for example: (ou=teams,dc=example,dc=com).
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=""
 	SearchFilter string `json:"searchFilter,omitempty"`
 
 	// +kubebuilder:validation:Optional
@@ -132,18 +138,23 @@ type LDAPTLS struct {
 
 type LDAPFieldNames struct {
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=email
 	Email string `json:"email,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=givenName
 	GivenName string `json:"givenName,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=group
 	Group string `json:"group,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=sn
 	Surname string `json:"surname,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=uid
 	Uid string `json:"uid,omitempty"`
 }
 

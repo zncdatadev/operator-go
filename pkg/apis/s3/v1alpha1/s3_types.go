@@ -35,6 +35,7 @@ type S3ConnectionSpec struct {
 	Host string `json:"host,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
 	Port int `json:"port,omitempty"`
 
 	// +kubebuilder:validation:Optional
@@ -43,6 +44,10 @@ type S3ConnectionSpec struct {
 
 	// +kubebuilder:validation:Optional
 	Tls *Tls `json:"tls,omitempty"`
+
+	// S3 bucket region for signing requests.
+	// +kubebuilder:default="us-east-1"
+	Region string `json:"region,omitempty"`
 }
 
 type Tls struct {
