@@ -114,7 +114,7 @@ type LDAPProvider struct {
 	Port int `json:"port,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default={"email": "mail", "givenName": "givenName", "group": "memberOf", "surname": "sn", "uid": "uid"}
+	// +kubebuilder:default={"email": "mail", "givenName": "givenName", "group": "memberof", "surname": "sn", "uid": "uid"}
 	LDAPFieldNames *LDAPFieldNames `json:"ldapFieldNames,omitempty"`
 
 	// LDAP search base, for example: ou=users,dc=example,dc=com.
@@ -146,7 +146,7 @@ type LDAPFieldNames struct {
 	GivenName string `json:"givenName,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=group
+	// +kubebuilder:default=memberof
 	Group string `json:"group,omitempty"`
 
 	// +kubebuilder:validation:Optional
