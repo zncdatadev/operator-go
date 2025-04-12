@@ -38,6 +38,7 @@ type ListenerSpec struct {
 	ClassName string `json:"className,omitempty"`
 
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
 	ExtraPodSelectorLabels map[string]string `json:"extraPodSelectorLabels,omitempty"`
 
 	// +kubebuilder:validation:Optional
@@ -52,7 +53,8 @@ type PortSpec struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name,omitempty"`
 
-	// +kubebuilder:validation:Required
+	// L4 protocol, `TCP`` or `UDP`
+	// +kubebuilder:validation:Optional
 	Protocol corev1.Protocol `json:"protocol,omitempty"`
 
 	// +kubebuilder:validation:Required
