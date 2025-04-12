@@ -138,7 +138,7 @@ type LDAPTLS struct {
 
 type LDAPFieldNames struct {
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=email
+	// +kubebuilder:default=mail
 	Email string `json:"email,omitempty"`
 
 	// +kubebuilder:validation:Optional
