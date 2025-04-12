@@ -25,14 +25,6 @@ type TLSVerificationSpec struct {
 
 	// +kubebuilder:validation:Optional
 	Server *ServerVerification `json:"server,omitempty"`
-
-	// +kubebuilder:validation:Optional
-	Mutual *MutualVerification `json:"mutual,omitempty"`
-}
-
-type MutualVerification struct {
-	// +kubebuilder:validation:Required
-	CertSecretClass string `json:"certSecretClass"`
 }
 
 type NoneVerification struct {

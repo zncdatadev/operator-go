@@ -36,4 +36,7 @@ type CredentialsScope struct {
 
 	// +kubebuilder:validation:Optional
 	Services []string `json:"services,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	ListenerVolumes []string `json:"listenerVolumes,omitempty"`
 }
