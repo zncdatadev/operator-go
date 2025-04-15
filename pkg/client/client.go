@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -292,7 +293,7 @@ func CreateOrUpdate(ctx context.Context, client ctrlclient.Client, obj ctrlclien
 			resourceVersion := current.(metav1.ObjectMetaAccessor).GetObjectMeta().GetResourceVersion()
 			obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetResourceVersion(resourceVersion)
 
-			if err := client.Update(ctx, obj); err != nil {
+			if err := UpdateRetryOnConflict(ctx, client, obj); err != nil {
 				clientLogger.Error(err, "Failed to update resource", logExtraValues...)
 				return false, err
 			}
@@ -316,7 +317,7 @@ func CreateOrUpdate(ctx context.Context, client ctrlclient.Client, obj ctrlclien
 			resourceVersion := current.(metav1.ObjectMetaAccessor).GetObjectMeta().GetResourceVersion()
 			obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetResourceVersion(resourceVersion)
 
-			if err = client.Update(ctx, obj); err != nil {
+			if err = UpdateRetryOnConflict(ctx, client, obj); err != nil {
 				clientLogger.Error(err, "Failed to update resource", logExtraValues...)
 				return false, err
 			}
@@ -325,6 +326,36 @@ func CreateOrUpdate(ctx context.Context, client ctrlclient.Client, obj ctrlclien
 		clientLogger.V(1).Info("Skipping update for object", logExtraValues...)
 	}
 	return false, err
+}
+
+// UpdateRetryOnConflict attempts to update a Kubernetes resource.
+// It uses a retry mechanism to handle conflicts during the update process.
+// If the update is successful, it logs a success message.
+// If the update fails, it logs an error message.
+// Parameters:
+//   - ctx: The context for the operation.
+//   - client: The Kubernetes client used to interact with the cluster.
+//   - obj: The resource object to update.
+//
+// Returns:
+//   - error: Returns an error if the operation fails, otherwise nil.
+func UpdateRetryOnConflict(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Object) error {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		gvk, err := GetObjectGVK(client.Scheme(), obj)
+		if err != nil {
+			return err
+		}
+		if err := client.Update(ctx, obj); err != nil {
+			clientLogger.Error(err, "Update resource error", "gvk", gvk, "namespace", obj.GetNamespace(), "name", obj.GetName())
+			return err
+		}
+		clientLogger.Info("Update resource success", "gvk", gvk, "namespace", obj.GetNamespace(), "name", obj.GetName())
+		return nil
+	}); err != nil {
+		clientLogger.Error(err, "Update resource error", "gvk", obj.GetObjectKind().GroupVersionKind(), "namespace", obj.GetNamespace(), "name", obj.GetName())
+	}
+
+	return nil
 }
 
 // CreateDoesNotExist attempts to create a Kubernetes resource.
