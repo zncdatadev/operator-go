@@ -119,7 +119,7 @@ func (r *BaseRoleReconciler[T]) ClusterStopped() bool {
 }
 
 func (r *BaseRoleReconciler[T]) Reconcile(ctx context.Context) (ctrl.Result, error) {
-	logger.V(5).Info("Reconciling role", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName())
+	logger.V(1).Info("Reconciling role", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName())
 	// add pdb resource for the role
 	if pdbReconciler, err := r.getPdbReconciler(ctx); err == nil && pdbReconciler != nil {
 		r.resources = append(r.resources, pdbReconciler)
@@ -133,13 +133,13 @@ func (r *BaseRoleReconciler[T]) Reconcile(ctx context.Context) (ctrl.Result, err
 			return res, err
 		}
 	}
-	logger.V(5).Info("Reconciled role", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName())
+	logger.V(1).Info("Reconciled role", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName())
 	return ctrl.Result{}, nil
 }
 
 // reconcile pdb resource for the role
 func (r *BaseRoleReconciler[T]) getPdbReconciler(_ context.Context) (Reconciler, error) {
-	logger.V(5).Info("get pdb for role", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName())
+	logger.V(5).Info("get role of pdb reconciler", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName())
 	value := reflect.ValueOf(r.Spec)
 	if value.Kind() == reflect.Ptr {
 		value = value.Elem()
@@ -172,7 +172,7 @@ func (r *BaseRoleReconciler[T]) getPdbReconciler(_ context.Context) (Reconciler,
 		opt.Annotations = r.RoleInfo.GetAnnotations()
 		opt.MaxUnavailableAmount = pdb.MaxUnavailable
 	}
-	logger.V(5).Info("get pdb success", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName(),
+	logger.V(5).Info("got pdb config", "namespace", r.GetNamespace(), "cluster", r.GetClusterName(), "role", r.GetName(),
 		"maxUnavailable", pdb.MaxUnavailable)
 	return NewPDBReconciler(r.Client, r.GetFullName(), option)
 }

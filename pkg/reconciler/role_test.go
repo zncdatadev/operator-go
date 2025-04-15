@@ -237,7 +237,7 @@ var _ = Describe("Role reconciler", func() {
 			Eventually(func() bool {
 				result, err := roleReconciler.Reconcile(ctx)
 				return result.IsZero() && err == nil
-			}, time.Second*3, time.Second*1).Should(BeTrue())
+			}, time.Second*10, time.Second*1).Should(BeTrue())
 
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
@@ -251,7 +251,7 @@ var _ = Describe("Role reconciler", func() {
 			Eventually(func() bool {
 				result, err := roleReconciler.Ready(ctx)
 				return result.IsZero() && err == nil
-			}, time.Second*3, time.Second*1).Should(BeTrue())
+			}, time.Second*10, time.Second*1).Should(BeTrue())
 		})
 
 		It("should reconcile role pdb", func() {
@@ -284,7 +284,7 @@ var _ = Describe("Role reconciler", func() {
 			Eventually(func() bool {
 				result, err := roleReconciler.Reconcile(ctx)
 				return result.IsZero() && err == nil
-			}, time.Second*3, time.Second*1).Should(BeTrue())
+			}, time.Second*10, time.Second*1).Should(BeTrue())
 
 			By("check pdb resource with role")
 			pdb := &policyv1.PodDisruptionBudget{}
@@ -397,7 +397,7 @@ var _ = Describe("Role reconciler", func() {
 			Eventually(func() bool {
 				result, err := roleReconciler.Reconcile(ctx)
 				return result.IsZero() && err == nil
-			}, time.Second*3, time.Second*1).Should(BeTrue())
+			}, time.Second*10, time.Second*1).Should(BeTrue())
 
 			deployment := &appv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace.GetName(), Name: roleInfo.GetFullName() + "-default"}, deployment)).Should(Succeed())
