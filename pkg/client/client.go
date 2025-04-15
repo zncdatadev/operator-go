@@ -353,6 +353,7 @@ func UpdateRetryOnConflict(ctx context.Context, client ctrlclient.Client, obj ct
 		return nil
 	}); err != nil {
 		clientLogger.Error(err, "Update resource error", "gvk", obj.GetObjectKind().GroupVersionKind(), "namespace", obj.GetNamespace(), "name", obj.GetName())
+		return err
 	}
 
 	return nil
