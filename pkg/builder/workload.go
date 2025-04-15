@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"time"
 
@@ -274,11 +275,17 @@ func (b *BaseWorkloadBuilder) OverrideContainer() {
 }
 
 func (b *BaseWorkloadBuilder) overridedEnv(container *corev1.Container) {
-	// Override the env
-	for key, value := range b.Overrides.EnvOverrides {
+	if len(b.Overrides.EnvOverrides) == 0 {
+		return
+	}
+
+	keys := maps.Keys(b.Overrides.EnvOverrides)
+	slices.Sorted(keys)
+
+	for key := range keys {
 		container.Env = append(container.Env, corev1.EnvVar{
 			Name:  key,
-			Value: value,
+			Value: b.Overrides.EnvOverrides[key],
 		})
 	}
 	logger.V(5).Info("Env override", "container", container.Name, "env", container.Env)
