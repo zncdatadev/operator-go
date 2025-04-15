@@ -279,10 +279,9 @@ func (b *BaseWorkloadBuilder) overridedEnv(container *corev1.Container) {
 		return
 	}
 
-	keys := maps.Keys(b.Overrides.EnvOverrides)
-	slices.Sorted(keys)
+	keys := slices.Sorted(maps.Keys(b.Overrides.EnvOverrides))
 
-	for key := range keys {
+	for _, key := range keys {
 		container.Env = append(container.Env, corev1.EnvVar{
 			Name:  key,
 			Value: b.Overrides.EnvOverrides[key],
