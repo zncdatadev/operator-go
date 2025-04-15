@@ -63,7 +63,7 @@ func (r *PDB) Reconcile(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	logger.V(5).Info("Reconciling resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", resource.GetName())
+	logger.V(1).Info("Reconciling pdb resource", "namespace", r.GetNamespace(), "cluster", r.GetName(), "name", resource.GetName())
 	logExtraValues := []any{
 		"name", resource.GetName(),
 		"namespace", resource.GetNamespace(),
@@ -73,16 +73,17 @@ func (r *PDB) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	obj := &policyv1.PodDisruptionBudget{}
 	if err := r.GetClient().Get(ctx, ctrlclient.ObjectKey{Namespace: resource.GetNamespace(), Name: resource.GetName()}, obj); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.V(5).Info("Creating resource", logExtraValues...)
+			logger.V(1).Info("Resource pdb not found, will create", logExtraValues...)
 			if err := r.GetClient().Client.Create(ctx, resource); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, nil
+			return ctrl.Result{Requeue: true}, nil
 		}
+		logger.Error(err, "Failed to fetch resource", logExtraValues...)
 		return ctrl.Result{}, err
 	}
 
-	logger.V(5).Info("Updating resource", logExtraValues...)
+	logger.V(1).Info("Updating pdb resource", logExtraValues...)
 
 	newPdb := resource.(*policyv1.PodDisruptionBudget).DeepCopy()
 	objDeepCopy := obj.DeepCopy()

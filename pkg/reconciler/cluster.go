@@ -98,24 +98,24 @@ func (r *BaseCluster[T]) IsPaused(ctx context.Context) bool {
 }
 
 func (r *BaseCluster[T]) Ready(ctx context.Context) (ctrl.Result, error) {
-	logger.V(5).Info("Checking readiness of cluster", "namespace", r.GetNamespace(), "cluster", r.GetName())
+	logger.V(1).Info("Checking readiness of cluster", "namespace", r.GetNamespace(), "cluster", r.GetName())
 	for _, resource := range r.resources {
 		if result, err := resource.Ready(ctx); !result.IsZero() || err != nil {
 			return result, err
 		}
 	}
-	logger.V(5).Info("Cluster is ready", "namespace", r.GetNamespace(), "cluster", r.GetName())
+	logger.V(1).Info("Cluster is ready", "namespace", r.GetNamespace(), "cluster", r.GetName())
 	return ctrl.Result{}, nil
 }
 
 func (r *BaseCluster[T]) Reconcile(ctx context.Context) (ctrl.Result, error) {
-	logger.V(5).Info("Reconciling cluster", "namespace", r.GetNamespace(), "cluster", r.GetName())
+	logger.V(1).Info("Reconciling cluster", "gvk", r.ClusterInfo.GVK.String(), "namespace", r.GetNamespace(), "cluster", r.GetName())
 	for _, resource := range r.resources {
 		if result, err := resource.Reconcile(ctx); !result.IsZero() || err != nil {
 			return result, err
 		}
 	}
-	logger.V(5).Info("Reconciled cluster", "namespace", r.GetNamespace(), "cluster", r.GetName())
+	logger.V(1).Info("Reconciled cluster", "gvk", r.ClusterInfo.GVK.String(), "namespace", r.GetNamespace(), "cluster", r.GetName())
 	return ctrl.Result{}, nil
 }
 
@@ -133,6 +133,6 @@ func (r *BaseCluster[T]) Run(ctx context.Context) (ctrl.Result, error) {
 		return result, err
 	}
 
-	logger.Info("Reconciliation completed, all resources are ready", "cluster", r.GetName(), "namespace", r.GetNamespace())
+	logger.Info("Reconciliation completed, all resources are ready", "gvk", r.ClusterInfo.GVK.String(), "namespace", r.GetNamespace(), "cluster", r.GetName())
 	return ctrl.Result{}, nil
 }
