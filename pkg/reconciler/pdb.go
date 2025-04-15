@@ -71,7 +71,7 @@ func (r *PDB) Reconcile(ctx context.Context) (ctrl.Result, error) {
 	}
 
 	obj := &policyv1.PodDisruptionBudget{}
-	if err := r.GetClient().Get(ctx, ctrlclient.ObjectKey{Namespace: resource.GetNamespace(), Name: resource.GetName()}, obj); err != nil {
+	if err := r.GetClient().Client.Get(ctx, ctrlclient.ObjectKey{Namespace: resource.GetNamespace(), Name: resource.GetName()}, obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.V(1).Info("Resource pdb not found, will create", logExtraValues...)
 			if err := r.GetClient().Client.Create(ctx, resource); err != nil {
