@@ -18,9 +18,9 @@ jobs:
           go-version: '~1.24'
 
       - name: Run linter
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.0.2
+          version: v2.1.6
   md-lint:
     name: Markdown Lint
     runs-on: ubuntu-latest
