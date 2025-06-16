@@ -66,7 +66,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.17.1
 ENVTEST_VERSION ?= release-0.20
-GOLANGCI_LINT_VERSION ?= v2.0.2
+GOLANGCI_LINT_VERSION ?= v2.1.6
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
