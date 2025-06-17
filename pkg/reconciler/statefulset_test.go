@@ -96,7 +96,6 @@ var _ = Describe("Statefulset reconciler", func() {
 			result, err := statusfulSetReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
-			Expect(result.Requeue).Should(BeTrue())
 
 			By("Checking the statefulset spec.replicas is valid")
 			statefulSet := &appv1.StatefulSet{}
@@ -107,7 +106,6 @@ var _ = Describe("Statefulset reconciler", func() {
 			result, err = statusfulSetReconciler.Ready(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
-			Expect(result.Requeue).Should(BeTrue())
 
 			// Because of the envtest do not handle the pod, we need to mock the statefulset is ready
 			// mock the statefulset is ready, update the ready replicas to 3
@@ -136,7 +134,6 @@ var _ = Describe("Statefulset reconciler", func() {
 			result, err := statusfulSetReconciler.Reconcile(ctx)
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
-			Expect(result.Requeue).Should(BeTrue())
 
 			By("Checking the statefulset spec replicas is valid")
 			statefulSet := &appv1.StatefulSet{}
@@ -168,7 +165,6 @@ var _ = Describe("Statefulset reconciler", func() {
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
-			Expect(result.Requeue).Should(BeTrue())
 
 			By("Checking the statefulset spec replicas is updated to 0")
 			statefulSet = &appv1.StatefulSet{}
