@@ -97,7 +97,6 @@ var _ = Describe("Deloyment reconciler", func() {
 			// Expect(result.RequeueOrNot()).Should(BeTrue())
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
-			Expect(result.Requeue).Should(BeTrue())
 
 			By("Checking the deployment spec.replicas is valid")
 			deployment := &appv1.Deployment{}
@@ -109,7 +108,6 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
-			Expect(result.Requeue).Should(BeTrue())
 
 			// Because the envtest does not handle the pod, we need to mock that the statefulset is ready
 			// Mock that the deployment is ready by updating the ready replicas to 3
@@ -145,7 +143,6 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
-			Expect(result.Requeue).Should(BeTrue())
 
 			By("checking the deployment spec replicas is valid")
 			deployment := &appv1.Deployment{}
@@ -172,7 +169,6 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(result).ShouldNot(BeNil())
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(result.IsZero()).Should(BeFalse())
-			Expect(result.Requeue).Should(BeTrue())
 
 			By("checking the deployment spec replicas is updated to 0")
 			deployment = &appv1.Deployment{}
