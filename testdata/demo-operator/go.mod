@@ -2,8 +2,6 @@ module github.com/zncdatadev/operator-go/testdata/demo-operator
 
 go 1.24.1
 
-toolchain go1.24.2
-
 require (
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.38.0
