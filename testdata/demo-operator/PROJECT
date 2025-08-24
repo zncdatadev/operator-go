@@ -8,4 +8,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: demo-operator
 repo: github.com/zncdatadev/operator-go/testdata/demo-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kubedoop.dev
+  group: demo
+  kind: DemoCluster
+  path: github.com/zncdatadev/operator-go/testdata/demo-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

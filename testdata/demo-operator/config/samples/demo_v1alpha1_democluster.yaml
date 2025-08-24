@@ -1,0 +1,9 @@
+apiVersion: demo.kubedoop.dev/v1alpha1
+kind: DemoCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: demo-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: democluster-sample
+spec:
+  # TODO(user): Add fields here
