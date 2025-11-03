@@ -1,6 +1,6 @@
 module github.com/zncdatadev/operator-go
 
-go 1.24.1
+go 1.24.9
 
 require (
 	github.com/cisco-open/k8s-objectmatcher v1.10.0
