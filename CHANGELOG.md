@@ -1,6 +1,38 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.4 2025-05-11
+
+### features
+
+- Implemented retry mechanism for resource updates (#342)
+- Updated commons operator CRD (#332)
+- Updated listener CRD (#337)
+
+### improvements
+
+- Reduced log verbosity for cluster and pdb reconciler (#344)
+- Optimized envOverrides handling in BaseWorkloadBuilder (#343)
+
+### bugs
+
+- Fixed order envOverrides in BaseWorkloadBuilder (#341)
+- Updated default value for LDAP email field to 'mail' (#339)
+- Updated default value for LDAP group field to 'memberof' (#338)
+
+### dependencies
+
+- Bumped golang.org/x/net in the go_modules group (#345, #324)
+- Bumped sigs.k8s.io/controller-runtime from 0.20.2 to 0.20.3 (#319)
+- Bumped github.com/onsi/ginkgo/v2 from 2.22.2 to 2.23.4 (#333, #327, #318)
+- Bumped go to 1.24 and k8s api to 0.23.3 (#328)
+
+### ci
+
+- Added gh action depbot support (#335)
+- Bumped ci go version to 1.24 (#334)
+- Bumped DavidAnson/markdownlint-cli2-action from 18 to 19 (#336)
+
 ## v0.12.3 2025-01-25
 
 ### tests
