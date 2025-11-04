@@ -1,6 +1,34 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.5 2025-11-04
+
+### features
+
+- Updated Go version from 1.24.1 to 1.24.9 (#394)
+
+### bugs
+
+- Fixed test workflow does not contain permissions (#396)
+- Fixed lint workflow does not contain permissions (#395)
+
+### dependencies
+
+- Bumped sigs.k8s.io/controller-runtime from v0.20.4 to v0.21.0 (#362)
+- Bumped k8s.io/client-go from 0.32.3 to 0.33.4 (#374, #368, #364, #356)
+- Bumped k8s.io/kubectl from 0.32.3 to 0.33.3 (#369, #365)
+- Bumped github.com/onsi/ginkgo/v2 from 2.23.4 to 2.25.1 (#380)
+- Bumped github.com/onsi/gomega from 1.37.0 to 1.38.2 (#384, #371)
+- Bumped github.com/stretchr/testify from 1.10.0 to 1.11.1 (#385)
+- Bumped actions/setup-go from 5 to 6 (#389)
+- Bumped actions/checkout from 4 to 5 (#372)
+- Bumped DavidAnson/markdownlint-cli2-action from 19 to 20 (#355)
+
+### chore
+
+- Updated CHANGELOG for v0.12.4 release (#400)
+- Updated golangci-lint version to v2.1.6 in workflow and Makefile (#361)
+
 ## v0.12.4 2025-05-11
 
 ### features
