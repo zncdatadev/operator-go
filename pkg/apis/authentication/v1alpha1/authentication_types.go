@@ -47,6 +47,14 @@ type AuthenticationProvider struct {
 
 	// +kubebuilder:validation:Optional
 	LDAP *LDAPProvider `json:"ldap,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	Kerberos *KerberosProvider `json:"kerberos,omitempty"`
+}
+
+type KerberosProvider struct {
+	// +kubebuilder:validation:Optional
+	KerberosStorageClass string `json:"kerberosStorageClass,omitempty"`
 }
 
 type OIDCProvider struct {
