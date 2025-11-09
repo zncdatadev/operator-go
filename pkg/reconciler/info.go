@@ -17,6 +17,7 @@ limitations under the License.
 package reconciler
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/zncdatadev/operator-go/pkg/constants"
@@ -55,7 +56,7 @@ func (i *ClusterInfo) GetLabels() map[string]string {
 			constants.LabelKubernetesManagedBy: i.GVK.Group,
 		}
 	}
-	return i.labels
+	return maps.Clone(i.labels)
 }
 
 func (i *ClusterInfo) AddAnnotation(key, value string) {
@@ -108,7 +109,7 @@ func (i *RoleInfo) GetLabels() map[string]string {
 	}
 
 	i.labels[constants.LabelKubernetesComponent] = i.RoleName
-	return i.labels
+	return maps.Clone(i.labels)
 }
 
 func (i *RoleInfo) AddAnnotation(key, value string) {
@@ -157,7 +158,7 @@ func (i *RoleGroupInfo) GetLabels() map[string]string {
 	}
 
 	i.labels[constants.LabelKubernetesRoleGroup] = i.RoleGroupName
-	return i.labels
+	return maps.Clone(i.labels)
 }
 
 func (i *RoleGroupInfo) GetAnnotations() map[string]string {
