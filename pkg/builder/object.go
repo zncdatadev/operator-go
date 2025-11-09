@@ -17,6 +17,8 @@ limitations under the License.
 package builder
 
 import (
+	"maps"
+
 	"github.com/zncdatadev/operator-go/pkg/client"
 	"github.com/zncdatadev/operator-go/pkg/constants"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,7 +106,7 @@ func (b *ObjectMeta) GetLabels() map[string]string {
 		}
 	}
 
-	return b.labels
+	return maps.Clone(b.labels)
 }
 
 func (o *ObjectMeta) filterLabels(labels map[string]string) map[string]string {
