@@ -9,6 +9,8 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 )
 
+const testCustomValue = "custom-value"
+
 var _ = Describe("Info Immutability Tests", func() {
 	var (
 		gvk *metav1.GroupVersionKind
@@ -58,7 +60,7 @@ var _ = Describe("Info Immutability Tests", func() {
 
 			// Verify labels1 (previously returned copy) is not affected
 			Expect(labels1).NotTo(HaveKey("added-label"))
-			Expect(len(labels1)).To(Equal(initialSize))
+			Expect(labels1).To(HaveLen(initialSize))
 
 			// Get new labels and verify the added label is present
 			labels2 := clusterInfo.GetLabels()
@@ -83,7 +85,7 @@ var _ = Describe("Info Immutability Tests", func() {
 			Expect(labels1[constants.LabelKubernetesComponent]).To(Equal("test-role"))
 
 			// Modify the returned map
-			labels1["custom-key"] = "custom-value"
+			labels1["custom-key"] = testCustomValue
 
 			// Get labels again and verify the modification didn't affect internal state
 			labels2 := roleInfo.GetLabels()
@@ -111,7 +113,7 @@ var _ = Describe("Info Immutability Tests", func() {
 			Expect(labels1[constants.LabelKubernetesRoleGroup]).To(Equal("test-group"))
 
 			// Modify the returned map
-			labels1["custom-key"] = "custom-value"
+			labels1["custom-key"] = testCustomValue
 			labels1[constants.LabelKubernetesRoleGroup] = "modified-group"
 
 			// Get labels again and verify the modification didn't affect internal state

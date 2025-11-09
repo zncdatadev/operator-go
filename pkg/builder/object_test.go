@@ -67,7 +67,7 @@ var _ = Describe("ObjectMeta Immutability Tests", func() {
 			// Verify labels1 (previously returned copy) is not affected
 			Expect(labels1).NotTo(HaveKey("added-label-1"))
 			Expect(labels1).NotTo(HaveKey("added-label-2"))
-			Expect(len(labels1)).To(Equal(initialSize))
+			Expect(labels1).To(HaveLen(initialSize))
 
 			// Get new labels and verify the added labels are present
 			labels2 := objMeta.GetLabels()
