@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"time"
 
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -77,7 +78,7 @@ func (r *PDB) Reconcile(ctx context.Context) (ctrl.Result, error) {
 			if err := r.GetClient().Client.Create(ctx, resource); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 		logger.Error(err, "Failed to fetch resource", logExtraValues...)
 		return ctrl.Result{}, err

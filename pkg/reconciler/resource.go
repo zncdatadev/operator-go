@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -107,7 +108,7 @@ func (r *GenericResourceReconciler[T]) ResourceReconcile(ctx context.Context, re
 		return ctrl.Result{}, err
 	} else if mutation {
 		resourceLogger.Info("Resource created or updated", logExtraValues...)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }

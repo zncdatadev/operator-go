@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"time"
 
 	appv1 "k8s.io/api/apps/v1"
 	"k8s.io/utils/ptr"
@@ -67,7 +68,7 @@ func (r *Deployment) Ready(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 	logger.Info("Deployment is not ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
 func NewDeployment(
