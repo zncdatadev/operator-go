@@ -45,21 +45,41 @@ type ResourceReconciler[B builder.ObjectBuilder] interface {
 
 var _ ResourceReconciler[builder.ObjectBuilder] = &GenericResourceReconciler[builder.ObjectBuilder]{}
 
+// GenericResourceReconcilerOption is a functional option for configuring a GenericResourceReconciler
+type GenericResourceReconcilerOption[T builder.ObjectBuilder] func(*GenericResourceReconciler[T])
+
+// WithRequeueAfter sets the requeue duration for the reconciler
+func WithRequeueAfter[T builder.ObjectBuilder](duration time.Duration) GenericResourceReconcilerOption[T] {
+	return func(r *GenericResourceReconciler[T]) {
+		r.RequeueAfter = duration
+	}
+}
+
 type GenericResourceReconciler[T builder.ObjectBuilder] struct {
 	// Do not use ptr, to avoid other packages to modify the client
 	Client *client.Client
 
 	Builder T
+
+	// RequeueAfter is the duration after which to requeue the reconcile request
+	// when a resource is created or updated. Default is 1 second.
+	RequeueAfter time.Duration
 }
 
 func NewGenericResourceReconciler[T builder.ObjectBuilder](
 	client *client.Client,
 	builder T,
+	opts ...GenericResourceReconcilerOption[T],
 ) *GenericResourceReconciler[T] {
-	return &GenericResourceReconciler[T]{
-		Client:  client,
-		Builder: builder,
+	r := &GenericResourceReconciler[T]{
+		Client:       client,
+		Builder:      builder,
+		RequeueAfter: time.Second, // Default to 1 second
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 func (r *GenericResourceReconciler[T]) GetName() string {
@@ -92,7 +112,7 @@ func (r *GenericResourceReconciler[T]) GetBuilder() T {
 }
 
 // ResourceReconcile creates or updates a resource.
-// If the resource is created or updated, it returns a Result with a requeue time of 1 second.
+// If the resource is created or updated, it returns a Result with a requeue time configured via RequeueAfter.
 //
 // Most of the time you should not call this method directly, but call the r.Reconcile() method instead.
 func (r *GenericResourceReconciler[T]) ResourceReconcile(ctx context.Context, resource ctrlclient.Object) (ctrl.Result, error) {
@@ -108,7 +128,7 @@ func (r *GenericResourceReconciler[T]) ResourceReconcile(ctx context.Context, re
 		return ctrl.Result{}, err
 	} else if mutation {
 		resourceLogger.Info("Resource created or updated", logExtraValues...)
-		return ctrl.Result{RequeueAfter: time.Second}, nil
+		return ctrl.Result{RequeueAfter: r.RequeueAfter}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -137,11 +157,13 @@ type SimpleResourceReconciler[T builder.ObjectBuilder] struct {
 func NewSimpleResourceReconciler[T builder.ObjectBuilder](
 	client *client.Client,
 	builder T,
+	opts ...GenericResourceReconcilerOption[T],
 ) *SimpleResourceReconciler[T] {
 	return &SimpleResourceReconciler[T]{
 		GenericResourceReconciler: *NewGenericResourceReconciler[T](
 			client,
 			builder,
+			opts...,
 		),
 	}
 }

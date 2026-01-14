@@ -30,26 +30,53 @@ import (
 
 var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSet{}
 
+// StatefulSetOption is a functional option for configuring a StatefulSet reconciler
+type StatefulSetOption func(*StatefulSet)
+
+// WithStatefulSetRequeueAfter sets the requeue duration for statefulset reconciliation
+func WithStatefulSetRequeueAfter(duration time.Duration) StatefulSetOption {
+	return func(s *StatefulSet) {
+		s.RequeueAfter = duration
+	}
+}
+
+// WithStatefulSetReadyRequeueAfter sets the requeue duration for statefulset readiness checks
+func WithStatefulSetReadyRequeueAfter(duration time.Duration) StatefulSetOption {
+	return func(s *StatefulSet) {
+		s.ReadyRequeueAfter = duration
+	}
+}
+
 type StatefulSet struct {
 	GenericResourceReconciler[builder.StatefulSetBuilder]
 
 	// When the cluster is stopped, the statefulset will be scaled to 0
 	// and the reconcile will be not executed until the cluster is started
 	Stopped bool
+
+	// ReadyRequeueAfter is the duration after which to requeue when checking readiness.
+	// Default is 5 seconds.
+	ReadyRequeueAfter time.Duration
 }
 
 func NewStatefulSet(
 	client *client.Client,
 	statefulset builder.StatefulSetBuilder,
 	stopped bool,
+	opts ...StatefulSetOption,
 ) *StatefulSet {
-	return &StatefulSet{
+	s := &StatefulSet{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
 			client,
 			statefulset,
 		),
-		Stopped: stopped,
+		Stopped:           stopped,
+		ReadyRequeueAfter: 5 * time.Second, // Default to 5 seconds
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (r *StatefulSet) Reconcile(ctx context.Context) (ctrl.Result, error) {
@@ -80,5 +107,5 @@ func (r *StatefulSet) Ready(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 	logger.Info("StatefulSet is not ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: r.ReadyRequeueAfter}, nil
 }
