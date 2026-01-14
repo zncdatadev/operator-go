@@ -5,6 +5,7 @@ import (
 	"context"
 	"math/rand"
 	"strconv"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -170,6 +171,35 @@ var _ = Describe("Statefulset reconciler", func() {
 			statefulSet = &appv1.StatefulSet{}
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, statefulSet)).Should(Succeed())
 			Expect(*statefulSet.Spec.Replicas).Should(BeEquivalentTo(int32(0)))
+		})
+
+		It("Should use custom requeue after times", func() {
+			customRequeueAfter := 10 * time.Second
+			customReadyRequeueAfter := 15 * time.Second
+
+			By("Create a statefulset reconciler with custom requeue times")
+			statusfulSetReconciler := reconciler.NewStatefulSet(
+				resourceClient,
+				statefulSetBuilder,
+				false,
+				reconciler.WithStatefulSetRequeueAfter(customRequeueAfter),
+				reconciler.WithStatefulSetReadyRequeueAfter(customReadyRequeueAfter),
+			)
+			Expect(statusfulSetReconciler).ShouldNot(BeNil())
+			Expect(statusfulSetReconciler.RequeueAfter).Should(Equal(customRequeueAfter))
+			Expect(statusfulSetReconciler.ReadyRequeueAfter).Should(Equal(customReadyRequeueAfter))
+
+			By("reconcile the statefulset")
+			result, err := statusfulSetReconciler.Reconcile(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(result.RequeueAfter).Should(Equal(customRequeueAfter))
+
+			By("check the statefulset is not ready and uses custom ready requeue after")
+			result, err = statusfulSetReconciler.Ready(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(result.RequeueAfter).Should(Equal(customReadyRequeueAfter))
 		})
 	})
 

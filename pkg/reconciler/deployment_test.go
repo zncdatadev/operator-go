@@ -10,6 +10,7 @@ import (
 	"context"
 	"math/rand"
 	"strconv"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -175,6 +176,35 @@ var _ = Describe("Deloyment reconciler", func() {
 			Expect(k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: name}, deployment)).Should(Succeed())
 			Expect(*deployment.Spec.Replicas).Should(BeEquivalentTo(int32(0)))
 
+		})
+
+		It("Should use custom requeue after times", func() {
+			customRequeueAfter := 10 * time.Second
+			customReadyRequeueAfter := 15 * time.Second
+
+			By("Create a deployment reconciler with custom requeue times")
+			deploymentReconciler := reconciler.NewDeployment(
+				resourceClient,
+				deploymentBuilder,
+				false,
+				reconciler.WithDeploymentRequeueAfter(customRequeueAfter),
+				reconciler.WithReadyRequeueAfter(customReadyRequeueAfter),
+			)
+			Expect(deploymentReconciler).ShouldNot(BeNil())
+			Expect(deploymentReconciler.RequeueAfter).Should(Equal(customRequeueAfter))
+			Expect(deploymentReconciler.ReadyRequeueAfter).Should(Equal(customReadyRequeueAfter))
+
+			By("reconcile the deployment")
+			result, err := deploymentReconciler.Reconcile(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(result.RequeueAfter).Should(Equal(customRequeueAfter))
+
+			By("check the deployment is not ready and uses custom ready requeue after")
+			result, err = deploymentReconciler.Ready(ctx)
+			Expect(result).ShouldNot(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(result.RequeueAfter).Should(Equal(customReadyRequeueAfter))
 		})
 	})
 
