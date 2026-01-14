@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -59,7 +60,7 @@ func (r *Job) Ready(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 	logger.Info("Job is not ready", "namespace", obj.Namespace, "name", obj.Name, "Parallelism", *obj.Spec.Parallelism, "succeeded", obj.Status.Succeeded)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
 func NewJob(
