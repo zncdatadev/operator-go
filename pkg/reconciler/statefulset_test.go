@@ -182,8 +182,8 @@ var _ = Describe("Statefulset reconciler", func() {
 				resourceClient,
 				statefulSetBuilder,
 				false,
-				reconciler.WithStatefulSetRequeueAfter(customRequeueAfter),
-				reconciler.WithStatefulSetReadyRequeueAfter(customReadyRequeueAfter),
+				reconciler.StatefulSetRequeueAfter(customRequeueAfter),
+				reconciler.StatefulSetReadyRequeueAfter(customReadyRequeueAfter),
 			)
 			Expect(statusfulSetReconciler).ShouldNot(BeNil())
 			Expect(statusfulSetReconciler.RequeueAfter).Should(Equal(customRequeueAfter))

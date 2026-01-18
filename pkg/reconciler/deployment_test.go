@@ -187,8 +187,8 @@ var _ = Describe("Deloyment reconciler", func() {
 				resourceClient,
 				deploymentBuilder,
 				false,
-				reconciler.WithDeploymentRequeueAfter(customRequeueAfter),
-				reconciler.WithReadyRequeueAfter(customReadyRequeueAfter),
+				reconciler.DeploymentRequeueAfter(customRequeueAfter),
+				reconciler.DeploymentReadyRequeueAfter(customReadyRequeueAfter),
 			)
 			Expect(deploymentReconciler).ShouldNot(BeNil())
 			Expect(deploymentReconciler.RequeueAfter).Should(Equal(customRequeueAfter))

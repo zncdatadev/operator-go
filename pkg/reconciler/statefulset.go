@@ -33,15 +33,15 @@ var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSet{}
 // StatefulSetOption is a functional option for configuring a StatefulSet reconciler
 type StatefulSetOption func(*StatefulSet)
 
-// WithStatefulSetRequeueAfter sets the requeue duration for statefulset reconciliation
-func WithStatefulSetRequeueAfter(duration time.Duration) StatefulSetOption {
+// StatefulSetRequeueAfter sets the requeue duration for statefulset reconciliation
+func StatefulSetRequeueAfter(duration time.Duration) StatefulSetOption {
 	return func(s *StatefulSet) {
 		s.RequeueAfter = duration
 	}
 }
 
-// WithStatefulSetReadyRequeueAfter sets the requeue duration for statefulset readiness checks
-func WithStatefulSetReadyRequeueAfter(duration time.Duration) StatefulSetOption {
+// StatefulSetReadyRequeueAfter sets the requeue duration for statefulset readiness checks
+func StatefulSetReadyRequeueAfter(duration time.Duration) StatefulSetOption {
 	return func(s *StatefulSet) {
 		s.ReadyRequeueAfter = duration
 	}

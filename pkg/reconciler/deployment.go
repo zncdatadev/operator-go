@@ -33,15 +33,15 @@ var _ ResourceReconciler[builder.DeploymentBuilder] = &Deployment{}
 // DeploymentOption is a functional option for configuring a Deployment reconciler
 type DeploymentOption func(*Deployment)
 
-// WithDeploymentRequeueAfter sets the requeue duration for deployment reconciliation
-func WithDeploymentRequeueAfter(duration time.Duration) DeploymentOption {
+// DeploymentRequeueAfter sets the requeue duration for deployment reconciliation
+func DeploymentRequeueAfter(duration time.Duration) DeploymentOption {
 	return func(d *Deployment) {
 		d.RequeueAfter = duration
 	}
 }
 
-// WithReadyRequeueAfter sets the requeue duration for deployment readiness checks
-func WithReadyRequeueAfter(duration time.Duration) DeploymentOption {
+// DeploymentReadyRequeueAfter sets the requeue duration for deployment readiness checks
+func DeploymentReadyRequeueAfter(duration time.Duration) DeploymentOption {
 	return func(d *Deployment) {
 		d.ReadyRequeueAfter = duration
 	}

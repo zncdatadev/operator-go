@@ -32,15 +32,15 @@ var _ ResourceReconciler[builder.JobBuilder] = &Job{}
 // JobOption is a functional option for configuring a Job reconciler
 type JobOption func(*Job)
 
-// WithJobRequeueAfter sets the requeue duration for job reconciliation
-func WithJobRequeueAfter(duration time.Duration) JobOption {
+// JobRequeueAfter sets the requeue duration for job reconciliation
+func JobRequeueAfter(duration time.Duration) JobOption {
 	return func(j *Job) {
 		j.RequeueAfter = duration
 	}
 }
 
-// WithJobReadyRequeueAfter sets the requeue duration for job readiness checks
-func WithJobReadyRequeueAfter(duration time.Duration) JobOption {
+// JobReadyRequeueAfter sets the requeue duration for job readiness checks
+func JobReadyRequeueAfter(duration time.Duration) JobOption {
 	return func(j *Job) {
 		j.ReadyRequeueAfter = duration
 	}
