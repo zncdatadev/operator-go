@@ -34,7 +34,7 @@ type ListenerClassSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=Local
 	// +kubebuilder:validation:Enum=Local;Cluster
-	ServiceExternalTrafficPolicy corev1.ServiceExternalTrafficPolicyType `json:"serviceExternalTrafficPolicy,omitempty"`
+	ServiceExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"serviceExternalTrafficPolicy,omitempty"`
 
 	// When preferredAddressType is set to HostnameConservative, the controller will
 	// attempt to use the ip only `ListenerClassSpec.ServiceType` is NodePort,
