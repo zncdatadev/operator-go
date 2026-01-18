@@ -33,7 +33,7 @@ func ContainerPorts2ServicePorts(port []corev1.ContainerPort) []corev1.ServicePo
 }
 
 func PortsConverter(port []corev1.ContainerPort) []corev1.ServicePort {
-	ports := make([]corev1.ServicePort, 0)
+	ports := make([]corev1.ServicePort, 0, len(port))
 	for _, p := range port {
 		target := intstr.FromString(p.Name)
 
