@@ -5,7 +5,7 @@ go 1.25.3
 require (
 	github.com/cisco-open/k8s-objectmatcher v1.10.0
 	github.com/evanphx/json-patch v5.9.11+incompatible
-	github.com/onsi/ginkgo/v2 v2.27.2
+	github.com/onsi/ginkgo/v2 v2.27.5
 	github.com/onsi/gomega v1.38.2
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
