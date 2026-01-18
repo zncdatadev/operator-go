@@ -92,7 +92,7 @@ func (r *RoleReconciler) getResourceWithRoleGroup(
 	replicas *int32,
 ) []reconciler.Reconciler {
 
-	reconcilers := []reconciler.Reconciler{}
+	reconcilers := make([]reconciler.Reconciler, 0, 2)
 
 	reconcilers = append(reconcilers, r.getServiceReconciler(info))
 

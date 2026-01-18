@@ -209,7 +209,7 @@ func JavaLogTemplateValue(loggingConfig LoggingConfig, productLogging *ProductLo
 	values["RotatingFileHandlerFile"] = productLogging.RotatingFileHandlerFile
 	values["RotatingFileHandlerMaxSizeInMiB"] = productLogging.RotatingFileHandlerMaxBytes / 1024 / 1024
 	values["RotatingFileHandlerBackupCount"] = productLogging.RotatingFileHandlerBackupCount
-	loggers := []string{}
+	loggers := make([]string, 0, len(productLogging.Loggers))
 
 	for name, level := range productLogging.Loggers {
 		loggers = append(loggers, loggingConfig.LoggerFormatter(name, level.Level))
