@@ -29,29 +29,22 @@ import (
 
 var _ ResourceReconciler[builder.JobBuilder] = &Job{}
 
-// JobOption is a functional option for configuring a Job reconciler
-type JobOption func(*Job)
-
-// JobRequeueAfter sets the requeue duration for job reconciliation
-func JobRequeueAfter(duration time.Duration) JobOption {
-	return func(j *Job) {
-		j.RequeueAfter = duration
-	}
-}
-
-// JobReadyRequeueAfter sets the requeue duration for job readiness checks
-func JobReadyRequeueAfter(duration time.Duration) JobOption {
-	return func(j *Job) {
-		j.ReadyRequeueAfter = duration
-	}
-}
-
 type Job struct {
 	*GenericResourceReconciler[builder.JobBuilder]
 
 	// ReadyRequeueAfter is the duration after which to requeue when checking readiness.
 	// Default is 5 seconds.
 	ReadyRequeueAfter time.Duration
+}
+
+// SetRequeueAfter sets the requeue duration for job reconciliation
+func (j *Job) SetRequeueAfter(duration time.Duration) {
+	j.RequeueAfter = duration
+}
+
+// SetReadyRequeueAfter sets the requeue duration for job readiness checks
+func (j *Job) SetReadyRequeueAfter(duration time.Duration) {
+	j.ReadyRequeueAfter = duration
 }
 
 func (r *Job) Reconcile(ctx context.Context) (ctrl.Result, error) {
@@ -87,7 +80,7 @@ func (r *Job) Ready(ctx context.Context) (ctrl.Result, error) {
 func NewJob(
 	client *client.Client,
 	jobBuilder builder.JobBuilder,
-	opts ...JobOption,
+	opts ...WorkloadReconcilerOption,
 ) *Job {
 	j := &Job{
 		GenericResourceReconciler: NewGenericResourceReconciler[builder.JobBuilder](

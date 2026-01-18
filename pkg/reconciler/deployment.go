@@ -30,23 +30,6 @@ import (
 
 var _ ResourceReconciler[builder.DeploymentBuilder] = &Deployment{}
 
-// DeploymentOption is a functional option for configuring a Deployment reconciler
-type DeploymentOption func(*Deployment)
-
-// DeploymentRequeueAfter sets the requeue duration for deployment reconciliation
-func DeploymentRequeueAfter(duration time.Duration) DeploymentOption {
-	return func(d *Deployment) {
-		d.RequeueAfter = duration
-	}
-}
-
-// DeploymentReadyRequeueAfter sets the requeue duration for deployment readiness checks
-func DeploymentReadyRequeueAfter(duration time.Duration) DeploymentOption {
-	return func(d *Deployment) {
-		d.ReadyRequeueAfter = duration
-	}
-}
-
 type Deployment struct {
 	GenericResourceReconciler[builder.DeploymentBuilder]
 
@@ -57,6 +40,16 @@ type Deployment struct {
 	// ReadyRequeueAfter is the duration after which to requeue when checking readiness.
 	// Default is 5 seconds.
 	ReadyRequeueAfter time.Duration
+}
+
+// SetRequeueAfter sets the requeue duration for deployment reconciliation
+func (d *Deployment) SetRequeueAfter(duration time.Duration) {
+	d.RequeueAfter = duration
+}
+
+// SetReadyRequeueAfter sets the requeue duration for deployment readiness checks
+func (d *Deployment) SetReadyRequeueAfter(duration time.Duration) {
+	d.ReadyRequeueAfter = duration
 }
 
 func (r *Deployment) Reconcile(ctx context.Context) (ctrl.Result, error) {
@@ -96,7 +89,7 @@ func NewDeployment(
 	client *client.Client,
 	deployBuilder builder.DeploymentBuilder,
 	stopped bool,
-	opts ...DeploymentOption,
+	opts ...WorkloadReconcilerOption,
 ) *Deployment {
 	d := &Deployment{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.DeploymentBuilder](

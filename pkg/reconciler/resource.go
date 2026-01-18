@@ -148,6 +148,30 @@ func (r *GenericResourceReconciler[T]) Ready(ctx context.Context) (ctrl.Result, 
 	return ctrl.Result{}, nil
 }
 
+// WorkloadReconciler is an interface for workload reconcilers that have ReadyRequeueAfter
+// This is a marker interface that allows common option functions
+type WorkloadReconciler interface {
+	SetRequeueAfter(duration time.Duration)
+	SetReadyRequeueAfter(duration time.Duration)
+}
+
+// WorkloadReconcilerOption is a functional option for configuring workload reconcilers
+type WorkloadReconcilerOption func(WorkloadReconciler)
+
+// RequeueAfter sets the requeue duration for workload reconciliation
+func RequeueAfter(duration time.Duration) WorkloadReconcilerOption {
+	return func(r WorkloadReconciler) {
+		r.SetRequeueAfter(duration)
+	}
+}
+
+// ReadyRequeueAfter sets the requeue duration for workload readiness checks
+func ReadyRequeueAfter(duration time.Duration) WorkloadReconcilerOption {
+	return func(r WorkloadReconciler) {
+		r.SetReadyRequeueAfter(duration)
+	}
+}
+
 type SimpleResourceReconciler[T builder.ObjectBuilder] struct {
 	GenericResourceReconciler[T]
 }

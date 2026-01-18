@@ -30,23 +30,6 @@ import (
 
 var _ ResourceReconciler[builder.StatefulSetBuilder] = &StatefulSet{}
 
-// StatefulSetOption is a functional option for configuring a StatefulSet reconciler
-type StatefulSetOption func(*StatefulSet)
-
-// StatefulSetRequeueAfter sets the requeue duration for statefulset reconciliation
-func StatefulSetRequeueAfter(duration time.Duration) StatefulSetOption {
-	return func(s *StatefulSet) {
-		s.RequeueAfter = duration
-	}
-}
-
-// StatefulSetReadyRequeueAfter sets the requeue duration for statefulset readiness checks
-func StatefulSetReadyRequeueAfter(duration time.Duration) StatefulSetOption {
-	return func(s *StatefulSet) {
-		s.ReadyRequeueAfter = duration
-	}
-}
-
 type StatefulSet struct {
 	GenericResourceReconciler[builder.StatefulSetBuilder]
 
@@ -59,11 +42,21 @@ type StatefulSet struct {
 	ReadyRequeueAfter time.Duration
 }
 
+// SetRequeueAfter sets the requeue duration for statefulset reconciliation
+func (s *StatefulSet) SetRequeueAfter(duration time.Duration) {
+	s.RequeueAfter = duration
+}
+
+// SetReadyRequeueAfter sets the requeue duration for statefulset readiness checks
+func (s *StatefulSet) SetReadyRequeueAfter(duration time.Duration) {
+	s.ReadyRequeueAfter = duration
+}
+
 func NewStatefulSet(
 	client *client.Client,
 	statefulset builder.StatefulSetBuilder,
 	stopped bool,
-	opts ...StatefulSetOption,
+	opts ...WorkloadReconcilerOption,
 ) *StatefulSet {
 	s := &StatefulSet{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
