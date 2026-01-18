@@ -36,20 +36,40 @@ type StatefulSet struct {
 	// When the cluster is stopped, the statefulset will be scaled to 0
 	// and the reconcile will be not executed until the cluster is started
 	Stopped bool
+
+	// ReadyRequeueAfter is the duration after which to requeue when checking readiness.
+	// Default is 5 seconds.
+	ReadyRequeueAfter time.Duration
+}
+
+// SetRequeueAfter sets the requeue duration for statefulset reconciliation
+func (s *StatefulSet) SetRequeueAfter(duration time.Duration) {
+	s.RequeueAfter = duration
+}
+
+// SetReadyRequeueAfter sets the requeue duration for statefulset readiness checks
+func (s *StatefulSet) SetReadyRequeueAfter(duration time.Duration) {
+	s.ReadyRequeueAfter = duration
 }
 
 func NewStatefulSet(
 	client *client.Client,
 	statefulset builder.StatefulSetBuilder,
 	stopped bool,
+	opts ...WorkloadReconcilerOption,
 ) *StatefulSet {
-	return &StatefulSet{
+	s := &StatefulSet{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.StatefulSetBuilder](
 			client,
 			statefulset,
 		),
-		Stopped: stopped,
+		Stopped:           stopped,
+		ReadyRequeueAfter: 5 * time.Second, // Default to 5 seconds
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (r *StatefulSet) Reconcile(ctx context.Context) (ctrl.Result, error) {
@@ -80,5 +100,5 @@ func (r *StatefulSet) Ready(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 	logger.Info("StatefulSet is not ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: r.ReadyRequeueAfter}, nil
 }

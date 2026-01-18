@@ -36,6 +36,20 @@ type Deployment struct {
 	// When the cluster is stopped, the deployment will be scaled to 0
 	// and the reconcile will be not executed until the cluster is started
 	Stopped bool
+
+	// ReadyRequeueAfter is the duration after which to requeue when checking readiness.
+	// Default is 5 seconds.
+	ReadyRequeueAfter time.Duration
+}
+
+// SetRequeueAfter sets the requeue duration for deployment reconciliation
+func (d *Deployment) SetRequeueAfter(duration time.Duration) {
+	d.RequeueAfter = duration
+}
+
+// SetReadyRequeueAfter sets the requeue duration for deployment readiness checks
+func (d *Deployment) SetReadyRequeueAfter(duration time.Duration) {
+	d.ReadyRequeueAfter = duration
 }
 
 func (r *Deployment) Reconcile(ctx context.Context) (ctrl.Result, error) {
@@ -68,19 +82,25 @@ func (r *Deployment) Ready(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 	logger.Info("Deployment is not ready", "namespace", obj.Namespace, "name", obj.Name, "replicas", *obj.Spec.Replicas, "readyReplicas", obj.Status.ReadyReplicas)
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: r.ReadyRequeueAfter}, nil
 }
 
 func NewDeployment(
 	client *client.Client,
 	deployBuilder builder.DeploymentBuilder,
 	stopped bool,
+	opts ...WorkloadReconcilerOption,
 ) *Deployment {
-	return &Deployment{
+	d := &Deployment{
 		GenericResourceReconciler: *NewGenericResourceReconciler[builder.DeploymentBuilder](
 			client,
 			deployBuilder,
 		),
-		Stopped: stopped,
+		Stopped:           stopped,
+		ReadyRequeueAfter: 5 * time.Second, // Default to 5 seconds
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
