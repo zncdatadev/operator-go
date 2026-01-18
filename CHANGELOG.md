@@ -1,6 +1,37 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.12.6 2025-12-01
+
+### features
+
+- Added PodListeners API with DeepCopy methods (#432)
+- Added customizable requeueAfter options to resource reconcilers (#424)
+- Added KerberosProvider to Authentication (#405)
+
+### refactor
+
+- Replaced deprecated Requeue with RequeueAfter in reconcilers (#422)
+- Updated golangci-lint version and improve Makefile targets (#431)
+- Updated Go version from 1.24.9 to 1.25.3 (#402)
+
+### fix
+
+- Enhanced GetLabels() to return immutable labels map (#406)
+- Updated Go setup to use go-version-file in lint and test workflows (#403)
+
+### dependencies
+
+- Bumped github.com/onsi/gomega from 1.38.2 to 1.39.0 (#425)
+- Bumped github.com/onsi/ginkgo/v2 from 2.27.2 to 2.27.5 (#427, #397)
+- Bumped k8s.io deps to 0.35.0 (#430)
+- Bumped k8s.io/client-go from 0.34.2 to 0.34.3 and 0.34.1 to 0.34.2 (#418, #410)
+- Bumped k8s.io/kubectl from 0.34.1 to 0.34.2 and 0.33.3 to 0.34.1 (#411, #390)
+- Bumped sigs.k8s.io/controller-runtime from 0.21.0 to 0.22.4 (#398)
+- Bumped golangci/golangci-lint-action from 8 to 9 (#407)
+- Bumped actions/checkout from 5 to 6 (#413)
+- Bumped DavidAnson/markdownlint-cli2-action from 20 to 21 and 21 to 22 (#412, #416)
+
 ## v0.12.5 2025-11-04
 
 ### features
