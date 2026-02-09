@@ -1,0 +1,68 @@
+# HDFS Custom Resource Example
+# This example illustrates how to implement a specific product (HDFS) using the operator-go SDK.
+# It defines a standard HDFS HA (High Availability) cluster with three key roles: NameNode, JournalNode, and DataNode.
+# For general field definitions, please refer to 'crd-common-example.yaml'.
+metadata:
+  name: hdfsclusters.hdfs.kubedoop.dev
+spec:
+  # Image Configuration:
+  # Overrides the 'custom' field to point to a specific HDFS image distribution.
+  image:
+    custom: "my-registry.com/namespace/hdfs-custom-image:3.4.1"
+    productVersion: "3.4.1"
+    pullPolicy: IfNotPresent
+    repo: "quay.io/kubedoop"
+    kubedoopVersion: "0.2.0"
+  clusterConfig:
+    # Security Configuration:
+    # Enables Kerberos authentication using a SecretClass.
+    authentication:
+      kerberos:
+        secretClass: "hdfs-kerberos-secret"
+    # Sidecar Injection:
+    # Injects Vector agent for HDFS audit and service log collection.
+    vectorAgentConfigMap: "hdfs-vector-agent-configmap"
+    # HDFS Specific Dependencies:
+    # References the ConfigMap containing Zookeeper connection strings (required for HDFS HA and JournalNodes).
+    zookeeperConfigMap: "hdfs-zk-configmap"
+    # HDFS Business Logic Configuration:
+    # Sets the default replication factor for files stored in HDFS.
+    dfsReplication: 3
+
+  # Role: NameNode
+  # The metadata server of HDFS. In HA mode, typically requires 2 or more replicas.
+  nameNodes:
+    # JVM Tuning:
+    # Sets the heap size for the NameNode process.
+    jvmArgumentOverrides:
+      - "-Xmx4g"
+    roleGroups:
+      default:
+        replicas: 2 # HA setup usually runs 2 NameNodes (Active/Standby)
+        configOverrides:
+          # File-level Configuration Override:
+          # Adjusts the handler count in 'hdfs-site.xml' to handle high concurrency.
+          hdfs-site.xml:
+            dfs.namenode.handler.count: "100"
+
+  # Role: JournalNode
+  # synchronizes metadata between NameNodes. Requires odd number of replicas (3, 5) for quorum.
+  journalNodes:
+    roleGroups:
+      default:
+        replicas: 3
+
+  # Role: DataNode
+  # The storage worker nodes.
+  dataNodes:
+    roleGroups:
+      default:
+        replicas: 3
+        config:
+          # Logging Override:
+          # Sets DEBUG level logging for DataNodes to troubleshoot block replication issues.
+          logging:
+            containers:
+              dataNode:
+                console:
+                  level: "DEBUG"

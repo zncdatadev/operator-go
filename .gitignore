@@ -193,5 +193,7 @@ cover.out
 *__debug*
 **/coverage
 
-# ai code local
+# ai coding
 .codiumai.toml
+.auto-claude/
+_bmad*

@@ -1,0 +1,56 @@
+# Hive Metastore Custom Resource Example
+# This example illustrates how to define a Hive Metastore service using the operator-go SDK.
+# It features integration with S3 for storage and TLS/Kerberos for security.
+metadata:
+  name: hivemetastores.hive.kubedoop.dev
+spec:
+  # Image Configuration:
+  # Overrides the 'custom' field to point to a specific Hive image distribution.
+  image:
+    custom: "my-registry.com/namespace/hive-custom-image:3.0.0"
+    productVersion: "3.0.0"
+    pullPolicy: IfNotPresent
+    repo: "quay.io/kubedoop"
+    kubedoopVersion: "0.2.0"
+  clusterConfig:
+    # Security Configuration:
+    authentication:
+      kerberos:
+        # Enables Kerberos via SecretClass to auto-inject Keytabs and krb5.conf.
+        secretClass: "hive-kerberos-secret"
+      tls:
+        # TLS/SSL Configuration for Metastore service.
+        # References a SecretClass managed by secret-operator for certificates.
+        secretClass: "hive-tls-secret"
+        # Reference to a specific key in the secret containing the JKS password.
+        jksPassword: "jks-password"
+    # S3 Integration:
+    # Configures the underlying object storage for Hive Warehouse.
+    s3:
+      # Option 1: CRD Reference (Recommended)
+      # References an existing 'S3Connection' CRD. The Operator reads the endpoint and
+      # credentials from it and configures Hive automatically.
+      reference: "hive-s3-connection"
+      # Option 2: Inline Configuration
+      # Defines S3 connection details directly in the Spec.
+      # inline:
+      #   bucket: "my-warehouse"
+      #   endpoint: "s3.amazonaws.com"
+      #   ...
+    # Sidecar Injection:
+    # Injects Vector agent for collecting Hive Metastore audit and application logs.
+    vectorAgentConfigMap: "hive-vector-agent-configmap"
+
+  # Role: Metastore
+  # The central repository of Hive metadata. It stores metadata for Hive tables (like their schema and location)
+  # in a backend database (typically configured via referencing external DB or internal PostgreSQL)
+  metastore:
+    roleGroups:
+      default:
+        replicas: 1
+        configOverrides:
+          # Configuration File Override:
+          # Sets critical properties in hive-site.xml.
+          hive-site.xml:
+            # Defines the location of the default database for the warehouse.
+            hive.metastore.warehouse.dir: "s3a://metrics/warehouse"
