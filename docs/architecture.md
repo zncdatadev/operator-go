@@ -30,9 +30,6 @@ This document systematically expounds the design philosophy, architectural layer
 - **RoleGroup**
   - The physical unit of deployment and resource isolation under a Role. Each RoleGroup maps directly to a Kubernetes `StatefulSet` (and associated Service, ConfigMap, PDB). This allows a single Role to be partitioned into multiple groups with distinct hardware specifications (CPU/Memory), replica counts, or specialized configurations (e.g., a "high-performance" DataNode group vs. a "standard" group).
 
-- **Connection**
-  - A unified abstraction for external resources required by the cluster, such as **S3 Buckets** (for data storage) or **Database** (for metadata). These are defined as standard CRD fields or separate resources, decoupling the application from specific infrastructure details (credentials, endpoints).
-
 - **SecretClass**
   - An object managed by `secret-operator`, enabling the injection of sensitive data (Certificates, Kerberos Keytabs, Passwords) into Pods via the Kubernetes CSI (Container Storage Interface). Workloads reference a `SecretClass` to mount volumes that are dynamically populated by specific security backends.
 
@@ -181,6 +178,18 @@ Implements product-specific logic based on SDK abstract interfaces without modif
 
 # 4. Core Module Implementation
 
+This section details the core modules of the SDK, organized into five functional categories:
+
+| Category | Modules | Description |
+|----------|---------|-------------|
+| **Foundation & Lifecycle** | 4.1-4.4 | Core framework, extensions, webhooks, and cleanup |
+| **Resource Generation** | 4.5-4.6 | Configuration and sidecar management |
+| **Operational Management** | 4.7-4.8, 4.13-4.14 | Dependencies, health, errors, and events |
+| **Security & Network** | 4.9-4.10 | Security and service exposure |
+| **Operational Control** | 4.11-4.12 | Runtime controls and connections |
+
+---
+
 ## 4.1 Generics Transformation Module
 
 ### 4.1.1 Design Background
@@ -209,9 +218,28 @@ Reserve extension points at key nodes in the reconciliation process to support e
 2. **Role Level**: `PreReconcile`, `PostReconcile`, executed for a single role.
 3. **Role Group Level**: `PreReconcile`, `PostReconcile`, executed for a single role group.
 
-### 4.2.3 Execution Process
+### 4.2.3 Extension Registration
+
+- **Registration Timing**: Extensions must be registered during Operator initialization, specifically in the `main.go` setup phase before the Manager starts. This ensures all extensions are available when reconciliation begins.
+- **Registration Method**: Use the `ExtensionRegistry.Register()` method to add extensions. Each extension must implement the appropriate interface (`ClusterExtension`, `RoleExtension`, or `RoleGroupExtension`).
+- **Execution Order**: Extensions execute in the order they were registered. The SDK preserves registration order to ensure deterministic behavior. Use explicit priority values if custom ordering is required.
+
+### 4.2.4 Extension Lifecycle
+
+- **Initialization**: Extensions are instantiated once during Operator startup. The SDK does not recreate extensions per reconciliation.
+- **State Management**: Extensions should be stateless or manage their own internal state. The SDK passes the current CR context to each extension method, enabling access to cluster state without requiring persistent extension state.
+- **Cleanup**: Extensions can implement an optional `Cleanup()` method for resource release during Operator shutdown.
+
+### 4.2.5 Execution Process
 
 The reconciler iterates through extensions in the extension registry, executing them in registration order, supporting configuration for "process interruption on extension failure" to adapt to different fault tolerance needs.
+
+- **Normal Execution**: Extensions execute sequentially. Each extension receives the current context and can modify the CR or return an error.
+- **Error Handling**:
+  - If an extension returns an error, the SDK captures the error and propagates it to the CR Status.
+  - The `OnReconcileError` hook is triggered for cleanup or logging.
+  - Subsequent extensions may be skipped depending on error severity (configurable via `StopOnError` flag).
+- **State Recovery**: If an extension modifies the CR and a subsequent extension fails, the SDK does not automatically rollback changes. Extensions should implement their own compensation logic if needed.
 
 ## 4.3 Webhook Integration Module
 
@@ -250,7 +278,41 @@ Adopts a hybrid scheme of "Spec vs Status comparison as primary, cluster resourc
 4. Validate resource existence before deletion, deleting resources in the order of "PDB → StatefulSet → ConfigMap → Service".
 5. Sync Status.RoleGroups to `desiredGroups` and update the actual status snapshot.
 
-### 4.4.3 Boundary Handling
+### 4.4.3 Safety Protection Mechanisms
+
+- **Pre-Delete Validation**:
+  - Before deleting any resource, the SDK verifies the resource still exists in the cluster.
+  - Resource labels are checked to confirm ownership (matching the CR's ownership references).
+  - Resources without proper ownership labels are **NOT deleted** to prevent accidental deletion of manually created resources.
+
+- **Deletion Order**:
+  - Resources are deleted in dependency order to avoid orphaned references:
+    1. **PDB** (PodDisruptionBudget) - Remove first to avoid blocking StatefulSet deletion.
+    2. **StatefulSet** - Scale to 0 first, then delete (ensures graceful pod termination).
+    3. **ConfigMap** - Delete after StatefulSet is removed.
+    4. **Service** - Delete last as other resources may reference it.
+  - Each deletion waits for confirmation before proceeding to the next resource type.
+
+- **PVC Handling**:
+  - By default, **PVCs are PRESERVED** during orphaned resource cleanup to protect data.
+  - If PVC deletion is explicitly requested, the SDK requires confirmation via a specific annotation.
+
+### 4.4.4 Concurrency Conflict Handling
+
+- **Optimistic Locking**:
+  - The SDK uses Kubernetes resource versioning to detect concurrent modifications.
+  - If a resource was modified by another process between read and delete, the operation is retried with the latest resource version.
+
+- **Conflict Resolution**:
+  - **409 Conflict**: Automatically re-fetches the resource and retries the deletion.
+  - **429 Too Many Requests**: Implements exponential backoff before retry.
+  - **404 Not Found**: Treats as success (resource already deleted by another process).
+
+- **Status Synchronization**:
+  - After cleanup, the SDK atomically updates both the CR Status and the actual cluster state.
+  - If Status update fails, the next reconciliation cycle re-evaluates orphaned resources.
+
+### 4.4.5 Boundary Handling
 
 - **CR First Creation**: Status is empty, no orphaned resources, directly sync desired role groups to Status.
 - **Manual Resource Deletion**: Rely on idempotent deletion (IgnoreNotFound) to avoid errors, syncing Status in the next reconciliation.
@@ -327,12 +389,26 @@ Big Data systems often have strict startup dependency orders (e.g., Zookeeper ->
 ### 4.8.1 Design Background
 Stateful systems distinguish between "Infrastructure Ready" (Pod Running) and "Service Ready" (Business logic active). For example, an HDFS NameNode might be running but stuck in SafeMode, or a Database might be performing recovery. The Operator status must reflect this business reality.
 
-### 4.8.2 Core Implementation
+### 4.8.2 Health Check Mechanism
+
+The SDK implements a comprehensive health check mechanism that validates:
+- **External Dependencies**: Availability of required external resources (e.g., Zookeeper, S3, Database).
+- **Service Availability**: Whether the service is ready to accept traffic.
+- **Pod Status**: Health and readiness of individual Pods.
+
+- **Check Interval**: Health checks execute every **120 seconds** during reconciliation.
+- **Timeout**: Each health check operation has a maximum timeout of **300 seconds**.
+- **Failure Handling**:
+  - If a health check fails, the CR Status is marked as **Degraded** with an appropriate reason and message.
+  - If the controller itself encounters an internal error (e.g., panic, unexpected exception), the Status is **NOT modified** to prevent incorrect state propagation.
+  - Transient failures trigger a requeue for retry in the next reconciliation cycle.
+
+### 4.8.3 Core Implementation
 
 - **Status Definition**: The SDK standardizes cluster status through Generic Conditions:
   - **Available**: At least one replica is ready and serving traffic.
   - **Progressing**: The cluster is rolling out a new version or scaling replicas.
-  - **Degraded**: The cluster is experiencing issues (e.g., missing dependencies, crash loops).
+  - **Degraded**: The cluster is experiencing issues (e.g., missing dependencies, crash loops, health check failures).
   - **ServiceHealthy**: The application-level check passed (e.g., SafeMode off, RegionServer registered).
   - **ReconcileComplete**: The SDK has finished the latest reconciliation loop successfully.
 - **ServiceHealthCheck Interface**:
@@ -475,27 +551,239 @@ K8s Events provide a chronological log of significant occurrences within the clu
 
 # 5. Application of Design Patterns
 
-The core design of the SDK reuses multiple classic design patterns to enhance architectural flexibility and maintainability. Specific applications are as follows:
+The core design of the SDK reuses multiple classic design patterns to enhance architectural flexibility and maintainability. This section provides detailed explanations of each pattern's application within the SDK.
 
-- **Interface Segregation Pattern**
-  - **Application Scenario**: Splitting into fine-grained interfaces like `ClusterInterface`/`RoleInterface` for on-demand implementation by the product side.
-  - **Core Value**: Reduces implementation costs on the product side and avoids interface redundancy.
+## 5.1 Interface Segregation Pattern
 
-- **Strategy Pattern**
-  - **Application Scenario**: Extension point mechanism, where different products provide differentiated strategies by implementing extension interfaces.
-  - **Core Value**: Common process remains unchanged, strategies can be flexibly replaced.
+### 5.1.1 Pattern Overview
 
-- **Template Method Pattern**
-  - **Application Scenario**: `ClusterReconciler` defines the reconciliation process template, with extension points serving as hook methods.
-  - **Core Value**: Fixes the process skeleton while facilitating flexible extension of custom logic.
+The Interface Segregation Principle (ISP) states that clients should not be forced to depend on interfaces they do not use. The SDK applies this by splitting functionality into fine-grained, focused interfaces.
 
-- **Singleton Pattern**
-  - **Application Scenario**: `ExtensionRegistry` is globally unique, unifying extension management.
-  - **Core Value**: Ensures consistent extension execution order and avoids duplicate registration.
+### 5.1.2 Application in SDK
 
-- **Builder Pattern**
-  - **Application Scenario**: `StatefulSetBuilder` constructs StatefulSet resources step-by-step, adapting to different configurations.
-  - **Core Value**: Decouples resource construction logic, supporting flexible customization of resource attributes.
+- **`ClusterInterface`**: Defines cluster-level operations (GetName, GetNamespace, GetSpec, GetStatus, SetStatus).
+- **`RoleInterface`**: Defines role-level operations (GetRoleName, GetConfig, GetRoleGroups).
+- **`RoleConfigExtender`**: Defines configuration extension points for custom config merging.
+- **`ServiceHealthCheck`**: Defines health check contract for business-level readiness.
+
+### 5.1.3 Benefits
+
+- **Reduced Implementation Cost**: Product developers implement only the interfaces they need.
+- **Interface Clarity**: Each interface has a single, well-defined responsibility.
+- **Testability**: Smaller interfaces are easier to mock for unit testing.
+
+### 5.1.4 Example
+
+```go
+// Product implements only ClusterInterface, not all interfaces
+type HdfsCluster struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+    Spec              HdfsClusterSpec   `json:"spec,omitempty"`
+    Status            HdfsClusterStatus `json:"status,omitempty"`
+}
+
+// HdfsCluster automatically satisfies ClusterInterface by embedding GenericClusterSpec
+```
+
+## 5.2 Strategy Pattern
+
+### 5.2.1 Pattern Overview
+
+The Strategy Pattern defines a family of algorithms, encapsulates each one, and makes them interchangeable. The SDK uses this pattern extensively for extension points and configurable behaviors.
+
+### 5.2.2 Application in SDK
+
+- **Extension Interfaces**: Products implement `ClusterExtension`, `RoleExtension`, or `RoleGroupExtension` to inject custom reconciliation logic.
+- **ConfigFormat Interface**: Different configuration serializers (XML, Properties, YAML, Env) implement the same interface.
+- **SidecarProvider Interface**: Different sidecar injectors (Vector, JMX Exporter) follow a common contract.
+
+### 5.2.3 Benefits
+
+- **Flexibility**: Strategies can be swapped at runtime without modifying the SDK core.
+- **Open/Closed Principle**: New strategies can be added without modifying existing code.
+- **Isolation**: Each strategy is isolated, making it easier to test and maintain.
+
+### 5.2.4 Example
+
+```go
+// ConfigFormat strategy interface
+type ConfigFormat interface {
+    Marshal(data map[string]string) (string, error)
+}
+
+// Concrete strategies
+type XMLAdapter struct{}       // Hadoop XML format
+type PropertiesAdapter struct{} // Java .properties format
+type YAMLAdapter struct{}      // YAML format
+
+// Context uses the strategy
+type ConfigGenerator struct {
+    format ConfigFormat
+}
+```
+
+## 5.3 Template Method Pattern
+
+### 5.3.1 Pattern Overview
+
+The Template Method Pattern defines the skeleton of an algorithm in a base class, letting subclasses override specific steps without changing the algorithm's structure.
+
+### 5.3.2 Application in SDK
+
+- **ClusterReconciler**: Defines the reconciliation workflow (PreReconcile → Reconcile → PostReconcile) as a fixed template.
+- **Extension Hooks**: Products customize behavior by implementing extension interfaces at specific hook points.
+- **Resource Construction**: `StatefulSetBuilder` follows a template for constructing K8s resources.
+
+### 5.3.3 Reconciliation Template
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Reconciliation Template                   │
+├─────────────────────────────────────────────────────────────┤
+│  1. PreReconcile Extensions (Hook)                          │
+│     └── Product-specific pre-processing                     │
+│  2. Validate Dependencies                                   │
+│     └── Check external resources (ZK, S3, DB)               │
+│  3. For Each Role:                                          │
+│     ├── Role PreReconcile Extensions (Hook)                 │
+│     ├── For Each RoleGroup:                                 │
+│     │   ├── RoleGroup PreReconcile Extensions (Hook)        │
+│     │   ├── Build/Update Resources (StatefulSet, Service)   │
+│     │   └── RoleGroup PostReconcile Extensions (Hook)       │
+│     └── Role PostReconcile Extensions (Hook)                │
+│  4. Cleanup Orphaned Resources                              │
+│  5. Update Status                                           │
+│  6. PostReconcile Extensions (Hook)                         │
+│     └── Product-specific post-processing                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 5.3.4 Benefits
+
+- **Consistency**: All products follow the same reconciliation structure.
+- **Controlled Extension**: Products can only extend at designated points.
+- **Maintainability**: Changes to the core flow affect all products uniformly.
+
+## 5.4 Singleton Pattern
+
+### 5.4.1 Pattern Overview
+
+The Singleton Pattern ensures a class has only one instance and provides a global point of access to it.
+
+### 5.4.2 Application in SDK
+
+- **ExtensionRegistry**: Globally unique registry that manages all extensions. Ensures extensions are registered only once and executed in a deterministic order.
+- **Scheme**: The Kubernetes scheme is registered once during operator initialization.
+
+### 5.4.3 Benefits
+
+- **Consistency**: Single point of truth for extension management.
+- **Deterministic Execution**: Extensions execute in registration order.
+- **Thread Safety**: Prevents duplicate registration in concurrent scenarios.
+
+### 5.4.4 Example
+
+```go
+// ExtensionRegistry is a global singleton
+var globalRegistry = &ExtensionRegistry{
+    clusterExtensions:  make([]ClusterExtension, 0),
+    roleExtensions:     make([]RoleExtension, 0),
+    roleGroupExtensions: make([]RoleGroupExtension, 0),
+}
+
+func GetExtensionRegistry() *ExtensionRegistry {
+    return globalRegistry
+}
+```
+
+## 5.5 Builder Pattern
+
+### 5.5.1 Pattern Overview
+
+The Builder Pattern separates the construction of a complex object from its representation, allowing the same construction process to create different representations.
+
+### 5.5.2 Application in SDK
+
+- **StatefulSetBuilder**: Constructs `StatefulSet` resources step-by-step, handling complex configurations like volumes, containers, and affinity rules.
+- **ConfigMapBuilder**: Builds ConfigMaps with merged configurations.
+- **ServiceBuilder**: Constructs Service resources with appropriate ports and selectors.
+
+### 5.5.3 Builder Workflow
+
+```go
+// StatefulSetBuilder constructs resources step-by-step
+type StatefulSetBuilder struct {
+    roleGroup    *RoleGroup
+    config       *MergedConfig
+    sidecars     []SidecarProvider
+}
+
+func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
+    sts := &appsv1.StatefulSet{}
+    b.setName(sts)
+    b.setLabels(sts)
+    b.setReplicas(sts)
+    b.setPodSpec(sts)      // Includes containers, volumes, affinity
+    b.setVolumeClaims(sts) // PVC configuration
+    return sts
+}
+```
+
+### 5.5.4 Benefits
+
+- **Step-by-Step Construction**: Complex resources are built incrementally.
+- **Configuration Flexibility**: Different configurations produce different resource representations.
+- **Separation of Concerns**: Construction logic is isolated from business logic.
+
+## 5.6 Adapter Pattern
+
+### 5.6.1 Pattern Overview
+
+The Adapter Pattern converts the interface of a class into another interface that clients expect, enabling classes with incompatible interfaces to work together.
+
+### 5.6.2 Application in SDK
+
+- **ConfigFormat Adapters**: Convert internal configuration maps to various external formats:
+  - `XMLAdapter`: Adapts to Hadoop XML format
+  - `PropertiesAdapter`: Adapts to Java .properties format
+  - `YAMLAdapter`: Adapts to YAML format
+  - `EnvAdapter`: Adapts to environment variable format
+
+### 5.6.3 Benefits
+
+- **Format Independence**: SDK core works with internal map representation.
+- **Extensibility**: New formats can be added by implementing the adapter interface.
+- **Reusability**: Same configuration source can produce multiple output formats.
+
+## 5.7 Observer Pattern
+
+### 5.7.1 Pattern Overview
+
+The Observer Pattern defines a one-to-many dependency between objects so that when one object changes state, all its dependents are notified and updated automatically.
+
+### 5.7.2 Application in SDK
+
+- **Event Recording**: The SDK uses Kubernetes `EventRecorder` to emit events when resources change.
+- **Status Updates**: Extensions can observe and react to status changes via hooks.
+
+### 5.7.3 Benefits
+
+- **Decoupling**: Event emission is decoupled from business logic.
+- **Auditability**: All significant changes are recorded as events.
+- **Troubleshooting**: Events provide a chronological log of operations.
+
+## 5.8 Pattern Summary
+
+| Pattern | Primary Application | Key Benefit |
+|---------|---------------------|-------------|
+| Interface Segregation | `ClusterInterface`, `RoleInterface` | Focused, implementable contracts |
+| Strategy | Extensions, ConfigFormat | Swappable behaviors |
+| Template Method | Reconciliation flow | Consistent process with hooks |
+| Singleton | ExtensionRegistry | Global state management |
+| Builder | StatefulSetBuilder | Complex object construction |
+| Adapter | ConfigFormat adapters | Format interoperability |
+| Observer | Event recording | Change notification |
 
 # 6. Key Problems and Solutions
 
@@ -519,7 +807,7 @@ The core design of the SDK reuses multiple classic design patterns to enhance ar
 
 ## 7.1 SDK Deployment Dependencies
 
-- **K8s Version**: 1.19+ (Adapts to Webhook AdmissionReviewVersions=v1).
+- **K8s Version**: 1.31+ (Adapts to Webhook AdmissionReviewVersions=v1).
 - **Dependent Components**: cert-manager (for Webhook certificate generation), kubebuilder 3.0+ (for code generation).
 - **Permission Requirements**: Operator requires CRUD permissions for resources such as StatefulSet, Service, ConfigMap, etc.
 

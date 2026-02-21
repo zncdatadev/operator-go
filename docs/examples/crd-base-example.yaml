@@ -58,7 +58,7 @@ spec:
     # --- Product Specific Fields (Examples) ---
     # Products extend this section with their own global settings.
     #
-    # zookeeperConnection:       <-- HDFS/HBase/Kafka would add this
+    # zookeeperConfigMap:       <-- HDFS/HBase/Kafka would add this
     #
     # s3:                        <-- Hive/Trino would add this
     #
