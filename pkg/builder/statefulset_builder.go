@@ -64,6 +64,9 @@ type StatefulSetBuilder struct {
 
 	// Graceful shutdown timeout
 	TerminationGracePeriodSeconds *int64
+
+	// Lifecycle hooks
+	lifecycle *corev1.Lifecycle
 }
 
 // StorageConfig defines storage configuration for StatefulSet.
@@ -266,6 +269,46 @@ func (b *StatefulSetBuilder) WithTerminationGracePeriod(seconds int64) *Stateful
 	return b
 }
 
+// WithPreStopHook sets a preStop exec hook.
+func (b *StatefulSetBuilder) WithPreStopHook(command []string) *StatefulSetBuilder {
+	if b.lifecycle == nil {
+		b.lifecycle = &corev1.Lifecycle{}
+	}
+	b.lifecycle.PreStop = &corev1.LifecycleHandler{
+		Exec: &corev1.ExecAction{
+			Command: command,
+		},
+	}
+	return b
+}
+
+// WithPreStopHTTPGet sets a preStop HTTP GET hook.
+func (b *StatefulSetBuilder) WithPreStopHTTPGet(path string, port int) *StatefulSetBuilder {
+	if b.lifecycle == nil {
+		b.lifecycle = &corev1.Lifecycle{}
+	}
+	b.lifecycle.PreStop = &corev1.LifecycleHandler{
+		HTTPGet: &corev1.HTTPGetAction{
+			Path: path,
+			Port: intstr.FromInt(port),
+		},
+	}
+	return b
+}
+
+// WithPostStartHook sets a postStart exec hook.
+func (b *StatefulSetBuilder) WithPostStartHook(command []string) *StatefulSetBuilder {
+	if b.lifecycle == nil {
+		b.lifecycle = &corev1.Lifecycle{}
+	}
+	b.lifecycle.PostStart = &corev1.LifecycleHandler{
+		Exec: &corev1.ExecAction{
+			Command: command,
+		},
+	}
+	return b
+}
+
 // Build creates the StatefulSet.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 	sts := &appsv1.StatefulSet{
@@ -361,6 +404,11 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 
 	// Add explicit env vars (these override config env vars)
 	container.Env = append(container.Env, b.EnvVars...)
+
+	// Apply lifecycle hooks
+	if b.lifecycle != nil {
+		container.Lifecycle = b.lifecycle
+	}
 
 	// Setup probes
 	container.LivenessProbe = b.buildLivenessProbe()
