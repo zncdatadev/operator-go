@@ -80,8 +80,8 @@ func (a *XMLAdapter) Marshal(data map[string]string) (string, error) {
 	for _, key := range keys {
 		value := data[key]
 		sb.WriteString("  <property>\n")
-		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", escapeXML(key)))
-		sb.WriteString(fmt.Sprintf("    <value>%s</value>\n", escapeXML(value)))
+		fmt.Fprintf(&sb, "    <name>%s</name>\n", escapeXML(key))
+		fmt.Fprintf(&sb, "    <value>%s</value>\n", escapeXML(value))
 		sb.WriteString("  </property>\n")
 	}
 

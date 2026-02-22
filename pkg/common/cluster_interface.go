@@ -73,33 +73,33 @@ type ClusterObject struct {
 
 // GetName returns the cluster name.
 func (c *ClusterObject) GetName() string {
-	return c.ObjectMeta.Name
+	return c.Name
 }
 
 // GetNamespace returns the cluster namespace.
 func (c *ClusterObject) GetNamespace() string {
-	return c.ObjectMeta.Namespace
+	return c.Namespace
 }
 
 // GetUID returns the cluster UID.
 func (c *ClusterObject) GetUID() string {
-	return string(c.ObjectMeta.UID)
+	return string(c.UID)
 }
 
 // GetLabels returns the cluster labels.
 func (c *ClusterObject) GetLabels() map[string]string {
-	if c.ObjectMeta.Labels == nil {
+	if c.Labels == nil {
 		return make(map[string]string)
 	}
-	return c.ObjectMeta.Labels
+	return c.Labels
 }
 
 // GetAnnotations returns the cluster annotations.
 func (c *ClusterObject) GetAnnotations() map[string]string {
-	if c.ObjectMeta.Annotations == nil {
+	if c.Annotations == nil {
 		return make(map[string]string)
 	}
-	return c.ObjectMeta.Annotations
+	return c.Annotations
 }
 
 // GetObjectMeta returns the object metadata.
