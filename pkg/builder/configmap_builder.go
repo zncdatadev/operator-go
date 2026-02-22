@@ -17,11 +17,12 @@ limitations under the License.
 package builder
 
 import (
+	"fmt"
+
 	"github.com/zncdatadev/operator-go/pkg/config"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // ConfigMapBuilder constructs ConfigMap resources.
@@ -83,23 +84,22 @@ func (b *ConfigMapBuilder) WithConfigFiles(files map[string]string) *ConfigMapBu
 }
 
 // WithMergedConfig sets the data from a MergedConfig using the provided generator.
-// If an error occurs during config generation, it is logged and the builder returns without data.
-func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator *config.MultiFormatConfigGenerator) *ConfigMapBuilder {
+// Returns an error if config generation fails to prevent creating ConfigMaps with incomplete data.
+func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator *config.MultiFormatConfigGenerator) (*ConfigMapBuilder, error) {
 	if cfg == nil || generator == nil {
-		return b
+		return b, nil
 	}
 
 	files, err := generator.GenerateFiles(cfg.ConfigFiles)
 	if err != nil {
-		log.Log.Error(err, "Failed to generate config files", "configMap", b.Name)
-		return b
+		return b, fmt.Errorf("failed to generate config files for %s: %w", b.Name, err)
 	}
 
 	for filename, content := range files {
 		b.Data[filename] = content
 	}
 
-	return b
+	return b, nil
 }
 
 // Build creates the ConfigMap.

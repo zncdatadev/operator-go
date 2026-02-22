@@ -60,12 +60,12 @@ func (r *RoleInfo) GetRoleSpec() *v1alpha1.RoleSpec {
 
 // GetRoleGroups returns all role group specifications.
 func (r *RoleInfo) GetRoleGroups() map[string]v1alpha1.RoleGroupSpec {
-	return r.Spec.GetRoleGroups()
+	return r.GetRoleSpec().GetRoleGroups()
 }
 
 // GetOverrides returns the role-level overrides.
 func (r *RoleInfo) GetOverrides() *v1alpha1.OverridesSpec {
-	return r.Spec.GetOverrides()
+	return r.GetRoleSpec().GetOverrides()
 }
 
 // RoleGroupInfo contains information about a role group.

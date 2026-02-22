@@ -91,6 +91,7 @@ func (d *DependencyResolver) ValidateSecret(ctx context.Context, namespace, name
 }
 
 // ValidateZKConfig validates Zookeeper configuration.
+// The context parameter is reserved for future use (e.g., ZK connectivity validation).
 func (d *DependencyResolver) ValidateZKConfig(_ context.Context, zkConfig *v1alpha1.ZKConfig) error {
 	if zkConfig == nil {
 		return nil

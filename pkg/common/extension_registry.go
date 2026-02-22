@@ -53,6 +53,9 @@ type ExtensionRegistry struct {
 }
 
 // globalRegistry is the singleton instance.
+// Thread-safety: All access to globalRegistry is protected by sync.RWMutex.
+// For testing scenarios, use ResetExtensionRegistry() to reset state between tests,
+// or consider creating isolated instances with NewExtensionRegistry() for parallel tests.
 var globalRegistry = &ExtensionRegistry{
 	clusterExtensions:   make([]clusterExtensionEntry, 0),
 	roleExtensions:      make([]roleExtensionEntry, 0),
