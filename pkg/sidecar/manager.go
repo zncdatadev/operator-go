@@ -17,15 +17,20 @@ limitations under the License.
 package sidecar
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/zncdatadev/operator-go/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // SidecarManager manages sidecar providers and injection.
 type SidecarManager struct {
 	providers map[string]SidecarProvider
 	configs   map[string]*SidecarConfig
+	client    client.Client
+	namespace string
 }
 
 // NewSidecarManager creates a new SidecarManager.
@@ -34,6 +39,82 @@ func NewSidecarManager() *SidecarManager {
 		providers: make(map[string]SidecarProvider),
 		configs:   make(map[string]*SidecarConfig),
 	}
+}
+
+// WithClient sets the Kubernetes client for validation
+func (m *SidecarManager) WithClient(c client.Client, namespace string) *SidecarManager {
+	m.client = c
+	m.namespace = namespace
+	return m
+}
+
+// ValidateProvider validates a sidecar provider configuration
+func (m *SidecarManager) ValidateProvider(name string) error {
+	if m.client == nil || m.namespace == "" {
+		return nil
+	}
+
+	provider, exists := m.providers[name]
+	if !exists {
+		return common.ResourceNotFoundError("sidecar provider", m.namespace, name, fmt.Errorf("sidecar provider %s not found", name))
+	}
+
+	config, exists := m.configs[name]
+	if !exists {
+		config = &SidecarConfig{Enabled: true}
+	}
+
+	if !config.Enabled {
+		return nil
+	}
+
+	return validateProviderConfig(m.client, m.namespace, provider)
+}
+
+// ValidateAll validates all registered providers
+func (m *SidecarManager) ValidateAll() error {
+	if m.client == nil || m.namespace == "" {
+		return nil
+	}
+
+	var errors []error
+	for name := range m.providers {
+		if err := m.ValidateProvider(name); err != nil {
+			errors = append(errors, common.CreateResourceError("sidecar", m.namespace, name, fmt.Errorf("provider %s: %w", name, err)))
+		}
+	}
+
+	if len(errors) > 0 {
+		return common.ConfigMergeError("sidecar validation", fmt.Errorf("validation errors: %v", errors))
+	}
+	return nil
+}
+
+// validateProviderConfig validates the configuration for a provider
+func validateProviderConfig(c client.Client, namespace string, provider SidecarProvider) error {
+	switch provider.(type) {
+	case *VectorSidecarProvider:
+		cmName := "vector-config"
+		if err := validateConfigMapExists(c, namespace, cmName); err != nil {
+			return common.ResourceNotFoundError("config map", namespace, cmName, fmt.Errorf("vector config map %q not found: %w", cmName, err))
+		}
+	case *JMXExporterSidecarProvider:
+		cmName := "jmx-exporter-config"
+		if err := validateConfigMapExists(c, namespace, cmName); err != nil {
+			return common.ResourceNotFoundError("config map", namespace, cmName, fmt.Errorf("jmx-exporter config map %q not found: %w", cmName, err))
+		}
+	}
+	return nil
+}
+
+// validateConfigMapExists validates that a ConfigMap exists
+func validateConfigMapExists(c client.Client, namespace, name string) error {
+	cm := &corev1.ConfigMap{}
+	err := c.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, cm)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // Register registers a sidecar provider with its configuration.

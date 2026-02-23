@@ -18,7 +18,26 @@ package webhook
 
 import (
 	"context"
+	"fmt"
+
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
+
+// ValidateFieldLength validates string length
+func ValidateFieldLength(value, fieldName string, minLength, maxLength int) error {
+	if len(value) < minLength || len(value) > maxLength {
+		return common.ConfigValidationError(fieldName, fmt.Errorf("%s: length must be between %d and %d characters", fieldName, minLength, maxLength))
+	}
+	return nil
+}
+
+// ValidateNonEmptyMap validates map is not empty
+func ValidateNonEmptyMap(m map[string]string, fieldName string) error {
+	if len(m) == 0 {
+		return common.ConfigValidationError(fieldName, fmt.Errorf("%s: map cannot be empty", fieldName))
+	}
+	return nil
+}
 
 // ProductValidator defines the interface for validating CRs.
 // Products implement this interface to provide custom validation logic

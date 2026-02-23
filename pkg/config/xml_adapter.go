@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 // XMLProperty represents a single property in Hadoop XML configuration.
@@ -93,7 +95,7 @@ func (a *XMLAdapter) Marshal(data map[string]string) (string, error) {
 func (a *XMLAdapter) Unmarshal(data string) (map[string]string, error) {
 	var config XMLConfiguration
 	if err := xml.Unmarshal([]byte(data), &config); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal XML: %w", err)
+		return nil, common.ConfigParseError("XML", fmt.Errorf("failed to unmarshal XML: %w", err))
 	}
 
 	result := make(map[string]string, len(config.Properties))

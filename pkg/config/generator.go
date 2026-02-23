@@ -18,6 +18,8 @@ package config
 
 import (
 	"fmt"
+
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 // ConfigGenerator generates configuration files using format adapters.
@@ -59,7 +61,7 @@ func (g *ConfigGenerator) GenerateFiles(configFiles map[string]map[string]string
 	for filename, config := range configFiles {
 		content, err := g.Generate(config)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate %s: %w", filename, err)
+			return nil, common.ConfigParseError(filename, fmt.Errorf("failed to generate %s: %w", filename, err))
 		}
 		result[filename] = content
 	}
@@ -109,7 +111,7 @@ func (g *MultiFormatConfigGenerator) GenerateFiles(configFiles map[string]map[st
 	for filename, config := range configFiles {
 		content, err := g.Generate(filename, config)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate %s: %w", filename, err)
+			return nil, common.ConfigParseError(filename, fmt.Errorf("failed to generate %s: %w", filename, err))
 		}
 		result[filename] = content
 	}

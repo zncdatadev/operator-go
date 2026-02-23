@@ -19,6 +19,7 @@ package util
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -37,6 +38,7 @@ type ExecUtil struct {
 	Client    client.Client
 	Config    *rest.Config
 	ClientSet *kubernetes.Clientset
+	Executor  PodExecutor
 }
 
 // NewExecUtil creates a new ExecUtil.
@@ -50,6 +52,7 @@ func NewExecUtil(client client.Client, config *rest.Config) (*ExecUtil, error) {
 		Client:    client,
 		Config:    config,
 		ClientSet: clientSet,
+		Executor:  nil,
 	}, nil
 }
 
@@ -60,6 +63,15 @@ type ExecuteResult struct {
 	ExitCode int
 }
 
+// PodExecutor is an interface for executing commands in pods.
+// This interface allows for mocking in tests.
+type PodExecutor interface {
+	// ExecuteWithTimeout runs a command with a timeout.
+	ExecuteWithTimeout(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*ExecuteResult, error)
+	// ExecuteWithOutput executes a command and streams output to the provided writers.
+	ExecuteWithOutput(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error
+}
+
 // Execute runs a command in a pod container.
 func (e *ExecUtil) Execute(ctx context.Context, namespace, podName, containerName string, command []string) (*ExecuteResult, error) {
 	return e.ExecuteWithTimeout(ctx, namespace, podName, containerName, command, 30*time.Second)
@@ -67,6 +79,10 @@ func (e *ExecUtil) Execute(ctx context.Context, namespace, podName, containerNam
 
 // ExecuteWithTimeout runs a command with a timeout.
 func (e *ExecUtil) ExecuteWithTimeout(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*ExecuteResult, error) {
+	if e.Executor != nil {
+		return e.Executor.ExecuteWithTimeout(ctx, namespace, podName, containerName, command, timeout)
+	}
+
 	// Create timeout context
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -117,6 +133,13 @@ func (e *ExecUtil) ExecuteWithTimeout(ctx context.Context, namespace, podName, c
 
 // ExecuteSimple runs a command and returns only stdout.
 func (e *ExecUtil) ExecuteSimple(ctx context.Context, namespace, podName, containerName string, command []string) (string, error) {
+	if e.Executor != nil {
+		result, err := e.Executor.ExecuteWithTimeout(ctx, namespace, podName, containerName, command, 30*time.Second)
+		if err != nil && result == nil {
+			return "", err
+		}
+		return result.Stdout, err
+	}
 	result, err := e.Execute(ctx, namespace, podName, containerName, command)
 	if err != nil {
 		return "", err
@@ -126,7 +149,14 @@ func (e *ExecUtil) ExecuteSimple(ctx context.Context, namespace, podName, contai
 
 // ExecuteInPod finds the first pod matching labels and executes a command.
 func (e *ExecUtil) ExecuteInPod(ctx context.Context, namespace string, labels map[string]string, containerName string, command []string) (*ExecuteResult, error) {
-	// Find pods matching labels
+	if e.Executor != nil {
+		result, err := e.Executor.ExecuteWithTimeout(ctx, namespace, "test-pod", containerName, command, 30*time.Second)
+		if err != nil && result == nil {
+			return nil, err
+		}
+		return result, err
+	}
+
 	podList := &corev1.PodList{}
 	if err := e.Client.List(ctx, podList,
 		client.InNamespace(namespace),
@@ -139,7 +169,6 @@ func (e *ExecUtil) ExecuteInPod(ctx context.Context, namespace string, labels ma
 		return nil, fmt.Errorf("no pods found matching labels %v", labels)
 	}
 
-	// Find a running pod
 	for _, pod := range podList.Items {
 		if pod.Status.Phase == corev1.PodRunning {
 			return e.Execute(ctx, namespace, pod.Name, containerName, command)
@@ -151,7 +180,14 @@ func (e *ExecUtil) ExecuteInPod(ctx context.Context, namespace string, labels ma
 
 // CopyFromPod copies a file from a pod.
 func (e *ExecUtil) CopyFromPod(ctx context.Context, namespace, podName, containerName, srcPath string) ([]byte, error) {
-	// Use cat command to read file content
+	if e.Executor != nil {
+		result, err := e.Executor.ExecuteWithTimeout(ctx, namespace, podName, containerName, []string{"cat", srcPath}, 30*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("failed to copy file from pod: %w", err)
+		}
+		return []byte(result.Stdout), nil
+	}
+
 	command := []string{"cat", srcPath}
 	result, err := e.Execute(ctx, namespace, podName, containerName, command)
 	if err != nil {
@@ -209,6 +245,9 @@ func (e *ExecUtil) WaitForPodReady(ctx context.Context, namespace, podName strin
 
 // ExecuteWithOutput executes a command and streams output to the provided writers.
 func (e *ExecUtil) ExecuteWithOutput(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error {
+	if e.Executor != nil {
+		return e.Executor.ExecuteWithOutput(ctx, namespace, podName, containerName, command, stdout, stderr)
+	}
 	req := e.ClientSet.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -232,4 +271,28 @@ func (e *ExecUtil) ExecuteWithOutput(ctx context.Context, namespace, podName, co
 		Stdout: stdout,
 		Stderr: stderr,
 	})
+}
+
+// extractExitCode extracts exit code from error if available.
+func extractExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+
+	if exitErr, ok := err.(interface{ ExitStatus() int }); ok {
+		return exitErr.ExitStatus()
+	}
+
+	var exitErr interface{ ExitStatus() int }
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitStatus()
+	}
+
+	return 1
+}
+
+// WithExecutor sets a custom executor for testing.
+func (e *ExecUtil) WithExecutor(executor PodExecutor) *ExecUtil {
+	e.Executor = executor
+	return e
 }

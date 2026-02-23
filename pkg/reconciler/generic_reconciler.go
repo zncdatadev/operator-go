@@ -38,10 +38,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// Default reconciliation configuration.
+// Default health check configuration.
 const (
+	// DefaultHealthCheckInterval is the default interval between health checks.
 	DefaultHealthCheckInterval = 120 * time.Second
-	DefaultHealthCheckTimeout  = 300 * time.Second
+	// DefaultHealthCheckTimeout is the default timeout for health checks.
+	DefaultHealthCheckTimeout = 300 * time.Second
 )
 
 // GenericReconcilerConfig contains configuration for creating a GenericReconciler.
@@ -241,7 +243,7 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 			case "ReconciliationPaused":
 				logger.Info("Reconciliation is paused")
 				status.SetDegraded(true, v1alpha1.ReasonReconciliationPaused, "Reconciliation is paused")
-				_ = r.updateStatus(ctx, cr)
+				_ = r.updateStatus(ctx, cr) // nolint:errcheck
 				return ctrl.Result{}, nil
 			case "Stopped":
 				logger.Info("Cluster is stopped, scaling to zero")

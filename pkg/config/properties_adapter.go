@@ -21,6 +21,18 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/zncdatadev/operator-go/pkg/common"
+)
+
+const (
+	escapeBackslash = "\\\\"
+	escapeEqual     = "\\="
+	escapeColon     = "\\:"
+	escapeSpace     = "\\ "
+	escapeN         = "\\n"
+	escapeR         = "\\r"
+	escapeT         = "\\t"
 )
 
 // PropertiesAdapter converts between map and Java .properties format.
@@ -126,7 +138,7 @@ func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan properties: %w", err)
+		return nil, common.ConfigParseError("properties", fmt.Errorf("failed to scan properties: %w", err))
 	}
 
 	return result, nil
@@ -134,22 +146,22 @@ func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 
 // escapePropertiesKey escapes special characters in property keys.
 func escapePropertiesKey(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "=", "\\=")
-	s = strings.ReplaceAll(s, ":", "\\:")
-	s = strings.ReplaceAll(s, " ", "\\ ")
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	s = strings.ReplaceAll(s, "\t", "\\t")
+	s = strings.ReplaceAll(s, "\\", escapeBackslash)
+	s = strings.ReplaceAll(s, "=", escapeEqual)
+	s = strings.ReplaceAll(s, ":", escapeColon)
+	s = strings.ReplaceAll(s, " ", escapeSpace)
+	s = strings.ReplaceAll(s, "\n", escapeN)
+	s = strings.ReplaceAll(s, "\r", escapeR)
+	s = strings.ReplaceAll(s, "\t", escapeT)
 	return s
 }
 
 // escapePropertiesValue escapes special characters in property values.
 func escapePropertiesValue(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	s = strings.ReplaceAll(s, "\t", "\\t")
+	s = strings.ReplaceAll(s, "\\", escapeBackslash)
+	s = strings.ReplaceAll(s, "\n", escapeN)
+	s = strings.ReplaceAll(s, "\r", escapeR)
+	s = strings.ReplaceAll(s, "\t", escapeT)
 	return s
 }
 

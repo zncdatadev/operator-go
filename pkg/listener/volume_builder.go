@@ -18,8 +18,8 @@ package listener
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ListenerClass defines the exposure strategy.
@@ -36,7 +36,7 @@ const (
 
 // CSI driver constants
 const (
-	CSIDriverName          = "listeners.stackable.tech"
+	CSIDriverName           = "listeners.stackable.tech"
 	ListenerClassAnnotation = "listeners.stackable.tech/class"
 	ListenerScopeAnnotation = "listeners.stackable.tech/scope"
 )

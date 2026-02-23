@@ -156,7 +156,7 @@ func (h *HealthManager) CheckPodHealth(ctx context.Context, namespace string, la
 		return 0, 0, err
 	}
 
-	total := len(podList.Items)
+	total := len(podList.Items) // nolint:prealloc
 	ready := 0
 
 	for _, pod := range podList.Items {
