@@ -46,6 +46,7 @@ func (b *ListenerServiceBuilder) WithPorts(ports []corev1.ServicePort) *Listener
 
 // Build creates the Service.
 func (b *ListenerServiceBuilder) Build() *corev1.Service {
+	// Default to ClusterIP for safety - unknown listener classes will use this default
 	serviceType := corev1.ServiceTypeClusterIP
 
 	// Map listener class to service type
@@ -53,9 +54,9 @@ func (b *ListenerServiceBuilder) Build() *corev1.Service {
 	case ListenerClassExternalStable, ListenerClassExternalUnstable:
 		serviceType = corev1.ServiceTypeLoadBalancer
 	case ListenerClassClusterInternal:
-		fallthrough
+		// Already defaulted to ClusterIP above
 	default:
-		serviceType = corev1.ServiceTypeClusterIP
+		// Log warning for unknown listener class? For now, use ClusterIP as safe default
 	}
 
 	return &corev1.Service{

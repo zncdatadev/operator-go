@@ -134,15 +134,17 @@ func GenerateLog4j2(configs map[string]LoggerConfig) (string, error) {
 // GenerateLogback generates Logback XML format.
 // The output format is:
 // <configuration>
-//   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-//     <encoder>
-//       <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n</pattern>
-//     </encoder>
-//   </appender>
-//   <root level="INFO">
-//     <appender-ref ref="STDOUT" />
-//   </root>
-//   <logger name="com.example" level="DEBUG" />
+//
+//	<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+//	  <encoder>
+//	    <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n</pattern>
+//	  </encoder>
+//	</appender>
+//	<root level="INFO">
+//	  <appender-ref ref="STDOUT" />
+//	</root>
+//	<logger name="com.example" level="DEBUG" />
+//
 // </configuration>
 func GenerateLogback(configs map[string]LoggerConfig) (string, error) {
 	var sb strings.Builder
@@ -184,14 +186,15 @@ func GenerateLogback(configs map[string]LoggerConfig) (string, error) {
 
 // GeneratePythonLogging generates Python logging config.
 // The output format is:
-// LOGGING = {
-//     'version': 1,
-//     'disable_existing_loggers': False,
-//     'formatters': {...},
-//     'handlers': {...},
-//     'loggers': {...},
-//     'root': {...}
-// }
+//
+//	LOGGING = {
+//	    'version': 1,
+//	    'disable_existing_loggers': False,
+//	    'formatters': {...},
+//	    'handlers': {...},
+//	    'loggers': {...},
+//	    'root': {...}
+//	}
 func GeneratePythonLogging(configs map[string]LoggerConfig) (string, error) {
 	var sb strings.Builder
 

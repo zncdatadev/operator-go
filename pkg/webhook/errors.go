@@ -65,9 +65,9 @@ func (errs ValidationErrors) Error() string {
 		return "no validation errors"
 	}
 
-	var msgs []string
-	for _, err := range errs {
-		msgs = append(msgs, err.Error())
+	msgs := make([]string, len(errs))
+	for i, err := range errs {
+		msgs[i] = err.Error()
 	}
 	return strings.Join(msgs, "; ")
 }

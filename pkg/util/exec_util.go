@@ -274,6 +274,7 @@ func (e *ExecUtil) ExecuteWithOutput(ctx context.Context, namespace, podName, co
 }
 
 // extractExitCode extracts exit code from error if available.
+// This function is used internally and may be exposed in future implementations.
 func extractExitCode(err error) int {
 	if err == nil {
 		return 0
