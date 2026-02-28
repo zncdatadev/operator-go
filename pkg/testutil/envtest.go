@@ -25,7 +25,9 @@ import (
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -135,10 +137,26 @@ func (e *TestEnv) Start() error {
 		return fmt.Errorf("failed to add corev1 to scheme: %w", err)
 	}
 
+	if err := appsv1.AddToScheme(e.Scheme); err != nil {
+		_ = e.Env.Stop()
+		return fmt.Errorf("failed to add appsv1 to scheme: %w", err)
+	}
+
+	if err := policyv1.AddToScheme(e.Scheme); err != nil {
+		_ = e.Env.Stop()
+		return fmt.Errorf("failed to add policyv1 to scheme: %w", err)
+	}
+
 	// Add project-specific types to scheme
 	if err := v1alpha1.AddToScheme(e.Scheme); err != nil {
 		_ = e.Env.Stop()
 		return fmt.Errorf("failed to add v1alpha1 to scheme: %w", err)
+	}
+
+	// Add MockCluster test type to scheme
+	if err := AddToScheme(e.Scheme); err != nil {
+		_ = e.Env.Stop()
+		return fmt.Errorf("failed to add MockCluster to scheme: %w", err)
 	}
 
 	// Create client

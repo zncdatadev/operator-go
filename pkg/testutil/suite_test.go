@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package reconciler_test
+package testutil_test
 
 import (
 	"context"
@@ -27,7 +27,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -38,14 +37,13 @@ var (
 	testEnv    *testutil.TestEnv
 	testScheme *runtime.Scheme
 	k8sClient  client.Client
-	recorder   record.EventRecorder
 	ctx        context.Context
 	cancel     context.CancelFunc
 )
 
-func TestReconciler(t *testing.T) {
+func TestTestutil(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Reconciler Suite")
+	RunSpecs(t, "Testutil Suite")
 }
 
 var _ = BeforeSuite(func() {
@@ -64,9 +62,6 @@ var _ = BeforeSuite(func() {
 
 	k8sClient = testEnv.GetClient()
 	Expect(k8sClient).NotTo(BeNil())
-
-	recorder = record.NewFakeRecorder(100)
-	Expect(recorder).NotTo(BeNil())
 })
 
 var _ = AfterSuite(func() {

@@ -17,10 +17,14 @@ limitations under the License.
 package sidecar_test
 
 import (
+	"fmt"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
+	"github.com/zncdatadev/operator-go/pkg/testutil"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var _ = Describe("SidecarManager", func() {
@@ -120,6 +124,18 @@ var _ = Describe("SidecarManager", func() {
 			err := manager.InjectAll(podSpec)
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("should return error when provider inject fails", func() {
+			injectErr := fmt.Errorf("inject error")
+			provider := &mockSidecarProvider{name: "test-sidecar", injectErr: injectErr}
+			config := &sidecar.SidecarConfig{Enabled: true}
+			manager.Register(provider, config)
+
+			podSpec := &corev1.PodSpec{}
+			err := manager.InjectAll(podSpec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to inject sidecar"))
+		})
 	})
 
 	Describe("Inject", func() {
@@ -137,6 +153,17 @@ var _ = Describe("SidecarManager", func() {
 			podSpec := &corev1.PodSpec{}
 			err := manager.Inject(podSpec, "non-existent")
 			Expect(err).To(HaveOccurred())
+		})
+
+		It("should skip injection for disabled sidecar", func() {
+			provider := &mockSidecarProvider{name: "test-sidecar"}
+			config := &sidecar.SidecarConfig{Enabled: false}
+			manager.Register(provider, config)
+
+			podSpec := &corev1.PodSpec{}
+			err := manager.Inject(podSpec, "test-sidecar")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podSpec.Containers).To(BeEmpty())
 		})
 	})
 
@@ -161,6 +188,187 @@ var _ = Describe("SidecarManager", func() {
 			provider := &mockSidecarProvider{name: "test-sidecar"}
 			manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
 			Expect(manager.Count()).To(Equal(1))
+		})
+	})
+
+	Describe("WithClient", func() {
+		It("should set client and namespace", func() {
+			fakeClient := testutil.NewFakeClient()
+			result := manager.WithClient(fakeClient, "test-namespace")
+			Expect(result).To(Equal(manager))
+		})
+	})
+
+	Describe("ValidateProvider", func() {
+		It("should return nil when client is not set", func() {
+			provider := &mockSidecarProvider{name: "test-sidecar"}
+			manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateProvider("test-sidecar")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return nil when namespace is empty", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "")
+
+			provider := &mockSidecarProvider{name: "test-sidecar"}
+			manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateProvider("test-sidecar")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return error for non-existent provider with client", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "test-namespace")
+
+			err := manager.ValidateProvider("non-existent")
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should return nil for disabled sidecar with client", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "test-namespace")
+
+			provider := &mockSidecarProvider{name: "test-sidecar"}
+			manager.Register(provider, &sidecar.SidecarConfig{Enabled: false})
+
+			err := manager.ValidateProvider("test-sidecar")
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateAll", func() {
+		It("should return nil when client is not set", func() {
+			provider := &mockSidecarProvider{name: "test-sidecar"}
+			manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateAll()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return nil when namespace is empty", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "")
+
+			provider := &mockSidecarProvider{name: "test-sidecar"}
+			manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateAll()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should validate all registered providers with client", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "test-namespace")
+
+			provider1 := &mockSidecarProvider{name: "sidecar-1"}
+			provider2 := &mockSidecarProvider{name: "sidecar-2"}
+			manager.Register(provider1, &sidecar.SidecarConfig{Enabled: true})
+			manager.Register(provider2, &sidecar.SidecarConfig{Enabled: true})
+
+			// For mock providers, validation should succeed
+			err := manager.ValidateAll()
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateProvider with real providers", func() {
+		It("should return error when Vector ConfigMap does not exist", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "test-namespace")
+
+			vectorProvider := sidecar.NewVectorSidecarProvider()
+			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateProvider(sidecar.VectorSidecarName)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should return nil when Vector ConfigMap exists", func() {
+			vectorCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vector-config",
+					Namespace: "test-namespace",
+				},
+			}
+			fakeClient := testutil.NewFakeClientWithObjects(vectorCM)
+			manager.WithClient(fakeClient, "test-namespace")
+
+			vectorProvider := sidecar.NewVectorSidecarProvider()
+			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateProvider(sidecar.VectorSidecarName)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return error when JMX Exporter ConfigMap does not exist", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "test-namespace")
+
+			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
+			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateProvider(sidecar.JMXExporterSidecarName)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should return nil when JMX Exporter ConfigMap exists", func() {
+			jmxCm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jmx-exporter-config",
+					Namespace: "test-namespace",
+				},
+			}
+			fakeClient := testutil.NewFakeClientWithObjects(jmxCm)
+			manager.WithClient(fakeClient, "test-namespace")
+
+			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
+			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateProvider(sidecar.JMXExporterSidecarName)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateAll with real providers", func() {
+		It("should return error when any provider validation fails", func() {
+			fakeClient := testutil.NewFakeClient()
+			manager.WithClient(fakeClient, "test-namespace")
+
+			vectorProvider := sidecar.NewVectorSidecarProvider()
+			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
+			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
+			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateAll()
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should return nil when all provider validations succeed", func() {
+			vectorCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vector-config",
+					Namespace: "test-namespace",
+				},
+			}
+			jmxCm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jmx-exporter-config",
+					Namespace: "test-namespace",
+				},
+			}
+			fakeClient := testutil.NewFakeClientWithObjects(vectorCM, jmxCm)
+			manager.WithClient(fakeClient, "test-namespace")
+
+			vectorProvider := sidecar.NewVectorSidecarProvider()
+			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
+			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
+			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
+
+			err := manager.ValidateAll()
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
@@ -323,7 +531,8 @@ var _ = Describe("Sidecar Helper Functions", func() {
 
 // mockSidecarProvider is a test implementation of SidecarProvider
 type mockSidecarProvider struct {
-	name string
+	name      string
+	injectErr error
 }
 
 func (p *mockSidecarProvider) Name() string {
@@ -331,6 +540,9 @@ func (p *mockSidecarProvider) Name() string {
 }
 
 func (p *mockSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.SidecarConfig) error {
+	if p.injectErr != nil {
+		return p.injectErr
+	}
 	// Add a simple container
 	podSpec.Containers = append(podSpec.Containers, corev1.Container{
 		Name:  p.name,

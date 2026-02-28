@@ -19,6 +19,7 @@ package builder_test
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -134,6 +135,84 @@ var _ = Describe("PDBBuilder", func() {
 
 			Expect(nn.Name).To(Equal(name))
 			Expect(nn.Namespace).To(Equal(namespace))
+		})
+	})
+
+	Describe("WithSpec", func() {
+		It("should return builder unchanged when spec is nil", func() {
+			result := pdbBuilder.WithSpec(nil)
+
+			Expect(result).To(Equal(pdbBuilder))
+			Expect(pdbBuilder.Enabled).To(BeTrue()) // default value
+		})
+
+		It("should set enabled from spec", func() {
+			spec := &v1alpha1.PodDisruptionBudgetSpec{
+				Enabled: false,
+			}
+			result := pdbBuilder.WithSpec(spec)
+
+			Expect(result).To(Equal(pdbBuilder))
+			Expect(pdbBuilder.Enabled).To(BeFalse())
+		})
+
+		It("should set max unavailable from spec", func() {
+			maxUnavailable := int32(2)
+			spec := &v1alpha1.PodDisruptionBudgetSpec{
+				Enabled:        true,
+				MaxUnavailable: &maxUnavailable,
+			}
+			result := pdbBuilder.WithSpec(spec)
+
+			Expect(result).To(Equal(pdbBuilder))
+			Expect(pdbBuilder.MaxUnavailable).NotTo(BeNil())
+			Expect(pdbBuilder.MaxUnavailable.IntValue()).To(Equal(2))
+		})
+
+		It("should handle spec with nil max unavailable", func() {
+			spec := &v1alpha1.PodDisruptionBudgetSpec{
+				Enabled:        true,
+				MaxUnavailable: nil,
+			}
+			result := pdbBuilder.WithSpec(spec)
+
+			Expect(result).To(Equal(pdbBuilder))
+			Expect(pdbBuilder.MaxUnavailable).To(BeNil())
+		})
+
+		It("should build PDB with spec values", func() {
+			maxUnavailable := int32(3)
+			spec := &v1alpha1.PodDisruptionBudgetSpec{
+				Enabled:        true,
+				MaxUnavailable: &maxUnavailable,
+			}
+			pdb := pdbBuilder.
+				WithSelector(map[string]string{"app": "test"}).
+				WithSpec(spec).
+				Build()
+
+			Expect(pdb).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(3))
+		})
+
+		It("should combine WithSpec with other builders", func() {
+			maxUnavailable := int32(1)
+			spec := &v1alpha1.PodDisruptionBudgetSpec{
+				Enabled:        true,
+				MaxUnavailable: &maxUnavailable,
+			}
+			pdb := pdbBuilder.
+				WithLabels(map[string]string{"app": "test"}).
+				WithAnnotations(map[string]string{"description": "test pdb"}).
+				WithSelector(map[string]string{"app": "test-app"}).
+				WithSpec(spec).
+				Build()
+
+			Expect(pdb.Labels).To(HaveKeyWithValue("app", "test"))
+			Expect(pdb.Annotations).To(HaveKeyWithValue("description", "test pdb"))
+			Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "test-app"))
+			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
 		})
 	})
 })

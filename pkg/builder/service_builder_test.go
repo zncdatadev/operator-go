@@ -78,6 +78,21 @@ var _ = Describe("ServiceBuilder", func() {
 			Expect(result).To(Equal(svcBuilder))
 			Expect(svcBuilder.Headless).To(BeTrue())
 		})
+
+		It("should set service type to ClusterIP", func() {
+			result := svcBuilder.WithServiceType(builder.ServiceTypeClusterIP)
+
+			Expect(result).To(Equal(svcBuilder))
+			Expect(svcBuilder.Type).To(Equal(corev1.ServiceTypeClusterIP))
+			Expect(svcBuilder.Headless).To(BeFalse())
+		})
+
+		It("should set service type to LoadBalancer", func() {
+			result := svcBuilder.WithServiceType(builder.ServiceTypeLoadBalancer)
+
+			Expect(result).To(Equal(svcBuilder))
+			Expect(svcBuilder.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+		})
 	})
 
 	Describe("WithSelector", func() {
@@ -163,8 +178,94 @@ var _ = Describe("HeadlessServiceBuilder", func() {
 		namespace = "test-namespace"
 	)
 
+	var headlessBuilder *builder.HeadlessServiceBuilder
+
+	BeforeEach(func() {
+		headlessBuilder = builder.NewHeadlessServiceBuilder(name, namespace)
+	})
+
 	It("should create a headless service by default", func() {
-		builder := builder.NewHeadlessServiceBuilder(name, namespace)
-		Expect(builder.Headless).To(BeTrue())
+		Expect(headlessBuilder.Headless).To(BeTrue())
+	})
+
+	It("should create a builder with ClusterIP type", func() {
+		Expect(headlessBuilder.Type).To(Equal(corev1.ServiceTypeClusterIP))
+	})
+
+	Describe("Build", func() {
+		It("should build a headless service with ClusterIP None", func() {
+			svc := headlessBuilder.
+				WithSelector(map[string]string{"app": "test"}).
+				Build()
+
+			Expect(svc).NotTo(BeNil())
+			Expect(svc.Name).To(Equal(name))
+			Expect(svc.Namespace).To(Equal(namespace))
+			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+		})
+
+		It("should build a headless service with labels", func() {
+			svc := headlessBuilder.
+				WithLabels(map[string]string{"app": "test", "component": "database"}).
+				WithSelector(map[string]string{"app": "test"}).
+				Build()
+
+			Expect(svc.Labels).To(HaveKeyWithValue("app", "test"))
+			Expect(svc.Labels).To(HaveKeyWithValue("component", "database"))
+		})
+
+		It("should build a headless service with annotations", func() {
+			svc := headlessBuilder.
+				WithAnnotations(map[string]string{"description": "headless service"}).
+				WithSelector(map[string]string{"app": "test"}).
+				Build()
+
+			Expect(svc.Annotations).To(HaveKeyWithValue("description", "headless service"))
+		})
+
+		It("should build a headless service with ports", func() {
+			svc := headlessBuilder.
+				WithSelector(map[string]string{"app": "test"}).
+				AddPortSimple("http", 8080, corev1.ProtocolTCP).
+				AddPortSimple("https", 8443, corev1.ProtocolTCP).
+				Build()
+
+			Expect(svc.Spec.Ports).To(HaveLen(2))
+			Expect(svc.Spec.Ports[0].Name).To(Equal("http"))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
+			Expect(svc.Spec.Ports[1].Name).To(Equal("https"))
+			Expect(svc.Spec.Ports[1].Port).To(Equal(int32(8443)))
+		})
+
+		It("should build a headless service with selector", func() {
+			svc := headlessBuilder.
+				WithSelector(map[string]string{"app": "test-app", "tier": "backend"}).
+				Build()
+
+			Expect(svc.Spec.Selector).To(HaveKeyWithValue("app", "test-app"))
+			Expect(svc.Spec.Selector).To(HaveKeyWithValue("tier", "backend"))
+		})
+
+		It("should be StatefulSet compatible", func() {
+			svc := headlessBuilder.
+				WithSelector(map[string]string{"app": "stateful-app"}).
+				AddPortSimple("data", 9042, corev1.ProtocolTCP).
+				Build()
+
+			// Headless services are typically used for StatefulSets
+			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+			Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+		})
+
+		It("should call embedded ServiceBuilder Build method", func() {
+			// This test ensures HeadlessServiceBuilder.Build() is covered
+			svc := headlessBuilder.
+				WithSelector(map[string]string{"app": "test"}).
+				Build()
+
+			// Verify the Build method works correctly through HeadlessServiceBuilder
+			Expect(svc).NotTo(BeNil())
+			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+		})
 	})
 })

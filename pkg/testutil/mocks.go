@@ -26,6 +26,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -186,7 +187,21 @@ func (w *ClusterWrapper) GetScheme() *runtime.Scheme {
 }
 
 // DeepCopyCluster implements common.ClusterInterface.
+// Handles nil receiver to support generic reconciler's fetchCR pattern.
 func (w *ClusterWrapper) DeepCopyCluster() common.ClusterInterface {
+	if w == nil || w.MockCluster == nil {
+		// Return a new empty wrapper with properly initialized TypeMeta
+		// This is needed because fetchCR in generic_reconciler.go calls
+		// DeepCopyCluster() on a zero value to create an instance for client.Get
+		return &ClusterWrapper{
+			MockCluster: &MockCluster{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "MockCluster",
+					APIVersion: "test.zncdata.dev/v1alpha1",
+				},
+			},
+		}
+	}
 	return WrapMockCluster(w.MockCluster.DeepCopy())
 }
 
@@ -323,3 +338,34 @@ func DefaultRoleGroupResources(name, namespace, image string) *reconciler.RoleGr
 
 // Verify interface implementations
 var _ common.ClusterInterface = &ClusterWrapper{}
+
+// SchemeBuilder for MockCluster
+var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
+
+// AddToScheme adds MockCluster to the scheme
+var AddToScheme = SchemeBuilder.AddToScheme
+
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(MockClusterGroupVersion, &MockCluster{}, &MockClusterList{})
+	metav1.AddToGroupVersion(scheme, MockClusterGroupVersion)
+	return nil
+}
+
+// MockClusterGroupVersion for MockCluster CRD
+var MockClusterGroupVersion = schema.GroupVersion{Group: "test.zncdata.dev", Version: "v1alpha1"}
+
+// MockClusterList is a list of MockCluster
+type MockClusterList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata"`
+	Items           []MockCluster `json:"items"`
+}
+
+// DeepCopyObject implements runtime.Object.
+func (l *MockClusterList) DeepCopyObject() runtime.Object {
+	return &MockClusterList{
+		TypeMeta: l.TypeMeta,
+		ListMeta: l.ListMeta,
+		Items:    append([]MockCluster{}, l.Items...),
+	}
+}

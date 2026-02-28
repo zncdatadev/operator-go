@@ -218,18 +218,6 @@ func NewTestRoleGroupSpec(replicas int32) *v1alpha1.RoleGroupSpec {
 	}
 }
 
-// Helper functions
-
-// PtrInt32 returns a pointer to an int32.
-func PtrInt32(i int32) *int32 {
-	return &i
-}
-
-// PtrInt64 returns a pointer to an int64.
-func PtrInt64(i int64) *int64 {
-	return &i
-}
-
 // NewTestNamespace creates a test Namespace.
 func NewTestNamespace(name string) *corev1.Namespace {
 	return &corev1.Namespace{

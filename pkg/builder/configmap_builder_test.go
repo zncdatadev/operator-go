@@ -17,10 +17,24 @@ limitations under the License.
 package builder_test
 
 import (
+	"errors"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/config"
 )
+
+// failingFormat is a mock format that always returns an error
+type failingFormat struct{}
+
+func (f *failingFormat) Marshal(data map[string]string) (string, error) {
+	return "", errors.New("mock marshal error")
+}
+
+func (f *failingFormat) Unmarshal(data string) (map[string]string, error) {
+	return nil, errors.New("mock unmarshal error")
+}
 
 var _ = Describe("ConfigMapBuilder", func() {
 	const (
@@ -123,6 +137,108 @@ var _ = Describe("ConfigMapBuilder", func() {
 
 			Expect(nn.Name).To(Equal(name))
 			Expect(nn.Namespace).To(Equal(namespace))
+		})
+	})
+
+	Describe("WithMergedConfig", func() {
+		It("should return builder unchanged when config is nil", func() {
+			result, err := cmBuilder.WithMergedConfig(nil, nil)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(cmBuilder))
+		})
+
+		It("should return builder unchanged when generator is nil", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"test.properties": {"key": "value"},
+				},
+			}
+			result, err := cmBuilder.WithMergedConfig(cfg, nil)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(cmBuilder))
+		})
+
+		It("should add config files from merged config", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"server.properties": {"port": "8080", "host": "localhost"},
+				},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterDefaultFormats()
+
+			result, err := cmBuilder.WithMergedConfig(cfg, generator)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(cmBuilder))
+			Expect(cmBuilder.Data).To(HaveKey("server.properties"))
+			Expect(cmBuilder.Data["server.properties"]).To(ContainSubstring("port=8080"))
+		})
+
+		It("should add multiple config files from merged config", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"server.properties": {"port": "8080"},
+					"app.yaml":          {"name": "test-app"},
+				},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterDefaultFormats()
+
+			result, err := cmBuilder.WithMergedConfig(cfg, generator)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(cmBuilder))
+			Expect(cmBuilder.Data).To(HaveKey("server.properties"))
+			Expect(cmBuilder.Data).To(HaveKey("app.yaml"))
+		})
+
+		It("should build ConfigMap with merged config data", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"server.properties": {"port": "8080", "host": "localhost"},
+				},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterDefaultFormats()
+
+			cmBuilder.WithMergedConfig(cfg, generator)
+			cm := cmBuilder.Build()
+
+			Expect(cm.Data).To(HaveKey("server.properties"))
+		})
+
+		It("should handle empty config files", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterDefaultFormats()
+
+			result, err := cmBuilder.WithMergedConfig(cfg, generator)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(cmBuilder))
+			Expect(cmBuilder.Data).To(BeEmpty())
+		})
+
+		It("should return error when generator fails", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"test.fail": {"key": "value"},
+				},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			// Register a failing format for .fail extension
+			generator.RegisterFormat(".fail", &failingFormat{})
+
+			result, err := cmBuilder.WithMergedConfig(cfg, generator)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to generate config files"))
+			Expect(result).To(Equal(cmBuilder))
 		})
 	})
 })

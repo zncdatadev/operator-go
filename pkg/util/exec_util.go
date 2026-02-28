@@ -273,9 +273,17 @@ func (e *ExecUtil) ExecuteWithOutput(ctx context.Context, namespace, podName, co
 	})
 }
 
-// extractExitCode extracts exit code from error if available.
-// This function is used internally and may be exposed in future implementations.
-func extractExitCode(err error) int {
+// ExtractExitCode extracts exit code from error if available.
+// This function is useful for determining the exit status of failed command executions.
+//
+// Example:
+//
+//	result, err := execUtil.Execute(ctx, namespace, podName, containerName, cmd)
+//	if err != nil {
+//	    exitCode := ExtractExitCode(err)
+//	    log.Info("command failed", "exitCode", exitCode)
+//	}
+func ExtractExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
