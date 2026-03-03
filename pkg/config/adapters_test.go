@@ -30,7 +30,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=value\\nwith\\nnewlines\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "value\nwith\nnewlines"))
 		})
 
@@ -38,7 +38,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=value\\rcarriage\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "value\rcarriage"))
 		})
 
@@ -46,7 +46,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=col1\\tcol2\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "col1\tcol2"))
 		})
 
@@ -54,7 +54,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=path\\\\to\\\\file\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "path\\to\\file"))
 		})
 
@@ -62,7 +62,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=a\\=b\\=c\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "a=b=c"))
 		})
 
@@ -70,7 +70,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=http\\://localhost\\:8080\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "http://localhost:8080"))
 		})
 
@@ -78,7 +78,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=hello\\ world\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "hello world"))
 		})
 
@@ -86,7 +86,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=not\\#a\\#comment\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "not#a#comment"))
 		})
 
@@ -94,7 +94,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=Hello\\!World\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "Hello!World"))
 		})
 	})
@@ -104,7 +104,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=endswith\\\ncontinued\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "endswithcontinued"))
 		})
 
@@ -112,7 +112,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=\\\\\\\\double\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "\\\\double"))
 		})
 
@@ -121,7 +121,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=unknown\\xescape\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// Unknown escape keeps the backslash
 			Expect(result).To(HaveKeyWithValue("key", "unknown\\xescape"))
 		})
@@ -130,7 +130,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=a\\nb\\tc\\\\d\\re\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "a\nb\tc\\d\re"))
 		})
 
@@ -138,7 +138,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=\\n\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "\n"))
 		})
 	})
@@ -148,7 +148,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", ""))
 		})
 
@@ -156,7 +156,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=simple\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "simple"))
 		})
 
@@ -164,7 +164,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", ""))
 		})
 	})
@@ -181,7 +181,7 @@ var _ = Describe("unescapeProperties", func() {
 				"key with spaces": "value",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// Verify the key is escaped in the marshaled output
 			Expect(marshaled).To(ContainSubstring("\\ "))
 		})
@@ -190,7 +190,7 @@ var _ = Describe("unescapeProperties", func() {
 			adapter := config.NewPropertiesAdapter()
 			content := "key=hello\\nworld\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "hello\nworld"))
 		})
 	})
@@ -202,10 +202,10 @@ var _ = Describe("unescapeProperties", func() {
 				"key": "line1\nline2\nline3",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -215,10 +215,10 @@ var _ = Describe("unescapeProperties", func() {
 				"key": "col1\tcol2\tcol3",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -228,10 +228,10 @@ var _ = Describe("unescapeProperties", func() {
 				"key": `C:\Users\test\path`,
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -241,10 +241,10 @@ var _ = Describe("unescapeProperties", func() {
 				"key": "line1\r\nline2",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -259,10 +259,10 @@ var _ = Describe("unescapeProperties", func() {
 				"key": "a\nb\tc\\d\re=f:g#h!i",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 	})
@@ -289,14 +289,14 @@ var _ = Describe("PropertiesAdapter", func() {
 				"key2": "value2",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("key1=value1"))
 			Expect(result).To(ContainSubstring("key2=value2"))
 		})
 
 		It("should return empty string for empty map", func() {
 			result, err := adapter.Marshal(map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
@@ -307,7 +307,7 @@ var _ = Describe("PropertiesAdapter", func() {
 				"middle": "m",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(Equal("alpha=a\nmiddle=m\nzebra=z\n"))
 		})
 
@@ -318,7 +318,7 @@ var _ = Describe("PropertiesAdapter", func() {
 				"key:with:colons": "value",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("\\ "))
 			Expect(result).To(ContainSubstring("\\="))
 			Expect(result).To(ContainSubstring("\\:"))
@@ -329,7 +329,7 @@ var _ = Describe("PropertiesAdapter", func() {
 				"key": "value\nwith\nnewlines",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("\\n"))
 		})
 	})
@@ -338,21 +338,21 @@ var _ = Describe("PropertiesAdapter", func() {
 		It("should unmarshal simple key-value pairs", func() {
 			content := "key1=value1\nkey2=value2\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key1", "value1"))
 			Expect(result).To(HaveKeyWithValue("key2", "value2"))
 		})
 
 		It("should handle empty content", func() {
 			result, err := adapter.Unmarshal("")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
 		It("should skip comments", func() {
 			content := "# This is a comment\nkey=value\n! This is also a comment\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveLen(1))
 			Expect(result).To(HaveKeyWithValue("key", "value"))
 		})
@@ -361,28 +361,28 @@ var _ = Describe("PropertiesAdapter", func() {
 			adapter.Separator = ":"
 			content := "key:value\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "value"))
 		})
 
 		It("should handle key with no value", func() {
 			content := "key\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", ""))
 		})
 
 		It("should unescape special characters", func() {
 			content := "key=value\\nwith\\nnewlines\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "value\nwith\nnewlines"))
 		})
 
 		It("should handle line continuation", func() {
 			content := "key=value\\\ncontinued\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "valuecontinued"))
 		})
 	})
@@ -395,10 +395,10 @@ var _ = Describe("PropertiesAdapter", func() {
 				"key3": "value with spaces",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Note: "value with spaces" might be escaped differently
 			Expect(unmarshaled).To(HaveKeyWithValue("key1", "value1"))
@@ -426,7 +426,7 @@ var _ = Describe("XMLAdapter", func() {
 				"fs.defaultFS": "hdfs://localhost:8020",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("<?xml version=\"1.0\""))
 			Expect(result).To(ContainSubstring("<configuration>"))
 			Expect(result).To(ContainSubstring("<name>fs.defaultFS</name>"))
@@ -436,7 +436,7 @@ var _ = Describe("XMLAdapter", func() {
 
 		It("should return empty configuration for empty map", func() {
 			result, err := adapter.Marshal(map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("<configuration>"))
 			Expect(result).To(ContainSubstring("</configuration>"))
 		})
@@ -447,7 +447,7 @@ var _ = Describe("XMLAdapter", func() {
 				"alpha": "a",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("<name>alpha</name>"))
 			Expect(result).To(ContainSubstring("<name>zebra</name>"))
 		})
@@ -457,7 +457,7 @@ var _ = Describe("XMLAdapter", func() {
 				"key": "<value>&\"'",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("&lt;"))
 			Expect(result).To(ContainSubstring("&gt;"))
 			Expect(result).To(ContainSubstring("&amp;"))
@@ -474,7 +474,7 @@ var _ = Describe("XMLAdapter", func() {
   </property>
 </configuration>`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("fs.defaultFS", "hdfs://localhost:8020"))
 		})
 
@@ -483,7 +483,7 @@ var _ = Describe("XMLAdapter", func() {
 <configuration>
 </configuration>`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
@@ -500,7 +500,7 @@ var _ = Describe("XMLAdapter", func() {
   </property>
 </configuration>`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveLen(2))
 			Expect(result).To(HaveKeyWithValue("key1", "value1"))
 			Expect(result).To(HaveKeyWithValue("key2", "value2"))
@@ -514,10 +514,10 @@ var _ = Describe("XMLAdapter", func() {
 				"key2": "value2",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 	})
@@ -543,14 +543,14 @@ var _ = Describe("YAMLAdapter", func() {
 				"key2": "value2",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("key1: value1"))
 			Expect(result).To(ContainSubstring("key2: value2"))
 		})
 
 		It("should return empty string for empty map", func() {
 			result, err := adapter.Marshal(map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
@@ -559,7 +559,7 @@ var _ = Describe("YAMLAdapter", func() {
 				"key": "value:with:colons",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring(`"`))
 		})
 
@@ -568,7 +568,7 @@ var _ = Describe("YAMLAdapter", func() {
 				"key": "",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring(`key: ""`))
 		})
 	})
@@ -577,21 +577,21 @@ var _ = Describe("YAMLAdapter", func() {
 		It("should unmarshal simple key-value pairs", func() {
 			content := "key1: value1\nkey2: value2\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key1", "value1"))
 			Expect(result).To(HaveKeyWithValue("key2", "value2"))
 		})
 
 		It("should handle empty content", func() {
 			result, err := adapter.Unmarshal("")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
 		It("should skip comments", func() {
 			content := "# This is a comment\nkey: value\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveLen(1))
 			Expect(result).To(HaveKeyWithValue("key", "value"))
 		})
@@ -599,14 +599,14 @@ var _ = Describe("YAMLAdapter", func() {
 		It("should handle quoted values", func() {
 			content := `key: "quoted value"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "quoted value"))
 		})
 
 		It("should handle single quoted values", func() {
 			content := `key: 'quoted value'`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "quoted value"))
 		})
 	})
@@ -621,7 +621,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="line1\nline2"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "line1\nline2"))
 		})
 
@@ -629,7 +629,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="text\rcarriage"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "text\rcarriage"))
 		})
 
@@ -637,7 +637,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="col1\tcol2"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "col1\tcol2"))
 		})
 
@@ -645,7 +645,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="path\\to\\file"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "path\\to\\file"))
 		})
 
@@ -653,7 +653,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="say \"hello\""`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", `say "hello"`))
 		})
 
@@ -661,7 +661,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="it\'s"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "it's"))
 		})
 
@@ -669,7 +669,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="price\$100"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "price$100"))
 		})
 
@@ -677,7 +677,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="code\` + "`" + `code"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "code`code"))
 		})
 	})
@@ -687,7 +687,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="endswith\""`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", `endswith"`))
 		})
 
@@ -695,7 +695,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="\\\\double"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "\\\\double"))
 		})
 
@@ -704,7 +704,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="unknown\xescape"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// Unknown escape keeps the backslash
 			Expect(result).To(HaveKeyWithValue("KEY", "unknown\\xescape"))
 		})
@@ -713,7 +713,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="a\nb\tc\\d\re"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "a\nb\tc\\d\re"))
 		})
 	})
@@ -723,7 +723,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY=""`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", ""))
 		})
 
@@ -731,7 +731,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY=simple`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "simple"))
 		})
 
@@ -739,7 +739,7 @@ var _ = Describe("unescapeEnvValue", func() {
 			adapter := config.NewEnvAdapter()
 			content := `KEY="\n"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "\n"))
 		})
 	})
@@ -751,10 +751,10 @@ var _ = Describe("unescapeEnvValue", func() {
 				"KEY": "line1\nline2\nline3",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -764,10 +764,10 @@ var _ = Describe("unescapeEnvValue", func() {
 				"KEY": "col1\tcol2\tcol3",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -777,10 +777,10 @@ var _ = Describe("unescapeEnvValue", func() {
 				"KEY": `C:\Users\test\path`,
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -790,10 +790,10 @@ var _ = Describe("unescapeEnvValue", func() {
 				"KEY": "line1\r\nline2",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 
@@ -803,10 +803,10 @@ var _ = Describe("unescapeEnvValue", func() {
 				"KEY": "a\nb\tc\\d\re$f`g",
 			}
 			marshaled, err := adapter.Marshal(original)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			unmarshaled, err := adapter.Unmarshal(marshaled)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
 		})
 	})
@@ -833,14 +833,14 @@ var _ = Describe("EnvAdapter", func() {
 				"KEY2": "value2",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("KEY1=value1"))
 			Expect(result).To(ContainSubstring("KEY2=value2"))
 		})
 
 		It("should return empty string for empty map", func() {
 			result, err := adapter.Marshal(map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
@@ -850,7 +850,7 @@ var _ = Describe("EnvAdapter", func() {
 				"KEY": "value",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("export KEY=value"))
 		})
 
@@ -859,7 +859,7 @@ var _ = Describe("EnvAdapter", func() {
 				"KEY": "value with spaces",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring(`"value with spaces"`))
 		})
 
@@ -868,7 +868,7 @@ var _ = Describe("EnvAdapter", func() {
 				"KEY": "value\nwith\nnewlines",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring("\\n"))
 		})
 
@@ -877,7 +877,7 @@ var _ = Describe("EnvAdapter", func() {
 				"KEY": "",
 			}
 			result, err := adapter.Marshal(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring(`KEY=""`))
 		})
 	})
@@ -886,21 +886,21 @@ var _ = Describe("EnvAdapter", func() {
 		It("should unmarshal environment variable format", func() {
 			content := "KEY1=value1\nKEY2=value2\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY1", "value1"))
 			Expect(result).To(HaveKeyWithValue("KEY2", "value2"))
 		})
 
 		It("should handle empty content", func() {
 			result, err := adapter.Unmarshal("")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
 		It("should skip comments", func() {
 			content := "# This is a comment\nKEY=value\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveLen(1))
 			Expect(result).To(HaveKeyWithValue("KEY", "value"))
 		})
@@ -908,21 +908,21 @@ var _ = Describe("EnvAdapter", func() {
 		It("should handle export prefix", func() {
 			content := "export KEY=value\n"
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "value"))
 		})
 
 		It("should handle quoted values", func() {
 			content := `KEY="quoted value"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "quoted value"))
 		})
 
 		It("should unescape special characters", func() {
 			content := `KEY="value\nwith\nnewlines"`
 			result, err := adapter.Unmarshal(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "value\nwith\nnewlines"))
 		})
 	})

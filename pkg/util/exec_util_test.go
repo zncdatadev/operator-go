@@ -71,7 +71,7 @@ func (m *MockPodExecutor) ExecuteWithOutput(ctx context.Context, namespace, podN
 	if m.ExecuteWithOutputFunc != nil {
 		return m.ExecuteWithOutputFunc(ctx, namespace, podName, containerName, command, stdout, stderr)
 	}
-	stdout.Write([]byte("mock output"))
+	_, _ = stdout.Write([]byte("mock output"))
 	return nil
 }
 
@@ -577,8 +577,8 @@ var _ = Describe("ExecUtil", func() {
 
 		It("should stream output to provided writers", func() {
 			mockExecutor.ExecuteWithOutputFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error {
-				stdout.Write([]byte("streamed output"))
-				stderr.Write([]byte("streamed error"))
+				_, _ = stdout.Write([]byte("streamed output"))
+				_, _ = stderr.Write([]byte("streamed error"))
 				return nil
 			}
 
@@ -669,7 +669,7 @@ var _ = Describe("ExecUtil", func() {
 
 		AfterEach(func() {
 			// Cleanup
-			k8sClient.Delete(ctx, testPod)
+			_ = k8sClient.Delete(ctx, testPod)
 		})
 
 		It("should find running pod by labels", func() {

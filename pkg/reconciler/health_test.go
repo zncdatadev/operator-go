@@ -73,7 +73,7 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should handle Stopped state", func() {
@@ -82,18 +82,18 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should handle empty roles", func() {
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should handle nil cluster operation", func() {
 			spec.ClusterOperation = nil
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should handle role groups with no existing StatefulSet", func() {
@@ -108,7 +108,7 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should set available condition when all replicas are available", func() {
@@ -121,7 +121,7 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			availableCond := status.GetCondition(v1alpha1.ConditionAvailable)
 			Expect(availableCond).NotTo(BeNil())
@@ -143,7 +143,7 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "multi-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Status should be updated
 			Expect(status.GetCondition(v1alpha1.ConditionAvailable)).NotTo(BeNil())
@@ -158,7 +158,7 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// ReconciliationPaused takes precedence
 			degradedCond := status.GetCondition(v1alpha1.ConditionDegraded)
 			Expect(degradedCond).NotTo(BeNil())
@@ -178,28 +178,28 @@ var _ = Describe("HealthManager", func() {
 			}
 
 			err := healthManager.Check(ctx, "default", "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
 	Describe("CheckPodHealth", func() {
 		It("should return zero for non-existent pods", func() {
 			total, ready, err := healthManager.CheckPodHealth(ctx, "default", map[string]string{"app": "nonexistent"})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(total).To(Equal(0))
 			Expect(ready).To(Equal(0))
 		})
 
 		It("should handle empty labels", func() {
 			total, ready, err := healthManager.CheckPodHealth(ctx, "default", map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(total).To(Equal(0))
 			Expect(ready).To(Equal(0))
 		})
 
 		It("should handle nil labels", func() {
 			total, ready, err := healthManager.CheckPodHealth(ctx, "default", nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(total).To(Equal(0))
 			Expect(ready).To(Equal(0))
 		})
@@ -359,7 +359,7 @@ var _ = Describe("HealthManager with StatefulSet", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 
 			err := healthManager.Check(ctx, namespace, "health-test", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			Expect(k8sClient.Delete(ctx, sts)).To(Succeed())
 		})
@@ -414,7 +414,7 @@ var _ = Describe("HealthManager with StatefulSet", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 
 			err := healthManager.Check(ctx, namespace, "health-test", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			Expect(k8sClient.Delete(ctx, sts)).To(Succeed())
 		})
@@ -483,7 +483,7 @@ var _ = Describe("HealthManager CheckPodHealth with Pods", func() {
 
 		// Check pod health
 		total, ready, err := healthManager.CheckPodHealth(ctx, namespace, map[string]string{"app": "health-test-pods"})
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(total).To(Equal(2))
 		Expect(ready).To(Equal(1))
 
@@ -510,7 +510,7 @@ var _ = Describe("HealthManager CheckPodHealth with Pods", func() {
 		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
 		total, ready, err := healthManager.CheckPodHealth(ctx, namespace, map[string]string{"app": "health-test-pending"})
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(total).To(Equal(1))
 		Expect(ready).To(Equal(0))
 
@@ -542,7 +542,7 @@ var _ = Describe("HealthManager CheckPodHealth with Pods", func() {
 		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
 		total, ready, err := healthManager.CheckPodHealth(ctx, namespace, map[string]string{"app": "health-test-no-cond"})
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(total).To(Equal(1))
 		Expect(ready).To(Equal(0))
 

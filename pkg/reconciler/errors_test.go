@@ -30,7 +30,7 @@ var _ = Describe("Errors", func() {
 		Describe("NewConfigError", func() {
 			It("should create a ConfigError with field and message", func() {
 				err := reconciler.NewConfigError("spec.replicas", "must be positive")
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.Field).To(Equal("spec.replicas"))
 				Expect(err.Message).To(Equal("must be positive"))
 			})
@@ -48,16 +48,16 @@ var _ = Describe("Errors", func() {
 		Describe("NewReconcileError", func() {
 			It("should create a ReconcileError without cause", func() {
 				err := reconciler.NewReconcileError("PreReconcile", "extension hook failed", nil)
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.Phase).To(Equal("PreReconcile"))
 				Expect(err.Message).To(Equal("extension hook failed"))
-				Expect(err.Cause).To(BeNil())
+				Expect(err.Cause).ToNot(HaveOccurred())
 			})
 
 			It("should create a ReconcileError with cause", func() {
 				cause := errors.New("underlying error")
 				err := reconciler.NewReconcileError("DependencyValidation", "dependency validation failed", cause)
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.Phase).To(Equal("DependencyValidation"))
 				Expect(err.Message).To(Equal("dependency validation failed"))
 				Expect(err.Cause).To(Equal(cause))
@@ -82,7 +82,7 @@ var _ = Describe("Errors", func() {
 		Describe("Unwrap", func() {
 			It("should return nil when no cause", func() {
 				err := reconciler.NewReconcileError("PreReconcile", "extension hook failed", nil)
-				Expect(err.Unwrap()).To(BeNil())
+				Expect(err.Unwrap()).To(Succeed())
 			})
 
 			It("should return the underlying cause", func() {
@@ -97,18 +97,18 @@ var _ = Describe("Errors", func() {
 		Describe("NewResourceBuildError", func() {
 			It("should create a ResourceBuildError without cause", func() {
 				err := reconciler.NewResourceBuildError("StatefulSet", "namenode", "default", "failed to build", nil)
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.ResourceType).To(Equal("StatefulSet"))
 				Expect(err.RoleName).To(Equal("namenode"))
 				Expect(err.GroupName).To(Equal("default"))
 				Expect(err.Message).To(Equal("failed to build"))
-				Expect(err.Cause).To(BeNil())
+				Expect(err.Cause).ToNot(HaveOccurred())
 			})
 
 			It("should create a ResourceBuildError with cause", func() {
 				cause := errors.New("invalid configuration")
 				err := reconciler.NewResourceBuildError("ConfigMap", "datanode", "worker", "invalid config", cause)
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.Cause).To(Equal(cause))
 			})
 		})
@@ -133,7 +133,7 @@ var _ = Describe("Errors", func() {
 		Describe("Unwrap", func() {
 			It("should return nil when no cause", func() {
 				err := reconciler.NewResourceBuildError("StatefulSet", "namenode", "default", "failed to build", nil)
-				Expect(err.Unwrap()).To(BeNil())
+				Expect(err.Unwrap()).To(Succeed())
 			})
 
 			It("should return the underlying cause", func() {
@@ -148,18 +148,18 @@ var _ = Describe("Errors", func() {
 		Describe("NewResourceApplyError", func() {
 			It("should create a ResourceApplyError without cause", func() {
 				err := reconciler.NewResourceApplyError("StatefulSet", "default", "test-cluster", "failed to apply", nil)
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.ResourceType).To(Equal("StatefulSet"))
 				Expect(err.Namespace).To(Equal("default"))
 				Expect(err.ResourceName).To(Equal("test-cluster"))
 				Expect(err.Message).To(Equal("failed to apply"))
-				Expect(err.Cause).To(BeNil())
+				Expect(err.Cause).ToNot(HaveOccurred())
 			})
 
 			It("should create a ResourceApplyError with cause", func() {
 				cause := errors.New("connection refused")
 				err := reconciler.NewResourceApplyError("Service", "production", "my-service", "API server error", cause)
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 				Expect(err.Cause).To(Equal(cause))
 			})
 		})
@@ -182,7 +182,7 @@ var _ = Describe("Errors", func() {
 		Describe("Unwrap", func() {
 			It("should return nil when no cause", func() {
 				err := reconciler.NewResourceApplyError("StatefulSet", "default", "test-cluster", "failed to apply", nil)
-				Expect(err.Unwrap()).To(BeNil())
+				Expect(err.Unwrap()).To(Succeed())
 			})
 
 			It("should return the underlying cause", func() {

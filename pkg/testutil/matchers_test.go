@@ -66,12 +66,12 @@ var _ = Describe("Matchers", func() {
 		It("should return error for wrong type", func() {
 			matcher := testutil.HaveCondition("Ready", "ClusterReady")
 			_, err := matcher.Match("not a condition slice")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should return proper failure message", func() {
 			matcher := testutil.HaveCondition("Ready", "ClusterReady")
-			matcher.Match([]metav1.Condition{})
+			_, _ = matcher.Match([]metav1.Condition{})
 			msg := matcher.FailureMessage([]metav1.Condition{})
 			Expect(msg).To(ContainSubstring("Ready"))
 			Expect(msg).To(ContainSubstring("ClusterReady"))
@@ -133,12 +133,12 @@ var _ = Describe("Matchers", func() {
 		It("should return error for invalid type", func() {
 			matcher := testutil.HaveOwnerReference("test-owner", "MockCluster")
 			_, err := matcher.Match(123)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should return proper failure message", func() {
 			matcher := testutil.HaveOwnerReference("test-owner", "MockCluster")
-			matcher.Match([]metav1.OwnerReference{})
+			_, _ = matcher.Match([]metav1.OwnerReference{})
 			msg := matcher.FailureMessage([]metav1.OwnerReference{})
 			Expect(msg).To(ContainSubstring("test-owner"))
 			Expect(msg).To(ContainSubstring("MockCluster"))
@@ -166,7 +166,7 @@ var _ = Describe("Matchers", func() {
 		It("should match when actual is nil interface", func() {
 			matcher := testutil.BeCreatedSuccessfully()
 			match, err := matcher.Match(nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(match).To(BeTrue())
 		})
 
@@ -196,12 +196,12 @@ var _ = Describe("Matchers", func() {
 		It("should return error for non-string type", func() {
 			matcher := testutil.HaveName("test-name")
 			_, err := matcher.Match(123)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should return proper failure message", func() {
 			matcher := testutil.HaveName("expected-name")
-			matcher.Match("actual-name")
+			_, _ = matcher.Match("actual-name")
 			msg := matcher.FailureMessage("actual-name")
 			Expect(msg).To(ContainSubstring("expected-name"))
 			Expect(msg).To(ContainSubstring("actual-name"))
@@ -253,12 +253,12 @@ var _ = Describe("Matchers", func() {
 		It("should return error for non-map type", func() {
 			matcher := testutil.HaveLabels(map[string]string{"app": "test"})
 			_, err := matcher.Match("not a map")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should return proper failure message", func() {
 			matcher := testutil.HaveLabels(map[string]string{"app": "test"})
-			matcher.Match(map[string]string{})
+			_, _ = matcher.Match(map[string]string{})
 			msg := matcher.FailureMessage(map[string]string{})
 			Expect(msg).To(ContainSubstring("app"))
 		})
@@ -317,14 +317,14 @@ var _ = Describe("Matchers", func() {
 				Name string
 			}
 			_, err := matcher.Match(&NoSpecStruct{Name: "test"})
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should return error for object without Replicas field", func() {
 			matcher := testutil.HaveReplicas(1)
 			// ConfigMap has Spec but no Replicas in Spec
 			_, err := matcher.Match(&corev1.ConfigMap{})
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should return proper failure message", func() {
@@ -335,7 +335,7 @@ var _ = Describe("Matchers", func() {
 					Replicas: &replicas,
 				},
 			}
-			matcher.Match(sts)
+			_, _ = matcher.Match(sts)
 			msg := matcher.FailureMessage(sts)
 			Expect(msg).To(ContainSubstring("5"))
 		})

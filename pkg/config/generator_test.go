@@ -66,7 +66,7 @@ var _ = Describe("ConfigGenerator", func() {
 				"key2": "value2",
 			}
 			content, err := generator.Generate(data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("key1=value1"))
 			Expect(content).To(ContainSubstring("key2=value2"))
 		})
@@ -74,14 +74,14 @@ var _ = Describe("ConfigGenerator", func() {
 		It("should return empty string for empty data", func() {
 			generator := config.NewConfigGeneratorWithType(config.FormatProperties)
 			content, err := generator.Generate(map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(BeEmpty())
 		})
 
 		It("should return error when format is nil", func() {
 			generator := config.NewConfigGenerator(nil)
 			content, err := generator.Generate(map[string]string{"key": "value"})
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(content).To(BeEmpty())
 		})
 	})
@@ -91,7 +91,7 @@ var _ = Describe("ConfigGenerator", func() {
 			generator := config.NewConfigGeneratorWithType(config.FormatProperties)
 			content := "key1=value1\nkey2=value2\n"
 			data, err := generator.Parse(content)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(data).To(HaveKeyWithValue("key1", "value1"))
 			Expect(data).To(HaveKeyWithValue("key2", "value2"))
 		})
@@ -99,14 +99,14 @@ var _ = Describe("ConfigGenerator", func() {
 		It("should return empty map for empty content", func() {
 			generator := config.NewConfigGeneratorWithType(config.FormatProperties)
 			data, err := generator.Parse("")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(data).To(BeEmpty())
 		})
 
 		It("should return error when format is nil", func() {
 			generator := config.NewConfigGenerator(nil)
 			data, err := generator.Parse("key=value")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(data).To(BeNil())
 		})
 	})
@@ -119,7 +119,7 @@ var _ = Describe("ConfigGenerator", func() {
 				"config2.properties": {"key2": "value2"},
 			}
 			result, err := generator.GenerateFiles(files)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKey("config1.properties"))
 			Expect(result).To(HaveKey("config2.properties"))
 			Expect(result["config1.properties"]).To(ContainSubstring("key1=value1"))
@@ -129,7 +129,7 @@ var _ = Describe("ConfigGenerator", func() {
 		It("should return empty map for empty input", func() {
 			generator := config.NewConfigGeneratorWithType(config.FormatProperties)
 			result, err := generator.GenerateFiles(map[string]map[string]string{})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 	})
@@ -170,7 +170,7 @@ var _ = Describe("MultiFormatConfigGenerator", func() {
 		It("should generate XML format for .xml extension", func() {
 			data := map[string]string{"key": "value"}
 			content, err := generator.Generate("config.xml", data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("<?xml"))
 			Expect(content).To(ContainSubstring("<name>key</name>"))
 			Expect(content).To(ContainSubstring("<value>value</value>"))
@@ -179,35 +179,35 @@ var _ = Describe("MultiFormatConfigGenerator", func() {
 		It("should generate Properties format for .properties extension", func() {
 			data := map[string]string{"key": "value"}
 			content, err := generator.Generate("config.properties", data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("key=value"))
 		})
 
 		It("should generate YAML format for .yaml extension", func() {
 			data := map[string]string{"key": "value"}
 			content, err := generator.Generate("config.yaml", data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("key: value"))
 		})
 
 		It("should generate YAML format for .yml extension", func() {
 			data := map[string]string{"key": "value"}
 			content, err := generator.Generate("config.yml", data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("key: value"))
 		})
 
 		It("should generate Env format for .env extension", func() {
 			data := map[string]string{"KEY": "value"}
 			content, err := generator.Generate("config.env", data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("KEY=value"))
 		})
 
 		It("should fall back to Properties format for unknown extension", func() {
 			data := map[string]string{"key": "value"}
 			content, err := generator.Generate("config.unknown", data)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(content).To(ContainSubstring("key=value"))
 		})
 	})
@@ -225,7 +225,7 @@ var _ = Describe("MultiFormatConfigGenerator", func() {
 				"app.env":                {"APP_ENV": "production"},
 			}
 			result, err := generator.GenerateFiles(files)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveLen(4))
 			Expect(result["core-site.xml"]).To(ContainSubstring("<?xml"))
 			Expect(result["application.properties"]).To(ContainSubstring("server.port=8080"))

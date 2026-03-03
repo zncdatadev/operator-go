@@ -34,4 +34,3 @@ jobs:
         with:
           globs: |
             README.*.md
-            docs/*.md

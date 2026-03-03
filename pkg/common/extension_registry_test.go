@@ -333,7 +333,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterClusterExtension(ext)
 
 			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 
@@ -346,7 +346,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterClusterExtension(ext)
 
 			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -362,7 +362,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterClusterExtension(ext)
 
 			err := registry.ExecuteClusterPostReconcile(context.Background(), nil, nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 
@@ -375,7 +375,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterClusterExtension(ext)
 
 			err := registry.ExecuteClusterPostReconcile(context.Background(), nil, nil)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -391,7 +391,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterClusterExtension(ext)
 
 			err := registry.ExecuteClusterOnError(context.Background(), nil, nil, errors.New("test error"))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 	})
@@ -409,7 +409,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterRoleExtension(ext)
 
 			err := registry.ExecuteRolePreReconcile(context.Background(), nil, nil, "test-role")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 	})
@@ -426,7 +426,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterRoleExtension(ext)
 
 			err := registry.ExecuteRolePostReconcile(context.Background(), nil, nil, "test-role")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 	})
@@ -445,7 +445,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterRoleGroupExtension(ext)
 
 			err := registry.ExecuteRoleGroupPreReconcile(context.Background(), nil, nil, "test-role", "test-group")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 	})
@@ -462,7 +462,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			registry.RegisterRoleGroupExtension(ext)
 
 			err := registry.ExecuteRoleGroupPostReconcile(context.Background(), nil, nil, "test-role", "test-group")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(executed).To(BeTrue())
 		})
 	})

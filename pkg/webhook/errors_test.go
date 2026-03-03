@@ -110,7 +110,7 @@ var _ = Describe("ValidationErrors", func() {
 	Describe("ToError", func() {
 		It("should return nil for empty list", func() {
 			var errs webhook.ValidationErrors
-			Expect(errs.ToError()).To(BeNil())
+			Expect(errs.ToError()).To(Succeed())
 		})
 
 		It("should return errors when not empty", func() {

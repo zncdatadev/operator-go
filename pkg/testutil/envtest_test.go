@@ -54,7 +54,7 @@ var _ = Describe("TestEnv", func() {
 			}
 			env := testutil.NewTestEnv(cfg)
 			Expect(env).NotTo(BeNil())
-			Expect(len(env.Env.CRDDirectoryPaths)).To(Equal(1))
+			Expect(env.Env.CRDDirectoryPaths).To(HaveLen(1))
 		})
 	})
 
@@ -88,22 +88,22 @@ var _ = Describe("TestEnv", func() {
 	Context("NamespaceOperations", func() {
 		It("should create a namespace", func() {
 			ns, err := testEnv.CreateNamespace("test-namespace-create")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(ns).NotTo(BeNil())
 			Expect(ns.Name).To(Equal("test-namespace-create"))
 		})
 
 		It("should delete a namespace", func() {
 			_, err := testEnv.CreateNamespace("test-namespace-delete")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			err = testEnv.DeleteNamespace("test-namespace-delete")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return error when deleting non-existent namespace", func() {
 			err := testEnv.DeleteNamespace("non-existent-namespace")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -111,7 +111,7 @@ var _ = Describe("TestEnv", func() {
 		It("should return nil when already started", func() {
 			// testEnv is already started in BeforeSuite
 			err := testEnv.Start()
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -119,7 +119,7 @@ var _ = Describe("TestEnv", func() {
 		It("should return nil when not started", func() {
 			env := testutil.NewTestEnv(nil)
 			err := env.Stop()
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })
@@ -141,7 +141,7 @@ var _ = Describe("FakeClient", func() {
 			// Verify the object exists
 			var retrieved corev1.ConfigMap
 			err := client.Get(context.Background(), types.NamespacedName{Name: "test-cm", Namespace: "default"}, &retrieved)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(retrieved.Name).To(Equal("test-cm"))
 		})
 
@@ -154,11 +154,11 @@ var _ = Describe("FakeClient", func() {
 			// Verify both objects exist
 			var retrievedCM corev1.ConfigMap
 			err := client.Get(context.Background(), types.NamespacedName{Name: "test-cm", Namespace: "default"}, &retrievedCM)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			var retrievedSvc corev1.Service
 			err = client.Get(context.Background(), types.NamespacedName{Name: "test-svc", Namespace: "default"}, &retrievedSvc)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })

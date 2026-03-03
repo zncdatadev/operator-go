@@ -100,7 +100,7 @@ func (m *MockCluster) DeepCopy() *MockCluster {
 	out := new(MockCluster)
 	*out = *m
 	out.TypeMeta = m.TypeMeta
-	m.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.ObjectMeta = *m.ObjectMeta.DeepCopy()
 	out.Spec = *m.Spec.DeepCopy()
 	out.Status = *m.Status.DeepCopy()
 	return out
@@ -136,7 +136,7 @@ func (w *ClusterWrapper) GetObjectMeta() *metav1.ObjectMeta {
 
 // GetUID returns the UID as string for common.ClusterInterface compatibility.
 func (w *ClusterWrapper) GetUID() string {
-	return string(w.ObjectMeta.UID)
+	return string(w.UID)
 }
 
 // GetName implements common.ClusterInterface.
@@ -202,7 +202,7 @@ func (w *ClusterWrapper) DeepCopyCluster() common.ClusterInterface {
 			},
 		}
 	}
-	return WrapMockCluster(w.MockCluster.DeepCopy())
+	return WrapMockCluster(w.DeepCopy())
 }
 
 // GetRuntimeObject implements common.ClusterInterface.

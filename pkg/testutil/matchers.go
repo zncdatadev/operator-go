@@ -45,7 +45,7 @@ func (m *haveConditionMatcher) Match(actual interface{}) (bool, error) {
 	}
 
 	for _, cond := range conditions {
-		if string(cond.Type) == m.conditionType && cond.Reason == m.reason {
+		if cond.Type == m.conditionType && cond.Reason == m.reason {
 			return true, nil
 		}
 	}
@@ -85,7 +85,7 @@ func (m *haveOwnerReferenceMatcher) Match(actual interface{}) (bool, error) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// Reflection failed, ownerRefs will remain nil
+					ownerRefs = nil // Reflection failed, ensure ownerRefs is nil
 				}
 			}()
 			val := reflect.ValueOf(obj)

@@ -47,13 +47,13 @@ var _ = Describe("DependencyResolver", func() {
 	Describe("Validate", func() {
 		It("should return nil for nil spec", func() {
 			err := resolver.Validate(context.Background(), nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for valid spec without cluster operation", func() {
 			spec := &commonsv1alpha1.GenericClusterSpec{}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for spec with nil cluster operation", func() {
@@ -61,7 +61,7 @@ var _ = Describe("DependencyResolver", func() {
 				ClusterOperation: nil,
 			}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return ReconciliationPaused error when reconciliation is paused", func() {
@@ -71,7 +71,7 @@ var _ = Describe("DependencyResolver", func() {
 				},
 			}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -85,7 +85,7 @@ var _ = Describe("DependencyResolver", func() {
 				},
 			}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -100,7 +100,7 @@ var _ = Describe("DependencyResolver", func() {
 				},
 			}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -115,7 +115,7 @@ var _ = Describe("DependencyResolver", func() {
 
 		It("should return error when ConfigMap does not exist", func() {
 			err := resolver.ValidateConfigMap(ctx, namespace, "non-existent-configmap")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -136,7 +136,7 @@ var _ = Describe("DependencyResolver", func() {
 			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
 			err := resolver.ValidateConfigMap(ctx, namespace, "test-configmap")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, cm)).To(Succeed())
@@ -154,7 +154,7 @@ var _ = Describe("DependencyResolver", func() {
 
 		It("should return error when Secret does not exist", func() {
 			err := resolver.ValidateSecret(ctx, namespace, "non-existent-secret")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -175,7 +175,7 @@ var _ = Describe("DependencyResolver", func() {
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
 			err := resolver.ValidateSecret(ctx, namespace, "test-secret")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
@@ -185,12 +185,12 @@ var _ = Describe("DependencyResolver", func() {
 	Describe("ValidateZKConfig", func() {
 		It("should return nil for nil config", func() {
 			err := resolver.ValidateZKConfig(context.Background(), nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return error for empty connection string", func() {
 			err := resolver.ValidateZKConfig(context.Background(), "")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -199,19 +199,19 @@ var _ = Describe("DependencyResolver", func() {
 
 		It("should return nil for valid connection string", func() {
 			err := resolver.ValidateZKConfig(context.Background(), "zk1:2181,zk2:2181")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for non-string config", func() {
 			err := resolver.ValidateZKConfig(context.Background(), 12345)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
 	Describe("ValidateS3Connection", func() {
 		It("should return nil for nil config", func() {
 			err := resolver.ValidateS3Connection(context.Background(), nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return error when host is empty", func() {
@@ -219,7 +219,7 @@ var _ = Describe("DependencyResolver", func() {
 				Host: "",
 			}
 			err := resolver.ValidateS3Connection(context.Background(), s3Config)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -232,7 +232,7 @@ var _ = Describe("DependencyResolver", func() {
 				Credentials: nil,
 			}
 			err := resolver.ValidateS3Connection(context.Background(), s3Config)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -247,19 +247,19 @@ var _ = Describe("DependencyResolver", func() {
 				},
 			}
 			err := resolver.ValidateS3Connection(context.Background(), s3Config)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for non-S3ConnectionSpec config", func() {
 			err := resolver.ValidateS3Connection(context.Background(), "not a valid config")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
 	Describe("ValidateDatabaseConnection", func() {
 		It("should return nil for nil config", func() {
 			err := resolver.ValidateDatabaseConnection(context.Background(), nil)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return error when host is empty", func() {
@@ -267,7 +267,7 @@ var _ = Describe("DependencyResolver", func() {
 				Host: "",
 			}
 			err := resolver.ValidateDatabaseConnection(context.Background(), dbConfig)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -282,7 +282,7 @@ var _ = Describe("DependencyResolver", func() {
 				},
 			}
 			err := resolver.ValidateDatabaseConnection(context.Background(), dbConfig)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -295,7 +295,7 @@ var _ = Describe("DependencyResolver", func() {
 				Credentials: nil,
 			}
 			err := resolver.ValidateDatabaseConnection(context.Background(), dbConfig)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			var depErr *reconciler.DependencyError
 			Expect(errors.As(err, &depErr)).To(BeTrue())
@@ -310,22 +310,22 @@ var _ = Describe("DependencyResolver", func() {
 				},
 			}
 			err := resolver.ValidateDatabaseConnection(context.Background(), dbConfig)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for non-DatabaseConnectionSpec config", func() {
 			err := resolver.ValidateDatabaseConnection(context.Background(), "not a valid config")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
 	Describe("ValidateZKConnection", func() {
 		It("should delegate to ValidateZKConfig", func() {
 			err := resolver.ValidateZKConnection(context.Background(), "")
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 
 			err = resolver.ValidateZKConnection(context.Background(), "zk1:2181")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })
@@ -358,7 +358,7 @@ var _ = Describe("DependencyError", func() {
 				Type:    "TestError",
 				Message: "test message",
 			}
-			Expect(err.Unwrap()).To(BeNil())
+			Expect(err.Unwrap()).To(Succeed())
 		})
 
 		It("should return the underlying cause", func() {
@@ -417,33 +417,33 @@ var _ = Describe("DependencyError helpers", func() {
 var _ = Describe("ValidateEndpointFormat", func() {
 	It("should return error for empty endpoint", func() {
 		err := reconciler.ValidateEndpointFormat("", "testField")
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("endpoint is empty"))
 	})
 
 	It("should return nil for bare hostname", func() {
 		err := reconciler.ValidateEndpointFormat("localhost", "testField")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should return nil for valid URL with scheme", func() {
 		err := reconciler.ValidateEndpointFormat("http://localhost:8080", "testField")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should return nil for valid HTTPS URL", func() {
 		err := reconciler.ValidateEndpointFormat("https://example.com:443", "testField")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should return nil for valid URL without port", func() {
 		err := reconciler.ValidateEndpointFormat("http://example.com", "testField")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should return error for invalid URL format", func() {
 		err := reconciler.ValidateEndpointFormat("http://:8080", "testField")
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("host is missing"))
 	})
 })
@@ -451,31 +451,31 @@ var _ = Describe("ValidateEndpointFormat", func() {
 var _ = Describe("ParseConnectionStrings", func() {
 	It("should return error for empty connection string", func() {
 		_, err := reconciler.ParseConnectionStrings("")
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("connection string is empty"))
 	})
 
 	It("should parse single host", func() {
 		hosts, err := reconciler.ParseConnectionStrings("host1:2181")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(hosts).To(Equal([]string{"host1:2181"}))
 	})
 
 	It("should parse multiple hosts", func() {
 		hosts, err := reconciler.ParseConnectionStrings("host1:2181,host2:2181,host3:2181")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(hosts).To(Equal([]string{"host1:2181", "host2:2181", "host3:2181"}))
 	})
 
 	It("should trim whitespace from hosts", func() {
 		hosts, err := reconciler.ParseConnectionStrings("  host1:2181 , host2:2181  ,  host3:2181  ")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(hosts).To(Equal([]string{"host1:2181", "host2:2181", "host3:2181"}))
 	})
 
 	It("should return error when no valid hosts found", func() {
 		_, err := reconciler.ParseConnectionStrings("   ,  ,  ")
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("no valid hosts found"))
 	})
 })

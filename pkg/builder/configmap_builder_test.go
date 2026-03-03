@@ -204,7 +204,7 @@ var _ = Describe("ConfigMapBuilder", func() {
 			generator := config.NewMultiFormatConfigGenerator()
 			generator.RegisterDefaultFormats()
 
-			cmBuilder.WithMergedConfig(cfg, generator)
+			_, _ = cmBuilder.WithMergedConfig(cfg, generator)
 			cm := cmBuilder.Build()
 
 			Expect(cm.Data).To(HaveKey("server.properties"))

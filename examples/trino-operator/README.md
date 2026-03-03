@@ -12,7 +12,7 @@ This is an example operator built with [Kubebuilder](https://book.kubebuilder.io
 
 ## Project Structure
 
-```
+```text
 trino-operator/
 ├── api/v1alpha1/                    # CRD definitions
 │   ├── trinocluster_types.go        # TrinoCluster CRD (implements ClusterInterface)
@@ -89,7 +89,7 @@ make test
 
 ### GenericReconciler Flow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                     GenericReconciler                           │
 ├─────────────────────────────────────────────────────────────────┤
@@ -114,7 +114,7 @@ make test
 
 ### RoleGroupHandler Routing
 
-```
+```text
 TrinoRoleGroupHandler.BuildResources()
     │
     ├── RoleCoordinators → CoordinatorsHandler.BuildResources()

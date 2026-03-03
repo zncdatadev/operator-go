@@ -72,7 +72,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status.SetRoleGroup("test-role", "default")
 
 			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for empty roles", func() {
@@ -82,7 +82,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 
 			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for nil roles", func() {
@@ -92,7 +92,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 
 			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil when all status role groups exist in spec", func() {
@@ -117,7 +117,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status.SetRoleGroup("role-b", "group-1")
 
 			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil for empty status", func() {
@@ -133,7 +133,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 
 			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil when no status role groups", func() {
@@ -149,7 +149,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 
 			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should cleanup orphaned role group resources", func() {
@@ -194,7 +194,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status.SetRoleGroup("test-role", "orphaned") // This is orphaned
 
 			err := cleaner.Cleanup(ctx, namespace, "cleanup-test", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Verify resources are deleted
 			Eventually(func() bool {
@@ -243,7 +243,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status.SetRoleGroup("role", "test-cm") // Orphaned
 
 			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should handle non-existent ConfigMap gracefully", func() {
@@ -258,7 +258,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status.SetRoleGroup("role", "nonexistent")
 
 			err := cleaner.Cleanup(ctx, namespace, "nonexistent", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -287,7 +287,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status.SetRoleGroup("role", "test-svc")
 
 			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -332,7 +332,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status.SetRoleGroup("role", "test-sts")
 
 			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -364,7 +364,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status.SetRoleGroup("role", "test-pdb")
 
 			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })
@@ -448,7 +448,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status.SetRoleGroup("role", "test")
 
 		err := cleaner.Cleanup(ctx, namespace, "multi-delete", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should cleanup all resources including regular service and PDB", func() {
@@ -547,7 +547,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status.SetRoleGroup("role", "full-cleanup-test")
 
 		err := cleaner.Cleanup(ctx, namespace, "full-cleanup", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should scale StatefulSet to zero before deletion when replicas > 0", func() {
@@ -594,7 +594,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status.SetRoleGroup("role", "scale-to-zero-test")
 
 		err := cleaner.Cleanup(ctx, namespace, "scale-to-zero", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should handle multiple orphaned role groups", func() {
@@ -634,7 +634,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status.SetRoleGroup("role-a", "orphan-2") // Orphaned
 
 		err := cleaner.Cleanup(ctx, namespace, "multi-orphan", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 })
 
@@ -722,7 +722,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status.SetRoleGroup("role", "scale-fail-test")
 
 		err := cleaner.Cleanup(ctx, namespace, "scale-fail", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should handle StatefulSet with zero replicas", func() {
@@ -769,7 +769,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status.SetRoleGroup("role", "zero-replicas-test")
 
 		err := cleaner.Cleanup(ctx, namespace, "zero-replicas", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should handle StatefulSet with nil replicas", func() {
@@ -815,6 +815,6 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status.SetRoleGroup("role", "nil-replicas-test")
 
 		err := cleaner.Cleanup(ctx, namespace, "nil-replicas", spec, status)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 })

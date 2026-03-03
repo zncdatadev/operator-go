@@ -192,7 +192,7 @@ var _ = Describe("Mocks", func() {
 			wrapper := testutil.WrapMockCluster(cluster)
 			labels := wrapper.GetLabels()
 			Expect(labels).NotTo(BeNil())
-			Expect(len(labels)).To(Equal(0))
+			Expect(labels).To(BeEmpty())
 		})
 
 		It("should implement GetAnnotations", func() {
@@ -209,7 +209,7 @@ var _ = Describe("Mocks", func() {
 			wrapper := testutil.WrapMockCluster(cluster)
 			annotations := wrapper.GetAnnotations()
 			Expect(annotations).NotTo(BeNil())
-			Expect(len(annotations)).To(Equal(0))
+			Expect(annotations).To(BeEmpty())
 		})
 
 		It("should implement GetSpec", func() {
@@ -288,7 +288,7 @@ var _ = Describe("Mocks", func() {
 			wrapper := testutil.WrapMockCluster(cluster)
 
 			resources, err := handler.BuildResources(context.Background(), k8sClient, wrapper, buildCtx)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(resources).NotTo(BeNil())
 			Expect(resources.ConfigMap).NotTo(BeNil())
 			Expect(resources.Service).NotTo(BeNil())
@@ -310,7 +310,7 @@ var _ = Describe("Mocks", func() {
 			wrapper := testutil.WrapMockCluster(cluster)
 
 			_, err := handler.BuildResources(context.Background(), k8sClient, wrapper, buildCtx)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(customError))
 		})
 	})
@@ -332,7 +332,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterPreReconcile(context.Background(), k8sClient, wrapper)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should implement ClusterPreReconcile with custom func", func() {
@@ -345,7 +345,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterPreReconcile(context.Background(), k8sClient, wrapper)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
 
@@ -354,7 +354,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterPostReconcile(context.Background(), k8sClient, wrapper)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should implement ClusterPostReconcile with custom func", func() {
@@ -367,7 +367,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterPostReconcile(context.Background(), k8sClient, wrapper)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
 
@@ -376,7 +376,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterOnError(context.Background(), k8sClient, wrapper, errors.New("test error"))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should implement ClusterOnError with custom func", func() {
@@ -389,7 +389,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterOnError(context.Background(), k8sClient, wrapper, errors.New("test error"))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
 
@@ -401,7 +401,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			wrapper := testutil.WrapMockCluster(cluster)
 			err := ext.ClusterPreReconcile(context.Background(), k8sClient, wrapper)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("pre-reconcile error"))
 		})
 	})
@@ -427,7 +427,7 @@ var _ = Describe("Mocks", func() {
 			list := testutil.MockClusterList{
 				Items: []testutil.MockCluster{*cluster},
 			}
-			Expect(len(list.Items)).To(Equal(1))
+			Expect(list.Items).To(HaveLen(1))
 		})
 
 		It("should implement DeepCopyObject", func() {
@@ -439,7 +439,7 @@ var _ = Describe("Mocks", func() {
 			Expect(copied).NotTo(BeNil())
 			copiedList, ok := copied.(*testutil.MockClusterList)
 			Expect(ok).To(BeTrue())
-			Expect(len(copiedList.Items)).To(Equal(1))
+			Expect(copiedList.Items).To(HaveLen(1))
 		})
 	})
 
@@ -447,7 +447,7 @@ var _ = Describe("Mocks", func() {
 		It("should add MockCluster to scheme", func() {
 			scheme := runtime.NewScheme()
 			err := testutil.AddToScheme(scheme)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Verify MockCluster is registered
 			gvk := schema.GroupVersionKind{
@@ -456,7 +456,7 @@ var _ = Describe("Mocks", func() {
 				Kind:    "MockCluster",
 			}
 			obj, err := scheme.New(gvk)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(obj).NotTo(BeNil())
 		})
 	})
