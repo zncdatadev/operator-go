@@ -1,0 +1,45 @@
+apiVersion: trino.kubedoop.dev/v1alpha1
+kind: TrinoCluster
+metadata:
+  name: demo-trino
+  labels:
+    app.kubernetes.io/name: trino
+    app.kubernetes.io/instance: demo-trino
+    app.kubernetes.io/managed-by: trino-operator
+spec:
+  image: trinodb/trino:435
+
+  # Coordinators role configuration (plural naming)
+  coordinators:
+    roleGroups:
+      default:
+        replicas: 1
+        config:
+          resources:
+            cpu:
+              min: "500m"
+              max: "1"
+            memory:
+              limit: "2Gi"
+
+  # Workers role configuration (plural naming)
+  workers:
+    roleGroups:
+      default:
+        replicas: 3
+        config:
+          resources:
+            cpu:
+              min: "1"
+              max: "2"
+            memory:
+              limit: "4Gi"
+
+  # Catalog configuration
+  catalogs:
+    - name: hive
+      type: hive
+      properties:
+        "hive.metastore.uri": "thrift://hive-metastore:9083"
+    - name: tpch
+      type: tpch

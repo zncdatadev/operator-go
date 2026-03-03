@@ -1,3 +1,7 @@
+ignores:
+  - "docs/**"
+  - ".omc/**"
+
 MD007:
   indent: 4
   start_indented: false

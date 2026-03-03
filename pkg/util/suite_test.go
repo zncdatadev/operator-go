@@ -1,5 +1,5 @@
 /*
-Copyright 2023 zncdatadev.
+Copyright 2024 ZNCDataDev.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,22 +14,55 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package util
+package util_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	// +kubebuilder:scaffold:imports
+	"github.com/zncdatadev/operator-go/pkg/testutil"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
+var (
+	testEnv    *testutil.TestEnv
+	testScheme *runtime.Scheme
+	k8sClient  client.Client
+	ctx        context.Context
+	cancel     context.CancelFunc
+)
+
 func TestUtil(t *testing.T) {
-
 	RegisterFailHandler(Fail)
-
-	RunSpecs(t, "Controller Suite")
+	RunSpecs(t, "Util Suite")
 }
+
+var _ = BeforeSuite(func() {
+	ctx, cancel = context.WithCancel(context.Background())
+	testScheme = scheme.Scheme
+	Expect(corev1.AddToScheme(testScheme)).To(Succeed())
+
+	By("bootstrapping test environment")
+	testEnv = testutil.NewTestEnv(nil)
+	Expect(testEnv.Start()).To(Succeed())
+
+	k8sClient = testEnv.GetClient()
+	Expect(k8sClient).NotTo(BeNil())
+})
+
+var _ = AfterSuite(func() {
+	By("tearing down the test environment")
+	cancel()
+	Eventually(func() error {
+		return testEnv.Stop()
+	}, time.Minute, time.Second).Should(Succeed())
+})

@@ -1,0 +1,169 @@
+# Generic Product CRD Base Template
+#
+# This file represents the BASE STRUCTURE provided by the operator-go SDK.
+# All specific Product Operators (e.g., HDFS, Hive, Trino) are built upon this foundation.
+#
+# Conceptual Inheritance Model:
+# ┌──────────────────────┐       ┌──────────────────────┐
+# │   Base Structure     │       │   Product CRD        │
+# │ (Provided by SDK)    │       │ (Implemented by Dev) │
+# │                      │       │                      │
+# │ - ImageSpec          │<──────┼─ Embeds ImageSpec    │
+# │ - ClusterOperation   │<──────┼─ Embeds Operation    │
+# │ - GenericRoleSpec    │<──────┼─ Uses for 'NameNode' │
+# │                      │       │   Uses for 'DataNode'│
+# │                      │       │                      │
+# │                      │       │ + [Product Specs]    │
+# │                      │       │   - ZKConnection     │
+# │                      │       │   - DFSReplication   │
+# └──────────────────────┘       └──────────────────────┘
+#
+metadata:
+  name: productclusters.product.kubedoop.dev
+spec:
+  # [Standard] Image Configuration
+  # This block is common across all products.
+  image:
+    # Full image reference. If present, ignores 'repo', 'productVersion', and 'kubedoopVersion'.
+    custom: "my-registry.com/namespace/product-custom-image:3.4.1"
+    # Product version to deploy.
+    productVersion: "3.4.1"
+    # Pull Policy: Always, IfNotPresent, Never
+    pullPolicy: IfNotPresent
+    repo: "quay.io/kubedoop"
+    # KubedooP Operator version to ensure compatibility.
+    kubedoopVersion: "0.2.0"
+
+  # [Extensible] Cluster-wide Configuration
+  # Contains both standard SDK configurations and Product-specific extended fields.
+  clusterConfig:
+    # --- Standard SDK Fields ---
+
+    # Authentication & Security:
+    # Configures global authentication mechanisms. Specific fields depend on the product's capabilities.
+    # Detail: ../pkg/apis/authentication/v1alpha1/authentication_types.go
+    authentication:
+      kerberos:
+        # References a 'SecretClass' (managed by secret-operator) to auto-inject Keytabs and krb5.conf.
+        secretClass: "product-kerberos-secret"
+      oidc:
+        # References a generic Kubernetes Secret containing OIDC client credentials.
+        clientCredentialSecret: "product-oidc-secret"
+
+    # Sidecar Injection:
+    # Example: Name of the ConfigMap defining the Vector agent configuration for log collection.
+    # If configured, a Vector sidecar container will be automatically injected into all Pods.
+    vectorAgentConfigMap: "trino-vector-agent-configmap"
+
+    # --- Product Specific Fields (Examples) ---
+    # Products extend this section with their own global settings.
+    #
+    # zookeeperConfigMap:       <-- HDFS/HBase/Kafka would add this
+    #
+    # s3:                        <-- Hive/Trino would add this
+    #
+    # databaseInitialization:    <-- Airflow would add this
+
+
+  # [Standard] Operational Controls
+  clusterOperation:
+    # Halt: If true, scales all RoleGroups to 0 replicas. PVCs and other resources are preserved.
+    stopped: boolean
+    # Pause: If true, the Operator suspends all reconciliation actions. Useful for manual debugging/intervention.
+    reconciliationPaused: boolean
+
+  # [Dynamic] Role Definitions
+  # The SDK allows Products to define arbitrary Role names (e.g., 'nameNodes', 'workers').
+  # HOWEVER, the *structure* of these Roles must follow the GenericRoleSpec demonstrated below.
+  #
+  # Example Mapping:
+  # +-------------+-------------------+----------------------------+
+  # | Product     | Role Field Name   | Kubernetes Resource Name   |
+  # +-------------+-------------------+----------------------------+
+  # | HDFS        | nameNodes         | hdfs-namenode-<group>      |
+  # |             | dataNodes         | hdfs-datanode-<group>      |
+  # +-------------+-------------------+----------------------------+
+  # | Hive        | metastore         | hive-metastore-<group>     |
+  # +-------------+-------------------+----------------------------+
+
+  # Template Role: 'exampleRole'
+  # This demonstrates the standard configuration capabilities available to ANY role defined by a Product.
+  exampleRole:
+    # Configuration Files Override (Deep Level):
+    # Map[FileName]Map[Key]Value. Merges into specific component config files (e.g., xml, properties, ini).
+    # - Key exists: Update value.
+    # - Key missing: Append new key-value pair.
+    configOverrides: map[string]map[string]string
+    # Environment Variables Override:
+    # Appends or updates environment variables injected into the main container.
+    envOverrides: map[string]string
+    # Pod Template Override:
+    # "Escape Hatch" allowing modification of the generated PodSpec using K8s Strategic Merge Patch.
+    # Use carefully to change fields not exposed in the CRD (e.g., InitContainers, HostPath).
+    podOverrides: RawExtension
+    # CLI Arguments Override:
+    # Appends or modifies arguments passed to the container entrypoint.
+    # Strategy depends on implementation (Replace vs Append).
+    cliOverrides: list[string]
+    # Role-Level Common Configuration:
+    config:
+      affnity: RawExtension
+      # Time window for the process to stop gracefully before SIGKILL is sent.
+      gracefulShutdownTimeout: string
+      resources:
+        cpu:
+          min: string
+          max: string
+        memory:
+          limit: string
+      logging:
+        # Structured Logging Configuration:
+        # Maps logical logging levels to product-specific configuration formats (log4j, logback, logging.yaml).
+        # Structure: containers -> containerName -> {console, file, loggers}
+        containers:
+          # 'mainContainerName' should be replaced by the actual container name defined in the Product code
+          mainContainerName:
+            console:
+              level: "INFO"
+            file:
+              level: "ERROR"
+            # Fine-grained logger configuration (e.g., package/module level)
+            loggers:
+              ROOT:
+                level: "DEBUG"
+              some.module:
+                level: "TRACE"
+
+    # RoleGroup Definition
+    # Code Reuse: RoleGroups inherit the Role's structure but apply to specific StatefuleSets.
+    roleGroups:
+      default:
+        replicas: 3
+        configOverrides:
+          # Example: Override 'node.properties' specifically for the default group.
+          node.properties:
+            node.environment: "production"
+
+  # Template Role 2: 'anotherExampleRole'
+  # Shows that a Product can define multiple distinct roles.
+  anotherExampleRole:
+    # RoleGroups Configuration:
+    roleGroups:
+      default:
+        replicas: 3
+      # Example: A specialized group for heavy computational tasks.
+      # It overrides the base role configuration with higher resource limits and debug logging.
+      highPerformance:
+        replicas: 3
+        config:
+          resources:
+            cpu:
+              min: string
+              max: string
+            memory:
+              limit: string
+          logging:
+            containers:
+              worker:
+                console:
+                  level: "DEBUG"
