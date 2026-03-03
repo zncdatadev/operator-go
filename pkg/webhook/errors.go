@@ -97,7 +97,11 @@ func (errs ValidationErrors) ToError() error {
 
 // Merge combines multiple ValidationErrors into one.
 func Merge(errsList ...ValidationErrors) ValidationErrors {
-	var result ValidationErrors
+	totalLen := 0
+	for _, errs := range errsList {
+		totalLen += len(errs)
+	}
+	result := make(ValidationErrors, 0, totalLen)
 	for _, errs := range errsList {
 		result = append(result, errs...)
 	}

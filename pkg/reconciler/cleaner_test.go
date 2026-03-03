@@ -32,6 +32,8 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+const cleanerTestNamespace = "default"
+
 var _ = Describe("RoleGroupCleaner", func() {
 	var cleaner *reconciler.RoleGroupCleaner
 	var ctx context.Context
@@ -39,7 +41,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = cleanerTestNamespace
 		cleaner = reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
 	})
 
@@ -212,7 +214,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = cleanerTestNamespace
 		cleaner = reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
 	})
 
@@ -376,7 +378,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = cleanerTestNamespace
 		cleaner = reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
 	})
 
@@ -645,7 +647,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = cleanerTestNamespace
 		cleaner = reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
 	})
 

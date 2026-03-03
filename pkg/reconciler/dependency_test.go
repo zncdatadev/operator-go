@@ -30,6 +30,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const dependencyTestNamespace = "default"
+
 var _ = Describe("DependencyResolver", func() {
 	var resolver *reconciler.DependencyResolver
 
@@ -110,7 +112,7 @@ var _ = Describe("DependencyResolver", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			namespace = "default"
+			namespace = dependencyTestNamespace
 		})
 
 		It("should return error when ConfigMap does not exist", func() {
@@ -149,7 +151,7 @@ var _ = Describe("DependencyResolver", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			namespace = "default"
+			namespace = dependencyTestNamespace
 		})
 
 		It("should return error when Secret does not exist", func() {

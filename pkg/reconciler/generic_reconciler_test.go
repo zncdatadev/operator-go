@@ -213,13 +213,15 @@ var _ = Describe("GenericReconciler", func() {
 	})
 })
 
+const testNamespace = "default"
+
 var _ = Describe("GenericReconciler Reconcile", func() {
 	var r *reconciler.GenericReconciler[*testutil.ClusterWrapper]
 	var mockHandler *testutil.MockRoleGroupHandler
 	var namespace string
 
 	BeforeEach(func() {
-		namespace = "default"
+		namespace = testNamespace
 		mockHandler = testutil.NewMockRoleGroupHandler()
 
 		mockCR := testutil.NewMockCluster("test-cr", namespace)
@@ -522,7 +524,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 	var testID string // Unique identifier for test isolation
 
 	BeforeEach(func() {
-		namespace = "default"
+		namespace = testNamespace
 		testID = fmt.Sprintf("test-%d", time.Now().UnixNano())
 		mockHandler = testutil.NewMockRoleGroupHandler()
 
@@ -874,7 +876,7 @@ var _ = Describe("GenericReconciler scaleToZero", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = testNamespace
 		crName = "scale-zero-cr"
 		mockHandler = testutil.NewMockRoleGroupHandler()
 		customCR = testutil.NewMockCluster(crName, namespace).
@@ -963,7 +965,7 @@ var _ = Describe("GenericReconciler error paths", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = testNamespace
 		crName = "error-path-cr"
 		mockHandler = testutil.NewMockRoleGroupHandler()
 		customCR = testutil.NewMockCluster(crName, namespace).
@@ -1035,7 +1037,7 @@ var _ = Describe("GenericReconciler applyResources errors", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = testNamespace
 		crName = "apply-error-cr"
 		mockHandler = testutil.NewMockRoleGroupHandler()
 		customCR = testutil.NewMockCluster(crName, namespace).
@@ -1137,7 +1139,7 @@ var _ = Describe("GenericReconciler cleanupRoleGroup errors", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = testNamespace
 		cleaner = reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
 	})
 

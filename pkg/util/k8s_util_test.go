@@ -78,7 +78,7 @@ var _ = Describe("K8sUtil", func() {
 
 			// Update
 			result, err := k8sUtil.CreateOrUpdate(ctx, cm, func() error {
-				cm.Data["key"] = "updated"
+				cm.Data["key"] = "updated-value"
 				return nil
 			})
 

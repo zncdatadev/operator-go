@@ -296,6 +296,8 @@ var _ = Describe("HealthManager", func() {
 	})
 })
 
+const healthTestNamespace = "default"
+
 var _ = Describe("HealthManager with StatefulSet", func() {
 	var healthManager *reconciler.HealthManager
 	var ctx context.Context
@@ -303,7 +305,7 @@ var _ = Describe("HealthManager with StatefulSet", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		namespace = "default"
+		namespace = healthTestNamespace
 		healthManager = reconciler.NewHealthManager(k8sClient)
 	})
 
