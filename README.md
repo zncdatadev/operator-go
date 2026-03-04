@@ -1,5 +1,7 @@
 # Operator-go
 
+English | [简体中文](./README_zh-CN.md)
+
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/zncdatadev/operator-go)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/zncdatadev/operator-go)
 [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zncdatadev/operator-go/test.yml)](https://github.com/zncdatadev/operator-go/actions/workflows/test.yml)
