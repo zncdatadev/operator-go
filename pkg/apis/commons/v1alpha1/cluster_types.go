@@ -16,6 +16,10 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+)
+
 // GenericClusterSpec defines the common cluster configuration for all product operators.
 // Product-specific specs should embed this struct to inherit common functionality.
 type GenericClusterSpec struct {
@@ -33,20 +37,44 @@ type GenericClusterSpec struct {
 // RoleSpec defines the configuration for a role within a cluster.
 // A role acts as a template for its RoleGroups, defining shared configurations.
 type RoleSpec struct {
-	// RoleConfig contains role-level common configurations.
-	// These configurations are inherited by all RoleGroups under this role.
+	// RoleConfig contains Kubernetes-level role management controls.
+	// These settings are role-scoped and NOT inherited or overridden by individual RoleGroups.
+	// Examples: PodDisruptionBudget that covers all Pods across all RoleGroups.
 	// +kubebuilder:validation:Optional
 	RoleConfig *RoleConfigSpec `json:"roleConfig,omitempty"`
+
+	// Config contains workload runtime configuration defaults for all RoleGroups.
+	// Each RoleGroup inherits these values and can selectively override them.
+	// Key distinction from 'roleConfig': this is workload behavior (resources, affinity, logging)
+	// that propagates to RoleGroups, while roleConfig is Kubernetes resource management.
+	// +kubebuilder:validation:Optional
+	Config *RoleGroupConfigSpec `json:"config,omitempty"`
 
 	// RoleGroups defines the role group configurations.
 	// Each RoleGroup maps to a Kubernetes StatefulSet.
 	// +kubebuilder:validation:Optional
 	RoleGroups map[string]RoleGroupSpec `json:"roleGroups,omitempty"`
 
-	// Overrides allows customization of configuration files, environment variables, and CLI arguments.
-	// These overrides apply to all RoleGroups unless overridden at the RoleGroup level.
+	// ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+	// Map[FileName]Map[Key]Value. These overrides apply to all RoleGroups unless overridden.
 	// +kubebuilder:validation:Optional
-	Overrides *OverridesSpec `json:"overrides,omitempty"`
+	ConfigOverrides map[string]map[string]string `json:"configOverrides,omitempty"`
+
+	// EnvOverrides allows customization of environment variables.
+	// These overrides apply to all RoleGroups unless overridden.
+	// +kubebuilder:validation:Optional
+	EnvOverrides map[string]string `json:"envOverrides,omitempty"`
+
+	// CliOverrides allows customization of CLI arguments.
+	// These overrides apply to all RoleGroups unless overridden.
+	// +kubebuilder:validation:Optional
+	CliOverrides []string `json:"cliOverrides,omitempty"`
+
+	// PodOverrides allows customization of Pod template using Strategic Merge Patch.
+	// These overrides apply to all RoleGroups unless overridden.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Type=object
+	PodOverrides *k8sruntime.RawExtension `json:"podOverrides,omitempty"`
 }
 
 // RoleGroupSpec defines the configuration for a role group.
@@ -58,15 +86,31 @@ type RoleGroupSpec struct {
 	// +kubebuilder:validation:Optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// RoleGroupConfig contains role group level configurations.
+	// Config contains role group level configurations.
 	// These include resource limits, affinity, and logging settings.
 	// +kubebuilder:validation:Optional
-	RoleGroupConfig *RoleGroupConfigSpec `json:"roleGroupConfig,omitempty"`
+	Config *RoleGroupConfigSpec `json:"config,omitempty"`
 
-	// Overrides allows customization at the role group level.
+	// ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+	// Map[FileName]Map[Key]Value. RoleGroup overrides take precedence over Role overrides.
+	// +kubebuilder:validation:Optional
+	ConfigOverrides map[string]map[string]string `json:"configOverrides,omitempty"`
+
+	// EnvOverrides allows customization of environment variables.
 	// RoleGroup overrides take precedence over Role overrides.
 	// +kubebuilder:validation:Optional
-	Overrides *OverridesSpec `json:"overrides,omitempty"`
+	EnvOverrides map[string]string `json:"envOverrides,omitempty"`
+
+	// CliOverrides allows customization of CLI arguments.
+	// RoleGroup overrides take precedence over Role overrides.
+	// +kubebuilder:validation:Optional
+	CliOverrides []string `json:"cliOverrides,omitempty"`
+
+	// PodOverrides allows customization of Pod template using Strategic Merge Patch.
+	// RoleGroup overrides take precedence over Role overrides.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Type=object
+	PodOverrides *k8sruntime.RawExtension `json:"podOverrides,omitempty"`
 }
 
 // GetReplicas returns the replica count, defaulting to 1 if not specified.
@@ -85,23 +129,34 @@ func (r *RoleSpec) GetRoleGroups() map[string]RoleGroupSpec {
 	return r.RoleGroups
 }
 
-// GetOverrides returns the overrides specification, or nil if not set.
+// GetOverrides returns the overrides specification built from flattened fields.
 func (r *RoleSpec) GetOverrides() *OverridesSpec {
-	if r.Overrides == nil {
-		return &OverridesSpec{}
+	if r.ConfigOverrides == nil && r.EnvOverrides == nil && r.CliOverrides == nil && r.PodOverrides == nil {
+		return nil
 	}
-	return r.Overrides
+	return &OverridesSpec{
+		ConfigOverrides: r.ConfigOverrides,
+		EnvOverrides:    r.EnvOverrides,
+		CliOverrides:    r.CliOverrides,
+		PodOverrides:    r.PodOverrides,
+	}
 }
 
-// GetOverrides returns the overrides specification, or nil if not set.
+// GetOverrides returns the overrides specification built from flattened fields.
 func (r *RoleGroupSpec) GetOverrides() *OverridesSpec {
-	if r.Overrides == nil {
-		return &OverridesSpec{}
+	if r.ConfigOverrides == nil && r.EnvOverrides == nil && r.CliOverrides == nil && r.PodOverrides == nil {
+		return nil
 	}
-	return r.Overrides
+	return &OverridesSpec{
+		ConfigOverrides: r.ConfigOverrides,
+		EnvOverrides:    r.EnvOverrides,
+		CliOverrides:    r.CliOverrides,
+		PodOverrides:    r.PodOverrides,
+	}
 }
 
-// GetRoleConfig returns the role configuration, or an empty config if not set.
+// GetRoleConfig returns the Kubernetes-level role configuration, or an empty config if not set.
+// This is NOT inherited by RoleGroups.
 func (r *RoleSpec) GetRoleConfig() *RoleConfigSpec {
 	if r.RoleConfig == nil {
 		return &RoleConfigSpec{}
@@ -109,10 +164,25 @@ func (r *RoleSpec) GetRoleConfig() *RoleConfigSpec {
 	return r.RoleConfig
 }
 
-// GetRoleGroupConfig returns the role group configuration, or an empty config if not set.
-func (r *RoleGroupSpec) GetRoleGroupConfig() *RoleGroupConfigSpec {
-	if r.RoleGroupConfig == nil {
+// GetConfig returns the workload runtime configuration defaults, or an empty config if not set.
+// These values are inherited by RoleGroups.
+func (r *RoleSpec) GetConfig() *RoleGroupConfigSpec {
+	if r.Config == nil {
 		return &RoleGroupConfigSpec{}
 	}
-	return r.RoleGroupConfig
+	return r.Config
+}
+
+// GetConfig returns the role group configuration, or an empty config if not set.
+func (r *RoleGroupSpec) GetConfig() *RoleGroupConfigSpec {
+	if r.Config == nil {
+		return &RoleGroupConfigSpec{}
+	}
+	return r.Config
+}
+
+// GetRoleGroupConfig is an alias for GetConfig for backward compatibility.
+// Deprecated: Use GetConfig instead.
+func (r *RoleGroupSpec) GetRoleGroupConfig() *RoleGroupConfigSpec {
+	return r.GetConfig()
 }

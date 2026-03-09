@@ -300,10 +300,8 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 
 	// Process each role group
 	for groupName, groupSpec := range roleSpec.GetRoleGroups() {
-		if err := r.reconcileRoleGroup(ctx, cr, roleName, &v1alpha1.RoleSpec{
-			RoleConfig: roleSpec.RoleConfig,
-			Overrides:  roleSpec.Overrides,
-		}, groupName, &groupSpec); err != nil {
+		groupSpecCopy := *groupSpec.DeepCopy() // Deep copy to avoid shared mutable state
+		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy); err != nil {
 			return err
 		}
 	}

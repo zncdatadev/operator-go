@@ -474,14 +474,44 @@ func (in *RoleGroupSpec) DeepCopyInto(out *RoleGroupSpec) {
 		*out = new(int32)
 		**out = **in
 	}
-	if in.RoleGroupConfig != nil {
-		in, out := &in.RoleGroupConfig, &out.RoleGroupConfig
+	if in.Config != nil {
+		in, out := &in.Config, &out.Config
 		*out = new(RoleGroupConfigSpec)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.Overrides != nil {
-		in, out := &in.Overrides, &out.Overrides
-		*out = new(OverridesSpec)
+	if in.ConfigOverrides != nil {
+		in, out := &in.ConfigOverrides, &out.ConfigOverrides
+		*out = make(map[string]map[string]string, len(*in))
+		for key, val := range *in {
+			var outVal map[string]string
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make(map[string]string, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
+		}
+	}
+	if in.EnvOverrides != nil {
+		in, out := &in.EnvOverrides, &out.EnvOverrides
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.CliOverrides != nil {
+		in, out := &in.CliOverrides, &out.CliOverrides
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PodOverrides != nil {
+		in, out := &in.PodOverrides, &out.PodOverrides
+		*out = new(runtime.RawExtension)
 		(*in).DeepCopyInto(*out)
 	}
 }
@@ -504,6 +534,11 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 		*out = new(RoleConfigSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Config != nil {
+		in, out := &in.Config, &out.Config
+		*out = new(RoleGroupConfigSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.RoleGroups != nil {
 		in, out := &in.RoleGroups, &out.RoleGroups
 		*out = make(map[string]RoleGroupSpec, len(*in))
@@ -511,9 +546,39 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 			(*out)[key] = *val.DeepCopy()
 		}
 	}
-	if in.Overrides != nil {
-		in, out := &in.Overrides, &out.Overrides
-		*out = new(OverridesSpec)
+	if in.ConfigOverrides != nil {
+		in, out := &in.ConfigOverrides, &out.ConfigOverrides
+		*out = make(map[string]map[string]string, len(*in))
+		for key, val := range *in {
+			var outVal map[string]string
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make(map[string]string, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
+		}
+	}
+	if in.EnvOverrides != nil {
+		in, out := &in.EnvOverrides, &out.EnvOverrides
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.CliOverrides != nil {
+		in, out := &in.CliOverrides, &out.CliOverrides
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PodOverrides != nil {
+		in, out := &in.PodOverrides, &out.PodOverrides
+		*out = new(runtime.RawExtension)
 		(*in).DeepCopyInto(*out)
 	}
 }
