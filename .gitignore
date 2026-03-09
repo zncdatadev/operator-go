@@ -198,3 +198,4 @@ cover.out
 .auto-claude/
 _bmad*
 .omc
+.claude/worktrees

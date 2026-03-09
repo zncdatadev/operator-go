@@ -52,7 +52,7 @@ func (b *CatalogConfigBuilder) Build() map[string]string {
 
 // buildCatalogProperties builds the properties string for a catalog
 func (b *CatalogConfigBuilder) buildCatalogProperties(catalog trinov1alpha1.CatalogSpec) string {
-	var lines []string
+	lines := make([]string, 0, 1+len(catalog.Properties))
 
 	// Add connector.name based on catalog type
 	connectorName := b.getConnectorName(catalog.Type)

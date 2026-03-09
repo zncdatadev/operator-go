@@ -92,43 +92,187 @@ spec:
                   Coordinators defines the Coordinators role configuration (plural naming)
                   Coordinator is responsible for query coordination, metadata management, and client request handling
                 properties:
+                  cliOverrides:
+                    description: |-
+                      CliOverrides allows customization of CLI arguments.
+                      These overrides apply to all RoleGroups unless overridden.
+                    items:
+                      type: string
+                    type: array
+                  config:
+                    description: |-
+                      Config contains workload runtime configuration defaults for all RoleGroups.
+                      Each RoleGroup inherits these values and can selectively override them.
+                      Key distinction from 'roleConfig': this is workload behavior (resources, affinity, logging)
+                      that propagates to RoleGroups, while roleConfig is Kubernetes resource management.
+                    properties:
+                      affinity:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      gracefulShutdownTimeout:
+                        default: 30s
+                        type: string
+                      logging:
+                        properties:
+                          containers:
+                            additionalProperties:
+                              properties:
+                                console:
+                                  description: |-
+                                    LogLevelSpec
+                                    level mapping if app log level is not standard
+                                      - FATAL -> CRITICAL
+                                      - ERROR -> ERROR
+                                      - WARN -> WARNING
+                                      - INFO -> INFO
+                                      - DEBUG -> DEBUG
+                                      - TRACE -> DEBUG
+
+                                    Default log level is INFO
+                                  properties:
+                                    level:
+                                      default: INFO
+                                      enum:
+                                      - FATAL
+                                      - ERROR
+                                      - WARN
+                                      - INFO
+                                      - DEBUG
+                                      - TRACE
+                                      type: string
+                                  type: object
+                                file:
+                                  description: |-
+                                    LogLevelSpec
+                                    level mapping if app log level is not standard
+                                      - FATAL -> CRITICAL
+                                      - ERROR -> ERROR
+                                      - WARN -> WARNING
+                                      - INFO -> INFO
+                                      - DEBUG -> DEBUG
+                                      - TRACE -> DEBUG
+
+                                    Default log level is INFO
+                                  properties:
+                                    level:
+                                      default: INFO
+                                      enum:
+                                      - FATAL
+                                      - ERROR
+                                      - WARN
+                                      - INFO
+                                      - DEBUG
+                                      - TRACE
+                                      type: string
+                                  type: object
+                                loggers:
+                                  additionalProperties:
+                                    description: |-
+                                      LogLevelSpec
+                                      level mapping if app log level is not standard
+                                        - FATAL -> CRITICAL
+                                        - ERROR -> ERROR
+                                        - WARN -> WARNING
+                                        - INFO -> INFO
+                                        - DEBUG -> DEBUG
+                                        - TRACE -> DEBUG
+
+                                      Default log level is INFO
+                                    properties:
+                                      level:
+                                        default: INFO
+                                        enum:
+                                        - FATAL
+                                        - ERROR
+                                        - WARN
+                                        - INFO
+                                        - DEBUG
+                                        - TRACE
+                                        type: string
+                                    type: object
+                                  type: object
+                              type: object
+                            type: object
+                          enableVectorAgent:
+                            type: boolean
+                        type: object
+                      resources:
+                        properties:
+                          cpu:
+                            properties:
+                              max:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              min:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                            type: object
+                          memory:
+                            properties:
+                              limit:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                            type: object
+                          storage:
+                            properties:
+                              capacity:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                default: 10Gi
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClass:
+                                type: string
+                            type: object
+                        type: object
+                    type: object
+                  configOverrides:
+                    additionalProperties:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    description: |-
+                      ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+                      Map[FileName]Map[Key]Value. These overrides apply to all RoleGroups unless overridden.
+                    type: object
                   discoveryEnabled:
                     default: true
                     description: DiscoveryEnabled indicates whether to enable Discovery
                       service (for Worker discovery)
                     type: boolean
+                  envOverrides:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      EnvOverrides allows customization of environment variables.
+                      These overrides apply to all RoleGroups unless overridden.
+                    type: object
                   httpPort:
                     default: 8080
                     description: HTTPPort is the HTTP API port
                     format: int32
                     type: integer
-                  overrides:
+                  podOverrides:
                     description: |-
-                      Overrides allows customization of configuration files, environment variables, and CLI arguments.
-                      These overrides apply to all RoleGroups unless overridden at the RoleGroup level.
-                    properties:
-                      cliOverrides:
-                        items:
-                          type: string
-                        type: array
-                      configOverrides:
-                        additionalProperties:
-                          additionalProperties:
-                            type: string
-                          type: object
-                        type: object
-                      envOverrides:
-                        additionalProperties:
-                          type: string
-                        type: object
-                      podOverrides:
-                        type: object
-                        x-kubernetes-preserve-unknown-fields: true
+                      PodOverrides allows customization of Pod template using Strategic Merge Patch.
+                      These overrides apply to all RoleGroups unless overridden.
                     type: object
+                    x-kubernetes-preserve-unknown-fields: true
                   roleConfig:
                     description: |-
-                      RoleConfig contains role-level common configurations.
-                      These configurations are inherited by all RoleGroups under this role.
+                      RoleConfig contains Kubernetes-level role management controls.
+                      These settings are role-scoped and NOT inherited or overridden by individual RoleGroups.
+                      Examples: PodDisruptionBudget that covers all Pods across all RoleGroups.
                     properties:
                       podDisruptionBudget:
                         description: |-
@@ -158,39 +302,16 @@ spec:
                         RoleGroupSpec defines the configuration for a role group.
                         Each RoleGroup maps directly to a Kubernetes StatefulSet and its associated resources.
                       properties:
-                        overrides:
+                        cliOverrides:
                           description: |-
-                            Overrides allows customization at the role group level.
+                            CliOverrides allows customization of CLI arguments.
                             RoleGroup overrides take precedence over Role overrides.
-                          properties:
-                            cliOverrides:
-                              items:
-                                type: string
-                              type: array
-                            configOverrides:
-                              additionalProperties:
-                                additionalProperties:
-                                  type: string
-                                type: object
-                              type: object
-                            envOverrides:
-                              additionalProperties:
-                                type: string
-                              type: object
-                            podOverrides:
-                              type: object
-                              x-kubernetes-preserve-unknown-fields: true
-                          type: object
-                        replicas:
-                          default: 1
-                          description: Replicas is the number of pod replicas for
-                            this role group.
-                          format: int32
-                          minimum: 0
-                          type: integer
-                        roleGroupConfig:
+                          items:
+                            type: string
+                          type: array
+                        config:
                           description: |-
-                            RoleGroupConfig contains role group level configurations.
+                            Config contains role group level configurations.
                             These include resource limits, affinity, and logging settings.
                           properties:
                             affinity:
@@ -323,6 +444,35 @@ spec:
                                   type: object
                               type: object
                           type: object
+                        configOverrides:
+                          additionalProperties:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          description: |-
+                            ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+                            Map[FileName]Map[Key]Value. RoleGroup overrides take precedence over Role overrides.
+                          type: object
+                        envOverrides:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            EnvOverrides allows customization of environment variables.
+                            RoleGroup overrides take precedence over Role overrides.
+                          type: object
+                        podOverrides:
+                          description: |-
+                            PodOverrides allows customization of Pod template using Strategic Merge Patch.
+                            RoleGroup overrides take precedence over Role overrides.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        replicas:
+                          default: 1
+                          description: Replicas is the number of pod replicas for
+                            this role group.
+                          format: int32
+                          minimum: 0
+                          type: integer
                       type: object
                     description: |-
                       RoleGroups defines the role group configurations.
@@ -339,33 +489,177 @@ spec:
                     RoleSpec defines the configuration for a role within a cluster.
                     A role acts as a template for its RoleGroups, defining shared configurations.
                   properties:
-                    overrides:
+                    cliOverrides:
                       description: |-
-                        Overrides allows customization of configuration files, environment variables, and CLI arguments.
-                        These overrides apply to all RoleGroups unless overridden at the RoleGroup level.
+                        CliOverrides allows customization of CLI arguments.
+                        These overrides apply to all RoleGroups unless overridden.
+                      items:
+                        type: string
+                      type: array
+                    config:
+                      description: |-
+                        Config contains workload runtime configuration defaults for all RoleGroups.
+                        Each RoleGroup inherits these values and can selectively override them.
+                        Key distinction from 'roleConfig': this is workload behavior (resources, affinity, logging)
+                        that propagates to RoleGroups, while roleConfig is Kubernetes resource management.
                       properties:
-                        cliOverrides:
-                          items:
-                            type: string
-                          type: array
-                        configOverrides:
-                          additionalProperties:
-                            additionalProperties:
-                              type: string
-                            type: object
-                          type: object
-                        envOverrides:
-                          additionalProperties:
-                            type: string
-                          type: object
-                        podOverrides:
+                        affinity:
                           type: object
                           x-kubernetes-preserve-unknown-fields: true
+                        gracefulShutdownTimeout:
+                          default: 30s
+                          type: string
+                        logging:
+                          properties:
+                            containers:
+                              additionalProperties:
+                                properties:
+                                  console:
+                                    description: |-
+                                      LogLevelSpec
+                                      level mapping if app log level is not standard
+                                        - FATAL -> CRITICAL
+                                        - ERROR -> ERROR
+                                        - WARN -> WARNING
+                                        - INFO -> INFO
+                                        - DEBUG -> DEBUG
+                                        - TRACE -> DEBUG
+
+                                      Default log level is INFO
+                                    properties:
+                                      level:
+                                        default: INFO
+                                        enum:
+                                        - FATAL
+                                        - ERROR
+                                        - WARN
+                                        - INFO
+                                        - DEBUG
+                                        - TRACE
+                                        type: string
+                                    type: object
+                                  file:
+                                    description: |-
+                                      LogLevelSpec
+                                      level mapping if app log level is not standard
+                                        - FATAL -> CRITICAL
+                                        - ERROR -> ERROR
+                                        - WARN -> WARNING
+                                        - INFO -> INFO
+                                        - DEBUG -> DEBUG
+                                        - TRACE -> DEBUG
+
+                                      Default log level is INFO
+                                    properties:
+                                      level:
+                                        default: INFO
+                                        enum:
+                                        - FATAL
+                                        - ERROR
+                                        - WARN
+                                        - INFO
+                                        - DEBUG
+                                        - TRACE
+                                        type: string
+                                    type: object
+                                  loggers:
+                                    additionalProperties:
+                                      description: |-
+                                        LogLevelSpec
+                                        level mapping if app log level is not standard
+                                          - FATAL -> CRITICAL
+                                          - ERROR -> ERROR
+                                          - WARN -> WARNING
+                                          - INFO -> INFO
+                                          - DEBUG -> DEBUG
+                                          - TRACE -> DEBUG
+
+                                        Default log level is INFO
+                                      properties:
+                                        level:
+                                          default: INFO
+                                          enum:
+                                          - FATAL
+                                          - ERROR
+                                          - WARN
+                                          - INFO
+                                          - DEBUG
+                                          - TRACE
+                                          type: string
+                                      type: object
+                                    type: object
+                                type: object
+                              type: object
+                            enableVectorAgent:
+                              type: boolean
+                          type: object
+                        resources:
+                          properties:
+                            cpu:
+                              properties:
+                                max:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                min:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                              type: object
+                            memory:
+                              properties:
+                                limit:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                              type: object
+                            storage:
+                              properties:
+                                capacity:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  default: 10Gi
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                storageClass:
+                                  type: string
+                              type: object
+                          type: object
                       type: object
+                    configOverrides:
+                      additionalProperties:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      description: |-
+                        ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+                        Map[FileName]Map[Key]Value. These overrides apply to all RoleGroups unless overridden.
+                      type: object
+                    envOverrides:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        EnvOverrides allows customization of environment variables.
+                        These overrides apply to all RoleGroups unless overridden.
+                      type: object
+                    podOverrides:
+                      description: |-
+                        PodOverrides allows customization of Pod template using Strategic Merge Patch.
+                        These overrides apply to all RoleGroups unless overridden.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     roleConfig:
                       description: |-
-                        RoleConfig contains role-level common configurations.
-                        These configurations are inherited by all RoleGroups under this role.
+                        RoleConfig contains Kubernetes-level role management controls.
+                        These settings are role-scoped and NOT inherited or overridden by individual RoleGroups.
+                        Examples: PodDisruptionBudget that covers all Pods across all RoleGroups.
                       properties:
                         podDisruptionBudget:
                           description: |-
@@ -395,39 +689,16 @@ spec:
                           RoleGroupSpec defines the configuration for a role group.
                           Each RoleGroup maps directly to a Kubernetes StatefulSet and its associated resources.
                         properties:
-                          overrides:
+                          cliOverrides:
                             description: |-
-                              Overrides allows customization at the role group level.
+                              CliOverrides allows customization of CLI arguments.
                               RoleGroup overrides take precedence over Role overrides.
-                            properties:
-                              cliOverrides:
-                                items:
-                                  type: string
-                                type: array
-                              configOverrides:
-                                additionalProperties:
-                                  additionalProperties:
-                                    type: string
-                                  type: object
-                                type: object
-                              envOverrides:
-                                additionalProperties:
-                                  type: string
-                                type: object
-                              podOverrides:
-                                type: object
-                                x-kubernetes-preserve-unknown-fields: true
-                            type: object
-                          replicas:
-                            default: 1
-                            description: Replicas is the number of pod replicas for
-                              this role group.
-                            format: int32
-                            minimum: 0
-                            type: integer
-                          roleGroupConfig:
+                            items:
+                              type: string
+                            type: array
+                          config:
                             description: |-
-                              RoleGroupConfig contains role group level configurations.
+                              Config contains role group level configurations.
                               These include resource limits, affinity, and logging settings.
                             properties:
                               affinity:
@@ -560,6 +831,35 @@ spec:
                                     type: object
                                 type: object
                             type: object
+                          configOverrides:
+                            additionalProperties:
+                              additionalProperties:
+                                type: string
+                              type: object
+                            description: |-
+                              ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+                              Map[FileName]Map[Key]Value. RoleGroup overrides take precedence over Role overrides.
+                            type: object
+                          envOverrides:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              EnvOverrides allows customization of environment variables.
+                              RoleGroup overrides take precedence over Role overrides.
+                            type: object
+                          podOverrides:
+                            description: |-
+                              PodOverrides allows customization of Pod template using Strategic Merge Patch.
+                              RoleGroup overrides take precedence over Role overrides.
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                          replicas:
+                            default: 1
+                            description: Replicas is the number of pod replicas for
+                              this role group.
+                            format: int32
+                            minimum: 0
+                            type: integer
                         type: object
                       description: |-
                         RoleGroups defines the role group configurations.
@@ -575,38 +875,182 @@ spec:
                   Workers defines the Workers role configuration (plural naming)
                   Worker is responsible for executing query tasks and can be horizontally scaled
                 properties:
+                  cliOverrides:
+                    description: |-
+                      CliOverrides allows customization of CLI arguments.
+                      These overrides apply to all RoleGroups unless overridden.
+                    items:
+                      type: string
+                    type: array
+                  config:
+                    description: |-
+                      Config contains workload runtime configuration defaults for all RoleGroups.
+                      Each RoleGroup inherits these values and can selectively override them.
+                      Key distinction from 'roleConfig': this is workload behavior (resources, affinity, logging)
+                      that propagates to RoleGroups, while roleConfig is Kubernetes resource management.
+                    properties:
+                      affinity:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      gracefulShutdownTimeout:
+                        default: 30s
+                        type: string
+                      logging:
+                        properties:
+                          containers:
+                            additionalProperties:
+                              properties:
+                                console:
+                                  description: |-
+                                    LogLevelSpec
+                                    level mapping if app log level is not standard
+                                      - FATAL -> CRITICAL
+                                      - ERROR -> ERROR
+                                      - WARN -> WARNING
+                                      - INFO -> INFO
+                                      - DEBUG -> DEBUG
+                                      - TRACE -> DEBUG
+
+                                    Default log level is INFO
+                                  properties:
+                                    level:
+                                      default: INFO
+                                      enum:
+                                      - FATAL
+                                      - ERROR
+                                      - WARN
+                                      - INFO
+                                      - DEBUG
+                                      - TRACE
+                                      type: string
+                                  type: object
+                                file:
+                                  description: |-
+                                    LogLevelSpec
+                                    level mapping if app log level is not standard
+                                      - FATAL -> CRITICAL
+                                      - ERROR -> ERROR
+                                      - WARN -> WARNING
+                                      - INFO -> INFO
+                                      - DEBUG -> DEBUG
+                                      - TRACE -> DEBUG
+
+                                    Default log level is INFO
+                                  properties:
+                                    level:
+                                      default: INFO
+                                      enum:
+                                      - FATAL
+                                      - ERROR
+                                      - WARN
+                                      - INFO
+                                      - DEBUG
+                                      - TRACE
+                                      type: string
+                                  type: object
+                                loggers:
+                                  additionalProperties:
+                                    description: |-
+                                      LogLevelSpec
+                                      level mapping if app log level is not standard
+                                        - FATAL -> CRITICAL
+                                        - ERROR -> ERROR
+                                        - WARN -> WARNING
+                                        - INFO -> INFO
+                                        - DEBUG -> DEBUG
+                                        - TRACE -> DEBUG
+
+                                      Default log level is INFO
+                                    properties:
+                                      level:
+                                        default: INFO
+                                        enum:
+                                        - FATAL
+                                        - ERROR
+                                        - WARN
+                                        - INFO
+                                        - DEBUG
+                                        - TRACE
+                                        type: string
+                                    type: object
+                                  type: object
+                              type: object
+                            type: object
+                          enableVectorAgent:
+                            type: boolean
+                        type: object
+                      resources:
+                        properties:
+                          cpu:
+                            properties:
+                              max:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              min:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                            type: object
+                          memory:
+                            properties:
+                              limit:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                            type: object
+                          storage:
+                            properties:
+                              capacity:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                default: 10Gi
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClass:
+                                type: string
+                            type: object
+                        type: object
+                    type: object
+                  configOverrides:
+                    additionalProperties:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    description: |-
+                      ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+                      Map[FileName]Map[Key]Value. These overrides apply to all RoleGroups unless overridden.
+                    type: object
+                  envOverrides:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      EnvOverrides allows customization of environment variables.
+                      These overrides apply to all RoleGroups unless overridden.
+                    type: object
                   httpPort:
                     default: 8080
                     description: HTTPPort is the HTTP API port
                     format: int32
                     type: integer
-                  overrides:
+                  podOverrides:
                     description: |-
-                      Overrides allows customization of configuration files, environment variables, and CLI arguments.
-                      These overrides apply to all RoleGroups unless overridden at the RoleGroup level.
-                    properties:
-                      cliOverrides:
-                        items:
-                          type: string
-                        type: array
-                      configOverrides:
-                        additionalProperties:
-                          additionalProperties:
-                            type: string
-                          type: object
-                        type: object
-                      envOverrides:
-                        additionalProperties:
-                          type: string
-                        type: object
-                      podOverrides:
-                        type: object
-                        x-kubernetes-preserve-unknown-fields: true
+                      PodOverrides allows customization of Pod template using Strategic Merge Patch.
+                      These overrides apply to all RoleGroups unless overridden.
                     type: object
+                    x-kubernetes-preserve-unknown-fields: true
                   roleConfig:
                     description: |-
-                      RoleConfig contains role-level common configurations.
-                      These configurations are inherited by all RoleGroups under this role.
+                      RoleConfig contains Kubernetes-level role management controls.
+                      These settings are role-scoped and NOT inherited or overridden by individual RoleGroups.
+                      Examples: PodDisruptionBudget that covers all Pods across all RoleGroups.
                     properties:
                       podDisruptionBudget:
                         description: |-
@@ -636,39 +1080,16 @@ spec:
                         RoleGroupSpec defines the configuration for a role group.
                         Each RoleGroup maps directly to a Kubernetes StatefulSet and its associated resources.
                       properties:
-                        overrides:
+                        cliOverrides:
                           description: |-
-                            Overrides allows customization at the role group level.
+                            CliOverrides allows customization of CLI arguments.
                             RoleGroup overrides take precedence over Role overrides.
-                          properties:
-                            cliOverrides:
-                              items:
-                                type: string
-                              type: array
-                            configOverrides:
-                              additionalProperties:
-                                additionalProperties:
-                                  type: string
-                                type: object
-                              type: object
-                            envOverrides:
-                              additionalProperties:
-                                type: string
-                              type: object
-                            podOverrides:
-                              type: object
-                              x-kubernetes-preserve-unknown-fields: true
-                          type: object
-                        replicas:
-                          default: 1
-                          description: Replicas is the number of pod replicas for
-                            this role group.
-                          format: int32
-                          minimum: 0
-                          type: integer
-                        roleGroupConfig:
+                          items:
+                            type: string
+                          type: array
+                        config:
                           description: |-
-                            RoleGroupConfig contains role group level configurations.
+                            Config contains role group level configurations.
                             These include resource limits, affinity, and logging settings.
                           properties:
                             affinity:
@@ -801,6 +1222,35 @@ spec:
                                   type: object
                               type: object
                           type: object
+                        configOverrides:
+                          additionalProperties:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          description: |-
+                            ConfigOverrides allows customization of configuration files (e.g., XML, properties).
+                            Map[FileName]Map[Key]Value. RoleGroup overrides take precedence over Role overrides.
+                          type: object
+                        envOverrides:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            EnvOverrides allows customization of environment variables.
+                            RoleGroup overrides take precedence over Role overrides.
+                          type: object
+                        podOverrides:
+                          description: |-
+                            PodOverrides allows customization of Pod template using Strategic Merge Patch.
+                            RoleGroup overrides take precedence over Role overrides.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        replicas:
+                          default: 1
+                          description: Replicas is the number of pod replicas for
+                            this role group.
+                          format: int32
+                          minimum: 0
+                          type: integer
                       type: object
                     description: |-
                       RoleGroups defines the role group configurations.

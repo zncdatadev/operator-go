@@ -25,7 +25,9 @@ This document systematically expounds the design philosophy, architectural layer
   - Represents a specific deployment instance of a Product, defined by a Custom Resource (CR). It serves as the root object aggregating global configurations (e.g., Image version, Security features, Vector/Logging sidecars) and all component Roles.
 
 - **Role**
-  - Represents a logical functional component within a Product (e.g., NameNode or DataNode in HDFS). It acts as a template and grouping mechanism for RoleGroups, defining shared configurations (Config Overrides, shared logging settings) that are inherited by its definition.
+  - Represents a logical functional component within a Product (e.g., NameNode or DataNode in HDFS). It acts as a template and grouping mechanism for RoleGroups, defining shared configurations (Config Overrides, shared logging settings) that are inherited by its definition. A Role contains two distinct configuration sections:
+    - `roleConfig`: Kubernetes-level management controls (e.g., PodDisruptionBudget), Role-scoped only, NOT inherited by RoleGroups.
+    - `config`: Workload runtime configuration (resources, affinity, logging), serves as defaults for RoleGroups and CAN be inherited and overridden.
 
 - **RoleGroup**
   - The physical unit of deployment and resource isolation under a Role. Each RoleGroup maps directly to a Kubernetes `StatefulSet` (and associated Service, ConfigMap, PDB). This allows a single Role to be partitioned into multiple groups with distinct hardware specifications (CPU/Memory), replica counts, or specialized configurations (e.g., a "high-performance" DataNode group vs. a "standard" group).
@@ -34,7 +36,7 @@ This document systematically expounds the design philosophy, architectural layer
   - An object managed by `secret-operator`, enabling the injection of sensitive data (Certificates, Kerberos Keytabs, Passwords) into Pods via the Kubernetes CSI (Container Storage Interface). Workloads reference a `SecretClass` to mount volumes that are dynamically populated by specific security backends.
 
 - **Overrides**
-  - A hierarchical configuration mechanism allowing precise customization of generated resources. It supports overriding Configuration Files (e.g., XML/Properties), Environment Variables, CLI arguments, JVM arguments, and Pod attributes (via PodTemplateSpec). RoleGroup overrides inherit from and take precedence over Role overrides.
+  - A hierarchical configuration mechanism allowing precise customization of generated resources. It supports overriding Configuration Files (e.g., XML/Properties), Environment Variables, CLI arguments, and Pod attributes (via PodTemplateSpec). **Important**: Override fields (`configOverrides`, `envOverrides`, `cliOverrides`, `podOverrides`) are **flattened** directly at Role/RoleGroup level, NOT nested under an `overrides` field. RoleGroup overrides inherit from and take precedence over Role overrides.
 
 - **Webhook**
   - Kubernetes admission webhooks integrated into the SDK for defaulting and validation. MutatingWebhook runs first to populate missing fields with safe defaults before persistence, while ValidatingWebhook runs next to enforce invariants and business rules (e.g., invalid replica counts, missing dependencies). Failed validation rejects the request so only valid specs enter reconciliation.
@@ -141,7 +143,7 @@ Defines core interfaces and extension contracts. It only depends on the API laye
 - **Business Interfaces**:
     - `ClusterInterface`: Cluster-level interface, defining methods for cluster name, Spec/Status access, state updates, etc.
     - `RoleInterface`: Role-level interface, defining methods for role name, default ports, configuration extenders, etc.
-    - `RoleConfigExtender`: Configuration extender interface, defining logic for parsing and merging differentiated configurations.
+    - `RoleExtender`: Role extender interface, defining logic for extending Role configurations (e.g., extending `role.config` fields for product-specific workload settings).
 
 - **Extension Interfaces**:
     - `ClusterExtension/RoleExtension`: Extension point interfaces, defining custom logic before and after reconciliation.
@@ -200,7 +202,7 @@ Original interfaces relied on type assertions, presenting runtime error risks an
 
 - **Generic Reconciler Skeleton**: `GenericReconciler[CR ClusterInterface]`, constraining CR type and reusing the reconciliation process.
 - **Generic Extension Interface**: `ClusterExtension[CR ClusterInterface]`, eliminating type assertions and directly receiving specific CR types.
-- **Generic Config Extender**: `RoleConfigExtender[ExtConfig any]`, constraining differentiated configuration types to ensure type legitimacy.
+- **Generic Role Extender**: `RoleExtender[ExtConfig any]`, constraining extension configuration types for extending Role-level settings (e.g., `role.config` fields) to ensure type safety.
 
 ### 4.1.3 Core Value
 
@@ -563,7 +565,7 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 
 - **`ClusterInterface`**: Defines cluster-level operations (GetName, GetNamespace, GetSpec, GetStatus, SetStatus).
 - **`RoleInterface`**: Defines role-level operations (GetRoleName, GetConfig, GetRoleGroups).
-- **`RoleConfigExtender`**: Defines configuration extension points for custom config merging.
+- **`RoleExtender`**: Defines Role extension points for extending `role.config` fields with product-specific settings.
 - **`ServiceHealthCheck`**: Defines health check contract for business-level readiness.
 
 ### 5.1.3 Benefits

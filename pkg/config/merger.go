@@ -168,7 +168,7 @@ func (m *ConfigMerger) mergeSlices(base, override []string) []string {
 
 	switch m.SliceMergeStrategy {
 	case MergeStrategyAppend:
-		result := make([]string, len(base))
+		result := make([]string, len(base), len(base)+len(override))
 		copy(result, base)
 		return append(result, override...)
 	case MergeStrategyReplace:

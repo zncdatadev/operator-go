@@ -161,7 +161,7 @@ func (v *TrinoClusterCustomValidator) validateTrinoCluster(obj *trinov1alpha1.Tr
 func (v *TrinoClusterCustomValidator) validateCoordinators(spec *trinov1alpha1.CoordinatorsSpec, errs *webhook.ValidationErrors) {
 	// Validate HTTP port
 	if spec.HTTPPort != 0 {
-		if err := validatePort(spec.HTTPPort, "spec.coordinators.httpPort"); err != nil {
+		if err := validatePort(spec.HTTPPort); err != nil {
 			errs.AddWithValue("spec.coordinators.httpPort", err.Error(), spec.HTTPPort)
 		}
 	}
@@ -171,7 +171,7 @@ func (v *TrinoClusterCustomValidator) validateCoordinators(spec *trinov1alpha1.C
 func (v *TrinoClusterCustomValidator) validateWorkers(spec *trinov1alpha1.WorkersSpec, errs *webhook.ValidationErrors) {
 	// Validate HTTP port
 	if spec.HTTPPort != 0 {
-		if err := validatePort(spec.HTTPPort, "spec.workers.httpPort"); err != nil {
+		if err := validatePort(spec.HTTPPort); err != nil {
 			errs.AddWithValue("spec.workers.httpPort", err.Error(), spec.HTTPPort)
 		}
 	}
@@ -212,7 +212,7 @@ func validateImage(image string) error {
 }
 
 // validatePort validates port number range
-func validatePort(port int32, field string) error {
+func validatePort(port int32) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("must be between 1 and 65535")
 	}

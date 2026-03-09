@@ -4,6 +4,51 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-03-09]
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+#### Added
+- Added detailed explanation of Role's two configuration sections in Section 1.3 (Terminology Definition):
+  - `roleConfig`: Kubernetes-level management controls (e.g., PodDisruptionBudget), Role-scoped only, NOT inherited by RoleGroups
+  - `config`: Workload runtime configuration (resources, affinity, logging), serves as defaults for RoleGroups and CAN be inherited and overridden
+- Added important note in Overrides terminology: override fields (`configOverrides`, `envOverrides`, `cliOverrides`, `podOverrides`) are **flattened** directly at Role/RoleGroup level, NOT nested under an `overrides` field
+
+#### Changed
+- Renamed interface from `RoleConfigExtender` to `RoleExtender` across documentation
+- Updated interface description from "configuration extender for parsing and merging differentiated configurations" to "Role extender for extending `role.config` fields with product-specific settings"
+- Updated corresponding generic type description from "Generic Config Extender" to "Generic Role Extender"
+- Removed JVM arguments from Overrides terminology description (no longer supported)
+
+### Security Documentation (`security.md`)
+
+No changes in this release.
+
+### Examples
+
+#### Added
+- Added comprehensive Role-level comments in `crd-base-example.yaml`:
+  - Field inheritance explanation (Role → RoleGroup)
+  - Override precedence documentation
+- Added `roleConfig` section example with PodDisruptionBudget configuration
+- Added detailed comments distinguishing `roleConfig` vs `config` sections
+
+#### Changed
+- Updated `crd-base-example.yaml` with concrete example values instead of type placeholders:
+  - `gracefulShutdownTimeout`: `"30s"`
+  - CPU resources: `min: "500m"`, `max: "1"` (Role), `min: "1"`, `max: "2"` (RoleGroup)
+  - Memory resources: `limit: "2Gi"` (Role), `limit: "4Gi"` (RoleGroup)
+
+#### Fixed
+- Fixed typo in `crd-base-example.yaml`: `affnity` → `affinity`
+- Fixed typo in `crd-base-example.yaml`: `StatefuleSets` → `StatefulSets`
+
+### New Files
+
+No new files in this release.
+
+---
+
 ## [2025-02-21]
 
 ### Architecture Documentation (`architecture.md`)

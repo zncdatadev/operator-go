@@ -111,7 +111,7 @@ func (r *RoleGroupInfo) GetAffinity() *corev1.Affinity {
 
 // GetResources returns the resource requirements.
 func (r *RoleGroupInfo) GetResources() *v1alpha1.ResourcesSpec {
-	config := r.Spec.GetRoleGroupConfig()
+	config := r.Spec.GetConfig()
 	if config == nil {
 		return nil
 	}
@@ -120,7 +120,7 @@ func (r *RoleGroupInfo) GetResources() *v1alpha1.ResourcesSpec {
 
 // GetLogging returns the logging configuration.
 func (r *RoleGroupInfo) GetLogging() *v1alpha1.LoggingSpec {
-	config := r.Spec.GetRoleGroupConfig()
+	config := r.Spec.GetConfig()
 	if config == nil {
 		return nil
 	}
@@ -129,7 +129,7 @@ func (r *RoleGroupInfo) GetLogging() *v1alpha1.LoggingSpec {
 
 // GetGracefulShutdownTimeout returns the graceful shutdown timeout.
 func (r *RoleGroupInfo) GetGracefulShutdownTimeout() string {
-	config := r.Spec.GetRoleGroupConfig()
+	config := r.Spec.GetConfig()
 	if config == nil {
 		return "30s"
 	}

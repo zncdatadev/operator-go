@@ -87,7 +87,13 @@ spec:
   # +-------------+-------------------+----------------------------+
 
   # Template Role: 'exampleRole'
-  # This demonstrates the standard configuration capabilities available to ANY role defined by a Product.
+  # A Role represents a logical functional component of the cluster (e.g., NameNode, Worker).
+  # It acts as the default configuration template for all RoleGroups it contains.
+  #
+  # Field Inheritance: Role → RoleGroup
+  #   Fields defined at the Role level serve as cluster-wide defaults.
+  #   Individual RoleGroups may selectively override them.
+  #   Override precedence (highest to lowest): RoleGroup > Role
   exampleRole:
     # Configuration Files Override (Deep Level):
     # Map[FileName]Map[Key]Value. Merges into specific component config files (e.g., xml, properties, ini).
@@ -105,17 +111,36 @@ spec:
     # Appends or modifies arguments passed to the container entrypoint.
     # Strategy depends on implementation (Replace vs Append).
     cliOverrides: list[string]
-    # Role-Level Common Configuration:
+    # roleConfig: Kubernetes-Level Role Management Controls
+    # Governs Kubernetes-native operational behavior for this Role as a whole.
+    # Settings here are role-scoped and NOT inherited or overridden by individual RoleGroups.
+    # Currently supports:
+    #   - PodDisruptionBudget (PDB): Ensures minimum availability during voluntary disruptions
+    #     (e.g., node draining, rolling updates). Applied as a single PDB resource covering
+    #     all Pods across all RoleGroups under this Role.
+    roleConfig:
+      podDisruptionBudget:
+        enabled: true
+        maxUnavailable: 1
+    # config: Workload Runtime Configuration (Role-Level Defaults)
+    # Defines default runtime behavior for Pods/containers across all RoleGroups of this Role.
+    # Each RoleGroup inherits these values and can selectively override them.
+    #
+    # Key distinction from 'roleConfig':
+    #   - roleConfig: Kubernetes resource management (e.g., PDB). Role-scoped only;
+    #                 not propagated to or overridable by individual RoleGroups.
+    #   - config:     Workload runtime behavior (resources, affinity, logging, shutdown).
+    #                 Serves as the default for all RoleGroups; each can override as needed.
     config:
-      affnity: RawExtension
+      affinity: RawExtension
       # Time window for the process to stop gracefully before SIGKILL is sent.
-      gracefulShutdownTimeout: string
+      gracefulShutdownTimeout: "30s"
       resources:
         cpu:
-          min: string
-          max: string
+          min: "500m"
+          max: "1"
         memory:
-          limit: string
+          limit: "2Gi"
       logging:
         # Structured Logging Configuration:
         # Maps logical logging levels to product-specific configuration formats (log4j, logback, logging.yaml).
@@ -135,7 +160,7 @@ spec:
                 level: "TRACE"
 
     # RoleGroup Definition
-    # Code Reuse: RoleGroups inherit the Role's structure but apply to specific StatefuleSets.
+    # Code Reuse: RoleGroups inherit the Role's structure but apply to specific StatefulSets.
     roleGroups:
       default:
         replicas: 3
@@ -158,10 +183,10 @@ spec:
         config:
           resources:
             cpu:
-              min: string
-              max: string
+              min: "1"
+              max: "2"
             memory:
-              limit: string
+              limit: "4Gi"
           logging:
             containers:
               worker:

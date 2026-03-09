@@ -615,7 +615,7 @@ var _ = Describe("StatefulSet building", func() {
 	})
 
 	It("should set resources when configured", func() {
-		buildCtx.RoleGroupSpec.RoleGroupConfig = &v1alpha1.RoleGroupConfigSpec{
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
 			Resources: &v1alpha1.ResourcesSpec{
 				CPU:    &v1alpha1.CPUResource{},
 				Memory: &v1alpha1.MemoryResource{},

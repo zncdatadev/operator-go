@@ -101,8 +101,9 @@ func main() {
 
 	// Create GenericReconciler config
 	reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
-		Client:              mgr.GetClient(),
-		Scheme:              mgr.GetScheme(),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		//nolint:staticcheck // TODO: migrate to GetEventRecorder when SDK supports new events API
 		Recorder:            mgr.GetEventRecorderFor("trino-cluster-controller"),
 		RoleGroupHandler:    roleGroupHandler,
 		HealthCheckInterval: 120 * time.Second,
