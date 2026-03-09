@@ -22,6 +22,12 @@ const (
 	DefaultImage = "trinodb/trino:435"
 )
 
+// RoleGroup constants
+const (
+	// DefaultRoleGroupName is the default role group name
+	DefaultRoleGroupName = "default"
+)
+
 // Port constants
 const (
 	// DefaultHTTPPort is the default HTTP API port for Trino

@@ -81,7 +81,7 @@ func (b *TrinoConfigBuilder) WithProperty(key, value string) *TrinoConfigBuilder
 
 // Build generates the Trino configuration as a string
 func (b *TrinoConfigBuilder) Build() string {
-	var lines []string
+	lines := make([]string, 0, len(b.properties))
 	for key, value := range b.properties {
 		lines = append(lines, fmt.Sprintf("%s=%s", key, value))
 	}
@@ -130,7 +130,7 @@ func (b *JVMConfigBuilder) WithMaxMemory(memory string) *JVMConfigBuilder {
 
 // Build generates the JVM configuration as a string
 func (b *JVMConfigBuilder) Build() string {
-	var lines []string
+	lines := make([]string, 0, 1+len(b.gcOptions)+len(b.extraOpts))
 
 	// Memory settings
 	lines = append(lines, fmt.Sprintf("-Xmx%s", b.maxMemory))

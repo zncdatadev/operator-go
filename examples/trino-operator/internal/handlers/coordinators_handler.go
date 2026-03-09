@@ -48,10 +48,7 @@ func (h *CoordinatorsHandler) BuildResources(
 	port := GetCoordinatorPort(cr)
 
 	// Build ConfigMap with Trino configuration
-	configMap, err := h.buildConfigMap(cr, buildCtx, port)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build ConfigMap: %w", err)
-	}
+	configMap := h.buildConfigMap(cr, buildCtx, port)
 
 	// Build Headless Service for StatefulSet
 	headlessService := BuildHeadlessService(buildCtx, port)
@@ -91,7 +88,7 @@ func (h *CoordinatorsHandler) buildConfigMap(
 	cr *trinov1alpha1.TrinoCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 	port int32,
-) (*corev1.ConfigMap, error) {
+) *corev1.ConfigMap {
 	// Generate Trino configuration
 	trinoConfig := config.NewTrinoConfigBuilder().
 		ForCoordinator(cr, buildCtx, port).
@@ -119,7 +116,7 @@ func (h *CoordinatorsHandler) buildConfigMap(
 	}
 
 	// Use SDK builder to create ConfigMap
-	return BuildConfigMap(buildCtx, data), nil
+	return BuildConfigMap(buildCtx, data)
 }
 
 // getRoleConfigPDB extracts PDB spec from CoordinatorsSpec

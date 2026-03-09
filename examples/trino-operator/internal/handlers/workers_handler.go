@@ -49,10 +49,7 @@ func (h *WorkersHandler) BuildResources(
 	workerPort := GetWorkerPort(cr)
 
 	// Build ConfigMap with Trino configuration
-	configMap, err := h.buildConfigMap(cr, buildCtx, coordinatorPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build ConfigMap: %w", err)
-	}
+	configMap := h.buildConfigMap(cr, buildCtx, coordinatorPort)
 
 	// Build Headless Service for StatefulSet
 	headlessService := BuildHeadlessService(buildCtx, workerPort)
@@ -88,7 +85,7 @@ func (h *WorkersHandler) buildConfigMap(
 	cr *trinov1alpha1.TrinoCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 	coordinatorPort int32,
-) (configMap *corev1.ConfigMap, err error) {
+) *corev1.ConfigMap {
 	// Generate Trino configuration for Worker
 	trinoConfig := config.NewTrinoConfigBuilder().
 		ForWorker(cr, buildCtx, coordinatorPort).
@@ -106,7 +103,7 @@ func (h *WorkersHandler) buildConfigMap(
 	}
 
 	// Use SDK builder to create ConfigMap
-	return BuildConfigMap(buildCtx, data), nil
+	return BuildConfigMap(buildCtx, data)
 }
 
 // getWorkerRoleConfigPDB extracts PDB spec from WorkersSpec

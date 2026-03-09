@@ -95,7 +95,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 		Context("when role is coordinators", func() {
 			BeforeEach(func() {
 				buildCtx.RoleName = RoleCoordinators
-				buildCtx.RoleGroupName = "default"
+				buildCtx.RoleGroupName = constants.DefaultRoleGroupName
 			})
 
 			It("should route to coordinators handler and return resources", func() {
@@ -113,7 +113,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 		Context("when role is workers", func() {
 			BeforeEach(func() {
 				buildCtx.RoleName = RoleWorkers
-				buildCtx.RoleGroupName = "default"
+				buildCtx.RoleGroupName = constants.DefaultRoleGroupName
 				buildCtx.ResourceName = "test-trino-workers-default"
 			})
 
@@ -131,7 +131,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 		Context("when role is unknown", func() {
 			BeforeEach(func() {
 				buildCtx.RoleName = "unknown-role"
-				buildCtx.RoleGroupName = "default"
+				buildCtx.RoleGroupName = constants.DefaultRoleGroupName
 			})
 
 			It("should return an error for unknown role", func() {
@@ -147,7 +147,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 		DescribeTable("routing based on role name",
 			func(roleName string, expectError bool) {
 				buildCtx.RoleName = roleName
-				buildCtx.RoleGroupName = "default"
+				buildCtx.RoleGroupName = constants.DefaultRoleGroupName
 
 				resources, err := handler.BuildResources(ctx, k8sClient, cr, buildCtx)
 
@@ -195,7 +195,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 					Expect(ports).To(BeNil())
 				} else {
 					Expect(ports).NotTo(BeNil())
-					Expect(len(ports)).To(Equal(expectedLen))
+					Expect(ports).To(HaveLen(expectedLen))
 					Expect(ports[0].Name).To(Equal("http"))
 					Expect(ports[0].ContainerPort).To(Equal(constants.DefaultHTTPPort))
 					Expect(ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
@@ -238,7 +238,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 					Expect(ports).To(BeNil())
 				} else {
 					Expect(ports).NotTo(BeNil())
-					Expect(len(ports)).To(Equal(expectedLen))
+					Expect(ports).To(HaveLen(expectedLen))
 					Expect(ports[0].Name).To(Equal("http"))
 					Expect(ports[0].Port).To(Equal(constants.DefaultHTTPPort))
 					Expect(ports[0].Protocol).To(Equal(corev1.ProtocolTCP))

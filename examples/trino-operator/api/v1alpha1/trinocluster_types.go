@@ -165,7 +165,7 @@ func (t *TrinoCluster) GetScheme() *runtime.Scheme {
 
 // GetUID returns the cluster UID as string
 func (t *TrinoCluster) GetUID() string {
-	return string(t.ObjectMeta.UID)
+	return string(t.UID)
 }
 
 func init() {

@@ -89,7 +89,7 @@ var _ = Describe("TrinoCluster Webhook", func() {
 
 	Context("When creating TrinoCluster under Validating Webhook", func() {
 		It("Should admit valid TrinoCluster", func() {
-			obj.Spec.Image = "trinodb/trino:435"
+			obj.Spec.Image = constants.DefaultImage
 			obj.Spec.Coordinators = &trinov1alpha1.CoordinatorsSpec{HTTPPort: 8080}
 			obj.Spec.Workers = &trinov1alpha1.WorkersSpec{HTTPPort: 8080}
 			warnings, err := validator.ValidateCreate(ctx, obj)
@@ -188,7 +188,7 @@ var _ = Describe("TrinoCluster Webhook", func() {
 	Context("When updating TrinoCluster under Validating Webhook", func() {
 		It("Should admit valid update", func() {
 			oldObj.Spec.Image = "trinodb/trino:435"
-			obj.Spec.Image = "trinodb/trino:435"
+			obj.Spec.Image = constants.DefaultImage
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(Succeed())
 		})
@@ -203,7 +203,7 @@ var _ = Describe("TrinoCluster Webhook", func() {
 
 		It("Should admit update when old image was empty", func() {
 			oldObj.Spec.Image = ""
-			obj.Spec.Image = "trinodb/trino:435"
+			obj.Spec.Image = constants.DefaultImage
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(Succeed())
 		})
