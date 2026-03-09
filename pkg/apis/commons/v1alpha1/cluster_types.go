@@ -130,6 +130,10 @@ func (r *RoleSpec) GetRoleGroups() map[string]RoleGroupSpec {
 }
 
 // GetOverrides returns the overrides specification built from flattened fields.
+// Returns nil if no overrides are configured, avoiding unnecessary allocations.
+// Note: This method creates a new OverridesSpec struct on each call, but only contains
+// pointer references (not copies) to the underlying override maps. This is acceptable
+// because it's called once per reconcile cycle per Role, not in hot paths.
 func (r *RoleSpec) GetOverrides() *OverridesSpec {
 	if r.ConfigOverrides == nil && r.EnvOverrides == nil && r.CliOverrides == nil && r.PodOverrides == nil {
 		return nil
@@ -143,6 +147,8 @@ func (r *RoleSpec) GetOverrides() *OverridesSpec {
 }
 
 // GetOverrides returns the overrides specification built from flattened fields.
+// Returns nil if no overrides are configured, avoiding unnecessary allocations.
+// See RoleSpec.GetOverrides for implementation details.
 func (r *RoleGroupSpec) GetOverrides() *OverridesSpec {
 	if r.ConfigOverrides == nil && r.EnvOverrides == nil && r.CliOverrides == nil && r.PodOverrides == nil {
 		return nil
@@ -155,7 +161,15 @@ func (r *RoleGroupSpec) GetOverrides() *OverridesSpec {
 	}
 }
 
-// GetRoleConfig returns the Kubernetes-level role configuration, or an empty config if not set.
+// HasRoleConfig returns true if RoleConfig is set.
+// Use this for nil-check semantics when needed.
+func (r *RoleSpec) HasRoleConfig() bool {
+	return r.RoleConfig != nil
+}
+
+// GetRoleConfig returns the Kubernetes-level role configuration.
+// Returns an empty struct if not set, ensuring callers always get a valid reference.
+// Use HasRoleConfig() to check if the configuration was explicitly set.
 // This is NOT inherited by RoleGroups.
 func (r *RoleSpec) GetRoleConfig() *RoleConfigSpec {
 	if r.RoleConfig == nil {
@@ -173,16 +187,11 @@ func (r *RoleSpec) GetConfig() *RoleGroupConfigSpec {
 	return r.Config
 }
 
-// GetConfig returns the role group configuration, or an empty config if not set.
+// GetConfig returns the role group configuration.
+// Returns an empty struct if not set, ensuring callers always get a valid reference.
 func (r *RoleGroupSpec) GetConfig() *RoleGroupConfigSpec {
 	if r.Config == nil {
 		return &RoleGroupConfigSpec{}
 	}
 	return r.Config
-}
-
-// GetRoleGroupConfig is an alias for GetConfig for backward compatibility.
-// Deprecated: Use GetConfig instead.
-func (r *RoleGroupSpec) GetRoleGroupConfig() *RoleGroupConfigSpec {
-	return r.GetConfig()
 }

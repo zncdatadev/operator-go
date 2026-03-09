@@ -310,7 +310,7 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		WithPorts(h.GetContainerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))
 
 	// Set resources if configured
-	roleGroupConfig := buildCtx.RoleGroupSpec.GetRoleGroupConfig()
+	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
 	if roleGroupConfig != nil && roleGroupConfig.Resources != nil {
 		stsBuilder.WithResources(roleGroupConfig.Resources)
 	}

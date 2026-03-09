@@ -299,8 +299,12 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 	}
 
 	// Process each role group
+	// Note: groupSpec is deep copied because it may be modified during reconciliation.
+	// roleSpec is passed directly as read-only (used for configuration lookup only);
+	// it originates from spec.Roles which is re-fetched from the API server each reconcile,
+	// so any accidental modifications would not persist and would be corrected on next reconcile.
 	for groupName, groupSpec := range roleSpec.GetRoleGroups() {
-		groupSpecCopy := *groupSpec.DeepCopy() // Deep copy to avoid shared mutable state
+		groupSpecCopy := *groupSpec.DeepCopy()
 		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy); err != nil {
 			return err
 		}
