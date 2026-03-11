@@ -109,6 +109,7 @@ spec:
     # Pod Template Override:
     # "Escape Hatch" allowing modification of the generated PodSpec using K8s Strategic Merge Patch.
     # Use carefully to change fields not exposed in the CRD (e.g., InitContainers, HostPath).
+    # Type: k8s.io/apimachinery/pkg/runtime.RawExtension (arbitrary JSON/YAML object)
     podOverrides: {}
     # CLI Arguments Override:
     # Appends or modifies arguments passed to the container entrypoint.
@@ -136,6 +137,7 @@ spec:
     #   - config:     Workload runtime behavior (resources, affinity, logging, shutdown).
     #                 Serves as the default for all RoleGroups; each can override as needed.
     config:
+      # Type: k8s.io/apimachinery/pkg/runtime.RawExtension (arbitrary JSON/YAML object, follows K8s affinity spec)
       affinity: {}
       # Time window for the process to stop gracefully before SIGKILL is sent.
       gracefulShutdownTimeout: "30s"
