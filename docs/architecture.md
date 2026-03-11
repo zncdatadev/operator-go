@@ -144,17 +144,18 @@ Defines core interfaces and extension contracts. It only depends on the API laye
     - `ClusterInterface`: Cluster-level interface, defining methods for cluster name, Spec/Status access, state updates, etc.
     - `RoleInterface`: Role-level interface, defining methods for role name, default ports, configuration extenders, etc.
     - `RoleExtender`: Role extender interface, defining logic for extending Role configurations (e.g., extending `role.config` fields for product-specific workload settings).
+    - `RoleGroupHandler`: The primary implementation extension point for product operators. Each product implements this interface to define the specific Kubernetes resources (StatefulSet, Services, ConfigMaps) built for each RoleGroup. The `GenericReconciler` calls `BuildResources()` on this handler during reconciliation.
 
 - **Extension Interfaces**:
-    - `ClusterExtension/RoleExtension`: Extension point interfaces, defining custom logic before and after reconciliation.
-    - `ExtensionRegistry`: Extension registry, managing the registration, sorting, and execution of all extensions.
+    - `ClusterExtension/RoleExtension/RoleGroupExtension`: Extension point interfaces, defining custom logic before and after reconciliation at each level.
+    - `ExtensionRegistry`: Extension registry, managing the registration, priority-based ordering, and execution of all extensions.
 
 ### 3.2.3 Core Component Layer (Common Logic Layer)
 
 Implements common business logic based on abstract interfaces. It depends on the Abstract Interface Layer and Tools Layer, and does not directly depend on specific products, ensuring logic reuse.
 
 - **Core Components**:
-    - `ClusterReconciler`: Cluster reconciler, the entry point for the core reconciliation process, including role traversal, extension point execution, and orphaned resource cleanup.
+    - `GenericReconciler`: The generic cluster reconciler, the entry point for the core reconciliation process, including role traversal, extension point execution, and orphaned resource cleanup.
     - `ConfigMerger`: Configuration merger, implementing the merging and differentiated override of role and role group configurations.
     - `ConfigGenerator`: Configuration generator, transforming merged configuration maps into specific file formats (XML, Properties, YAML, etc.).
     - `SidecarManager`: Sidecar container manager, handling the injection of auxiliary containers (e.g., Log collection, Monitoring) into the Pod Spec.
@@ -174,7 +175,7 @@ Provides non-intrusive common utility functions for the Core Component Layer to 
 Implements product-specific logic based on SDK abstract interfaces without modifying SDK core code, relying only on the API Layer and Abstract Interface Layer.
 
 - **Implementation Points**:
-    - CR structs implement `ClusterInterface`/`RoleInterface` interfaces.
+    - **CR structs implement `ClusterInterface`/`RoleInterface` interfaces and provide `RoleGroupHandler` to define product-specific resources.**
     - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
     - Integrate Webhook specific validation and default value population logic.
 
@@ -224,7 +225,7 @@ Reserve extension points at key nodes in the reconciliation process to support e
 
 - **Registration Timing**: Extensions must be registered during Operator initialization, specifically in the `main.go` setup phase before the Manager starts. This ensures all extensions are available when reconciliation begins.
 - **Registration Method**: Use the `ExtensionRegistry.Register()` method to add extensions. Each extension must implement the appropriate interface (`ClusterExtension`, `RoleExtension`, or `RoleGroupExtension`).
-- **Execution Order**: Extensions execute in the order they were registered. The SDK preserves registration order to ensure deterministic behavior. Use explicit priority values if custom ordering is required.
+- **Execution Order**: Extensions execute in **priority order (highest first)**. When multiple extensions share the same priority, they execute in registration order. Use `RegisterXxxExtensionWithPriority()` to assign explicit priority values (Lowest=0, Low=25, Normal=50, High=75, Highest=100).
 
 ### 4.2.4 Extension Lifecycle
 
@@ -234,7 +235,7 @@ Reserve extension points at key nodes in the reconciliation process to support e
 
 ### 4.2.5 Execution Process
 
-The reconciler iterates through extensions in the extension registry, executing them in registration order, supporting configuration for "process interruption on extension failure" to adapt to different fault tolerance needs.
+The reconciler iterates through extensions in the extension registry, executing them in **priority order (highest first)**, supporting configuration for "process interruption on extension failure" to adapt to different fault tolerance needs.
 
 - **Normal Execution**: Extensions execute sequentially. Each extension receives the current context and can modify the CR or return an error.
 - **Error Handling**:
@@ -419,10 +420,7 @@ The SDK implements a comprehensive health check mechanism that validates:
   - **Example**: HDFS implements this to run `hdfs dfsadmin -safemode get`.
 - **Status Aggregation**: The SDK aggregates Pod Readiness, Dependency Status, and Business Health Checks into the final `GenericClusterStatus`.
 
-### 4.8.3 Core Value
-
-- **Precise Observability**: Provides users with a "Service View" rather than just a "Pod View".
-- **Automation Support**: Enables higher-level tooling to know exactly when a cluster is truly operational.
+### 4.8.4 Core Value
 
 ## 4.9 Security Module
 
@@ -503,10 +501,7 @@ Hardcoding these connections in `configOverrides` is error-prone and leaks crede
   - *Example*: An `S3Connection` object is transformed into `core-site.xml` properties (`fs.s3a.access.key`, `fs.s3a.endpoint`, etc.) by the **ConfigGenerator**.
 - **Credential Resolution**: References to Secrets (e.g., `credentials: secret-name`) are validated and mounted, or resolved to CSI `SecretClass` references for secure injection.
 
-### 4.11.3 Core Value
-
-- **Abstraction**: Users define "What" (Connect to this S3 bucket), not "How" (Set these 50 Hadoop XML properties).
-- **Portability**: Switching from MinIO to AWS S3 requires changing just the Connection spec, not the entire application config.
+### 4.12.3 Core Value
 
 ## 4.13 Error Handling & Resilience Module
 
@@ -565,6 +560,7 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 
 - **`ClusterInterface`**: Defines cluster-level operations (GetName, GetNamespace, GetSpec, GetStatus, SetStatus).
 - **`RoleInterface`**: Defines role-level operations (GetRoleName, GetConfig, GetRoleGroups).
+- **`RoleGroupHandler`**: Defines the `BuildResources()` contract that product operators implement to produce RoleGroup-specific Kubernetes resources.
 - **`RoleExtender`**: Defines Role extension points for extending `role.config` fields with product-specific settings.
 - **`ServiceHealthCheck`**: Defines health check contract for business-level readiness.
 
@@ -633,7 +629,7 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 
 ### 5.3.2 Application in SDK
 
-- **ClusterReconciler**: Defines the reconciliation workflow (PreReconcile → Reconcile → PostReconcile) as a fixed template.
+- **`GenericReconciler`**: Defines the reconciliation workflow (PreReconcile → Reconcile → PostReconcile) as a fixed template.
 - **Extension Hooks**: Products customize behavior by implementing extension interfaces at specific hook points.
 - **Resource Construction**: `StatefulSetBuilder` follows a template for constructing K8s resources.
 
@@ -651,7 +647,7 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 │     ├── Role PreReconcile Extensions (Hook)                 │
 │     ├── For Each RoleGroup:                                 │
 │     │   ├── RoleGroup PreReconcile Extensions (Hook)        │
-│     │   ├── Build/Update Resources (StatefulSet, Service)   │
+│     │   ├── Build/Apply Resources (ordered, see below)      │
 │     │   └── RoleGroup PostReconcile Extensions (Hook)       │
 │     └── Role PostReconcile Extensions (Hook)                │
 │  4. Cleanup Orphaned Resources                              │
@@ -660,6 +656,24 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 │     └── Product-specific post-processing                    │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Resource Application Order (per RoleGroup)**
+
+Within step 3, resources are applied in a strict dependency order:
+
+```
+ConfigMap → HeadlessService → Service → StatefulSet → PDB
+```
+
+The rationale follows Kubernetes resource dependency rules:
+
+1. **ConfigMap**: Applied first because Pods reference ConfigMaps as volume mounts or environment sources. The configuration data must exist before any Pod starts.
+2. **HeadlessService**: A StatefulSet requires a `serviceName` pointing to a headless Service. Kubernetes uses it to create stable, predictable DNS entries (`pod-0.svc.ns.svc.cluster.local`) for inter-pod communication. It must exist before the StatefulSet is created.
+3. **Service** (client-facing): Created before the StatefulSet so that client endpoints are available as soon as Pods become ready.
+4. **StatefulSet**: Applied after all its dependencies (configs, DNS) are in place. The StatefulSet controller then creates Pods in ordinal order.
+5. **PDB** (PodDisruptionBudget): Applied last, as it references existing Pods. It enforces availability guarantees during voluntary disruptions once the workload is running.
+
+This creation order is the inverse of the deletion order used during orphaned resource cleanup (see §4.4.2).
 
 ### 5.3.4 Benefits
 
@@ -681,7 +695,7 @@ The Singleton Pattern ensures a class has only one instance and provides a globa
 ### 5.4.3 Benefits
 
 - **Consistency**: Single point of truth for extension management.
-- **Deterministic Execution**: Extensions execute in registration order.
+- **Deterministic Execution**: Extensions execute in priority order (highest first); registration order is used as a tiebreaker.
 - **Thread Safety**: Prevents duplicate registration in concurrent scenarios.
 
 ### 5.4.4 Example
@@ -794,7 +808,7 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
   - **Core Advantage**: Compile-time type safety, reduced boilerplate code, improved development efficiency.
 
 - **Residual orphaned resources after role group deletion**
-  - **Solution**: Based on Spec and Status comparison combined with resource existence validation, delete orphamitigating complexity resources in order.
+  - **Solution**: Based on Spec and Status comparison combined with resource existence validation, delete orphaned resources in dependency order.
   - **Core Advantage**: Efficient and precise, avoiding accidental deletion, ensuring state convergence.
 
 - **Repetitive multi-product configuration validation/default value logic**

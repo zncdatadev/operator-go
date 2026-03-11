@@ -68,9 +68,9 @@ spec:
   # [Standard] Operational Controls
   clusterOperation:
     # Halt: If true, scales all RoleGroups to 0 replicas. PVCs and other resources are preserved.
-    stopped: boolean
+    stopped: false
     # Pause: If true, the Operator suspends all reconciliation actions. Useful for manual debugging/intervention.
-    reconciliationPaused: boolean
+    reconciliationPaused: false
 
   # [Dynamic] Role Definitions
   # The SDK allows Products to define arbitrary Role names (e.g., 'nameNodes', 'workers').
@@ -99,18 +99,22 @@ spec:
     # Map[FileName]Map[Key]Value. Merges into specific component config files (e.g., xml, properties, ini).
     # - Key exists: Update value.
     # - Key missing: Append new key-value pair.
-    configOverrides: map[string]map[string]string
+    configOverrides:
+      some-config.xml:
+        some.property: "value"
     # Environment Variables Override:
     # Appends or updates environment variables injected into the main container.
-    envOverrides: map[string]string
+    envOverrides:
+      MY_ENV_VAR: "value"
     # Pod Template Override:
     # "Escape Hatch" allowing modification of the generated PodSpec using K8s Strategic Merge Patch.
     # Use carefully to change fields not exposed in the CRD (e.g., InitContainers, HostPath).
-    podOverrides: RawExtension
+    podOverrides: {}
     # CLI Arguments Override:
     # Appends or modifies arguments passed to the container entrypoint.
     # Strategy depends on implementation (Replace vs Append).
-    cliOverrides: list[string]
+    cliOverrides:
+      - "--some-flag=value"
     # roleConfig: Kubernetes-Level Role Management Controls
     # Governs Kubernetes-native operational behavior for this Role as a whole.
     # Settings here are role-scoped and NOT inherited or overridden by individual RoleGroups.
@@ -132,7 +136,7 @@ spec:
     #   - config:     Workload runtime behavior (resources, affinity, logging, shutdown).
     #                 Serves as the default for all RoleGroups; each can override as needed.
     config:
-      affinity: RawExtension
+      affinity: {}
       # Time window for the process to stop gracefully before SIGKILL is sent.
       gracefulShutdownTimeout: "30s"
       resources:
