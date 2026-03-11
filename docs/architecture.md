@@ -155,7 +155,7 @@ Defines core interfaces and extension contracts. It only depends on the API laye
 Implements common business logic based on abstract interfaces. It depends on the Abstract Interface Layer and Tools Layer, and does not directly depend on specific products, ensuring logic reuse.
 
 - **Core Components**:
-    - `GenericReconciler`: The generic cluster reconciler, the entry point for the core reconciliation process, including role traversal, extension point execution, and orphaned resource cleanup.
+    - `ClusterReconciler` (implemented as `GenericReconciler` in the SDK): Cluster reconciler, the entry point for the core reconciliation process, including role traversal, extension point execution, and orphaned resource cleanup.
     - `ConfigMerger`: Configuration merger, implementing the merging and differentiated override of role and role group configurations.
     - `ConfigGenerator`: Configuration generator, transforming merged configuration maps into specific file formats (XML, Properties, YAML, etc.).
     - `SidecarManager`: Sidecar container manager, handling the injection of auxiliary containers (e.g., Log collection, Monitoring) into the Pod Spec.
@@ -175,8 +175,7 @@ Provides non-intrusive common utility functions for the Core Component Layer to 
 Implements product-specific logic based on SDK abstract interfaces without modifying SDK core code, relying only on the API Layer and Abstract Interface Layer.
 
 - **Implementation Points**:
-    - **CR structs implement `ClusterInterface`/`RoleInterface` interfaces and provide `RoleGroupHandler` to define product-specific resources.**
-    - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
+    - **CR structs implement `ClusterInterface`/`RoleInterface` interfaces and provide `RoleGroupHandler` to define product-specific resources.**    - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
     - Integrate Webhook specific validation and default value population logic.
 
 # 4. Core Module Implementation
@@ -629,7 +628,7 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 
 ### 5.3.2 Application in SDK
 
-- **`GenericReconciler`**: Defines the reconciliation workflow (PreReconcile → Reconcile → PostReconcile) as a fixed template.
+- **`ClusterReconciler`** (SDK: `GenericReconciler`): Defines the reconciliation workflow (PreReconcile → Reconcile → PostReconcile) as a fixed template.
 - **Extension Hooks**: Products customize behavior by implementing extension interfaces at specific hook points.
 - **Resource Construction**: `StatefulSetBuilder` follows a template for constructing K8s resources.
 
