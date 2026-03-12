@@ -270,7 +270,7 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 	}
 
 	// 4. Cleanup orphaned resources
-	if err := r.cleaner.Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status); err != nil {
+	if err := r.cleaner.WithOwner(r.getAsClientObject(cr)).Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status); err != nil {
 		logger.Error(err, "Failed to cleanup orphaned resources")
 		// Don't fail reconciliation for cleanup errors
 	}
@@ -428,15 +428,26 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 }
 
 // applyResource applies a single resource using CreateOrUpdate.
+// After the operation, emits a Create or Update event based on the result.
 func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.Object, obj client.Object) error {
-	_, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
+	result, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
 		// Set ownership
 		if err := controllerutil.SetControllerReference(owner, obj, r.scheme); err != nil {
 			return err
 		}
 		return nil
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	switch result {
+	case controllerutil.OperationResultCreated:
+		r.eventManager.EmitCreateEvent(owner.GetName(), obj)
+	case controllerutil.OperationResultUpdated:
+		r.eventManager.EmitUpdateEvent(owner.GetName(), obj)
+	}
+	return nil
 }
 
 // handleStoppedCluster handles the case when a cluster is stopped.

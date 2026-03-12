@@ -820,3 +820,167 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 })
+
+var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
+	var ctx context.Context
+	var namespace string
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		namespace = cleanerTestNamespace
+	})
+
+	// The cleaner constructs resource names as: clusterName + "-" + groupName
+	// Tests must create resources using that naming convention.
+
+	It("should skip deletion when StatefulSet is not owned by the cluster", func() {
+		clusterName := "ownerref-skip"
+		groupName := "grp1"
+		resourceName := clusterName + "-" + groupName // "ownerref-skip-grp1"
+
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+				// no OwnerReferences — simulates a manually-created or foreign resource
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": resourceName},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": resourceName}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+		cleaner.WithOwner(&metav1.ObjectMeta{UID: "some-cluster-uid-that-does-not-match"})
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+
+		// StatefulSet should still exist (not owned → not deleted)
+		existing := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, existing)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, existing)).To(Succeed())
+	})
+
+	It("should delete StatefulSet when ownerUID matches", func() {
+		clusterName := "ownerref-del"
+		groupName := "grp2"
+		resourceName := clusterName + "-" + groupName // "ownerref-del-grp2"
+		ownerUID := types.UID("test-cluster-uid-456")
+
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "test.zncdata.dev/v1alpha1",
+						Kind:       "TestCluster",
+						Name:       clusterName,
+						UID:        ownerUID,
+						Controller: ptr.To(true),
+					},
+				},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(0)),
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": resourceName},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": resourceName}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+		cleaner.WithOwner(&metav1.ObjectMeta{UID: ownerUID})
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+
+		// StatefulSet should be deleted
+		existing := &appsv1.StatefulSet{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, existing)
+		Expect(getErr).To(HaveOccurred())
+	})
+
+	It("should skip deletion when ConfigMap is not owned by the cluster", func() {
+		clusterName := "ownerref-cm-skip"
+		groupName := "grp3"
+		resourceName := clusterName + "-" + groupName // "ownerref-cm-skip-grp3"
+
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+				// no OwnerReferences
+			},
+			Data: map[string]string{"key": "value"},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+		cleaner.WithOwner(&metav1.ObjectMeta{UID: "foreign-uid"})
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+
+		// ConfigMap should still exist
+		existing := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, existing)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, existing)).To(Succeed())
+	})
+
+	It("should allow cleanup without ownerUID set (backward compatible)", func() {
+		// When no ownerUID is set, all resources are treated as owned and deleted
+		clusterName := "ownerref-nouid"
+		groupName := "grp4"
+		resourceName := clusterName + "-" + groupName // "ownerref-nouid-grp4"
+
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		// cleaner without WithOwner call — ownerUID is ""
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+
+		// ConfigMap should be deleted (no ownerUID → treat all as owned)
+		existing := &corev1.ConfigMap{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, existing)
+		Expect(getErr).To(HaveOccurred())
+	})
+})
