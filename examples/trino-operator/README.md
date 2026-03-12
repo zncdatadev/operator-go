@@ -177,9 +177,21 @@ spec:
 ### 1. Implementing ClusterInterface
 
 ```go
-// TrinoCluster implements ClusterInterface
+// TrinoCluster implements ClusterInterface.
+// GetSpec builds GenericClusterSpec dynamically from the typed coordinators/workers
+// fields, bridging the type-safe CRD structure to the SDK framework's generic Roles map.
 func (t *TrinoCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
-    return &t.Spec.GenericClusterSpec
+    roles := make(map[string]commonsv1alpha1.RoleSpec)
+    if t.Spec.Coordinators != nil {
+        roles["coordinators"] = t.Spec.Coordinators.RoleSpec
+    }
+    if t.Spec.Workers != nil {
+        roles["workers"] = t.Spec.Workers.RoleSpec
+    }
+    return &commonsv1alpha1.GenericClusterSpec{
+        ClusterOperation: t.Spec.ClusterOperation,
+        Roles:            roles,
+    }
 }
 
 func (t *TrinoCluster) GetStatus() *commonsv1alpha1.GenericClusterStatus {
@@ -237,4 +249,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
