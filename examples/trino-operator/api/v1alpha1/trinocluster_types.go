@@ -30,11 +30,10 @@ import (
 // +kubebuilder:printcolumn:name="Workers",type="integer",JSONPath=".status.registeredWorkers"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type TrinoClusterSpec struct {
-	// Embed generic cluster spec to inherit ClusterOperation, Roles, etc.
-	// This is the key to using operator-go SDK: inherit common capabilities through embedding
-	commonsv1alpha1.GenericClusterSpec `json:",inline"`
-
-	// ==================== Trino Specific Configuration ====================
+	// ClusterOperation controls operator behavior at runtime.
+	// Allows pausing reconciliation or stopping the cluster gracefully.
+	// +kubebuilder:validation:Optional
+	ClusterOperation *commonsv1alpha1.ClusterOperationSpec `json:"clusterOperation,omitempty"`
 
 	// Image specifies the Trino container image
 	// +kubebuilder:default="trinodb/trino:435"
@@ -128,9 +127,21 @@ type TrinoClusterList struct {
 // ==================== ClusterInterface Implementation ====================
 // This is the key to using operator-go SDK: implement ClusterInterface
 
-// GetSpec returns the generic cluster spec
+// GetSpec builds and returns a GenericClusterSpec from the typed role fields.
+// This bridges the type-safe coordinators/workers fields to the SDK framework's
+// generic Roles map, without exposing a redundant spec.roles field in the CRD.
 func (t *TrinoCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
-	return &t.Spec.GenericClusterSpec
+	roles := make(map[string]commonsv1alpha1.RoleSpec)
+	if t.Spec.Coordinators != nil {
+		roles["coordinators"] = t.Spec.Coordinators.RoleSpec
+	}
+	if t.Spec.Workers != nil {
+		roles["workers"] = t.Spec.Workers.RoleSpec
+	}
+	return &commonsv1alpha1.GenericClusterSpec{
+		ClusterOperation: t.Spec.ClusterOperation,
+		Roles:            roles,
+	}
 }
 
 // GetStatus returns the generic cluster status
