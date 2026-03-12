@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/common"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,9 +39,10 @@ const (
 
 // HealthManager manages health checks and status updates.
 type HealthManager struct {
-	Client        client.Client
-	CheckInterval time.Duration
-	Timeout       time.Duration
+	Client             client.Client
+	CheckInterval      time.Duration
+	Timeout            time.Duration
+	serviceHealthCheck common.ServiceHealthCheck
 }
 
 // NewHealthManager creates a new HealthManager.
@@ -50,6 +52,14 @@ func NewHealthManager(client client.Client) *HealthManager {
 		CheckInterval: DefaultCheckInterval,
 		Timeout:       DefaultTimeout,
 	}
+}
+
+// WithServiceHealthCheck sets an optional product-level health check.
+// When set, the check is executed after pod-level health is verified.
+// If the service is not healthy, the cluster is marked as Degraded.
+func (h *HealthManager) WithServiceHealthCheck(check common.ServiceHealthCheck) *HealthManager {
+	h.serviceHealthCheck = check
+	return h
 }
 
 // Check performs health checks and updates status.
@@ -113,6 +123,22 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		status.SetDegraded(true, v1alpha1.ReasonDegraded, "Some replicas are unhealthy")
 	} else {
 		status.SetDegraded(false, v1alpha1.ReasonAvailable, "All replicas are healthy")
+	}
+
+	// Run product-level service health check if configured.
+	if h.serviceHealthCheck != nil {
+		healthy, err := h.serviceHealthCheck.CheckHealthy(ctx, h.Client, namespace, clusterName)
+		if err != nil {
+			logger.Error(err, "Service health check failed")
+			status.SetDegraded(true, v1alpha1.ReasonDegraded, fmt.Sprintf("Service health check error: %v", err))
+			return nil
+		}
+		if !healthy {
+			status.SetDegraded(true, v1alpha1.ReasonDegraded, "Service health check reported unhealthy")
+			status.SetServiceHealthy(false, v1alpha1.ReasonDegraded, "Service is not healthy")
+			return nil
+		}
+		status.SetServiceHealthy(true, v1alpha1.ReasonAvailable, "Service is healthy")
 	}
 
 	return nil

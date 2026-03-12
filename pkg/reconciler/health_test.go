@@ -18,16 +18,19 @@ package reconciler_test
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var _ = Describe("HealthManager", func() {
@@ -559,5 +562,96 @@ var _ = Describe("HealthManager Default constants", func() {
 
 	It("should have correct default timeout", func() {
 		Expect(reconciler.DefaultTimeout).To(Equal(300 * time.Second))
+	})
+})
+
+var _ = Describe("HealthManager with ServiceHealthCheck", func() {
+	var ctx context.Context
+	var spec *v1alpha1.GenericClusterSpec
+	var status *v1alpha1.GenericClusterStatus
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		spec = &v1alpha1.GenericClusterSpec{}
+		status = &v1alpha1.GenericClusterStatus{}
+	})
+
+	It("sets ServiceHealthy=true when service check returns healthy", func() {
+		hm := reconciler.NewHealthManager(k8sClient).
+			WithServiceHealthCheck(common.ServiceHealthCheckFunc(func(_ context.Context, _ client.Client, _, _ string) (bool, error) {
+				return true, nil
+			}))
+
+		err := hm.Check(ctx, "default", "test-cluster", spec, status)
+		Expect(err).NotTo(HaveOccurred())
+
+		cond := status.GetCondition(v1alpha1.ConditionServiceHealthy)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("sets ServiceHealthy=false and Degraded=true when service check returns unhealthy", func() {
+		hm := reconciler.NewHealthManager(k8sClient).
+			WithServiceHealthCheck(common.AlwaysUnhealthy)
+
+		err := hm.Check(ctx, "default", "test-cluster", spec, status)
+		Expect(err).NotTo(HaveOccurred())
+
+		cond := status.GetCondition(v1alpha1.ConditionServiceHealthy)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+
+		degraded := status.GetCondition(v1alpha1.ConditionDegraded)
+		Expect(degraded).NotTo(BeNil())
+		Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("sets Degraded=true when service check returns an error", func() {
+		hm := reconciler.NewHealthManager(k8sClient).
+			WithServiceHealthCheck(common.ServiceHealthCheckFunc(func(_ context.Context, _ client.Client, _, _ string) (bool, error) {
+				return false, errors.New("connection refused")
+			}))
+
+		err := hm.Check(ctx, "default", "test-cluster", spec, status)
+		Expect(err).NotTo(HaveOccurred())
+
+		degraded := status.GetCondition(v1alpha1.ConditionDegraded)
+		Expect(degraded).NotTo(BeNil())
+		Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
+		Expect(degraded.Message).To(ContainSubstring("connection refused"))
+	})
+
+	It("skips service health check when not configured", func() {
+		hm := reconciler.NewHealthManager(k8sClient) // no WithServiceHealthCheck
+
+		err := hm.Check(ctx, "default", "test-cluster", spec, status)
+		Expect(err).NotTo(HaveOccurred())
+
+		// ServiceHealthy condition should not be set
+		cond := status.GetCondition(v1alpha1.ConditionServiceHealthy)
+		Expect(cond).To(BeNil())
+	})
+
+	It("uses CompositeHealthCheck combining multiple checks", func() {
+		called := []string{}
+		check1 := common.ServiceHealthCheckFunc(func(_ context.Context, _ client.Client, _, name string) (bool, error) {
+			called = append(called, "check1")
+			return true, nil
+		})
+		check2 := common.ServiceHealthCheckFunc(func(_ context.Context, _ client.Client, _, name string) (bool, error) {
+			called = append(called, "check2")
+			return true, nil
+		})
+
+		hm := reconciler.NewHealthManager(k8sClient).
+			WithServiceHealthCheck(common.NewCompositeHealthCheck(check1, check2))
+
+		err := hm.Check(ctx, "default", "test-cluster", spec, status)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(called).To(Equal([]string{"check1", "check2"}))
+
+		cond := status.GetCondition(v1alpha1.ConditionServiceHealthy)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	})
 })

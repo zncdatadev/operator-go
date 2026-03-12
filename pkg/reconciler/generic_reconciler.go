@@ -68,6 +68,12 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// Defaults to 300s if not specified.
 	HealthCheckTimeout time.Duration
 
+	// ServiceHealthCheck is an optional product-level health check.
+	// When set, it is called after pod-level health verification in each reconciliation cycle.
+	// Products use this to verify application readiness (e.g., HDFS SafeMode off).
+	// +optional
+	ServiceHealthCheck common.ServiceHealthCheck
+
 	// Prototype is a zero-value instance of the CR type used for controller setup.
 	// This is required because Go generics don't allow creating new instances.
 	Prototype CR
@@ -142,6 +148,9 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 	healthManager := NewHealthManager(cfg.Client)
 	healthManager.CheckInterval = healthCheckInterval
 	healthManager.Timeout = healthCheckTimeout
+	if cfg.ServiceHealthCheck != nil {
+		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
+	}
 
 	return &GenericReconciler[CR]{
 		client:             cfg.Client,
