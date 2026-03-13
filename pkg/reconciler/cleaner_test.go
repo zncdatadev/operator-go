@@ -74,7 +74,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 			status.SetRoleGroup("test-role", "default")
 
-			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -84,7 +84,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			}
 			status := &v1alpha1.GenericClusterStatus{}
 
-			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -94,7 +94,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			}
 			status := &v1alpha1.GenericClusterStatus{}
 
-			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -119,7 +119,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status.SetRoleGroup("role-a", "group-2")
 			status.SetRoleGroup("role-b", "group-1")
 
-			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -135,7 +135,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			}
 			status := &v1alpha1.GenericClusterStatus{}
 
-			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -151,7 +151,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			}
 			status := &v1alpha1.GenericClusterStatus{}
 
-			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "test-cluster", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -196,7 +196,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 			status.SetRoleGroup("test-role", "default")
 			status.SetRoleGroup("test-role", "orphaned") // This is orphaned
 
-			err := cleaner.Cleanup(ctx, namespace, "cleanup-test", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "cleanup-test", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Verify resources are deleted
@@ -245,7 +245,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 			status.SetRoleGroup("role", "test-cm") // Orphaned
 
-			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -260,7 +260,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 			status.SetRoleGroup("role", "nonexistent")
 
-			err := cleaner.Cleanup(ctx, namespace, "nonexistent", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "nonexistent", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})
@@ -289,7 +289,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 			status.SetRoleGroup("role", "test-svc")
 
-			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})
@@ -334,7 +334,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 			status.SetRoleGroup("role", "test-sts")
 
-			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})
@@ -366,7 +366,7 @@ var _ = Describe("RoleGroupCleaner resource deletion", func() {
 			status := &v1alpha1.GenericClusterStatus{}
 			status.SetRoleGroup("role", "test-pdb")
 
-			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status)
+			err := cleaner.Cleanup(ctx, namespace, "delete", spec, status, "", nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})
@@ -450,7 +450,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", "test")
 
-		err := cleaner.Cleanup(ctx, namespace, "multi-delete", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "multi-delete", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -549,7 +549,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", "full-cleanup-test")
 
-		err := cleaner.Cleanup(ctx, namespace, "full-cleanup", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "full-cleanup", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -596,7 +596,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", "scale-to-zero-test")
 
-		err := cleaner.Cleanup(ctx, namespace, "scale-to-zero", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "scale-to-zero", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -636,7 +636,7 @@ var _ = Describe("RoleGroupCleaner with multiple resources", func() {
 		status.SetRoleGroup("role-a", "orphan-1") // Orphaned
 		status.SetRoleGroup("role-a", "orphan-2") // Orphaned
 
-		err := cleaner.Cleanup(ctx, namespace, "multi-orphan", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "multi-orphan", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 })
@@ -678,7 +678,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status.SetRoleGroup("role", "ctx-cancel-test")
 
 		// Cleanup with canceled context - may or may not error depending on timing
-		_ = cleaner.Cleanup(canceledCtx, namespace, "ctx-cancel", spec, status)
+		_ = cleaner.Cleanup(canceledCtx, namespace, "ctx-cancel", spec, status, "", nil)
 	})
 
 	It("should continue when StatefulSet scale to zero fails", func() {
@@ -724,7 +724,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", "scale-fail-test")
 
-		err := cleaner.Cleanup(ctx, namespace, "scale-fail", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "scale-fail", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -771,7 +771,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", "zero-replicas-test")
 
-		err := cleaner.Cleanup(ctx, namespace, "zero-replicas", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "zero-replicas", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -817,7 +817,7 @@ var _ = Describe("RoleGroupCleaner error paths", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", "nil-replicas-test")
 
-		err := cleaner.Cleanup(ctx, namespace, "nil-replicas", spec, status)
+		err := cleaner.Cleanup(ctx, namespace, "nil-replicas", spec, status, "", nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 })
@@ -859,7 +859,6 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
 
 		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
-		cleaner.WithOwner(&metav1.ObjectMeta{UID: "some-cluster-uid-that-does-not-match"})
 
 		spec := &v1alpha1.GenericClusterSpec{
 			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
@@ -867,7 +866,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", groupName)
 
-		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status, "some-cluster-uid-that-does-not-match", nil)).To(Succeed())
 
 		// StatefulSet should still exist (not owned → not deleted)
 		existing := &appsv1.StatefulSet{}
@@ -909,7 +908,6 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
 
 		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
-		cleaner.WithOwner(&metav1.ObjectMeta{UID: ownerUID})
 
 		spec := &v1alpha1.GenericClusterSpec{
 			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
@@ -917,7 +915,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", groupName)
 
-		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status, ownerUID, nil)).To(Succeed())
 
 		// StatefulSet should be deleted
 		existing := &appsv1.StatefulSet{}
@@ -941,7 +939,6 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
 		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
-		cleaner.WithOwner(&metav1.ObjectMeta{UID: "foreign-uid"})
 
 		spec := &v1alpha1.GenericClusterSpec{
 			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
@@ -949,7 +946,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", groupName)
 
-		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status, "foreign-uid", nil)).To(Succeed())
 
 		// ConfigMap should still exist
 		existing := &corev1.ConfigMap{}
@@ -968,7 +965,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		}
 		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
-		// cleaner without WithOwner call — ownerUID is ""
+		// cleaner without ownerUID — pass "" to treat all resources as owned (backward compatible)
 		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
 
 		spec := &v1alpha1.GenericClusterSpec{
@@ -977,7 +974,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", groupName)
 
-		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, namespace, clusterName, spec, status, "", nil)).To(Succeed())
 
 		// ConfigMap should be deleted (no ownerUID → treat all as owned)
 		existing := &corev1.ConfigMap{}
@@ -1013,7 +1010,7 @@ var _ = Describe("RoleGroupCleaner gray deletion", func() {
 		status.SetRoleGroup("role", groupName)
 
 		// First cleanup call: should annotate and NOT delete
-		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status, "", nil)).To(Succeed())
 
 		// ConfigMap should still exist but have the annotation
 		existing := &corev1.ConfigMap{}
@@ -1050,7 +1047,7 @@ var _ = Describe("RoleGroupCleaner gray deletion", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", groupName)
 
-		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status, "", nil)).To(Succeed())
 
 		// ConfigMap should be deleted
 		existing := &corev1.ConfigMap{}
@@ -1077,7 +1074,7 @@ var _ = Describe("RoleGroupCleaner gray deletion", func() {
 		status := &v1alpha1.GenericClusterStatus{}
 		status.SetRoleGroup("role", groupName)
 
-		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status)).To(Succeed())
+		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status, "", nil)).To(Succeed())
 
 		// ConfigMap should be gone
 		existing := &corev1.ConfigMap{}

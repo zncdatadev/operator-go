@@ -64,6 +64,12 @@ func validateImageSpec(image *commonsv1alpha1.ImageSpec, fldPath *field.Path) fi
 		return errs
 	}
 
+	// Validate Repo
+	if image.Repo == "" {
+		errs = append(errs, field.Required(fldPath.Child("repo"),
+			"repo is required when custom image is not set"))
+	}
+
 	// Validate ProductVersion
 	if image.ProductVersion == "" {
 		errs = append(errs, field.Required(fldPath.Child("productVersion"),

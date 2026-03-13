@@ -82,9 +82,22 @@ var _ = Describe("ValidateGenericClusterSpec", func() {
 		Expect(errs[0].Field).To(ContainSubstring("kubedoopVersion"))
 	})
 
+	It("should report error when repo is empty without Custom", func() {
+		spec := &commonsv1alpha1.GenericClusterSpec{
+			Image: &commonsv1alpha1.ImageSpec{
+				ProductVersion:  "3.3.6",
+				KubedoopVersion: "0.2.0",
+			},
+		}
+		errs := webhook.ValidateGenericClusterSpec(spec, field.NewPath("spec"))
+		Expect(errs).NotTo(BeEmpty())
+		Expect(errs[0].Field).To(ContainSubstring("repo"))
+	})
+
 	It("should report error for invalid pullPolicy", func() {
 		spec := &commonsv1alpha1.GenericClusterSpec{
 			Image: &commonsv1alpha1.ImageSpec{
+				Repo:            "quay.io/zncdatadev",
 				ProductVersion:  "3.3.6",
 				KubedoopVersion: "0.2.0",
 				PullPolicy:      corev1.PullPolicy("Invalid"),

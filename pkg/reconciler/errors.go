@@ -17,6 +17,7 @@ limitations under the License.
 package reconciler
 
 import (
+	stderrors "errors"
 	"fmt"
 	"time"
 )
@@ -188,8 +189,8 @@ func NewRateLimitError(retryAfter time.Duration, cause error) *RateLimitError {
 	}
 }
 
-// IsRateLimitError checks if an error is a RateLimitError.
+// IsRateLimitError checks if an error is or wraps a RateLimitError.
 func IsRateLimitError(err error) bool {
-	_, ok := err.(*RateLimitError)
-	return ok
+	var rateLimitErr *RateLimitError
+	return stderrors.As(err, &rateLimitErr)
 }

@@ -47,7 +47,6 @@ const (
 type RoleGroupCleaner struct {
 	Client                client.Client
 	Scheme                *runtime.Scheme
-	ownerUID              types.UID
 	grayDeleteGracePeriod time.Duration
 }
 
@@ -57,13 +56,6 @@ func NewRoleGroupCleaner(client client.Client, scheme *runtime.Scheme) *RoleGrou
 		Client: client,
 		Scheme: scheme,
 	}
-}
-
-// WithOwner sets the owner UID used for ownerReference validation.
-// Only resources owned by this UID will be deleted.
-func (c *RoleGroupCleaner) WithOwner(owner metav1.Object) *RoleGroupCleaner {
-	c.ownerUID = owner.GetUID()
-	return c
 }
 
 // WithGrayDeleteGracePeriod sets the grace period for gray deletion.
@@ -76,15 +68,40 @@ func (c *RoleGroupCleaner) WithGrayDeleteGracePeriod(d time.Duration) *RoleGroup
 
 // Cleanup removes orphaned resources for a cluster.
 // Resources are deleted in order: PDB → StatefulSet → ConfigMap → Service
-// PVCs are intentionally preserved to protect data unless AnnotationDeletePVCs is set on the CR.
-// Only resources owned by the cluster CR (via ownerReference) are deleted.
+// PVCs are intentionally preserved to protect data unless AnnotationDeletePVCs is set in crAnnotations.
+// Only resources with an ownerReference pointing to ownerUID (with controller=true) are deleted.
 // If GrayDeleteGracePeriod > 0, resources are annotated on first detection and only deleted
-// after the grace period has elapsed.
-func (c *RoleGroupCleaner) Cleanup(ctx context.Context, namespace, clusterName string, spec *v1alpha1.GenericClusterSpec, status *v1alpha1.GenericClusterStatus) error {
+// after the grace period has elapsed. Resources that are no longer orphaned have the annotation cleared.
+func (c *RoleGroupCleaner) Cleanup(
+	ctx context.Context,
+	namespace, clusterName string,
+	spec *v1alpha1.GenericClusterSpec,
+	status *v1alpha1.GenericClusterStatus,
+	ownerUID types.UID,
+	crAnnotations map[string]string,
+) error {
 	logger := log.FromContext(ctx)
+
+	deletePVCs := crAnnotations[AnnotationDeletePVCs] == "true"
 
 	// Get orphaned role groups
 	orphanedGroups := status.GetOrphanedRoleGroups(spec.Roles)
+
+	// LOW-3: If gray-delete is enabled, clear AnnotationPendingDeletion from resources
+	// that are no longer orphaned (re-added to spec). This ensures the grace period is
+	// respected correctly on any future re-orphaning.
+	if c.grayDeleteGracePeriod > 0 {
+		for _, roleSpec := range spec.Roles {
+			for groupName := range roleSpec.RoleGroups {
+				resourceName := fmt.Sprintf("%s-%s", clusterName, groupName)
+				if err := c.clearGrayDeleteAnnotation(ctx, namespace, resourceName); err != nil {
+					logger.V(1).Info("Failed to clear gray-delete annotation from active resource",
+						"resource", resourceName, "error", err)
+				}
+			}
+		}
+	}
+
 	if len(orphanedGroups) == 0 {
 		return nil
 	}
@@ -95,7 +112,7 @@ func (c *RoleGroupCleaner) Cleanup(ctx context.Context, namespace, clusterName s
 		for _, groupName := range groups {
 			resourceName := fmt.Sprintf("%s-%s", clusterName, groupName)
 
-			if err := c.cleanupRoleGroup(ctx, namespace, resourceName); err != nil {
+			if err := c.cleanupRoleGroup(ctx, namespace, resourceName, ownerUID, deletePVCs); err != nil {
 				return fmt.Errorf("failed to cleanup role group %s/%s: %w", roleName, groupName, err)
 			}
 
@@ -118,7 +135,7 @@ func countOrphanedGroups(orphaned map[string][]string) int {
 // cleanupRoleGroup cleans up all resources for a single role group.
 // When GrayDeleteGracePeriod is set, resources are first annotated and deleted only after
 // the grace period has elapsed.
-func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, resourceName string) error {
+func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, resourceName string, ownerUID types.UID, deletePVCs bool) error {
 	if c.grayDeleteGracePeriod > 0 {
 		// Gray delete: check if the primary resource (StatefulSet or ConfigMap) is already
 		// annotated. If not, annotate and defer; if yes and grace period elapsed, proceed.
@@ -135,26 +152,26 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, reso
 	// Delete in order: PDB → StatefulSet → ConfigMap → Service
 
 	// 1. Delete PDB
-	if err := c.deletePDB(ctx, namespace, resourceName); err != nil {
+	if err := c.deletePDB(ctx, namespace, resourceName, ownerUID); err != nil {
 		return err
 	}
 
-	// 2. Delete StatefulSet
-	if err := c.deleteStatefulSet(ctx, namespace, resourceName); err != nil {
+	// 2. Delete StatefulSet (and optionally PVCs before scaling down)
+	if err := c.deleteStatefulSet(ctx, namespace, resourceName, ownerUID, deletePVCs); err != nil {
 		return err
 	}
 
 	// 3. Delete ConfigMap
-	if err := c.deleteConfigMap(ctx, namespace, resourceName); err != nil {
+	if err := c.deleteConfigMap(ctx, namespace, resourceName, ownerUID); err != nil {
 		return err
 	}
 
 	// 4. Delete Services (headless and regular)
-	if err := c.deleteService(ctx, namespace, resourceName); err != nil {
+	if err := c.deleteService(ctx, namespace, resourceName, ownerUID); err != nil {
 		return err
 	}
 
-	if err := c.deleteService(ctx, namespace, resourceName+"-headless"); err != nil {
+	if err := c.deleteService(ctx, namespace, resourceName+"-headless", ownerUID); err != nil {
 		return err
 	}
 
@@ -220,14 +237,15 @@ func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace,
 	return false, nil
 }
 
-// isOwnedByCluster returns true if the object's ownerReferences contain the cluster owner UID.
-// If ownerUID is not set on the cleaner, all resources are considered owned (backward compatible).
-func (c *RoleGroupCleaner) isOwnedByCluster(obj metav1.Object) bool {
-	if c.ownerUID == "" {
+// isOwnedByCluster returns true if the object's ownerReferences contain an entry
+// matching ownerUID with controller=true.
+// If ownerUID is empty, all resources are considered owned (backward compatible).
+func isOwnedByCluster(obj metav1.Object, ownerUID types.UID) bool {
+	if ownerUID == "" {
 		return true
 	}
 	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == c.ownerUID && ref.Controller != nil && *ref.Controller {
+		if ref.UID == ownerUID && ref.Controller != nil && *ref.Controller {
 			return true
 		}
 	}
@@ -235,7 +253,7 @@ func (c *RoleGroupCleaner) isOwnedByCluster(obj metav1.Object) bool {
 }
 
 // deletePDB deletes a PodDisruptionBudget if it exists and is owned by the cluster.
-func (c *RoleGroupCleaner) deletePDB(ctx context.Context, namespace, name string) error {
+func (c *RoleGroupCleaner) deletePDB(ctx context.Context, namespace, name string, ownerUID types.UID) error {
 	pdb := &policyv1.PodDisruptionBudget{}
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
@@ -247,13 +265,19 @@ func (c *RoleGroupCleaner) deletePDB(ctx context.Context, namespace, name string
 		return err
 	}
 
+	if !isOwnedByCluster(pdb, ownerUID) {
+		log.FromContext(ctx).Info("Skipping PDB deletion: not owned by this cluster", "name", name)
+		return nil
+	}
+
 	return c.Client.Delete(ctx, pdb)
 }
 
 // deleteStatefulSet deletes a StatefulSet if it exists and is owned by the cluster.
-// PVCs managed by the StatefulSet's VolumeClaimTemplates are intentionally preserved by default.
-// Set deletePVCs=true to also delete associated PVCs.
-func (c *RoleGroupCleaner) deleteStatefulSet(ctx context.Context, namespace, name string) error {
+// If deletePVCs is true, PVCs associated with the StatefulSet's VolumeClaimTemplates are
+// deleted BEFORE scaling to zero (while the replica count is still valid).
+// Otherwise PVCs are preserved.
+func (c *RoleGroupCleaner) deleteStatefulSet(ctx context.Context, namespace, name string, ownerUID types.UID, deletePVCs bool) error {
 	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
@@ -265,9 +289,16 @@ func (c *RoleGroupCleaner) deleteStatefulSet(ctx context.Context, namespace, nam
 		return err
 	}
 
-	if !c.isOwnedByCluster(sts) {
+	if !isOwnedByCluster(sts, ownerUID) {
 		log.FromContext(ctx).Info("Skipping StatefulSet deletion: not owned by this cluster", "name", name)
 		return nil
+	}
+
+	// Delete PVCs BEFORE scaling to 0 (replica count is still valid at this point)
+	if deletePVCs {
+		if err := c.deletePVCsForStatefulSet(ctx, sts); err != nil {
+			return err
+		}
 	}
 
 	// Scale to 0 first for graceful shutdown
@@ -320,7 +351,7 @@ func (c *RoleGroupCleaner) deletePVCsForStatefulSet(ctx context.Context, sts *ap
 }
 
 // deleteConfigMap deletes a ConfigMap if it exists and is owned by the cluster.
-func (c *RoleGroupCleaner) deleteConfigMap(ctx context.Context, namespace, name string) error {
+func (c *RoleGroupCleaner) deleteConfigMap(ctx context.Context, namespace, name string, ownerUID types.UID) error {
 	cm := &corev1.ConfigMap{}
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
@@ -332,7 +363,7 @@ func (c *RoleGroupCleaner) deleteConfigMap(ctx context.Context, namespace, name 
 		return err
 	}
 
-	if !c.isOwnedByCluster(cm) {
+	if !isOwnedByCluster(cm, ownerUID) {
 		log.FromContext(ctx).Info("Skipping ConfigMap deletion: not owned by this cluster", "name", name)
 		return nil
 	}
@@ -341,7 +372,7 @@ func (c *RoleGroupCleaner) deleteConfigMap(ctx context.Context, namespace, name 
 }
 
 // deleteService deletes a Service if it exists and is owned by the cluster.
-func (c *RoleGroupCleaner) deleteService(ctx context.Context, namespace, name string) error {
+func (c *RoleGroupCleaner) deleteService(ctx context.Context, namespace, name string, ownerUID types.UID) error {
 	svc := &corev1.Service{}
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
@@ -353,10 +384,42 @@ func (c *RoleGroupCleaner) deleteService(ctx context.Context, namespace, name st
 		return err
 	}
 
-	if !c.isOwnedByCluster(svc) {
+	if !isOwnedByCluster(svc, ownerUID) {
 		log.FromContext(ctx).Info("Skipping Service deletion: not owned by this cluster", "name", name)
 		return nil
 	}
 
 	return c.Client.Delete(ctx, svc)
+}
+
+// clearGrayDeleteAnnotation removes the AnnotationPendingDeletion annotation from a resource
+// (StatefulSet or ConfigMap) if it is present. This is called for active (non-orphaned) resources
+// to ensure that if a role group is re-added to spec and later orphaned again, the grace period
+// is correctly measured from the new orphaning event.
+func (c *RoleGroupCleaner) clearGrayDeleteAnnotation(ctx context.Context, namespace, name string) error {
+	// Try StatefulSet first
+	sts := &appsv1.StatefulSet{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, sts); err == nil {
+		if _, ok := sts.GetAnnotations()[AnnotationPendingDeletion]; ok {
+			annotations := sts.GetAnnotations()
+			delete(annotations, AnnotationPendingDeletion)
+			sts.SetAnnotations(annotations)
+			return c.Client.Update(ctx, sts)
+		}
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	// Try ConfigMap as fallback
+	cm := &corev1.ConfigMap{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, cm); err == nil {
+		if _, ok := cm.GetAnnotations()[AnnotationPendingDeletion]; ok {
+			annotations := cm.GetAnnotations()
+			delete(annotations, AnnotationPendingDeletion)
+			cm.SetAnnotations(annotations)
+			return c.Client.Update(ctx, cm)
+		}
+	}
+	return nil
 }

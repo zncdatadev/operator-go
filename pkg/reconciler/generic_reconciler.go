@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -226,8 +227,7 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		// Handle 429 rate limit: back off without setting Degraded or emitting an error event
 		var rateLimitErr *RateLimitError
-		if IsRateLimitError(err) {
-			rateLimitErr = err.(*RateLimitError)
+		if stderrors.As(err, &rateLimitErr) {
 			logger.Info("Rate limited by Kubernetes API, backing off", "retryAfter", rateLimitErr.RetryAfter)
 			return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
 		}
@@ -317,7 +317,8 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 	}
 
 	// 4. Cleanup orphaned resources
-	if err := r.cleaner.WithOwner(r.getAsClientObject(cr)).Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status); err != nil {
+	owner := r.getAsClientObject(cr)
+	if err := r.cleaner.Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status, owner.GetUID(), owner.GetAnnotations()); err != nil {
 		logger.Error(err, "Failed to cleanup orphaned resources")
 		// Don't fail reconciliation for cleanup errors
 	}
@@ -583,9 +584,7 @@ func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR)
 	sa.Namespace = cr.GetNamespace()
 
 	_, err := r.k8sUtil.CreateOrUpdate(ctx, sa, func() error {
-		if sa.Labels == nil {
-			sa.Labels = cr.GetLabels()
-		}
+		sa.Labels = cr.GetLabels()
 		return controllerutil.SetControllerReference(owner, sa, r.scheme)
 	})
 	return err

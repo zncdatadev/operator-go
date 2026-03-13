@@ -28,17 +28,29 @@ import (
 // It mirrors controller-runtime's admission.Validator[T] interface, so implementations
 // can be passed directly to ctrl.NewWebhookManagedBy(...).WithValidator(...).
 //
-// For the common case where Create and Update share the same validation logic, embed
-// SimpleValidator to avoid boilerplate:
+// The recommended pattern to share logic between Create and Update is to extract a
+// private validate method:
 //
-//	type HdfsClusterValidator struct {
-//	   webhook.SimpleValidator[*HdfsCluster]
+// type HdfsClusterValidator struct{}
+//
+//	func (v *HdfsClusterValidator) ValidateCreate(ctx context.Context, cr *HdfsCluster) (admission.Warnings, error) {
+//	   return nil, v.validate(ctx, cr)
 //	}
 //
-//	func (v *HdfsClusterValidator) Validate(ctx context.Context, cr *HdfsCluster) error {
-//	   // validates both Create and Update
-//	   fieldErrs := webhook.ValidateGenericClusterSpec(&cr.Spec.GenericClusterSpec, ...)
-//	   ...
+//	func (v *HdfsClusterValidator) ValidateUpdate(ctx context.Context, _, cr *HdfsCluster) (admission.Warnings, error) {
+//	   return nil, v.validate(ctx, cr)
+//	}
+//
+//	func (v *HdfsClusterValidator) ValidateDelete(ctx context.Context, cr *HdfsCluster) (admission.Warnings, error) {
+//	   return nil, nil
+//	}
+//
+//	func (v *HdfsClusterValidator) validate(ctx context.Context, cr *HdfsCluster) error {
+//	   fieldErrs := webhook.ValidateGenericClusterSpec(&cr.Spec.GenericClusterSpec, field.NewPath("spec"))
+//	   if len(fieldErrs) > 0 {
+//	       return apierrors.NewInvalid(cr.GroupVersionKind().GroupKind(), cr.Name, fieldErrs)
+//	   }
+//	   return nil
 //	}
 type ProductValidator[CR any] interface {
 	// ValidateCreate validates the CR upon creation.
@@ -50,35 +62,6 @@ type ProductValidator[CR any] interface {
 
 	// ValidateDelete validates the CR upon deletion.
 	ValidateDelete(ctx context.Context, cr CR) (admission.Warnings, error)
-}
-
-// SimpleValidator is an embeddable struct that implements ProductValidator by delegating
-// ValidateCreate and ValidateUpdate to a single Validate method.
-// ValidateDelete is a no-op.
-//
-// Embed this in your validator struct and implement only Validate:
-//
-//	type MyValidator struct {
-//	   webhook.SimpleValidator[*MyCluster]
-//	}
-//
-// func (v *MyValidator) Validate(ctx context.Context, cr *MyCluster) error { ... }
-type SimpleValidator[CR any] struct{}
-
-// ValidateCreate calls Validate. Subtype must implement the Validate method.
-// This default implementation does nothing; override by embedding and calling your own Validate.
-func (v *SimpleValidator[CR]) ValidateCreate(_ context.Context, _ CR) (admission.Warnings, error) {
-	return nil, nil
-}
-
-// ValidateUpdate calls ValidateCreate on the new object.
-func (v *SimpleValidator[CR]) ValidateUpdate(_ context.Context, _, _ CR) (admission.Warnings, error) {
-	return nil, nil
-}
-
-// ValidateDelete is a no-op by default.
-func (v *SimpleValidator[CR]) ValidateDelete(_ context.Context, _ CR) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // NoOpValidator is a validator that does nothing.

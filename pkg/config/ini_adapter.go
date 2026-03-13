@@ -25,9 +25,12 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
-// INIAdapter converts between map[string]string and INI file format.
-// It writes flat key = value pairs and can read files that contain
-// [section] headers (sections are ignored during parsing).
+// INIAdapter converts between map[string]string and flat INI file format (no sections).
+// It writes flat key = value pairs and supports reading flat INI files.
+//
+// Note: This adapter only supports flat INI files (no [section] headers).
+// If a section header is encountered during Unmarshal, an error is returned.
+// This avoids silently losing data when multiple sections define the same key.
 type INIAdapter struct{}
 
 // NewINIAdapter creates a new INIAdapter.
@@ -35,7 +38,7 @@ func NewINIAdapter() *INIAdapter {
 	return &INIAdapter{}
 }
 
-// Marshal converts a configuration map to INI format.
+// Marshal converts a configuration map to flat INI format.
 // Keys are sorted for deterministic output.
 // Output format: key = value (one per line).
 func (a *INIAdapter) Marshal(data map[string]string) (string, error) {
@@ -56,22 +59,32 @@ func (a *INIAdapter) Marshal(data map[string]string) (string, error) {
 	return sb.String(), nil
 }
 
-// Unmarshal converts INI file content to a map.
+// Unmarshal converts flat INI file content to a map.
 // Supports:
 //   - key = value and key=value (with or without spaces)
-//   - [section] headers (silently ignored; all keys share a flat namespace)
 //   - # and ; comment lines
 //   - Blank lines
+//
+// Returns an error if a [section] header is encountered, since section-aware
+// INI files cannot be safely represented as a flat map[string]string.
 func (a *INIAdapter) Unmarshal(data string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	scanner := bufio.NewScanner(strings.NewReader(data))
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 
-		// Skip blank lines, comments, and section headers
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
+		// Skip blank lines and comments
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
+		}
+
+		// Reject section headers — flat INI only
+		if strings.HasPrefix(line, "[") {
+			return nil, common.ConfigParseError("ini", fmt.Errorf(
+				"line %d: section headers are not supported; use flat INI (key = value) format only", lineNum))
 		}
 
 		sepIdx := strings.IndexAny(line, "=:")

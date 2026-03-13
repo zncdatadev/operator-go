@@ -962,12 +962,17 @@ var _ = Describe("INIAdapter", func() {
 			Expect(result).To(HaveKeyWithValue("other", "data"))
 		})
 
-		It("should skip [section] headers", func() {
+		It("should return error when [section] headers are present", func() {
 			input := "[section]\nkey = value\n"
-			result, err := adapter.Unmarshal(input)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result).ToNot(HaveKey("[section]"))
-			Expect(result).To(HaveKeyWithValue("key", "value"))
+			_, err := adapter.Unmarshal(input)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("section headers are not supported"))
+		})
+
+		It("should return error when multiple [section] headers cause key collision", func() {
+			input := "[section1]\ntimeout = 30\n[section2]\ntimeout = 60\n"
+			_, err := adapter.Unmarshal(input)
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should skip # comment lines", func() {
