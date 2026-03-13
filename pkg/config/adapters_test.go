@@ -927,3 +927,82 @@ var _ = Describe("EnvAdapter", func() {
 		})
 	})
 })
+
+var _ = Describe("INIAdapter", func() {
+	var adapter *config.INIAdapter
+
+	BeforeEach(func() {
+		adapter = config.NewINIAdapter()
+	})
+
+	Describe("Marshal", func() {
+		It("should produce empty string for nil input", func() {
+			result, err := adapter.Marshal(nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal(""))
+		})
+
+		It("should marshal key-value pairs sorted", func() {
+			data := map[string]string{
+				"zebra": "last",
+				"apple": "first",
+			}
+			result, err := adapter.Marshal(data)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal("apple = first\nzebra = last\n"))
+		})
+	})
+
+	Describe("Unmarshal", func() {
+		It("should parse key = value lines", func() {
+			input := "key = value\nother=data\n"
+			result, err := adapter.Unmarshal(input)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("key", "value"))
+			Expect(result).To(HaveKeyWithValue("other", "data"))
+		})
+
+		It("should skip [section] headers", func() {
+			input := "[section]\nkey = value\n"
+			result, err := adapter.Unmarshal(input)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).ToNot(HaveKey("[section]"))
+			Expect(result).To(HaveKeyWithValue("key", "value"))
+		})
+
+		It("should skip # comment lines", func() {
+			input := "# this is a comment\nkey = value\n"
+			result, err := adapter.Unmarshal(input)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).ToNot(HaveKey("# this is a comment"))
+			Expect(result).To(HaveKeyWithValue("key", "value"))
+		})
+
+		It("should skip ; comment lines", func() {
+			input := "; semicolon comment\nkey = value\n"
+			result, err := adapter.Unmarshal(input)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("key", "value"))
+		})
+
+		It("should round-trip marshal/unmarshal", func() {
+			original := map[string]string{"host": "localhost", "port": "8080"}
+			marshaled, err := adapter.Marshal(original)
+			Expect(err).ToNot(HaveOccurred())
+			recovered, err := adapter.Unmarshal(marshaled)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(recovered).To(Equal(original))
+		})
+	})
+})
+
+var _ = Describe("GetFormat FormatINI", func() {
+	It("should return an INIAdapter for FormatINI", func() {
+		format := config.GetFormat(config.FormatINI)
+		Expect(format).ToNot(BeNil())
+		// Verify it's functional
+		result, err := format.Marshal(map[string]string{"k": "v"})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result).To(ContainSubstring("k = v"))
+	})
+})

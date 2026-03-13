@@ -19,6 +19,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -32,11 +33,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	// AnnotationPendingDeletion is set on orphaned resources during the gray-delete grace period.
+	// Value is an RFC3339 timestamp indicating when the resource was first marked for deletion.
+	AnnotationPendingDeletion = "orphan.zncdata.dev/pending-deletion"
+
+	// AnnotationDeletePVCs when set to "true" on the cluster CR, causes the cleaner to also
+	// delete PVCs associated with orphaned StatefulSets.
+	AnnotationDeletePVCs = "operator.zncdata.dev/delete-pvcs"
+)
+
 // RoleGroupCleaner cleans orphaned role group resources.
 type RoleGroupCleaner struct {
-	Client   client.Client
-	Scheme   *runtime.Scheme
-	ownerUID types.UID
+	Client                client.Client
+	Scheme                *runtime.Scheme
+	ownerUID              types.UID
+	grayDeleteGracePeriod time.Duration
 }
 
 // NewRoleGroupCleaner creates a new RoleGroupCleaner.
@@ -54,10 +66,20 @@ func (c *RoleGroupCleaner) WithOwner(owner metav1.Object) *RoleGroupCleaner {
 	return c
 }
 
+// WithGrayDeleteGracePeriod sets the grace period for gray deletion.
+// When > 0, orphaned resources are first annotated and only deleted after the grace period.
+// When 0 (default), resources are deleted immediately.
+func (c *RoleGroupCleaner) WithGrayDeleteGracePeriod(d time.Duration) *RoleGroupCleaner {
+	c.grayDeleteGracePeriod = d
+	return c
+}
+
 // Cleanup removes orphaned resources for a cluster.
 // Resources are deleted in order: PDB → StatefulSet → ConfigMap → Service
-// PVCs are intentionally preserved to protect data.
+// PVCs are intentionally preserved to protect data unless AnnotationDeletePVCs is set on the CR.
 // Only resources owned by the cluster CR (via ownerReference) are deleted.
+// If GrayDeleteGracePeriod > 0, resources are annotated on first detection and only deleted
+// after the grace period has elapsed.
 func (c *RoleGroupCleaner) Cleanup(ctx context.Context, namespace, clusterName string, spec *v1alpha1.GenericClusterSpec, status *v1alpha1.GenericClusterStatus) error {
 	logger := log.FromContext(ctx)
 
@@ -94,7 +116,22 @@ func countOrphanedGroups(orphaned map[string][]string) int {
 }
 
 // cleanupRoleGroup cleans up all resources for a single role group.
+// When GrayDeleteGracePeriod is set, resources are first annotated and deleted only after
+// the grace period has elapsed.
 func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, resourceName string) error {
+	if c.grayDeleteGracePeriod > 0 {
+		// Gray delete: check if the primary resource (StatefulSet or ConfigMap) is already
+		// annotated. If not, annotate and defer; if yes and grace period elapsed, proceed.
+		ready, err := c.checkOrMarkGrayDelete(ctx, namespace, resourceName)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			// Grace period not yet elapsed; skip deletion this cycle
+			return nil
+		}
+	}
+
 	// Delete in order: PDB → StatefulSet → ConfigMap → Service
 
 	// 1. Delete PDB
@@ -122,6 +159,65 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, reso
 	}
 
 	return nil
+}
+
+// checkOrMarkGrayDelete checks whether the grace period for a gray-deleted resource has elapsed.
+// Uses the StatefulSet (falling back to ConfigMap) as the primary resource to annotate.
+// Returns true if the resource should be deleted now, false if still within grace period.
+func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace, name string) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	// Try StatefulSet first, then ConfigMap as fallback
+	var primaryObj client.Object
+	sts := &appsv1.StatefulSet{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, sts); err == nil {
+		primaryObj = sts
+	} else if !errors.IsNotFound(err) {
+		return false, err
+	} else {
+		cm := &corev1.ConfigMap{}
+		if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, cm); err == nil {
+			primaryObj = cm
+		} else if errors.IsNotFound(err) {
+			// Resource already gone — allow deletion pass-through
+			return true, nil
+		} else {
+			return false, err
+		}
+	}
+
+	annotations := primaryObj.(metav1.Object).GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	markedAt, exists := annotations[AnnotationPendingDeletion]
+	if !exists {
+		// First detection: annotate and defer
+		annotations[AnnotationPendingDeletion] = time.Now().UTC().Format(time.RFC3339)
+		primaryObj.(metav1.Object).SetAnnotations(annotations)
+		if err := c.Client.Update(ctx, primaryObj); err != nil {
+			return false, fmt.Errorf("failed to mark resource for gray deletion: %w", err)
+		}
+		logger.Info("Marked orphaned resource for gray deletion", "name", name, "gracePeriod", c.grayDeleteGracePeriod)
+		return false, nil
+	}
+
+	// Check if grace period has elapsed
+	markedTime, err := time.Parse(time.RFC3339, markedAt)
+	if err != nil {
+		// Invalid timestamp — proceed with deletion
+		return true, nil
+	}
+
+	if time.Since(markedTime) >= c.grayDeleteGracePeriod {
+		logger.Info("Gray deletion grace period elapsed, proceeding with deletion", "name", name)
+		return true, nil
+	}
+
+	logger.Info("Gray deletion grace period not yet elapsed", "name", name,
+		"markedAt", markedAt, "gracePeriod", c.grayDeleteGracePeriod)
+	return false, nil
 }
 
 // isOwnedByCluster returns true if the object's ownerReferences contain the cluster owner UID.
@@ -155,7 +251,8 @@ func (c *RoleGroupCleaner) deletePDB(ctx context.Context, namespace, name string
 }
 
 // deleteStatefulSet deletes a StatefulSet if it exists and is owned by the cluster.
-// PVCs managed by the StatefulSet's VolumeClaimTemplates are intentionally preserved.
+// PVCs managed by the StatefulSet's VolumeClaimTemplates are intentionally preserved by default.
+// Set deletePVCs=true to also delete associated PVCs.
 func (c *RoleGroupCleaner) deleteStatefulSet(ctx context.Context, namespace, name string) error {
 	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Namespace: namespace, Name: name}
@@ -183,6 +280,43 @@ func (c *RoleGroupCleaner) deleteStatefulSet(ctx context.Context, namespace, nam
 	}
 
 	return c.Client.Delete(ctx, sts)
+}
+
+// deletePVCsForStatefulSet deletes PVCs created by a StatefulSet's VolumeClaimTemplates.
+// PVC names follow the pattern: {template.Name}-{statefulSet.Name}-{ordinal}.
+// This iterates over the StatefulSet's VolumeClaimTemplates and deletes all PVCs
+// for each ordinal up to the last known replica count.
+func (c *RoleGroupCleaner) deletePVCsForStatefulSet(ctx context.Context, sts *appsv1.StatefulSet) error {
+	if len(sts.Spec.VolumeClaimTemplates) == 0 {
+		return nil
+	}
+
+	replicas := int32(1)
+	if sts.Spec.Replicas != nil {
+		replicas = *sts.Spec.Replicas
+	}
+
+	logger := log.FromContext(ctx)
+	namespace := sts.Namespace
+
+	for _, vct := range sts.Spec.VolumeClaimTemplates {
+		for i := int32(0); i < replicas; i++ {
+			pvcName := fmt.Sprintf("%s-%s-%d", vct.Name, sts.Name, i)
+			pvc := &corev1.PersistentVolumeClaim{}
+			err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: pvcName}, pvc)
+			if err != nil {
+				if errors.IsNotFound(err) {
+					continue
+				}
+				return fmt.Errorf("failed to get PVC %s/%s: %w", namespace, pvcName, err)
+			}
+			if err := c.Client.Delete(ctx, pvc); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete PVC %s/%s: %w", namespace, pvcName, err)
+			}
+			logger.Info("Deleted PVC", "name", pvcName, "namespace", namespace)
+		}
+	}
+	return nil
 }
 
 // deleteConfigMap deletes a ConfigMap if it exists and is owned by the cluster.

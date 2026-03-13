@@ -53,6 +53,8 @@ func GetFormat(formatType ConfigFormatType) ConfigFormat {
 		return NewYAMLAdapter()
 	case FormatEnv:
 		return NewEnvAdapter()
+	case FormatINI:
+		return NewINIAdapter()
 	default:
 		return NewPropertiesAdapter() // Default fallback
 	}

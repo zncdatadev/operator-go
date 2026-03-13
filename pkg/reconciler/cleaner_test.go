@@ -18,6 +18,7 @@ package reconciler_test
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -981,6 +982,106 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		// ConfigMap should be deleted (no ownerUID → treat all as owned)
 		existing := &corev1.ConfigMap{}
 		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, existing)
+		Expect(getErr).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("RoleGroupCleaner gray deletion", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("should annotate resource on first detection and defer deletion", func() {
+		clusterName := "gray-defer"
+		groupName := "grp1"
+		resourceName := clusterName + "-" + groupName
+
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithGrayDeleteGracePeriod(10 * time.Minute) // large grace period
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		// First cleanup call: should annotate and NOT delete
+		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status)).To(Succeed())
+
+		// ConfigMap should still exist but have the annotation
+		existing := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cleanerTestNamespace, Name: resourceName}, existing)).To(Succeed())
+		Expect(existing.Annotations).To(HaveKey(reconciler.AnnotationPendingDeletion))
+
+		// Cleanup
+		Expect(k8sClient.Delete(ctx, existing)).To(Succeed())
+	})
+
+	It("should delete resource after grace period has elapsed", func() {
+		clusterName := "gray-elapsed"
+		groupName := "grp2"
+		resourceName := clusterName + "-" + groupName
+
+		// Create ConfigMap pre-annotated with a past timestamp
+		past := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        resourceName,
+				Namespace:   cleanerTestNamespace,
+				Annotations: map[string]string{reconciler.AnnotationPendingDeletion: past},
+			},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		// Grace period is only 1 minute — already elapsed
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithGrayDeleteGracePeriod(1 * time.Minute)
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status)).To(Succeed())
+
+		// ConfigMap should be deleted
+		existing := &corev1.ConfigMap{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: cleanerTestNamespace, Name: resourceName}, existing)
+		Expect(getErr).To(HaveOccurred())
+	})
+
+	It("should delete immediately when GrayDeleteGracePeriod is 0", func() {
+		clusterName := "gray-immediate"
+		groupName := "grp3"
+		resourceName := clusterName + "-" + groupName
+
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		// No GrayDeleteGracePeriod (default 0 = immediate)
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", groupName)
+
+		Expect(cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status)).To(Succeed())
+
+		// ConfigMap should be gone
+		existing := &corev1.ConfigMap{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: cleanerTestNamespace, Name: resourceName}, existing)
 		Expect(getErr).To(HaveOccurred())
 	})
 })

@@ -74,6 +74,24 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// +optional
 	ServiceHealthCheck common.ServiceHealthCheck
 
+	// RateLimitRetryAfter is the duration to wait before retrying after a 429 Too Many Requests
+	// response from the Kubernetes API. Defaults to 10s if not specified.
+	// +optional
+	RateLimitRetryAfter time.Duration
+
+	// GrayDeleteGracePeriod sets the grace period for orphaned resource cleanup.
+	// When > 0, resources are annotated on first detection and deleted only after this duration.
+	// When 0 (default), orphaned resources are deleted immediately.
+	// +optional
+	GrayDeleteGracePeriod time.Duration
+
+	// ServiceAccountName is the name of the ServiceAccount to create for the workload.
+	// When set, the GenericReconciler automatically creates (or updates) a ServiceAccount
+	// with this name in the CR's namespace at the start of each reconciliation.
+	// Products can then reference this SA in their StatefulSetBuilder via WithServiceAccount().
+	// +optional
+	ServiceAccountName string
+
 	// Prototype is a zero-value instance of the CR type used for controller setup.
 	// This is required because Go generics don't allow creating new instances.
 	Prototype CR
@@ -107,17 +125,19 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //     g. Final Status Update
 //  4. Error handling: OnReconcileError hooks, set Degraded condition
 type GenericReconciler[CR common.ClusterInterface] struct {
-	client             client.Client
-	scheme             *runtime.Scheme
-	k8sUtil            *util.K8sUtil
-	healthManager      *HealthManager
-	dependencyResolver *DependencyResolver
-	cleaner            *RoleGroupCleaner
-	eventManager       *EventManager
-	configMerger       *config.ConfigMerger
-	roleGroupHandler   RoleGroupHandler[CR]
-	extensionRegistry  *common.ExtensionRegistry
-	prototype          CR
+	client              client.Client
+	scheme              *runtime.Scheme
+	k8sUtil             *util.K8sUtil
+	healthManager       *HealthManager
+	dependencyResolver  *DependencyResolver
+	cleaner             *RoleGroupCleaner
+	eventManager        *EventManager
+	configMerger        *config.ConfigMerger
+	roleGroupHandler    RoleGroupHandler[CR]
+	extensionRegistry   *common.ExtensionRegistry
+	prototype           CR
+	rateLimitRetryAfter time.Duration
+	serviceAccountName  string
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -152,18 +172,30 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
 	}
 
+	cleaner := NewRoleGroupCleaner(cfg.Client, cfg.Scheme)
+	if cfg.GrayDeleteGracePeriod > 0 {
+		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
+	}
+
+	rateLimitRetryAfter := cfg.RateLimitRetryAfter
+	if rateLimitRetryAfter == 0 {
+		rateLimitRetryAfter = 10 * time.Second
+	}
+
 	return &GenericReconciler[CR]{
-		client:             cfg.Client,
-		scheme:             cfg.Scheme,
-		k8sUtil:            util.NewK8sUtil(cfg.Client, cfg.Scheme),
-		healthManager:      healthManager,
-		dependencyResolver: NewDependencyResolver(cfg.Client),
-		cleaner:            NewRoleGroupCleaner(cfg.Client, cfg.Scheme),
-		eventManager:       NewEventManager(cfg.Recorder),
-		configMerger:       config.NewConfigMerger(),
-		roleGroupHandler:   cfg.RoleGroupHandler,
-		extensionRegistry:  common.GetExtensionRegistry(),
-		prototype:          cfg.Prototype,
+		client:              cfg.Client,
+		scheme:              cfg.Scheme,
+		k8sUtil:             util.NewK8sUtil(cfg.Client, cfg.Scheme),
+		healthManager:       healthManager,
+		dependencyResolver:  NewDependencyResolver(cfg.Client),
+		cleaner:             cleaner,
+		eventManager:        NewEventManager(cfg.Recorder),
+		configMerger:        config.NewConfigMerger(),
+		roleGroupHandler:    cfg.RoleGroupHandler,
+		extensionRegistry:   common.GetExtensionRegistry(),
+		prototype:           cfg.Prototype,
+		rateLimitRetryAfter: rateLimitRetryAfter,
+		serviceAccountName:  cfg.ServiceAccountName,
 	}, nil
 }
 
@@ -192,6 +224,14 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 	// Perform reconciliation
 	result, err := r.reconcile(ctx, cr)
 	if err != nil {
+		// Handle 429 rate limit: back off without setting Degraded or emitting an error event
+		var rateLimitErr *RateLimitError
+		if IsRateLimitError(err) {
+			rateLimitErr = err.(*RateLimitError)
+			logger.Info("Rate limited by Kubernetes API, backing off", "retryAfter", rateLimitErr.RetryAfter)
+			return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
+		}
+
 		// Execute error hooks
 		r.executeErrorHooks(ctx, cr, err)
 
@@ -238,6 +278,13 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 	logger := log.FromContext(ctx)
 	spec := cr.GetSpec()
 	status := cr.GetStatus()
+
+	// 0. Auto-create ServiceAccount if configured
+	if r.serviceAccountName != "" {
+		if err := r.ensureServiceAccount(ctx, cr); err != nil {
+			return ctrl.Result{}, NewReconcileError("ServiceAccount", "failed to ensure service account", err)
+		}
+	}
 
 	// 1. Execute PreReconcile extensions
 	if err := r.extensionRegistry.ExecuteClusterPreReconcile(ctx, r.client, cr); err != nil {
@@ -429,6 +476,7 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 
 // applyResource applies a single resource using CreateOrUpdate.
 // After the operation, emits a Create or Update event based on the result.
+// If the Kubernetes API returns 429 Too Many Requests, a RateLimitError is returned.
 func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.Object, obj client.Object) error {
 	result, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
 		// Set ownership
@@ -438,6 +486,9 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 		return nil
 	})
 	if err != nil {
+		if errors.IsTooManyRequests(err) {
+			return NewRateLimitError(r.rateLimitRetryAfter, err)
+		}
 		return err
 	}
 
@@ -520,5 +571,22 @@ func (r *GenericReconciler[CR]) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
+		Owns(&corev1.ServiceAccount{}).
 		Complete(r)
+}
+
+// ensureServiceAccount creates or updates the ServiceAccount for the cluster workload.
+func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR) error {
+	owner := r.getAsClientObject(cr)
+	sa := &corev1.ServiceAccount{}
+	sa.Name = r.serviceAccountName
+	sa.Namespace = cr.GetNamespace()
+
+	_, err := r.k8sUtil.CreateOrUpdate(ctx, sa, func() error {
+		if sa.Labels == nil {
+			sa.Labels = cr.GetLabels()
+		}
+		return controllerutil.SetControllerReference(owner, sa, r.scheme)
+	})
+	return err
 }
