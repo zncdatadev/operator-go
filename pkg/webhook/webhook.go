@@ -19,27 +19,32 @@ package webhook
 import (
 	"context"
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // WebhookManager manages defaulting and validation webhooks for a product CR.
 // It provides a unified interface for applying defaults and running validation
 // during the admission webhook phase.
 //
-// Usage:
+// # Recommended Usage with controller-runtime
 //
-//	manager := webhook.NewWebhookManager[*HdfsCluster]()
-//	manager.WithDefaulter(&HdfsClusterDefaulter{})
-//	manager.WithValidator(&HdfsClusterValidator{})
+// Use DefaulterAdapter and ValidatorAdapter to bridge SDK types to controller-runtime:
 //
-//	// In MutatingWebhook handler:
-//	if err := manager.ApplyDefaults(ctx, cr); err != nil {
-//	    return err
+//	func SetupWebhookWithManager(mgr ctrl.Manager) error {
+//	   return ctrl.NewWebhookManagedBy(mgr, &MyCluster{}).
+//	       WithDefaulter(webhook.NewDefaulterAdapter(&MyClusterDefaulter{})).
+//	       WithValidator(webhook.NewValidatorAdapter[*MyCluster](&MyClusterValidator{})).
+//	       Complete()
 //	}
 //
-//	// In ValidatingWebhook handler:
-//	if err := manager.Validate(ctx, cr); err != nil {
-//	    return err
-//	}
+// # Alternative: WebhookManager (for testing or custom handlers)
+//
+// manager := webhook.NewWebhookManager[*HdfsCluster]()
+// manager.WithDefaulter(&HdfsClusterDefaulter{})
+// manager.WithValidator(&HdfsClusterValidator{})
+// if err := manager.ApplyDefaults(ctx, cr); err != nil { ... }
 type WebhookManager[CR any] struct {
 	defaulter ProductDefaulter[CR]
 	validator ProductValidator[CR]
@@ -75,32 +80,112 @@ func (m *WebhookManager[CR]) ApplyDefaults(ctx context.Context, cr CR) error {
 	if m.defaulter == nil {
 		return nil
 	}
-	if err := m.defaulter.SetDefaults(ctx, cr); err != nil {
+	if err := m.defaulter.Default(ctx, cr); err != nil {
 		return fmt.Errorf("failed to apply defaults: %w", err)
 	}
 	return nil
 }
 
-// Validate validates the CR.
+// Validate validates the CR on creation (calls ValidateCreate internally).
 // This should be called in the ValidatingWebhook handler.
 func (m *WebhookManager[CR]) Validate(ctx context.Context, cr CR) error {
 	if m.validator == nil {
 		return nil
 	}
-	if err := m.validator.Validate(ctx, cr); err != nil {
+	_, err := m.validator.ValidateCreate(ctx, cr)
+	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 	return nil
 }
 
-// HasDefaulter returns true if a defaulter is set.
+// HasDefaulter returns true if a custom defaulter is set.
 func (m *WebhookManager[CR]) HasDefaulter() bool {
 	_, ok := m.defaulter.(*NoOpDefaulter[CR])
 	return !ok
 }
 
-// HasValidator returns true if a validator is set.
+// HasValidator returns true if a custom validator is set.
 func (m *WebhookManager[CR]) HasValidator() bool {
 	_, ok := m.validator.(*NoOpValidator[CR])
 	return !ok
+}
+
+// DefaulterAdapter adapts a typed ProductDefaulter[CR] to the untyped
+// admission.CustomDefaulter (i.e. admission.Defaulter[runtime.Object]).
+// Use this to pass a typed SDK defaulter to ctrl.NewWebhookManagedBy(...).WithDefaulter(...).
+//
+// Example:
+//
+// ctrl.NewWebhookManagedBy(mgr, &MyCluster{}).
+//
+//	WithDefaulter(webhook.NewDefaulterAdapter(&MyClusterDefaulter{})).
+//	Complete()
+type DefaulterAdapter[CR runtime.Object] struct {
+	inner ProductDefaulter[CR]
+}
+
+// NewDefaulterAdapter creates a DefaulterAdapter wrapping the given ProductDefaulter.
+func NewDefaulterAdapter[CR runtime.Object](inner ProductDefaulter[CR]) *DefaulterAdapter[CR] {
+	return &DefaulterAdapter[CR]{inner: inner}
+}
+
+// Default implements admission.CustomDefaulter.
+// It casts obj to CR and delegates to the inner ProductDefaulter.Default.
+func (a *DefaulterAdapter[CR]) Default(ctx context.Context, obj runtime.Object) error {
+	cr, ok := obj.(CR)
+	if !ok {
+		return fmt.Errorf("expected %T, got %T", *new(CR), obj)
+	}
+	return a.inner.Default(ctx, cr)
+}
+
+// ValidatorAdapter adapts a typed ProductValidator[CR] to the untyped
+// admission.CustomValidator (i.e. admission.Validator[runtime.Object]).
+// Use this to pass a typed SDK validator to ctrl.NewWebhookManagedBy(...).WithValidator(...).
+//
+// Example:
+//
+// ctrl.NewWebhookManagedBy(mgr, &MyCluster{}).
+//
+//	WithValidator(webhook.NewValidatorAdapter[*MyCluster](&MyClusterValidator{})).
+//	Complete()
+type ValidatorAdapter[CR runtime.Object] struct {
+	inner ProductValidator[CR]
+}
+
+// NewValidatorAdapter creates a ValidatorAdapter wrapping the given ProductValidator.
+func NewValidatorAdapter[CR runtime.Object](inner ProductValidator[CR]) *ValidatorAdapter[CR] {
+	return &ValidatorAdapter[CR]{inner: inner}
+}
+
+// ValidateCreate implements admission.CustomValidator.
+func (a *ValidatorAdapter[CR]) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	cr, ok := obj.(CR)
+	if !ok {
+		return nil, fmt.Errorf("expected %T, got %T", *new(CR), obj)
+	}
+	return a.inner.ValidateCreate(ctx, cr)
+}
+
+// ValidateUpdate implements admission.CustomValidator.
+func (a *ValidatorAdapter[CR]) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	oldCR, ok := oldObj.(CR)
+	if !ok {
+		return nil, fmt.Errorf("expected %T for oldObj, got %T", *new(CR), oldObj)
+	}
+	newCR, ok := newObj.(CR)
+	if !ok {
+		return nil, fmt.Errorf("expected %T for newObj, got %T", *new(CR), newObj)
+	}
+	return a.inner.ValidateUpdate(ctx, oldCR, newCR)
+}
+
+// ValidateDelete implements admission.CustomValidator.
+func (a *ValidatorAdapter[CR]) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	cr, ok := obj.(CR)
+	if !ok {
+		return nil, fmt.Errorf("expected %T, got %T", *new(CR), obj)
+	}
+	return a.inner.ValidateDelete(ctx, cr)
 }
