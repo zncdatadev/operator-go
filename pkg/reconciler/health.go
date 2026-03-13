@@ -131,6 +131,7 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		if err != nil {
 			logger.Error(err, "Service health check failed")
 			status.SetDegraded(true, v1alpha1.ReasonDegraded, fmt.Sprintf("Service health check error: %v", err))
+			status.SetServiceHealthy(false, v1alpha1.ReasonDegraded, fmt.Sprintf("Service health check error: %v", err))
 			return nil
 		}
 		if !healthy {

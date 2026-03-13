@@ -112,7 +112,7 @@ var _ = Describe("ValidateGenericClusterSpec", func() {
 var _ = Describe("DefaultGenericClusterSpec", func() {
 	It("should do nothing when spec is nil", func() {
 		// Should not panic
-		webhook.DefaultGenericClusterSpec(nil, "hdfs", nil)
+		webhook.DefaultGenericClusterSpec(nil, nil)
 	})
 
 	It("should set default image when spec.Image is nil", func() {
@@ -122,7 +122,7 @@ var _ = Describe("DefaultGenericClusterSpec", func() {
 			ProductVersion:  "3.3.6",
 			KubedoopVersion: "0.2.0",
 		}
-		webhook.DefaultGenericClusterSpec(spec, "hdfs", defaultImage)
+		webhook.DefaultGenericClusterSpec(spec, defaultImage)
 		Expect(spec.Image).NotTo(BeNil())
 		Expect(spec.Image.Repo).To(Equal("quay.io/zncdatadev"))
 		Expect(spec.Image.ProductVersion).To(Equal("3.3.6"))
@@ -136,7 +136,7 @@ var _ = Describe("DefaultGenericClusterSpec", func() {
 		defaultImage := &commonsv1alpha1.ImageSpec{
 			ProductVersion: "3.3.6",
 		}
-		webhook.DefaultGenericClusterSpec(spec, "hdfs", defaultImage)
+		webhook.DefaultGenericClusterSpec(spec, defaultImage)
 		Expect(spec.Image.Custom).To(Equal("my-registry.io/hdfs:latest"))
 		Expect(spec.Image.ProductVersion).To(BeEmpty()) // original preserved
 	})
@@ -147,7 +147,7 @@ var _ = Describe("DefaultGenericClusterSpec", func() {
 				Custom: "quay.io/foo/bar:latest",
 			},
 		}
-		webhook.DefaultGenericClusterSpec(spec, "hdfs", nil)
+		webhook.DefaultGenericClusterSpec(spec, nil)
 		Expect(spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
 	})
 
@@ -158,7 +158,7 @@ var _ = Describe("DefaultGenericClusterSpec", func() {
 				PullPolicy: corev1.PullAlways,
 			},
 		}
-		webhook.DefaultGenericClusterSpec(spec, "hdfs", nil)
+		webhook.DefaultGenericClusterSpec(spec, nil)
 		Expect(spec.Image.PullPolicy).To(Equal(corev1.PullAlways))
 	})
 })

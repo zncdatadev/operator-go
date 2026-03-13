@@ -29,7 +29,7 @@ import (
 // type HdfsClusterDefaulter struct{}
 //
 //	func (d *HdfsClusterDefaulter) Default(ctx context.Context, cr *HdfsCluster) error {
-//	   webhook.DefaultGenericClusterSpec(&cr.Spec.GenericClusterSpec, "hdfs", defaultImage)
+//	   webhook.DefaultGenericClusterSpec(&cr.Spec.GenericClusterSpec, defaultImage)
 //	   return nil
 //	}
 type ProductDefaulter[CR any] interface {

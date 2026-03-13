@@ -57,13 +57,21 @@ type ImageSpec struct {
 }
 
 // GetImage returns the resolved container image reference for the given product name.
-// If Custom is set it is returned directly; otherwise the image is constructed from
-// Repo, productName, ProductVersion and KubedoopVersion.
+// If Custom is set it is returned directly.
+// Otherwise the image is constructed from Repo, productName, ProductVersion and KubedoopVersion.
+// Returns an empty string if productName is empty or if both Repo and ProductVersion are unset.
 func (i *ImageSpec) GetImage(productName string) string {
 	if i.Custom != "" {
 		return i.Custom
 	}
-	return i.Repo + "/" + productName + ":" + i.ProductVersion + "-kubedoop" + i.KubedoopVersion
+	if productName == "" || i.Repo == "" || i.ProductVersion == "" {
+		return ""
+	}
+	image := i.Repo + "/" + productName + ":" + i.ProductVersion
+	if i.KubedoopVersion != "" {
+		image += "-kubedoop" + i.KubedoopVersion
+	}
+	return image
 }
 
 // GetPullPolicy returns the configured pull policy, defaulting to IfNotPresent.

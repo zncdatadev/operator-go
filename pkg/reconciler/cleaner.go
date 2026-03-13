@@ -94,7 +94,7 @@ func (c *RoleGroupCleaner) Cleanup(
 		for _, roleSpec := range spec.Roles {
 			for groupName := range roleSpec.RoleGroups {
 				resourceName := fmt.Sprintf("%s-%s", clusterName, groupName)
-				if err := c.clearGrayDeleteAnnotation(ctx, namespace, resourceName); err != nil {
+				if err := c.clearGrayDeleteAnnotation(ctx, namespace, resourceName, ownerUID); err != nil {
 					logger.V(1).Info("Failed to clear gray-delete annotation from active resource",
 						"resource", resourceName, "error", err)
 				}
@@ -139,7 +139,7 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, reso
 	if c.grayDeleteGracePeriod > 0 {
 		// Gray delete: check if the primary resource (StatefulSet or ConfigMap) is already
 		// annotated. If not, annotate and defer; if yes and grace period elapsed, proceed.
-		ready, err := c.checkOrMarkGrayDelete(ctx, namespace, resourceName)
+		ready, err := c.checkOrMarkGrayDelete(ctx, namespace, resourceName, ownerUID)
 		if err != nil {
 			return err
 		}
@@ -180,8 +180,9 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(ctx context.Context, namespace, reso
 
 // checkOrMarkGrayDelete checks whether the grace period for a gray-deleted resource has elapsed.
 // Uses the StatefulSet (falling back to ConfigMap) as the primary resource to annotate.
+// Only resources owned by ownerUID are annotated; foreign resources are skipped.
 // Returns true if the resource should be deleted now, false if still within grace period.
-func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace, name string) (bool, error) {
+func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace, name string, ownerUID types.UID) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	// Try StatefulSet first, then ConfigMap as fallback
@@ -201,6 +202,12 @@ func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace,
 		} else {
 			return false, err
 		}
+	}
+
+	// Skip foreign resources to avoid mutating unrelated objects on name collision
+	if !isOwnedByCluster(primaryObj.(metav1.Object), ownerUID) {
+		logger.V(1).Info("Skipping gray-delete annotation: resource not owned by this cluster", "name", name)
+		return false, nil
 	}
 
 	annotations := primaryObj.(metav1.Object).GetAnnotations()
@@ -313,39 +320,33 @@ func (c *RoleGroupCleaner) deleteStatefulSet(ctx context.Context, namespace, nam
 	return c.Client.Delete(ctx, sts)
 }
 
-// deletePVCsForStatefulSet deletes PVCs created by a StatefulSet's VolumeClaimTemplates.
-// PVC names follow the pattern: {template.Name}-{statefulSet.Name}-{ordinal}.
-// This iterates over the StatefulSet's VolumeClaimTemplates and deletes all PVCs
-// for each ordinal up to the last known replica count.
+// deletePVCsForStatefulSet deletes PVCs associated with a StatefulSet by listing existing PVCs
+// using the StatefulSet's pod selector labels. This is more reliable than deriving names from
+// replica count, as it handles scaled-down StatefulSets and catches all existing PVCs regardless
+// of current replica count.
 func (c *RoleGroupCleaner) deletePVCsForStatefulSet(ctx context.Context, sts *appsv1.StatefulSet) error {
 	if len(sts.Spec.VolumeClaimTemplates) == 0 {
 		return nil
 	}
 
-	replicas := int32(1)
-	if sts.Spec.Replicas != nil {
-		replicas = *sts.Spec.Replicas
-	}
-
 	logger := log.FromContext(ctx)
 	namespace := sts.Namespace
 
-	for _, vct := range sts.Spec.VolumeClaimTemplates {
-		for i := int32(0); i < replicas; i++ {
-			pvcName := fmt.Sprintf("%s-%s-%d", vct.Name, sts.Name, i)
-			pvc := &corev1.PersistentVolumeClaim{}
-			err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: pvcName}, pvc)
-			if err != nil {
-				if errors.IsNotFound(err) {
-					continue
-				}
-				return fmt.Errorf("failed to get PVC %s/%s: %w", namespace, pvcName, err)
-			}
-			if err := c.Client.Delete(ctx, pvc); err != nil && !errors.IsNotFound(err) {
-				return fmt.Errorf("failed to delete PVC %s/%s: %w", namespace, pvcName, err)
-			}
-			logger.Info("Deleted PVC", "name", pvcName, "namespace", namespace)
+	// List PVCs matching the StatefulSet's pod selector
+	pvcList := &corev1.PersistentVolumeClaimList{}
+	if err := c.Client.List(ctx, pvcList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(sts.Spec.Selector.MatchLabels),
+	); err != nil {
+		return fmt.Errorf("failed to list PVCs for StatefulSet %s/%s: %w", namespace, sts.Name, err)
+	}
+
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+		if err := c.Client.Delete(ctx, pvc); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete PVC %s/%s: %w", namespace, pvc.Name, err)
 		}
+		logger.Info("Deleted PVC", "name", pvc.Name, "namespace", namespace)
 	}
 	return nil
 }
@@ -393,13 +394,15 @@ func (c *RoleGroupCleaner) deleteService(ctx context.Context, namespace, name st
 }
 
 // clearGrayDeleteAnnotation removes the AnnotationPendingDeletion annotation from a resource
-// (StatefulSet or ConfigMap) if it is present. This is called for active (non-orphaned) resources
-// to ensure that if a role group is re-added to spec and later orphaned again, the grace period
-// is correctly measured from the new orphaning event.
-func (c *RoleGroupCleaner) clearGrayDeleteAnnotation(ctx context.Context, namespace, name string) error {
+// (StatefulSet or ConfigMap) if it is present. Only modifies resources owned by ownerUID
+// to avoid mutating unrelated objects on name collision.
+func (c *RoleGroupCleaner) clearGrayDeleteAnnotation(ctx context.Context, namespace, name string, ownerUID types.UID) error {
 	// Try StatefulSet first
 	sts := &appsv1.StatefulSet{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, sts); err == nil {
+		if !isOwnedByCluster(sts, ownerUID) {
+			return nil
+		}
 		if _, ok := sts.GetAnnotations()[AnnotationPendingDeletion]; ok {
 			annotations := sts.GetAnnotations()
 			delete(annotations, AnnotationPendingDeletion)
@@ -414,6 +417,9 @@ func (c *RoleGroupCleaner) clearGrayDeleteAnnotation(ctx context.Context, namesp
 	// Try ConfigMap as fallback
 	cm := &corev1.ConfigMap{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, cm); err == nil {
+		if !isOwnedByCluster(cm, ownerUID) {
+			return nil
+		}
 		if _, ok := cm.GetAnnotations()[AnnotationPendingDeletion]; ok {
 			annotations := cm.GetAnnotations()
 			delete(annotations, AnnotationPendingDeletion)

@@ -57,6 +57,24 @@ var _ = Describe("ImageSpec", func() {
 				}
 				Expect(spec.GetImage("hive")).To(Equal("quay.io/kubedoop/hive:3.0.0-kubedoop0.1.0"))
 			})
+
+			It("returns empty string when Repo is empty", func() {
+				spec := &v1alpha1.ImageSpec{ProductVersion: "3.0.0", KubedoopVersion: "0.1.0"}
+				Expect(spec.GetImage("trino")).To(Equal(""))
+			})
+
+			It("returns empty string when productName is empty", func() {
+				spec := &v1alpha1.ImageSpec{Repo: "quay.io/kubedoop", ProductVersion: "3.0.0"}
+				Expect(spec.GetImage("")).To(Equal(""))
+			})
+
+			It("omits kubedoop suffix when KubedoopVersion is empty", func() {
+				spec := &v1alpha1.ImageSpec{
+					Repo:           "quay.io/kubedoop",
+					ProductVersion: "3.0.0",
+				}
+				Expect(spec.GetImage("trino")).To(Equal("quay.io/kubedoop/trino:3.0.0"))
+			})
 		})
 	})
 

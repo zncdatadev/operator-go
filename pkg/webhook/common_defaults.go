@@ -32,12 +32,11 @@ import (
 // Example (in product operator webhook):
 //
 //	func (d *HdfsClusterDefaulter) Default(ctx context.Context, cr *HdfsCluster) error {
-//	    webhook.DefaultGenericClusterSpec(&cr.Spec.GenericClusterSpec, "hdfs", &defaultImage)
+//	    webhook.DefaultGenericClusterSpec(&cr.Spec.GenericClusterSpec, &defaultImage)
 //	    return nil
 //	}
 func DefaultGenericClusterSpec(
 	spec *commonsv1alpha1.GenericClusterSpec,
-	productName string,
 	defaultImage *commonsv1alpha1.ImageSpec,
 ) {
 	if spec == nil {
