@@ -169,7 +169,7 @@ var _ = Describe("ValidationErrors.ToStatusError", func() {
 	It("should return nil when no errors", func() {
 		var errs webhook.ValidationErrors
 		err := errs.ToStatusError(gvk, "my-cluster")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should return a StatusError when errors exist", func() {
@@ -197,6 +197,6 @@ var _ = Describe("ValidationErrors.ToStatusError", func() {
 		err := errs.ToStatusError(gvk, "my-cluster")
 		statusErr, ok := err.(*apierrors.StatusError)
 		Expect(ok).To(BeTrue())
-		Expect(len(statusErr.ErrStatus.Details.Causes)).To(Equal(2))
+		Expect(statusErr.ErrStatus.Details.Causes).To(HaveLen(2))
 	})
 })

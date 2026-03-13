@@ -54,7 +54,7 @@ func (a *INIAdapter) Marshal(data map[string]string) (string, error) {
 
 	var sb strings.Builder
 	for _, key := range keys {
-		sb.WriteString(fmt.Sprintf("%s = %s\n", key, data[key]))
+		fmt.Fprintf(&sb, "%s = %s\n", key, data[key])
 	}
 	return sb.String(), nil
 }

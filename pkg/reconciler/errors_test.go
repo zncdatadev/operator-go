@@ -312,7 +312,7 @@ var _ = Describe("Errors", func() {
 var _ = Describe("RateLimitError", func() {
 	It("should create error with retry duration", func() {
 		err := reconciler.NewRateLimitError(10*time.Second, fmt.Errorf("429 Too Many Requests"))
-		Expect(err).ToNot(BeNil())
+		Expect(err).To(HaveOccurred())
 		Expect(err.RetryAfter).To(Equal(10 * time.Second))
 		Expect(err.Error()).To(ContainSubstring("10s"))
 	})
