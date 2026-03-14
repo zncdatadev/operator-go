@@ -58,11 +58,10 @@ var _ = Describe("GetFormat", func() {
 		Expect(ok).To(BeTrue())
 	})
 
-	It("should return PropertiesAdapter for FormatINI (not implemented)", func() {
+	It("should return INIAdapter for FormatINI", func() {
 		format := config.GetFormat(config.FormatINI)
 		Expect(format).NotTo(BeNil())
-		// INI format falls back to Properties
-		_, ok := format.(*config.PropertiesAdapter)
+		_, ok := format.(*config.INIAdapter)
 		Expect(ok).To(BeTrue())
 	})
 })

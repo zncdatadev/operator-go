@@ -169,11 +169,11 @@ var _ = Describe("WebhookManager", func() {
 })
 
 var _ = Describe("NoOpDefaulter", func() {
-	Describe("SetDefaults", func() {
+	Describe("Default", func() {
 		It("should do nothing and return nil", func() {
 			defaulter := webhook.NewNoOpDefaulter[*TestCR]()
 			cr := &TestCR{Name: "test"}
-			err := defaulter.SetDefaults(context.Background(), cr)
+			err := defaulter.Default(context.Background(), cr)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cr.Name).To(Equal("test"))
 		})
@@ -181,7 +181,7 @@ var _ = Describe("NoOpDefaulter", func() {
 })
 
 var _ = Describe("FuncDefaulter", func() {
-	Describe("SetDefaults", func() {
+	Describe("Default", func() {
 		It("should call the wrapped function", func() {
 			called := false
 			defaulter := webhook.NewFuncDefaulter[*TestCR](func(ctx context.Context, cr *TestCR) error {
@@ -189,7 +189,7 @@ var _ = Describe("FuncDefaulter", func() {
 				return nil
 			})
 			cr := &TestCR{}
-			err := defaulter.SetDefaults(context.Background(), cr)
+			err := defaulter.Default(context.Background(), cr)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
@@ -197,25 +197,44 @@ var _ = Describe("FuncDefaulter", func() {
 		It("should return nil when function is nil", func() {
 			defaulter := webhook.NewFuncDefaulter[*TestCR](nil)
 			cr := &TestCR{}
-			err := defaulter.SetDefaults(context.Background(), cr)
+			err := defaulter.Default(context.Background(), cr)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
 
 var _ = Describe("NoOpValidator", func() {
-	Describe("Validate", func() {
+	Describe("ValidateCreate", func() {
 		It("should do nothing and return nil", func() {
 			validator := webhook.NewNoOpValidator[*TestCR]()
 			cr := &TestCR{Value: -1}
-			err := validator.Validate(context.Background(), cr)
+			_, err := validator.ValidateCreate(context.Background(), cr)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateUpdate", func() {
+		It("should do nothing and return nil", func() {
+			validator := webhook.NewNoOpValidator[*TestCR]()
+			old := &TestCR{Value: 1}
+			cr := &TestCR{Value: -1}
+			_, err := validator.ValidateUpdate(context.Background(), old, cr)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateDelete", func() {
+		It("should do nothing and return nil", func() {
+			validator := webhook.NewNoOpValidator[*TestCR]()
+			cr := &TestCR{Value: -1}
+			_, err := validator.ValidateDelete(context.Background(), cr)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
 
 var _ = Describe("FuncValidator", func() {
-	Describe("Validate", func() {
+	Describe("ValidateCreate", func() {
 		It("should call the wrapped function", func() {
 			called := false
 			validator := webhook.NewFuncValidator[*TestCR](func(ctx context.Context, cr *TestCR) error {
@@ -223,7 +242,7 @@ var _ = Describe("FuncValidator", func() {
 				return nil
 			})
 			cr := &TestCR{}
-			err := validator.Validate(context.Background(), cr)
+			_, err := validator.ValidateCreate(context.Background(), cr)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
@@ -231,7 +250,33 @@ var _ = Describe("FuncValidator", func() {
 		It("should return nil when function is nil", func() {
 			validator := webhook.NewFuncValidator[*TestCR](nil)
 			cr := &TestCR{}
-			err := validator.Validate(context.Background(), cr)
+			_, err := validator.ValidateCreate(context.Background(), cr)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateUpdate", func() {
+		It("should call the wrapped function on new CR", func() {
+			var seen *TestCR
+			validator := webhook.NewFuncValidator[*TestCR](func(ctx context.Context, cr *TestCR) error {
+				seen = cr
+				return nil
+			})
+			old := &TestCR{Value: 1}
+			newCR := &TestCR{Value: 2}
+			_, err := validator.ValidateUpdate(context.Background(), old, newCR)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(seen).To(Equal(newCR))
+		})
+	})
+
+	Describe("ValidateDelete", func() {
+		It("should be a no-op", func() {
+			validator := webhook.NewFuncValidator[*TestCR](func(ctx context.Context, cr *TestCR) error {
+				return errors.New("should not be called")
+			})
+			cr := &TestCR{}
+			_, err := validator.ValidateDelete(context.Background(), cr)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
@@ -264,6 +309,72 @@ var _ = Describe("ValidateNonEmptyMap", func() {
 	It("should fail for empty map", func() {
 		m := map[string]string{}
 		err := webhook.ValidateNonEmptyMap(m, "labels")
+		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("DefaulterAdapter", func() {
+	It("should delegate Default to inner ProductDefaulter", func() {
+		called := false
+		inner := webhook.NewFuncDefaulter[*TestRuntimeCR](func(ctx context.Context, cr *TestRuntimeCR) error {
+			called = true
+			cr.Applied = true
+			return nil
+		})
+		adapter := webhook.NewDefaulterAdapter[*TestRuntimeCR](inner)
+		cr := &TestRuntimeCR{}
+		err := adapter.Default(context.Background(), cr)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(called).To(BeTrue())
+		Expect(cr.Applied).To(BeTrue())
+	})
+
+	It("should return error on wrong type", func() {
+		inner := webhook.NewNoOpDefaulter[*TestRuntimeCR]()
+		adapter := webhook.NewDefaulterAdapter[*TestRuntimeCR](inner)
+		// Pass a different runtime.Object
+		err := adapter.Default(context.Background(), &OtherRuntimeCR{})
+		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("ValidatorAdapter", func() {
+	It("should delegate ValidateCreate to inner ProductValidator", func() {
+		inner := webhook.NewFuncValidator[*TestRuntimeCR](func(ctx context.Context, cr *TestRuntimeCR) error {
+			if cr.Name == "bad" {
+				return errors.New("invalid name")
+			}
+			return nil
+		})
+		adapter := webhook.NewValidatorAdapter[*TestRuntimeCR](inner)
+
+		cr := &TestRuntimeCR{Name: "good"}
+		_, err := adapter.ValidateCreate(context.Background(), cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		bad := &TestRuntimeCR{Name: "bad"}
+		_, err = adapter.ValidateCreate(context.Background(), bad)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should delegate ValidateUpdate to inner ProductValidator", func() {
+		inner := webhook.NewFuncValidator[*TestRuntimeCR](func(ctx context.Context, cr *TestRuntimeCR) error {
+			if cr.Name == "invalid" {
+				return errors.New("invalid")
+			}
+			return nil
+		})
+		adapter := webhook.NewValidatorAdapter[*TestRuntimeCR](inner)
+		old := &TestRuntimeCR{Name: "old"}
+		newCR := &TestRuntimeCR{Name: "invalid"}
+		_, err := adapter.ValidateUpdate(context.Background(), old, newCR)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should return error on wrong type in ValidateCreate", func() {
+		inner := webhook.NewNoOpValidator[*TestRuntimeCR]()
+		adapter := webhook.NewValidatorAdapter[*TestRuntimeCR](inner)
+		_, err := adapter.ValidateCreate(context.Background(), &OtherRuntimeCR{})
 		Expect(err).To(HaveOccurred())
 	})
 })

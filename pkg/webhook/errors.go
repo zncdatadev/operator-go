@@ -19,6 +19,10 @@ package webhook
 import (
 	"fmt"
 	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 // ValidationError represents a single field validation failure.
@@ -93,6 +97,32 @@ func (errs ValidationErrors) ToError() error {
 		return nil
 	}
 	return errs
+}
+
+// ToStatusError converts ValidationErrors to a Kubernetes API validation error
+// suitable for returning from webhook ValidateCreate/ValidateUpdate/ValidateDelete.
+// Returns nil if there are no errors.
+//
+// Example:
+//
+//	gvk := schema.GroupVersionKind{Group: "hdfs.kubedoop.dev", Version: "v1alpha1", Kind: "HdfsCluster"}
+//	if err := errs.ToStatusError(gvk, obj.Name); err != nil {
+//	    return nil, err
+//	}
+func (errs ValidationErrors) ToStatusError(gvk schema.GroupVersionKind, name string) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	fieldErrs := make(field.ErrorList, 0, len(errs))
+	for _, e := range errs {
+		fldPath := field.NewPath(e.Field)
+		if e.Value != nil {
+			fieldErrs = append(fieldErrs, field.Invalid(fldPath, e.Value, e.Message))
+		} else {
+			fieldErrs = append(fieldErrs, field.Invalid(fldPath, nil, e.Message))
+		}
+	}
+	return apierrors.NewInvalid(gvk.GroupKind(), name, fieldErrs)
 }
 
 // Merge combines multiple ValidationErrors into one.

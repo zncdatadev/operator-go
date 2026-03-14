@@ -19,6 +19,7 @@ package reconciler_test
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -305,5 +306,30 @@ var _ = Describe("Errors", func() {
 			Expect(errors.As(wrappedErr, &configErr)).To(BeTrue())
 			Expect(configErr.Field).To(Equal("field"))
 		})
+	})
+})
+
+var _ = Describe("RateLimitError", func() {
+	It("should create error with retry duration", func() {
+		err := reconciler.NewRateLimitError(10*time.Second, fmt.Errorf("429 Too Many Requests"))
+		Expect(err).To(HaveOccurred())
+		Expect(err.RetryAfter).To(Equal(10 * time.Second))
+		Expect(err.Error()).To(ContainSubstring("10s"))
+	})
+
+	It("should report IsRateLimitError true", func() {
+		err := reconciler.NewRateLimitError(5*time.Second, nil)
+		Expect(reconciler.IsRateLimitError(err)).To(BeTrue())
+	})
+
+	It("should report IsRateLimitError false for other errors", func() {
+		err := reconciler.NewConfigError("field", "msg")
+		Expect(reconciler.IsRateLimitError(err)).To(BeFalse())
+	})
+
+	It("should unwrap the underlying cause", func() {
+		cause := fmt.Errorf("original")
+		err := reconciler.NewRateLimitError(5*time.Second, cause)
+		Expect(errors.Is(err, cause)).To(BeTrue())
 	})
 })

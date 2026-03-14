@@ -20,32 +20,30 @@ import (
 	"context"
 )
 
-// ProductDefaulter defines the interface for setting default values on CRs.
-// Products implement this interface to provide custom defaulting logic
-// that runs during the MutatingWebhook phase.
+// ProductDefaulter defines the interface for setting default values on a product CR.
+// It mirrors controller-runtime's admission.Defaulter[T] interface, so implementations
+// can be passed directly to ctrl.NewWebhookManagedBy(...).WithDefaulter(...).
 //
 // Usage:
 //
-//	type HdfsClusterDefaulter struct{}
+// type HdfsClusterDefaulter struct{}
 //
-//	func (d *HdfsClusterDefaulter) SetDefaults(ctx context.Context, cr *HdfsCluster) error {
-//	    if cr.Spec.SomeField == "" {
-//	        cr.Spec.SomeField = "default-value"
-//	    }
-//	    return nil
+//	func (d *HdfsClusterDefaulter) Default(ctx context.Context, cr *HdfsCluster) error {
+//	   webhook.DefaultGenericClusterSpec(&cr.Spec.GenericClusterSpec, defaultImage)
+//	   return nil
 //	}
 type ProductDefaulter[CR any] interface {
-	// SetDefaults populates default values for the CR.
-	// This is called by the MutatingWebhook before persistence.
-	SetDefaults(ctx context.Context, cr CR) error
+	// Default sets default values on the CR before it is persisted.
+	// Called by the MutatingWebhook on CREATE and UPDATE operations.
+	Default(ctx context.Context, cr CR) error
 }
 
 // NoOpDefaulter is a defaulter that does nothing.
 // Useful for testing or when no defaulting is needed.
 type NoOpDefaulter[CR any] struct{}
 
-// SetDefaults does nothing and returns nil.
-func (d *NoOpDefaulter[CR]) SetDefaults(_ context.Context, _ CR) error {
+// Default does nothing and returns nil.
+func (d *NoOpDefaulter[CR]) Default(_ context.Context, _ CR) error {
 	return nil
 }
 
@@ -64,8 +62,8 @@ func NewFuncDefaulter[CR any](fn func(ctx context.Context, cr CR) error) *FuncDe
 	return &FuncDefaulter[CR]{fn: fn}
 }
 
-// SetDefaults calls the wrapped function.
-func (d *FuncDefaulter[CR]) SetDefaults(ctx context.Context, cr CR) error {
+// Default calls the wrapped function.
+func (d *FuncDefaulter[CR]) Default(ctx context.Context, cr CR) error {
 	if d.fn == nil {
 		return nil
 	}

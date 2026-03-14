@@ -1170,6 +1170,6 @@ var _ = Describe("GenericReconciler cleanupRoleGroup errors", func() {
 		cancel()
 
 		// Cleanup - may or may not error depending on timing
-		_ = cleaner.Cleanup(canceledCtx, namespace, "cleanup-error", spec, status)
+		_ = cleaner.Cleanup(canceledCtx, namespace, "cleanup-error", spec, status, "", nil)
 	})
 })

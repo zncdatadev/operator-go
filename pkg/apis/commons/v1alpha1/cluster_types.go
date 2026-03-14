@@ -23,6 +23,12 @@ import (
 // GenericClusterSpec defines the common cluster configuration for all product operators.
 // Product-specific specs should embed this struct to inherit common functionality.
 type GenericClusterSpec struct {
+	// Image specifies the container image configuration for the product workload.
+	// If not set, the product operator webhook should provide defaults.
+	// When Custom is set, it takes precedence over Repo/ProductVersion/KubedoopVersion.
+	// +kubebuilder:validation:Optional
+	Image *ImageSpec `json:"image,omitempty"`
+
 	// ClusterOperation controls operator behavior at runtime.
 	// Allows pausing reconciliation or stopping the cluster gracefully.
 	// +kubebuilder:validation:Optional

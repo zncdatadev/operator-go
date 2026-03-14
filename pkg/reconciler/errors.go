@@ -17,7 +17,9 @@ limitations under the License.
 package reconciler
 
 import (
+	stderrors "errors"
 	"fmt"
+	"time"
 )
 
 // ConfigError represents a configuration-related error.
@@ -160,4 +162,35 @@ func IsResourceBuildError(err error) bool {
 func IsResourceApplyError(err error) bool {
 	_, ok := err.(*ResourceApplyError)
 	return ok
+}
+
+// RateLimitError represents a 429 Too Many Requests error from the Kubernetes API.
+// The caller should back off for RetryAfter before retrying.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Cause      error
+}
+
+// Error implements error.
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("rate limited by Kubernetes API, retry after %s: %v", e.RetryAfter, e.Cause)
+}
+
+// Unwrap returns the underlying error.
+func (e *RateLimitError) Unwrap() error {
+	return e.Cause
+}
+
+// NewRateLimitError creates a new RateLimitError.
+func NewRateLimitError(retryAfter time.Duration, cause error) *RateLimitError {
+	return &RateLimitError{
+		RetryAfter: retryAfter,
+		Cause:      cause,
+	}
+}
+
+// IsRateLimitError checks if an error is or wraps a RateLimitError.
+func IsRateLimitError(err error) bool {
+	var rateLimitErr *RateLimitError
+	return stderrors.As(err, &rateLimitErr)
 }
