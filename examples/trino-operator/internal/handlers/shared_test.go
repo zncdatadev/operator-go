@@ -374,8 +374,38 @@ var _ = Describe("Shared Handlers", func() {
 		})
 	})
 
+	Context("GetCoordinatorServiceName", func() {
+		It("Should fall back to {name}-coordinator when no role groups defined", func() {
+			cr := &trinov1alpha1.TrinoCluster{
+				Spec: trinov1alpha1.TrinoClusterSpec{},
+			}
+			cr.Name = "my-trino-cluster"
+
+			name := GetCoordinatorServiceName(cr)
+			Expect(name).To(Equal("my-trino-cluster-coordinator"))
+		})
+
+		It("Should return {name}-{groupName} when coordinator role group is defined", func() {
+			cr := &trinov1alpha1.TrinoCluster{
+				Spec: trinov1alpha1.TrinoClusterSpec{
+					Coordinators: &trinov1alpha1.CoordinatorsSpec{
+						RoleSpec: v1alpha1.RoleSpec{
+							RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+								"default": {},
+							},
+						},
+					},
+				},
+			}
+			cr.Name = "my-trino-cluster"
+
+			name := GetCoordinatorServiceName(cr)
+			Expect(name).To(Equal("my-trino-cluster-default"))
+		})
+	})
+
 	Context("GetDiscoveryURI", func() {
-		It("Should return correct discovery URI format", func() {
+		It("Should fall back to {name}-coordinator format when no role groups defined", func() {
 			cr := &trinov1alpha1.TrinoCluster{
 				Spec: trinov1alpha1.TrinoClusterSpec{},
 			}
@@ -383,6 +413,24 @@ var _ = Describe("Shared Handlers", func() {
 
 			uri := GetDiscoveryURI(cr, 8080)
 			Expect(uri).To(Equal("http://my-trino-cluster-coordinator:8080"))
+		})
+
+		It("Should use actual coordinator service name when role group is defined", func() {
+			cr := &trinov1alpha1.TrinoCluster{
+				Spec: trinov1alpha1.TrinoClusterSpec{
+					Coordinators: &trinov1alpha1.CoordinatorsSpec{
+						RoleSpec: v1alpha1.RoleSpec{
+							RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+								"default": {},
+							},
+						},
+					},
+				},
+			}
+			cr.Name = "test-cluster"
+
+			uri := GetDiscoveryURI(cr, 9090)
+			Expect(uri).To(Equal("http://test-cluster-default:9090"))
 		})
 
 		It("Should include custom port in URI", func() {
