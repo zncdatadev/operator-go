@@ -23,9 +23,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
-
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -39,22 +36,21 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 	)
 
 	BeforeEach(func() {
-		handler = NewTrinoRoleGroupHandler(constants.DefaultImage)
+		handler = NewTrinoRoleGroupHandler()
 		ctx = context.Background()
 	})
 
 	Describe("NewTrinoRoleGroupHandler", func() {
 		It("should create a new handler successfully", func() {
-			handler := NewTrinoRoleGroupHandler(constants.DefaultImage)
+			handler := NewTrinoRoleGroupHandler()
 			Expect(handler).NotTo(BeNil())
 			Expect(handler.coordinatorsHandler).NotTo(BeNil())
 			Expect(handler.workersHandler).NotTo(BeNil())
-			Expect(handler.defaultImage).To(Equal(constants.DefaultImage))
 		})
 
 		It("should return a new instance each time", func() {
-			handler1 := NewTrinoRoleGroupHandler(constants.DefaultImage)
-			handler2 := NewTrinoRoleGroupHandler(constants.DefaultImage)
+			handler1 := NewTrinoRoleGroupHandler()
+			handler2 := NewTrinoRoleGroupHandler()
 			Expect(handler1).NotTo(BeIdenticalTo(handler2))
 		})
 	})
@@ -168,123 +164,11 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 		)
 	})
 
-	Describe("GetContainerImage", func() {
-		DescribeTable("should return the injected default image for any role",
-			func(roleName string) {
-				image := handler.GetContainerImage(roleName)
-				Expect(image).To(Equal(constants.DefaultImage))
-			},
-			Entry("coordinators role", RoleCoordinators),
-			Entry("workers role", RoleWorkers),
-			Entry("empty role", ""),
-			Entry("unknown role", "unknown"),
-			Entry("random role", "random-role"),
-		)
-
-		It("should return the expected image constant", func() {
-			image := handler.GetContainerImage(RoleCoordinators)
-			Expect(image).To(Equal(constants.DefaultImage))
-		})
-	})
-
-	Describe("GetContainerPorts", func() {
-		DescribeTable("should return correct ports for known roles",
-			func(roleName string, expectedLen int, expectNil bool) {
-				ports := handler.GetContainerPorts(roleName, "default")
-
-				if expectNil {
-					Expect(ports).To(BeNil())
-				} else {
-					Expect(ports).NotTo(BeNil())
-					Expect(ports).To(HaveLen(expectedLen))
-					Expect(ports[0].Name).To(Equal("http"))
-					Expect(ports[0].ContainerPort).To(Equal(constants.DefaultHTTPPort))
-					Expect(ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-				}
-			},
-			Entry("coordinators role", RoleCoordinators, 1, false),
-			Entry("workers role", RoleWorkers, 1, false),
-			Entry("unknown role returns nil", "unknown", 0, true),
-			Entry("empty role returns nil", "", 0, true),
-		)
-
-		It("should return port 8080 for coordinators", func() {
-			ports := handler.GetContainerPorts(RoleCoordinators, "default")
-			Expect(ports).To(HaveLen(1))
-			Expect(ports[0].ContainerPort).To(Equal(int32(8080)))
-		})
-
-		It("should return port 8080 for workers", func() {
-			ports := handler.GetContainerPorts(RoleWorkers, "default")
-			Expect(ports).To(HaveLen(1))
-			Expect(ports[0].ContainerPort).To(Equal(int32(8080)))
-		})
-
-		It("should return the same ports for coordinators and workers", func() {
-			coordinatorPorts := handler.GetContainerPorts(RoleCoordinators, "default")
-			workerPorts := handler.GetContainerPorts(RoleWorkers, "default")
-
-			Expect(coordinatorPorts).To(HaveLen(len(workerPorts)))
-			Expect(coordinatorPorts[0].ContainerPort).To(Equal(workerPorts[0].ContainerPort))
-			Expect(coordinatorPorts[0].Name).To(Equal(workerPorts[0].Name))
-		})
-	})
-
-	Describe("GetServicePorts", func() {
-		DescribeTable("should return correct service ports for known roles",
-			func(roleName string, expectedLen int, expectNil bool) {
-				ports := handler.GetServicePorts(roleName, "default")
-
-				if expectNil {
-					Expect(ports).To(BeNil())
-				} else {
-					Expect(ports).NotTo(BeNil())
-					Expect(ports).To(HaveLen(expectedLen))
-					Expect(ports[0].Name).To(Equal("http"))
-					Expect(ports[0].Port).To(Equal(constants.DefaultHTTPPort))
-					Expect(ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-					Expect(ports[0].TargetPort).To(Equal(intstr.FromInt(int(constants.DefaultHTTPPort))))
-				}
-			},
-			Entry("coordinators role", RoleCoordinators, 1, false),
-			Entry("workers role", RoleWorkers, 1, false),
-			Entry("unknown role returns nil", "unknown", 0, true),
-			Entry("empty role returns nil", "", 0, true),
-		)
-
-		It("should return port 8080 for coordinators", func() {
-			ports := handler.GetServicePorts(RoleCoordinators, "default")
-			Expect(ports).To(HaveLen(1))
-			Expect(ports[0].Port).To(Equal(int32(8080)))
-		})
-
-		It("should return port 8080 for workers", func() {
-			ports := handler.GetServicePorts(RoleWorkers, "default")
-			Expect(ports).To(HaveLen(1))
-			Expect(ports[0].Port).To(Equal(int32(8080)))
-		})
-
-		It("should have correct TargetPort using intstr", func() {
-			ports := handler.GetServicePorts(RoleCoordinators, "default")
-			Expect(ports).To(HaveLen(1))
-			Expect(ports[0].TargetPort).To(Equal(intstr.FromInt(8080)))
-		})
-
-		It("should return the same service ports for coordinators and workers", func() {
-			coordinatorPorts := handler.GetServicePorts(RoleCoordinators, "default")
-			workerPorts := handler.GetServicePorts(RoleWorkers, "default")
-
-			Expect(coordinatorPorts).To(HaveLen(len(workerPorts)))
-			Expect(coordinatorPorts[0].Port).To(Equal(workerPorts[0].Port))
-			Expect(coordinatorPorts[0].Name).To(Equal(workerPorts[0].Name))
-			Expect(coordinatorPorts[0].TargetPort).To(Equal(workerPorts[0].TargetPort))
-		})
-	})
 })
 
 var _ = Describe("TrinoRoleGroupHandler Interface Compliance", func() {
 	It("should implement the RoleGroupHandler interface", func() {
-		handler := NewTrinoRoleGroupHandler(constants.DefaultImage)
+		handler := NewTrinoRoleGroupHandler()
 
 		// This test verifies compile-time interface compliance
 		// If the handler doesn't implement the interface, this won't compile
@@ -313,7 +197,7 @@ var _ = Describe("TrinoRoleGroupHandler Error Handling", func() {
 	)
 
 	BeforeEach(func() {
-		handler = NewTrinoRoleGroupHandler(constants.DefaultImage)
+		handler = NewTrinoRoleGroupHandler()
 		buildCtx = &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-trino",
 			ClusterNamespace: "default",

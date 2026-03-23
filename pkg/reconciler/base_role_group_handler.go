@@ -128,9 +128,9 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	resources.HeadlessService = headlessSvc
 
 	// Build Service (if ports are defined)
-	servicePorts := h.GetServicePorts(buildCtx.RoleName, buildCtx.RoleGroupName)
-	if len(servicePorts) > 0 {
-		resources.Service = h.buildService(buildCtx, labels, servicePorts)
+	svcPorts := h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName)
+	if len(svcPorts) > 0 {
+		resources.Service = h.buildService(buildCtx, labels, svcPorts)
 	}
 
 	// Build StatefulSet
@@ -154,24 +154,24 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	return resources, nil
 }
 
-// GetContainerImage returns the container image for a role.
-func (h *BaseRoleGroupHandler[CR]) GetContainerImage(roleName string) string {
+// containerImage returns the container image for a role.
+func (h *BaseRoleGroupHandler[CR]) containerImage(roleName string) string {
 	if image, ok := h.RoleImages[roleName]; ok {
 		return image
 	}
 	return h.Image
 }
 
-// GetContainerPorts returns the container ports for a role group.
-func (h *BaseRoleGroupHandler[CR]) GetContainerPorts(roleName, _ string) []corev1.ContainerPort {
+// containerPorts returns the container ports for a role group.
+func (h *BaseRoleGroupHandler[CR]) containerPorts(roleName, _ string) []corev1.ContainerPort {
 	if ports, ok := h.RoleContainerPorts[roleName]; ok {
 		return ports
 	}
 	return nil
 }
 
-// GetServicePorts returns the service ports for a role group.
-func (h *BaseRoleGroupHandler[CR]) GetServicePorts(roleName, _ string) []corev1.ServicePort {
+// servicePorts returns the service ports for a role group.
+func (h *BaseRoleGroupHandler[CR]) servicePorts(roleName, _ string) []corev1.ServicePort {
 	if ports, ok := h.RoleServicePorts[roleName]; ok {
 		return ports
 	}
@@ -269,7 +269,7 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 		Spec: corev1.ServiceSpec{
 			ClusterIP: corev1.ClusterIPNone,
 			Selector:  labels,
-			Ports:     h.GetServicePorts(buildCtx.RoleName, buildCtx.RoleGroupName),
+			Ports:     h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName),
 		},
 	}
 }
@@ -305,9 +305,9 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	stsBuilder.WithLabels(labels).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithReplicas(buildCtx.RoleGroupSpec.GetReplicas()).
-		WithImage(h.GetContainerImage(buildCtx.RoleName), h.ImagePullPolicy).
+		WithImage(h.containerImage(buildCtx.RoleName), h.ImagePullPolicy).
 		WithConfig(buildCtx.MergedConfig).
-		WithPorts(h.GetContainerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))
+		WithPorts(h.containerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))
 
 	// Set resources if configured
 	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
@@ -429,4 +429,4 @@ func (h *BaseRoleGroupHandler[CR]) FetchSecret(ctx context.Context, k8sClient cl
 }
 
 // Verify that BaseRoleGroupHandler implements RoleGroupHandler.
-var _ RoleGroupHandler[common.ClusterInterface] = &BaseRoleGroupHandler[common.ClusterInterface]{}
+var _ RoleGroupHandler[common.ClusterInterface] = (*BaseRoleGroupHandler[common.ClusterInterface])(nil)

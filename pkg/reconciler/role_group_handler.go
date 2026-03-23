@@ -86,6 +86,10 @@ type RoleGroupBuildContext struct {
 //
 // The GenericReconciler handles the "when" and "how to apply" resources,
 // while the RoleGroupHandler handles the "what" - the product-specific resource definitions.
+//
+// Implementations can embed BaseRoleGroupHandler to get default behaviour for
+// common resources (ConfigMap, Services, StatefulSet, PDB). Override BuildResources
+// or individual build steps as needed for product-specific logic.
 type RoleGroupHandler[CR common.ClusterInterface] interface {
 	// BuildResources builds all Kubernetes resources for a role group.
 	// The GenericReconciler will apply these resources in the correct order.
@@ -99,18 +103,6 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 	//
 	// Returns RoleGroupResources containing all built resources, or an error.
 	BuildResources(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *RoleGroupBuildContext) (*RoleGroupResources, error)
-
-	// GetContainerImage returns the container image for a given role.
-	// This allows different roles to use different images.
-	GetContainerImage(roleName string) string
-
-	// GetContainerPorts returns the container ports for a role group.
-	// These ports are used for the main container in the StatefulSet.
-	GetContainerPorts(roleName, roleGroupName string) []corev1.ContainerPort
-
-	// GetServicePorts returns the service ports for a role group.
-	// These ports are exposed by the Service (if one is created).
-	GetServicePorts(roleName, roleGroupName string) []corev1.ServicePort
 }
 
 // RoleGroupHandlerFuncs is an adapter to allow using functions as RoleGroupHandler.
@@ -118,15 +110,6 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 type RoleGroupHandlerFuncs[CR common.ClusterInterface] struct {
 	// BuildResourcesFunc is the function for building resources.
 	BuildResourcesFunc func(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *RoleGroupBuildContext) (*RoleGroupResources, error)
-
-	// GetContainerImageFunc is the function for getting container images.
-	GetContainerImageFunc func(roleName string) string
-
-	// GetContainerPortsFunc is the function for getting container ports.
-	GetContainerPortsFunc func(roleName, roleGroupName string) []corev1.ContainerPort
-
-	// GetServicePortsFunc is the function for getting service ports.
-	GetServicePortsFunc func(roleName, roleGroupName string) []corev1.ServicePort
 }
 
 // BuildResources implements RoleGroupHandler.
@@ -135,30 +118,6 @@ func (f *RoleGroupHandlerFuncs[CR]) BuildResources(ctx context.Context, k8sClien
 		return &RoleGroupResources{}, nil
 	}
 	return f.BuildResourcesFunc(ctx, k8sClient, cr, buildCtx)
-}
-
-// GetContainerImage implements RoleGroupHandler.
-func (f *RoleGroupHandlerFuncs[CR]) GetContainerImage(roleName string) string {
-	if f.GetContainerImageFunc == nil {
-		return ""
-	}
-	return f.GetContainerImageFunc(roleName)
-}
-
-// GetContainerPorts implements RoleGroupHandler.
-func (f *RoleGroupHandlerFuncs[CR]) GetContainerPorts(roleName, roleGroupName string) []corev1.ContainerPort {
-	if f.GetContainerPortsFunc == nil {
-		return nil
-	}
-	return f.GetContainerPortsFunc(roleName, roleGroupName)
-}
-
-// GetServicePorts implements RoleGroupHandler.
-func (f *RoleGroupHandlerFuncs[CR]) GetServicePorts(roleName, roleGroupName string) []corev1.ServicePort {
-	if f.GetServicePortsFunc == nil {
-		return nil
-	}
-	return f.GetServicePortsFunc(roleName, roleGroupName)
 }
 
 // Verify that RoleGroupHandlerFuncs implements RoleGroupHandler.
