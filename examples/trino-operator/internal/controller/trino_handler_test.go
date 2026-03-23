@@ -39,21 +39,22 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 	)
 
 	BeforeEach(func() {
-		handler = NewTrinoRoleGroupHandler()
+		handler = NewTrinoRoleGroupHandler(constants.DefaultImage)
 		ctx = context.Background()
 	})
 
 	Describe("NewTrinoRoleGroupHandler", func() {
 		It("should create a new handler successfully", func() {
-			handler := NewTrinoRoleGroupHandler()
+			handler := NewTrinoRoleGroupHandler(constants.DefaultImage)
 			Expect(handler).NotTo(BeNil())
 			Expect(handler.coordinatorsHandler).NotTo(BeNil())
 			Expect(handler.workersHandler).NotTo(BeNil())
+			Expect(handler.defaultImage).To(Equal(constants.DefaultImage))
 		})
 
 		It("should return a new instance each time", func() {
-			handler1 := NewTrinoRoleGroupHandler()
-			handler2 := NewTrinoRoleGroupHandler()
+			handler1 := NewTrinoRoleGroupHandler(constants.DefaultImage)
+			handler2 := NewTrinoRoleGroupHandler(constants.DefaultImage)
 			Expect(handler1).NotTo(BeIdenticalTo(handler2))
 		})
 	})
@@ -168,10 +169,10 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 	})
 
 	Describe("GetContainerImage", func() {
-		DescribeTable("should return trinodb/trino:435 for any role",
+		DescribeTable("should return the injected default image for any role",
 			func(roleName string) {
 				image := handler.GetContainerImage(roleName)
-				Expect(image).To(Equal("trinodb/trino:435"))
+				Expect(image).To(Equal(constants.DefaultImage))
 			},
 			Entry("coordinators role", RoleCoordinators),
 			Entry("workers role", RoleWorkers),
@@ -283,7 +284,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 
 var _ = Describe("TrinoRoleGroupHandler Interface Compliance", func() {
 	It("should implement the RoleGroupHandler interface", func() {
-		handler := NewTrinoRoleGroupHandler()
+		handler := NewTrinoRoleGroupHandler(constants.DefaultImage)
 
 		// This test verifies compile-time interface compliance
 		// If the handler doesn't implement the interface, this won't compile
@@ -312,7 +313,7 @@ var _ = Describe("TrinoRoleGroupHandler Error Handling", func() {
 	)
 
 	BeforeEach(func() {
-		handler = NewTrinoRoleGroupHandler()
+		handler = NewTrinoRoleGroupHandler(constants.DefaultImage)
 		buildCtx = &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-trino",
 			ClusterNamespace: "default",
