@@ -36,7 +36,14 @@ const (
 )
 
 // TrinoRoleGroupHandler implements the operator-go RoleGroupHandler interface
-// This is the key to using operator-go SDK: delegate product-specific resource building logic through this interface
+// This is the key to using operator-go SDK: delegate product-specific resource building logic through this interface.
+//
+// Note: GetContainerImage, GetContainerPorts, and GetServicePorts are required by the RoleGroupHandler
+// interface because BaseRoleGroupHandler uses them internally when building StatefulSets and Services.
+// This handler builds resources directly in CoordinatorsHandler/WorkersHandler without delegating to
+// BaseRoleGroupHandler, so those methods are not invoked by the SDK reconciliation loop here.
+// They are retained for interface compliance and would be used if this handler were refactored to
+// extend BaseRoleGroupHandler.
 type TrinoRoleGroupHandler struct {
 	coordinatorsHandler *handlers.CoordinatorsHandler
 	workersHandler      *handlers.WorkersHandler
