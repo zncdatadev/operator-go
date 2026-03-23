@@ -429,4 +429,4 @@ func (h *BaseRoleGroupHandler[CR]) FetchSecret(ctx context.Context, k8sClient cl
 }
 
 // Verify that BaseRoleGroupHandler implements RoleGroupHandler.
-var _ RoleGroupHandler[common.ClusterInterface] = (*BaseRoleGroupHandler[common.ClusterInterface])(nil)
+var _ RoleGroupHandler[common.ClusterInterface] = &BaseRoleGroupHandler[common.ClusterInterface]{}
