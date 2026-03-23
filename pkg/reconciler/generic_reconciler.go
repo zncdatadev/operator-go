@@ -256,8 +256,10 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 // fetchCR fetches the cluster resource by name.
 func (r *GenericReconciler[CR]) fetchCR(ctx context.Context, key types.NamespacedName) (CR, error) {
 	var zero CR
-	// Create a new instance of the CR type by deep copying the prototype
-	cr := zero.DeepCopyCluster().(CR)
+	// Create a new instance of the CR type by deep copying the prototype.
+	// Using r.prototype instead of a zero value prevents a nil pointer panic
+	// when CR is a pointer type (e.g. *TrinoCluster), where var zero CR yields nil.
+	cr := r.prototype.DeepCopyCluster().(CR)
 
 	// Get the client.Object for the fetch
 	obj := r.getAsClientObject(cr)
