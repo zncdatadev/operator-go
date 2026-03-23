@@ -53,7 +53,7 @@ func (b *TrinoConfigBuilder) ForCoordinator(cluster *trinov1alpha1.TrinoCluster,
 	b.properties["node-scheduler.include-coordinator"] = "false"
 	b.properties["http-server.http.port"] = fmt.Sprintf("%d", port)
 	b.properties["discovery-server.enabled"] = "true"
-	b.properties["discovery.uri"] = fmt.Sprintf("http://%s-coordinator:%d", cluster.Name, port)
+	b.properties["discovery.uri"] = fmt.Sprintf("http://%s:%d", coordinatorServiceName(cluster), port)
 
 	return b
 }
@@ -68,9 +68,20 @@ func (b *TrinoConfigBuilder) ForWorker(cluster *trinov1alpha1.TrinoCluster, buil
 	// Worker-specific configuration
 	b.properties["coordinator"] = "false"
 	b.properties["http-server.http.port"] = fmt.Sprintf("%d", coordinatorPort)
-	b.properties["discovery.uri"] = fmt.Sprintf("http://%s-coordinator:%d", cluster.Name, coordinatorPort)
+	b.properties["discovery.uri"] = fmt.Sprintf("http://%s:%d", coordinatorServiceName(cluster), coordinatorPort)
 
 	return b
+}
+
+// coordinatorServiceName returns the client-facing Service name for the coordinator.
+// The SDK names resources as {clusterName}-{groupName}.
+func coordinatorServiceName(cr *trinov1alpha1.TrinoCluster) string {
+	if cr.Spec.Coordinators != nil {
+		for groupName := range cr.Spec.Coordinators.RoleGroups {
+			return fmt.Sprintf("%s-%s", cr.Name, groupName)
+		}
+	}
+	return fmt.Sprintf("%s-coordinator", cr.Name)
 }
 
 // WithProperty adds a custom property

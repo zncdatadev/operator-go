@@ -145,9 +145,22 @@ func GetWorkerPort(cr *trinov1alpha1.TrinoCluster) int32 {
 	return constants.DefaultHTTPPort
 }
 
-// GetDiscoveryURI returns the discovery URI for the coordinator
+// GetCoordinatorServiceName returns the client-facing Service name for the coordinator.
+// The SDK names resources as {clusterName}-{groupName}, so we derive the name from
+// the first coordinator role group defined in the spec.
+func GetCoordinatorServiceName(cr *trinov1alpha1.TrinoCluster) string {
+	if cr.Spec.Coordinators != nil {
+		for groupName := range cr.Spec.Coordinators.RoleGroups {
+			return fmt.Sprintf("%s-%s", cr.Name, groupName)
+		}
+	}
+	return fmt.Sprintf("%s-coordinator", cr.Name)
+}
+
+// GetDiscoveryURI returns the discovery URI for the coordinator.
+// It uses the actual coordinator Service name derived from the spec.
 func GetDiscoveryURI(cr *trinov1alpha1.TrinoCluster, port int32) string {
-	return fmt.Sprintf("http://%s-coordinator:%d", cr.Name, port)
+	return fmt.Sprintf("http://%s:%d", GetCoordinatorServiceName(cr), port)
 }
 
 // GetReplicas returns the replicas from RoleGroupSpec or default value
