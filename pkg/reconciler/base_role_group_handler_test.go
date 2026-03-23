@@ -87,57 +87,6 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 	})
 
-	Describe("GetContainerImage", func() {
-		It("should return default image when role not in RoleImages", func() {
-			image := handler.GetContainerImage("unknown-role")
-			Expect(image).To(Equal("test-image:latest"))
-		})
-
-		It("should return role-specific image when set", func() {
-			handler.SetRoleImage("namenode", "hadoop-namenode:v1")
-			image := handler.GetContainerImage("namenode")
-			Expect(image).To(Equal("hadoop-namenode:v1"))
-		})
-
-		It("should return default image for other roles after setting one", func() {
-			handler.SetRoleImage("namenode", "hadoop-namenode:v1")
-			image := handler.GetContainerImage("datanode")
-			Expect(image).To(Equal("test-image:latest"))
-		})
-	})
-
-	Describe("GetContainerPorts", func() {
-		It("should return nil when role not in RoleContainerPorts", func() {
-			ports := handler.GetContainerPorts("unknown-role", "default")
-			Expect(ports).To(BeNil())
-		})
-
-		It("should return ports when set", func() {
-			expectedPorts := []corev1.ContainerPort{
-				{Name: "http", ContainerPort: 8080},
-			}
-			handler.SetRoleContainerPorts("web", expectedPorts)
-			ports := handler.GetContainerPorts("web", "default")
-			Expect(ports).To(Equal(expectedPorts))
-		})
-	})
-
-	Describe("GetServicePorts", func() {
-		It("should return nil when role not in RoleServicePorts", func() {
-			ports := handler.GetServicePorts("unknown-role", "default")
-			Expect(ports).To(BeNil())
-		})
-
-		It("should return ports when set", func() {
-			expectedPorts := []corev1.ServicePort{
-				{Name: "http", Port: 80, TargetPort: intstr.FromInt(8080)},
-			}
-			handler.SetRoleServicePorts("web", expectedPorts)
-			ports := handler.GetServicePorts("web", "default")
-			Expect(ports).To(Equal(expectedPorts))
-		})
-	})
-
 	Describe("SetRoleImage", func() {
 		It("should set image for a role", func() {
 			handler.SetRoleImage("test-role", "custom-image:v2")
@@ -415,56 +364,6 @@ var _ = Describe("RoleGroupHandlerFuncs", func() {
 
 			_, _ = funcs.BuildResources(context.Background(), nil, nil, nil)
 			Expect(called).To(BeTrue())
-		})
-	})
-
-	Describe("GetContainerImage", func() {
-		It("should return empty string when function is nil", func() {
-			image := funcs.GetContainerImage("test-role")
-			Expect(image).To(BeEmpty())
-		})
-
-		It("should call the function when set", func() {
-			funcs.GetContainerImageFunc = func(roleName string) string {
-				return "custom-image:v1"
-			}
-
-			image := funcs.GetContainerImage("test-role")
-			Expect(image).To(Equal("custom-image:v1"))
-		})
-	})
-
-	Describe("GetContainerPorts", func() {
-		It("should return nil when function is nil", func() {
-			ports := funcs.GetContainerPorts("test-role", "default")
-			Expect(ports).To(BeNil())
-		})
-
-		It("should call the function when set", func() {
-			expectedPorts := []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}
-			funcs.GetContainerPortsFunc = func(roleName, roleGroupName string) []corev1.ContainerPort {
-				return expectedPorts
-			}
-
-			ports := funcs.GetContainerPorts("test-role", "default")
-			Expect(ports).To(Equal(expectedPorts))
-		})
-	})
-
-	Describe("GetServicePorts", func() {
-		It("should return nil when function is nil", func() {
-			ports := funcs.GetServicePorts("test-role", "default")
-			Expect(ports).To(BeNil())
-		})
-
-		It("should call the function when set", func() {
-			expectedPorts := []corev1.ServicePort{{Name: "http", Port: 80}}
-			funcs.GetServicePortsFunc = func(roleName, roleGroupName string) []corev1.ServicePort {
-				return expectedPorts
-			}
-
-			ports := funcs.GetServicePorts("test-role", "default")
-			Expect(ports).To(Equal(expectedPorts))
 		})
 	})
 

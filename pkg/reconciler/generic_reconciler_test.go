@@ -492,27 +492,6 @@ func (a *handlerAdapter) BuildResources(ctx context.Context, k8sClient client.Cl
 	return a.handler.BuildResources(ctx, k8sClient, cr, buildCtx)
 }
 
-// GetContainerImage implements reconciler.RoleGroupHandler
-func (a *handlerAdapter) GetContainerImage(roleName string) string {
-	return a.handler.Image
-}
-
-// GetContainerPorts implements reconciler.RoleGroupHandler
-func (a *handlerAdapter) GetContainerPorts(roleName, roleGroupName string) []corev1.ContainerPort {
-	if ports, ok := a.handler.ContainerPorts[roleName]; ok {
-		return ports
-	}
-	return nil
-}
-
-// GetServicePorts implements reconciler.RoleGroupHandler
-func (a *handlerAdapter) GetServicePorts(roleName, roleGroupName string) []corev1.ServicePort {
-	if ports, ok := a.handler.ServicePorts[roleName]; ok {
-		return ports
-	}
-	return nil
-}
-
 // Verify interface implementations
 var _ common.ClusterInterface = &testutil.ClusterWrapper{}
 var _ reconciler.RoleGroupHandler[*testutil.ClusterWrapper] = &handlerAdapter{}
