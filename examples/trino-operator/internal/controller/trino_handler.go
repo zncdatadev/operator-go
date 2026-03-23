@@ -40,13 +40,19 @@ const (
 type TrinoRoleGroupHandler struct {
 	coordinatorsHandler *handlers.CoordinatorsHandler
 	workersHandler      *handlers.WorkersHandler
+	defaultImage        string
 }
 
-// NewTrinoRoleGroupHandler creates a new Handler
-func NewTrinoRoleGroupHandler() *TrinoRoleGroupHandler {
+// NewTrinoRoleGroupHandler creates a new Handler.
+// defaultImage is returned by GetContainerImage and should match the CRD default
+// (i.e. constants.DefaultImage). At runtime the actual image comes from cr.Spec.Image
+// which is applied directly inside BuildStatefulSet, so this value acts as a
+// consistent fallback for any caller that queries the handler before reconciling.
+func NewTrinoRoleGroupHandler(defaultImage string) *TrinoRoleGroupHandler {
 	return &TrinoRoleGroupHandler{
 		coordinatorsHandler: handlers.NewCoordinatorsHandler(),
 		workersHandler:      handlers.NewWorkersHandler(),
+		defaultImage:        defaultImage,
 	}
 }
 
@@ -69,9 +75,11 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 	}
 }
 
-// GetContainerImage returns the container image
+// GetContainerImage returns the default container image for the given role.
+// The actual image used at runtime is taken from cr.Spec.Image inside BuildResources;
+// this method provides a consistent fallback for callers such as BaseRoleGroupHandler.
 func (h *TrinoRoleGroupHandler) GetContainerImage(roleName string) string {
-	return "trinodb/trino:435"
+	return h.defaultImage
 }
 
 // GetContainerPorts returns the container ports
