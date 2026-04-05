@@ -20,6 +20,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // ClusterInterface defines cluster-level operations that all product CRs must implement.
@@ -32,7 +33,7 @@ type ClusterInterface interface {
 	GetNamespace() string
 
 	// GetUID returns the cluster UID (from ObjectMeta.UID).
-	GetUID() string
+	GetUID() types.UID
 
 	// GetLabels returns the cluster labels (from ObjectMeta.Labels).
 	GetLabels() map[string]string
@@ -82,8 +83,8 @@ func (c *ClusterObject) GetNamespace() string {
 }
 
 // GetUID returns the cluster UID.
-func (c *ClusterObject) GetUID() string {
-	return string(c.UID)
+func (c *ClusterObject) GetUID() types.UID {
+	return c.UID
 }
 
 // GetLabels returns the cluster labels.
