@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -134,9 +135,9 @@ func (w *ClusterWrapper) GetObjectMeta() *metav1.ObjectMeta {
 	return &w.ObjectMeta
 }
 
-// GetUID returns the UID as string for common.ClusterInterface compatibility.
-func (w *ClusterWrapper) GetUID() string {
-	return string(w.UID)
+// GetUID returns the UID for common.ClusterInterface compatibility.
+func (w *ClusterWrapper) GetUID() types.UID {
+	return w.UID
 }
 
 // GetName implements common.ClusterInterface.

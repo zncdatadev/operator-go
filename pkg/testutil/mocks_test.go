@@ -164,7 +164,7 @@ var _ = Describe("Mocks", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
 			cluster.UID = types.UID("test-uid")
 			wrapper := testutil.WrapMockCluster(cluster)
-			Expect(wrapper.GetUID()).To(Equal("test-uid"))
+			Expect(wrapper.GetUID()).To(Equal(types.UID("test-uid")))
 		})
 
 		It("should implement GetName", func() {

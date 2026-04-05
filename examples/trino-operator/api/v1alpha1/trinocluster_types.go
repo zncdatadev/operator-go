@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
@@ -174,9 +175,9 @@ func (t *TrinoCluster) GetScheme() *runtime.Scheme {
 	return nil // Scheme is set by the manager
 }
 
-// GetUID returns the cluster UID as string
-func (t *TrinoCluster) GetUID() string {
-	return string(t.UID)
+// GetUID returns the cluster UID
+func (t *TrinoCluster) GetUID() types.UID {
+	return t.UID
 }
 
 func init() {
