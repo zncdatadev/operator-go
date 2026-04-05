@@ -77,7 +77,7 @@ type HdfsCluster struct {
 
 func (h *HdfsCluster) GetName() string      { return h.Name }
 func (h *HdfsCluster) GetNamespace() string { return h.Namespace }
-func (h *HdfsCluster) GetUID() types.UID      { return h.UID }
+func (h *HdfsCluster) GetUID() types.UID    { return h.UID }
 func (h *HdfsCluster) GetLabels() map[string]string {
 	if h.Labels == nil {
 		return map[string]string{}
@@ -284,7 +284,7 @@ type MockClusterForProductTest struct {
 
 func (m *MockClusterForProductTest) GetName() string                   { return m.name }
 func (m *MockClusterForProductTest) GetNamespace() string              { return "default" }
-func (m *MockClusterForProductTest) GetUID() types.UID                   { return "uid-123" }
+func (m *MockClusterForProductTest) GetUID() types.UID                 { return "uid-123" }
 func (m *MockClusterForProductTest) GetLabels() map[string]string      { return nil }
 func (m *MockClusterForProductTest) GetAnnotations() map[string]string { return nil }
 func (m *MockClusterForProductTest) GetSpec() *v1alpha1.GenericClusterSpec {
