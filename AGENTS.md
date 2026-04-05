@@ -13,6 +13,37 @@
 - **Sidecar Management**: Pluggable sidecar injection (Vector, JMX Exporter)
 - **CRD APIs**: Common types for authentication, database, listeners, S3
 
+## Architecture Documentation (Authoritative Design Source)
+
+> **IMPORTANT**: The `docs/` directory contains architecture documents that are the **authoritative source of design constraints** for this project. All implementations — including the SDK itself and any operators built with it — **must follow** the design defined in these documents. When code and documentation conflict, the documentation takes precedence. Consult these docs before making design decisions.
+
+### Documentation Structure
+
+| File | Description |
+|------|-------------|
+| `docs/architecture.md` | **Core Technical Architecture** — design philosophy, layered architecture, core module specifications, design patterns, key problem solutions. This is the primary reference for all SDK design decisions. |
+| `docs/architecture_zh.md` | Chinese version of the architecture document |
+| `docs/security.md` | **Security Architecture** — application security (SecretClass, CSI, AutoTLS, Kerberos) and infrastructure security (RBAC, ServiceAccounts, Pod security) |
+| `docs/DOC_CHANGELOG.md` | Changelog tracking all documentation updates |
+| `docs/examples/` | CRD example YAMLs demonstrating the SDK's data model |
+
+### CRD Examples (`docs/examples/`)
+
+| File | Description |
+|------|-------------|
+| `crd-base-example.yaml` | Base CRD template showing the generic structure all product CRDs follow |
+| `crd-hdfs-example.yaml` | HDFS cluster CRD example (HA with NameNode, JournalNode, DataNode) |
+| `crd-hive-example.yaml` | Hive Metastore CRD example (S3 integration, TLS, Kerberos) |
+
+### Key Architectural Principles (from `docs/architecture.md`)
+
+1. **Interface-Driven Design (IDD)**: SDK core relies on interfaces, not concrete implementations. New products implement interfaces without modifying SDK core.
+2. **Desired State Convergence**: CR Spec is the desired state; reconciliation loop converges actual state. Bidirectional: also cleans orphaned resources.
+3. **Separation of Common and Specific**: SDK handles common logic (resource construction, config merging, webhook validation); products handle specific logic via extension interfaces.
+4. **Type Safety and Idempotency**: Go Generics for compile-time safety. All operations are idempotent.
+5. **Strict Merge Strategy**: Role/RoleGroup config merging follows defined rules — Deep Merge for maps, Replace/Append for slices, Strategic Merge Patch for PodTemplate.
+6. **Layered Architecture**: Specific Product Layer → Abstract Interface Layer → Core Component Layer → Tools Layer → API Layer.
+
 ## Architecture
 
 ### Core Packages
@@ -149,6 +180,15 @@ operator-go/
 │       ├── common_defaults.go    # Common defaulting helpers
 │       ├── common_validators.go  # Common validation helpers
 │       └── errors.go             # Webhook errors
+├── docs/                         # Architecture and design documentation (authoritative design source)
+│   ├── architecture.md           # Core Technical Architecture (English)
+│   ├── architecture_zh.md        # Core Technical Architecture (Chinese)
+│   ├── security.md               # Security Architecture (SecretClass, CSI, RBAC, Pod security)
+│   ├── DOC_CHANGELOG.md          # Documentation changelog
+│   └── examples/                 # CRD example YAMLs
+│       ├── crd-base-example.yaml     # Generic product CRD base template
+│       ├── crd-hdfs-example.yaml     # HDFS cluster CRD example
+│       └── crd-hive-example.yaml     # Hive Metastore CRD example
 ├── examples/                     # Example operators
 │   └── trino-operator/           # Trino operator example
 │       ├── api/v1alpha1/         # TrinoCluster CRD
