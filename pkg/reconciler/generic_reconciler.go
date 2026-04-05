@@ -116,7 +116,7 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //     - RoleGroup PreReconcile Extensions
 //     - Build RoleGroupBuildContext
 //     - Delegate to RoleGroupHandler.BuildResources()
-//     - Apply Resources (CM -> HeadlessSvc -> Service -> STS -> PDB)
+//     - Apply Resources (CM -> HeadlessSvc -> Service -> STS -> PDB -> MetricsSvc)
 //     - Track in Status
 //     - RoleGroup PostReconcile Extensions
 //     - Role PostReconcile Extensions
@@ -435,7 +435,7 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 }
 
 // applyResources applies all resources in the correct dependency order.
-// Order: ConfigMap -> Headless Service -> Service -> StatefulSet -> PDB
+// Order: ConfigMap -> Headless Service -> Service -> StatefulSet -> PDB -> MetricsService
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
 	owner := r.getAsClientObject(cr)
 
@@ -471,6 +471,13 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	if resources.PodDisruptionBudget != nil {
 		if err := r.applyResource(ctx, owner, resources.PodDisruptionBudget); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
+		}
+	}
+
+	// 6. Apply MetricsService
+	if resources.MetricsService != nil {
+		if err := r.applyResource(ctx, owner, resources.MetricsService); err != nil {
+			return NewResourceApplyError("MetricsService", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
 

@@ -45,6 +45,9 @@ type RoleGroupResources struct {
 
 	// PodDisruptionBudget controls pod eviction (optional).
 	PodDisruptionBudget *policyv1.PodDisruptionBudget
+
+	// MetricsService is a headless service with Prometheus scrape annotations (optional).
+	MetricsService *corev1.Service
 }
 
 // RoleGroupBuildContext provides context for building role group resources.
