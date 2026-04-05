@@ -25,7 +25,7 @@ import (
 
 func TestMetricsServiceBuilder_Defaults(t *testing.T) {
 	labels := map[string]string{
-		"app.kubernetes.io/name":     "test-cluster",
+		"app.kubernetes.io/name":      "test-cluster",
 		"app.kubernetes.io/component": "default",
 	}
 	svc := NewMetricsServiceBuilder("test-cluster-default", "test-ns", 9505, labels).Build()
