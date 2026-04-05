@@ -14,90 +14,108 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package builder
+package builder_test
 
 import (
-	"testing"
-
-	"github.com/stretchr/testify/assert"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/zncdatadev/operator-go/pkg/builder"
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestMetricsServiceBuilder_Defaults(t *testing.T) {
-	labels := map[string]string{
-		"app.kubernetes.io/name":      "test-cluster",
-		"app.kubernetes.io/component": "default",
-	}
-	svc := NewMetricsServiceBuilder("test-cluster-default", "test-ns", 9505, labels).Build()
+var _ = Describe("MetricsServiceBuilder", func() {
+	const (
+		resourceName = "test-cluster-default"
+		namespace    = "test-ns"
+		port         = int32(9505)
+	)
 
-	assert.Equal(t, "test-cluster-default-metrics", svc.Name)
-	assert.Equal(t, "test-ns", svc.Namespace)
-	assert.Equal(t, corev1.ClusterIPNone, svc.Spec.ClusterIP)
+	var labels map[string]string
 
-	// Labels include prometheus scrape
-	assert.Equal(t, "true", svc.Labels["prometheus.io/scrape"])
-	assert.Equal(t, "test-cluster", svc.Labels["app.kubernetes.io/name"])
+	BeforeEach(func() {
+		labels = map[string]string{
+			"app.kubernetes.io/name":      "test-cluster",
+			"app.kubernetes.io/component": "default",
+		}
+	})
 
-	// Prometheus annotations
-	assert.Equal(t, "true", svc.Annotations["prometheus.io/scrape"])
-	assert.Equal(t, "9505", svc.Annotations["prometheus.io/port"])
-	assert.Equal(t, "http", svc.Annotations["prometheus.io/scheme"])
-	assert.NotContains(t, svc.Annotations, "prometheus.io/path") // default: no path override
+	Describe("NewMetricsServiceBuilder", func() {
+		It("should create a builder with default values", func() {
+			b := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels)
+			Expect(b).NotTo(BeNil())
+		})
+	})
 
-	// Selector matches input labels
-	assert.Equal(t, "test-cluster", svc.Spec.Selector["app.kubernetes.io/name"])
-	assert.Equal(t, "default", svc.Spec.Selector["app.kubernetes.io/component"])
-	// Selector should NOT include prometheus label
-	assert.NotContains(t, svc.Spec.Selector, "prometheus.io/scrape")
+	Describe("Build", func() {
+		It("should build a headless metrics service with defaults", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).Build()
 
-	// Port
-	assert.Len(t, svc.Spec.Ports, 1)
-	assert.Equal(t, "metrics", svc.Spec.Ports[0].Name)
-	assert.Equal(t, int32(9505), svc.Spec.Ports[0].Port)
-}
+			Expect(svc.Name).To(Equal("test-cluster-default-metrics"))
+			Expect(svc.Namespace).To(Equal(namespace))
+			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
 
-func TestMetricsServiceBuilder_WithScheme(t *testing.T) {
-	labels := map[string]string{"app": "test"}
-	svc := NewMetricsServiceBuilder("test", "ns", 9505, labels).
-		WithScheme("https").
-		Build()
+			// Labels include prometheus scrape
+			Expect(svc.Labels).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+			Expect(svc.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "test-cluster"))
 
-	assert.Equal(t, "https", svc.Annotations["prometheus.io/scheme"])
-}
+			// Prometheus annotations
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9505"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scheme", "http"))
+			Expect(svc.Annotations).NotTo(HaveKey("prometheus.io/path"))
 
-func TestMetricsServiceBuilder_WithPath(t *testing.T) {
-	labels := map[string]string{"app": "test"}
-	svc := NewMetricsServiceBuilder("test", "ns", 9505, labels).
-		WithPath("/prom").
-		Build()
+			// Selector matches input labels
+			Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "test-cluster"))
+			Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/component", "default"))
+			Expect(svc.Spec.Selector).NotTo(HaveKey("prometheus.io/scrape"))
 
-	assert.Equal(t, "/prom", svc.Annotations["prometheus.io/path"])
-}
+			// Port
+			Expect(svc.Spec.Ports).To(HaveLen(1))
+			Expect(svc.Spec.Ports[0].Name).To(Equal("metrics"))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(port))
+		})
 
-func TestMetricsServiceBuilder_WithPathEmpty(t *testing.T) {
-	labels := map[string]string{"app": "test"}
-	svc := NewMetricsServiceBuilder("test", "ns", 9505, labels).
-		Build()
+		It("should not mutate the original labels map", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).Build()
 
-	// Empty path means default /metrics, don't set annotation
-	assert.NotContains(t, svc.Annotations, "prometheus.io/path")
-}
+			Expect(labels).NotTo(HaveKey("prometheus.io/scrape"))
+			Expect(svc.Labels).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+		})
+	})
 
-func TestMetricsServiceBuilder_WithPortName(t *testing.T) {
-	labels := map[string]string{"app": "test"}
-	svc := NewMetricsServiceBuilder("test", "ns", 9505, labels).
-		WithPortName("jmx-metrics").
-		Build()
+	Describe("WithScheme", func() {
+		It("should set the prometheus scrape scheme", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithScheme("https").
+				Build()
 
-	assert.Equal(t, "jmx-metrics", svc.Spec.Ports[0].Name)
-}
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scheme", "https"))
+		})
+	})
 
-func TestMetricsServiceBuilder_LabelsNotMutated(t *testing.T) {
-	labels := map[string]string{"app": "test"}
-	svc := NewMetricsServiceBuilder("test", "ns", 9505, labels).Build()
+	Describe("WithPath", func() {
+		It("should set the prometheus metrics path", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithPath("/prom").
+				Build()
 
-	// Original labels map should not be mutated
-	assert.NotContains(t, labels, "prometheus.io/scrape")
-	// But service labels should have it
-	assert.Equal(t, "true", svc.Labels["prometheus.io/scrape"])
-}
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/path", "/prom"))
+		})
+
+		It("should not set path annotation when path is empty", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).Build()
+
+			Expect(svc.Annotations).NotTo(HaveKey("prometheus.io/path"))
+		})
+	})
+
+	Describe("WithPortName", func() {
+		It("should set the service port name", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithPortName("jmx-metrics").
+				Build()
+
+			Expect(svc.Spec.Ports[0].Name).To(Equal("jmx-metrics"))
+		})
+	})
+})
