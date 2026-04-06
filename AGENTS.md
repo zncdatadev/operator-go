@@ -339,17 +339,41 @@ type ServiceHealthCheck interface {
 
 See `examples/trino-operator/` for a complete example.
 
-## Code Style & Conventions
+## Development Rules
+
+All AI agents and developers working on this project **must** follow these rules:
+
+### Before Committing Code
+1. Run `make generate` if you modified any API structs in `pkg/apis/`
+2. Run `make lint` — must pass with zero errors
+3. Run `make test` — all tests must pass
+4. **Never commit if lint or tests fail**
+
+### After Code Changes
+- Always run `make test` to verify nothing is broken
+- Always run `make lint` to ensure code quality
+- If adding new public interfaces, update AGENTS.md accordingly
+
+### Code Style & Conventions
 - **Formatting**: Must pass `go fmt`
 - **Linting**: Must pass `golangci-lint`
 - **CRDs**: Uses `kubebuilder` markers (tags) for code generation
 - **Generation**: When modifying API structs in `pkg/apis`, always run `make generate`
 - **Testing**: Use Ginkgo v2 + Gomega; test files use `suite_test.go` pattern
 - **Error Handling**: Use error types from `pkg/common/errors.go` and `pkg/reconciler/errors.go`
-- **Generics**: Extensive use of generics for type-safe operator framework
+- **Generics**: Extensive use of generics for type-safe operator framework — no type assertions
+
+### Design Constraints
+- Follow the layered architecture defined in `docs/architecture.md`
+- Use Go Generics for type safety — no type assertions
+- All operations must be idempotent
+- Config merging follows the strict merge strategy (Deep Merge for maps, Replace/Append for slices, Strategic Merge Patch for PodTemplate)
+- Extensions must be registered during Operator initialization (in `main.go` before Manager starts)
+- Override fields (`configOverrides`, `envOverrides`, `cliOverrides`, `podOverrides`) are **flattened** directly at Role/RoleGroup level, NOT nested under an `overrides` field
 
 ## Testing
 - Unit tests use Ginkgo v2 with Gomega matchers
 - Each package has a `suite_test.go` for test setup
 - `pkg/testutil/` provides envtest helpers and mocks
 - Run tests: `make test`
+- All tests must pass before any code is committed
