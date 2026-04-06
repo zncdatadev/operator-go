@@ -44,34 +44,6 @@
 5. **Strict Merge Strategy**: Role/RoleGroup config merging follows defined rules — Deep Merge for maps, Replace/Append for slices, Strategic Merge Patch for PodTemplate.
 6. **Layered Architecture**: Specific Product Layer → Abstract Interface Layer → Core Component Layer → Tools Layer → API Layer.
 
-## Architecture
-
-### Core Packages
-
-| Package | Description |
-|---------|-------------|
-| `pkg/apis/` | Kubernetes API definitions (CRDs) |
-| `pkg/builder/` | Fluent builders for K8s resources (StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount) |
-| `pkg/common/` | Core interfaces (`ClusterInterface`, `RoleInterface`, `ServiceHealthCheck`), extension registry, errors |
-| `pkg/config/` | Config generation (XML, YAML, Properties, Env, INI formats), merging, logging config |
-| `pkg/listener/` | Listener-related volume and service builders |
-| `pkg/reconciler/` | `GenericReconciler`, `BaseRoleGroupHandler`, health checks, dependency resolution, cleanup |
-| `pkg/security/` | Pod security context, secret class handling |
-| `pkg/sidecar/` | Sidecar manager and providers (Vector, JMX Exporter) |
-| `pkg/testutil/` | Testing utilities (envtest, mocks, matchers) |
-| `pkg/util/` | K8s utilities (CreateOrUpdate, status updates) |
-| `pkg/webhook/` | Webhook infrastructure (defaulter, validator, common defaults/validators) |
-
-### API Packages (`pkg/apis/`)
-
-| Package | Description |
-|---------|-------------|
-| `commons/v1alpha1` | Core types: GenericClusterSpec, RoleSpec, RoleGroupSpec, resources, TLS, credentials, logging, graceful shutdown, overrides, cluster operation |
-| `authentication/v1alpha1` | Authentication CRDs |
-| `database/v1alpha1` | Database connection CRDs |
-| `listeners/v1alpha1` | Listener, ListenerClass, PodListener CRDs |
-| `s3/v1alpha1` | S3 connection CRDs |
-
 ## Development Environment
 - **Language**: Go 1.25.3
 - **Dependency Management**: Go Modules (`go.mod`)
