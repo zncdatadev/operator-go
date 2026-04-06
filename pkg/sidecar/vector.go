@@ -17,7 +17,11 @@ limitations under the License.
 package sidecar
 
 import (
+	"context"
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -37,18 +41,28 @@ const (
 	VectorDataMountPath = "/var/lib/vector"
 	// VectorLogMountPath is the mount path for logs.
 	VectorLogMountPath = "/var/log/app"
+	// VectorDefaultConfigMapName is the default ConfigMap name for Vector config.
+	VectorDefaultConfigMapName = "vector-config"
 )
 
 // VectorSidecarProvider injects the Vector log collection sidecar.
 type VectorSidecarProvider struct {
-	name string
+	name          string
+	configMapName string
 }
 
 // NewVectorSidecarProvider creates a new VectorSidecarProvider.
 func NewVectorSidecarProvider() *VectorSidecarProvider {
 	return &VectorSidecarProvider{
-		name: VectorSidecarName,
+		name:          VectorSidecarName,
+		configMapName: VectorDefaultConfigMapName,
 	}
+}
+
+// WithConfigMapName sets a custom ConfigMap name for the Vector configuration.
+func (p *VectorSidecarProvider) WithConfigMapName(name string) *VectorSidecarProvider {
+	p.configMapName = name
+	return p
 }
 
 // Name returns the sidecar name.
@@ -56,7 +70,16 @@ func (p *VectorSidecarProvider) Name() string {
 	return p.name
 }
 
+// Validate validates that the Vector ConfigMap exists.
+func (p *VectorSidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
+	if err := ValidateConfigMapExists(ctx, c, namespace, p.configMapName); err != nil {
+		return fmt.Errorf("vector config map %q not found: %w", p.configMapName, err)
+	}
+	return nil
+}
+
 // Inject injects the Vector sidecar into the pod spec.
+// This method is idempotent — calling it multiple times will not duplicate the container.
 func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarConfig) error {
 	if config == nil {
 		config = &SidecarConfig{Enabled: true}
@@ -68,11 +91,17 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		image = VectorDefaultImage
 	}
 
+	// Get pull policy
+	pullPolicy := corev1.PullIfNotPresent
+	if config.ImagePullPolicy != "" {
+		pullPolicy = config.ImagePullPolicy
+	}
+
 	// Create Vector container
 	container := &corev1.Container{
 		Name:            p.name,
 		Image:           image,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: pullPolicy,
 		Command: []string{
 			"vector",
 			"--config",
@@ -101,6 +130,11 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		container.Resources = *config.Resources
 	}
 
+	// Apply security context if provided
+	if config.SecurityContext != nil {
+		container.SecurityContext = config.SecurityContext
+	}
+
 	// Apply custom configuration
 	if len(config.EnvVars) > 0 {
 		AddEnvVars(container, config.EnvVars)
@@ -110,8 +144,8 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		AddVolumeMounts(container, config.VolumeMounts)
 	}
 
-	// Add container to pod
-	podSpec.Containers = append(podSpec.Containers, *container)
+	// Add container to pod (idempotent — replace if exists)
+	findOrAddContainer(podSpec, *container)
 
 	// Add required volumes if not present
 	volumes := []corev1.Volume{
@@ -120,7 +154,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "vector-config",
+						Name: p.configMapName,
 					},
 				},
 			},
@@ -141,9 +175,10 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 
 	AddVolumes(podSpec, volumes)
 
-	// Also mount log volume to main container for shared logging
-	if len(podSpec.Containers) > 0 {
-		AddVolumeMounts(&podSpec.Containers[0], []corev1.VolumeMount{
+	// Mount log volume to the main container for shared logging
+	mainContainer := findMainContainer(podSpec, config.MainContainerName)
+	if mainContainer != nil {
+		AddVolumeMounts(mainContainer, []corev1.VolumeMount{
 			{
 				Name:      VectorLogVolumeName,
 				MountPath: VectorLogMountPath,

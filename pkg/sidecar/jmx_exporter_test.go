@@ -40,6 +40,13 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 	})
 
+	Describe("WithConfigMapName", func() {
+		It("should set a custom ConfigMap name", func() {
+			provider := sidecar.NewJMXExporterSidecarProvider().WithConfigMapName("custom-config")
+			Expect(provider).NotTo(BeNil())
+		})
+	})
+
 	Describe("Name", func() {
 		It("should return the sidecar name", func() {
 			provider := sidecar.NewJMXExporterSidecarProvider()
@@ -204,10 +211,88 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			Expect(found).To(BeTrue())
 		})
 
+		It("should apply security context when provided", func() {
+			securityContext := &corev1.SecurityContext{
+				RunAsNonRoot:             ptrBool(true),
+				ReadOnlyRootFilesystem:   ptrBool(true),
+				AllowPrivilegeEscalation: ptrBool(false),
+			}
+			config := &sidecar.SidecarConfig{
+				Enabled:         true,
+				SecurityContext: securityContext,
+			}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(podSpec.Containers[1].SecurityContext).NotTo(BeNil())
+			Expect(*podSpec.Containers[1].SecurityContext.RunAsNonRoot).To(BeTrue())
+		})
+
+		It("should apply custom image pull policy when provided", func() {
+			config := &sidecar.SidecarConfig{
+				Enabled:         true,
+				ImagePullPolicy: corev1.PullAlways,
+			}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullAlways))
+		})
+
+		It("should use default pull policy when not specified", func() {
+			config := &sidecar.SidecarConfig{Enabled: true}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+		})
+
 		It("should work with nil config", func() {
 			err := provider.Inject(podSpec, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podSpec.Containers).To(HaveLen(2))
+		})
+
+		It("should be idempotent - not duplicate container on repeated inject", func() {
+			config := &sidecar.SidecarConfig{Enabled: true}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podSpec.Containers).To(HaveLen(2))
+
+			// Inject again
+			err = provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should still have 2 containers (main + jmx-exporter), not 3
+			Expect(podSpec.Containers).To(HaveLen(2))
+
+			// Count jmx-exporter containers
+			jmxCount := 0
+			for _, c := range podSpec.Containers {
+				if c.Name == sidecar.JMXExporterSidecarName {
+					jmxCount++
+				}
+			}
+			Expect(jmxCount).To(Equal(1))
+		})
+
+		It("should use custom ConfigMap name for volume", func() {
+			provider = sidecar.NewJMXExporterSidecarProvider().WithConfigMapName("custom-jmx-config")
+			config := &sidecar.SidecarConfig{Enabled: true}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Find the config volume
+			var configVolume *corev1.Volume
+			for i, v := range podSpec.Volumes {
+				if v.Name == sidecar.JMXExporterConfigVolumeName {
+					configVolume = &podSpec.Volumes[i]
+					break
+				}
+			}
+			Expect(configVolume).NotTo(BeNil())
+			Expect(configVolume.ConfigMap).NotTo(BeNil())
+			Expect(configVolume.ConfigMap.Name).To(Equal("custom-jmx-config"))
 		})
 	})
 })
@@ -219,5 +304,6 @@ var _ = Describe("JMXExporter constants", func() {
 		Expect(int32(sidecar.JMXExporterPort)).To(Equal(int32(5556)))
 		Expect(sidecar.JMXExporterConfigVolumeName).To(Equal("jmx-exporter-config"))
 		Expect(sidecar.JMXExporterConfigMountPath).To(Equal("/opt/jmx_exporter"))
+		Expect(sidecar.JMXExporterDefaultConfigMapName).To(Equal("jmx-exporter-config"))
 	})
 })

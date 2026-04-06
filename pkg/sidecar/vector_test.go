@@ -33,6 +33,13 @@ var _ = Describe("VectorSidecarProvider", func() {
 		})
 	})
 
+	Describe("WithConfigMapName", func() {
+		It("should set a custom ConfigMap name", func() {
+			provider := sidecar.NewVectorSidecarProvider().WithConfigMapName("custom-config")
+			Expect(provider).NotTo(BeNil())
+		})
+	})
+
 	Describe("Name", func() {
 		It("should return the sidecar name", func() {
 			provider := sidecar.NewVectorSidecarProvider()
@@ -133,6 +140,38 @@ var _ = Describe("VectorSidecarProvider", func() {
 			Expect(foundLogMount).To(BeTrue())
 		})
 
+		It("should mount log volume to named main container", func() {
+			podSpec = &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "other", Image: "other-image"},
+					{Name: "app", Image: "app-image"},
+				},
+			}
+			config := &sidecar.SidecarConfig{
+				Enabled:           true,
+				MainContainerName: "app",
+			}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The "app" container (index 1) should have the log mount
+			appContainer := podSpec.Containers[1]
+			var foundLogMount bool
+			for _, m := range appContainer.VolumeMounts {
+				if m.Name == sidecar.VectorLogVolumeName {
+					foundLogMount = true
+					break
+				}
+			}
+			Expect(foundLogMount).To(BeTrue())
+
+			// The "other" container (index 0) should NOT have the log mount
+			otherContainer := podSpec.Containers[0]
+			for _, m := range otherContainer.VolumeMounts {
+				Expect(m.Name).NotTo(Equal(sidecar.VectorLogVolumeName))
+			}
+		})
+
 		It("should set correct command", func() {
 			config := &sidecar.SidecarConfig{Enabled: true}
 			err := provider.Inject(podSpec, config)
@@ -194,10 +233,88 @@ var _ = Describe("VectorSidecarProvider", func() {
 			Expect(found).To(BeTrue())
 		})
 
+		It("should apply security context when provided", func() {
+			securityContext := &corev1.SecurityContext{
+				RunAsNonRoot:             ptrBool(true),
+				ReadOnlyRootFilesystem:   ptrBool(true),
+				AllowPrivilegeEscalation: ptrBool(false),
+			}
+			config := &sidecar.SidecarConfig{
+				Enabled:         true,
+				SecurityContext: securityContext,
+			}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(podSpec.Containers[1].SecurityContext).NotTo(BeNil())
+			Expect(*podSpec.Containers[1].SecurityContext.RunAsNonRoot).To(BeTrue())
+		})
+
+		It("should apply custom image pull policy when provided", func() {
+			config := &sidecar.SidecarConfig{
+				Enabled:         true,
+				ImagePullPolicy: corev1.PullAlways,
+			}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullAlways))
+		})
+
+		It("should use default pull policy when not specified", func() {
+			config := &sidecar.SidecarConfig{Enabled: true}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+		})
+
 		It("should work with nil config", func() {
 			err := provider.Inject(podSpec, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podSpec.Containers).To(HaveLen(2))
+		})
+
+		It("should be idempotent - not duplicate container on repeated inject", func() {
+			config := &sidecar.SidecarConfig{Enabled: true}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podSpec.Containers).To(HaveLen(2))
+
+			// Inject again
+			err = provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should still have 2 containers (main + vector), not 3
+			Expect(podSpec.Containers).To(HaveLen(2))
+
+			// Count vector containers
+			vectorCount := 0
+			for _, c := range podSpec.Containers {
+				if c.Name == sidecar.VectorSidecarName {
+					vectorCount++
+				}
+			}
+			Expect(vectorCount).To(Equal(1))
+		})
+
+		It("should use custom ConfigMap name for volume", func() {
+			provider = sidecar.NewVectorSidecarProvider().WithConfigMapName("custom-vector-config")
+			config := &sidecar.SidecarConfig{Enabled: true}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Find the config volume
+			var configVolume *corev1.Volume
+			for i, v := range podSpec.Volumes {
+				if v.Name == sidecar.VectorConfigVolumeName {
+					configVolume = &podSpec.Volumes[i]
+					break
+				}
+			}
+			Expect(configVolume).NotTo(BeNil())
+			Expect(configVolume.ConfigMap).NotTo(BeNil())
+			Expect(configVolume.ConfigMap.Name).To(Equal("custom-vector-config"))
 		})
 	})
 })
@@ -212,5 +329,10 @@ var _ = Describe("Vector constants", func() {
 		Expect(sidecar.VectorConfigMountPath).To(Equal("/etc/vector"))
 		Expect(sidecar.VectorDataMountPath).To(Equal("/var/lib/vector"))
 		Expect(sidecar.VectorLogMountPath).To(Equal("/var/log/app"))
+		Expect(sidecar.VectorDefaultConfigMapName).To(Equal("vector-config"))
 	})
 })
+
+func ptrBool(b bool) *bool {
+	return &b
+}
