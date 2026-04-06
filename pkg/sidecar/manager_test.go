@@ -300,7 +300,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClient()
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := vector.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider("test-product:latest")
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 
 			err := manager.ValidateProvider(context.Background(), vector.VectorSidecarName)
@@ -317,7 +317,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClientWithObjects(vectorCM)
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := vector.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider("test-product:latest")
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 
 			err := manager.ValidateProvider(context.Background(), vector.VectorSidecarName)
@@ -358,7 +358,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClient()
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := vector.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider("test-product:latest")
 			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
@@ -383,7 +383,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClientWithObjects(vectorCM, jmxCm)
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := vector.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider("test-product:latest")
 			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
@@ -404,7 +404,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClientWithObjects(customCM)
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := vector.NewVectorSidecarProvider(vector.WithConfigMapName("my-custom-vector-config"))
+			vectorProvider := vector.NewVectorSidecarProvider("test-product:latest", vector.WithConfigMapName("my-custom-vector-config"))
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 
 			err := manager.ValidateProvider(context.Background(), vector.VectorSidecarName)

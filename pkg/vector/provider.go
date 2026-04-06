@@ -29,13 +29,6 @@ import (
 // ProviderOption is a functional option for configuring VectorSidecarProvider.
 type ProviderOption func(*VectorSidecarProvider)
 
-// WithImage sets a custom Vector container image.
-func WithImage(image string) ProviderOption {
-	return func(p *VectorSidecarProvider) {
-		p.image = image
-	}
-}
-
 // WithConfigMapName sets a custom ConfigMap name for the Vector configuration.
 func WithConfigMapName(name string) ProviderOption {
 	return func(p *VectorSidecarProvider) {
@@ -62,11 +55,12 @@ type VectorSidecarProvider struct {
 	dataVolumeSize *resource.Quantity
 }
 
-// NewVectorSidecarProvider creates a new VectorSidecarProvider with the given options.
-func NewVectorSidecarProvider(opts ...ProviderOption) *VectorSidecarProvider {
+// NewVectorSidecarProvider creates a new VectorSidecarProvider with the given product image and options.
+// The image parameter is required — it should be the product container's image (Vector is built into product images).
+func NewVectorSidecarProvider(image string, opts ...ProviderOption) *VectorSidecarProvider {
 	p := &VectorSidecarProvider{
 		name:          VectorSidecarName,
-		image:         VectorDefaultImage,
+		image:         image,
 		configMapName: VectorDefaultConfigMapName,
 	}
 	for _, opt := range opts {

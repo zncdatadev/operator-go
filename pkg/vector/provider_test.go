@@ -36,7 +36,7 @@ func newTestFakeClient(objects ...client.Object) client.Client {
 }
 
 func TestNewVectorSidecarProvider_Defaults(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	if p.Name() != VectorSidecarName {
 		t.Errorf("Name() = %q, want %q", p.Name(), VectorSidecarName)
 	}
@@ -45,8 +45,11 @@ func TestNewVectorSidecarProvider_Defaults(t *testing.T) {
 	}
 }
 
-func TestNewVectorSidecarProvider_WithImage(t *testing.T) {
-	p := NewVectorSidecarProvider(WithImage("custom/vector:1.0"))
+func TestNewVectorSidecarProvider_ConstructorImage(t *testing.T) {
+	p := NewVectorSidecarProvider("my-product:v2.0")
+	if p.image != "my-product:v2.0" {
+		t.Errorf("image = %q, want %q", p.image, "my-product:v2.0")
+	}
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -56,13 +59,13 @@ func TestNewVectorSidecarProvider_WithImage(t *testing.T) {
 	if err := p.Inject(podSpec, config); err != nil {
 		t.Fatalf("Inject() error = %v", err)
 	}
-	if podSpec.Containers[1].Image != "custom/vector:1.0" {
-		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, "custom/vector:1.0")
+	if podSpec.Containers[1].Image != "my-product:v2.0" {
+		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, "my-product:v2.0")
 	}
 }
 
 func TestNewVectorSidecarProvider_WithConfigMapName(t *testing.T) {
-	p := NewVectorSidecarProvider(WithConfigMapName("my-vector-config"))
+	p := NewVectorSidecarProvider("test-product:latest", WithConfigMapName("my-vector-config"))
 	if p.ConfigMapName() != "my-vector-config" {
 		t.Errorf("ConfigMapName() = %q, want %q", p.ConfigMapName(), "my-vector-config")
 	}
@@ -70,7 +73,7 @@ func TestNewVectorSidecarProvider_WithConfigMapName(t *testing.T) {
 
 func TestNewVectorSidecarProvider_WithDataVolumeSize(t *testing.T) {
 	qty := resource.MustParse("100Mi")
-	p := NewVectorSidecarProvider(WithDataVolumeSize(qty))
+	p := NewVectorSidecarProvider("test-product:latest", WithDataVolumeSize(qty))
 	if p.dataVolumeSize == nil {
 		t.Fatal("dataVolumeSize should not be nil")
 	}
@@ -87,7 +90,7 @@ func TestProvider_Validate_Success(t *testing.T) {
 		},
 	}
 	c := newTestFakeClient(cm)
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	if err := p.Validate(context.Background(), c, "test-ns"); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -95,7 +98,7 @@ func TestProvider_Validate_Success(t *testing.T) {
 
 func TestProvider_Validate_MissingConfigMap(t *testing.T) {
 	c := newTestFakeClient()
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	if err := p.Validate(context.Background(), c, "test-ns"); err == nil {
 		t.Fatal("Validate() expected error for missing ConfigMap, got nil")
 	}
@@ -109,14 +112,14 @@ func TestProvider_Validate_CustomConfigMap(t *testing.T) {
 		},
 	}
 	c := newTestFakeClient(cm)
-	p := NewVectorSidecarProvider(WithConfigMapName("custom-config"))
+	p := NewVectorSidecarProvider("test-product:latest", WithConfigMapName("custom-config"))
 	if err := p.Validate(context.Background(), c, "test-ns"); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
 func TestProvider_Inject_ContainerInjection(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -137,7 +140,7 @@ func TestProvider_Inject_ContainerInjection(t *testing.T) {
 }
 
 func TestProvider_Inject_DefaultImage(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -149,13 +152,13 @@ func TestProvider_Inject_DefaultImage(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if podSpec.Containers[1].Image != VectorDefaultImage {
-		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, VectorDefaultImage)
+	if podSpec.Containers[1].Image != "test-product:latest" {
+		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, "test-product:latest")
 	}
 }
 
 func TestProvider_Inject_CustomImage(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -176,7 +179,7 @@ func TestProvider_Inject_CustomImage(t *testing.T) {
 }
 
 func TestProvider_Inject_DefaultPullPolicy(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -194,7 +197,7 @@ func TestProvider_Inject_DefaultPullPolicy(t *testing.T) {
 }
 
 func TestProvider_Inject_CustomPullPolicy(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -215,7 +218,7 @@ func TestProvider_Inject_CustomPullPolicy(t *testing.T) {
 }
 
 func TestProvider_Inject_Command(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -240,7 +243,7 @@ func TestProvider_Inject_Command(t *testing.T) {
 }
 
 func TestProvider_Inject_VolumeMounts(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -283,7 +286,7 @@ func TestProvider_Inject_VolumeMounts(t *testing.T) {
 }
 
 func TestProvider_Inject_Volumes(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -311,7 +314,7 @@ func TestProvider_Inject_Volumes(t *testing.T) {
 }
 
 func TestProvider_Inject_ConfigMapVolume(t *testing.T) {
-	p := NewVectorSidecarProvider(WithConfigMapName("custom-vector-config"))
+	p := NewVectorSidecarProvider("test-product:latest", WithConfigMapName("custom-vector-config"))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -342,7 +345,7 @@ func TestProvider_Inject_ConfigMapVolume(t *testing.T) {
 }
 
 func TestProvider_Inject_LogVolumeOnMainContainer(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -371,7 +374,7 @@ func TestProvider_Inject_LogVolumeOnMainContainer(t *testing.T) {
 }
 
 func TestProvider_Inject_LogVolumeOnNamedMainContainer(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "other", Image: "other-image"},
@@ -410,7 +413,7 @@ func TestProvider_Inject_LogVolumeOnNamedMainContainer(t *testing.T) {
 }
 
 func TestProvider_Inject_ReadinessProbe(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -441,7 +444,7 @@ func TestProvider_Inject_ReadinessProbe(t *testing.T) {
 }
 
 func TestProvider_Inject_Idempotency(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -479,7 +482,7 @@ func TestProvider_Inject_Idempotency(t *testing.T) {
 }
 
 func TestProvider_Inject_NilConfig(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -495,7 +498,7 @@ func TestProvider_Inject_NilConfig(t *testing.T) {
 }
 
 func TestProvider_Inject_Resources(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -522,7 +525,7 @@ func TestProvider_Inject_Resources(t *testing.T) {
 }
 
 func TestProvider_Inject_EnvVars(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -545,7 +548,7 @@ func TestProvider_Inject_EnvVars(t *testing.T) {
 }
 
 func TestProvider_Inject_SecurityContext(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -573,7 +576,7 @@ func TestProvider_Inject_SecurityContext(t *testing.T) {
 }
 
 func TestProvider_Inject_CustomVolumeMounts(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -605,7 +608,7 @@ func TestProvider_Inject_CustomVolumeMounts(t *testing.T) {
 
 func TestProvider_Inject_CustomDataVolumeSize(t *testing.T) {
 	qty := resource.MustParse("100Mi")
-	p := NewVectorSidecarProvider(WithDataVolumeSize(qty))
+	p := NewVectorSidecarProvider("test-product:latest", WithDataVolumeSize(qty))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},
@@ -632,7 +635,7 @@ func TestProvider_Inject_CustomDataVolumeSize(t *testing.T) {
 }
 
 func TestProvider_Inject_DefaultSecurityContext(t *testing.T) {
-	p := NewVectorSidecarProvider()
+	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},

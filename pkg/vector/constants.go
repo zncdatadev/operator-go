@@ -20,9 +20,6 @@ const (
 	// VectorSidecarName is the name of the Vector sidecar container.
 	VectorSidecarName = "vector"
 
-	// VectorDefaultImage is the default Vector image.
-	VectorDefaultImage = "timberio/vector:0.30.0-debian"
-
 	// VectorConfigVolumeName is the name of the Vector config volume.
 	VectorConfigVolumeName = "vector-config"
 
