@@ -120,12 +120,12 @@ var _ = Describe("ListenerVolumeBuilder", func() {
 
 var _ = Describe("ListenerClass constants", func() {
 	It("should have correct CSI driver name", func() {
-		Expect(listener.CSIDriverName).To(Equal("listeners.stackable.tech"))
+		Expect(listener.CSIDriverName).To(Equal("listeners.kubedoop.dev"))
 	})
 
 	It("should have correct annotation names", func() {
-		Expect(listener.ListenerClassAnnotation).To(Equal("listeners.stackable.tech/class"))
-		Expect(listener.ListenerScopeAnnotation).To(Equal("listeners.stackable.tech/scope"))
+		Expect(listener.ListenerClassAnnotation).To(Equal("listeners.kubedoop.dev/class"))
+		Expect(listener.ListenerScopeAnnotation).To(Equal("listeners.kubedoop.dev/scope"))
 	})
 
 	It("should have correct listener class values", func() {
