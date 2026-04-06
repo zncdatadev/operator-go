@@ -99,109 +99,30 @@ Run these from the project root:
 | `make lint-config` | Verify golangci-lint configuration |
 
 ## Directory Structure
+> Subdirectories with their own `AGENTS.md` provide detailed file-level documentation. This section shows the top-level layout only.
+
 ```
 operator-go/
-├── cmd/                          # (Not present - operators provide their own main.go)
-├── pkg/
-│   ├── apis/                     # Kubernetes API definitions (CRDs)
-│   │   ├── authentication/       # Authentication CRDs
-│   │   ├── commons/              # Core types (cluster, role, resources, etc.)
-│   │   │   └── v1alpha1/         # Versioned commons API types
-│   │   │       ├── cluster_types.go      # GenericClusterSpec, GenericClusterStatus
-│   │   │       ├── cluster_operation.go  # Cluster operation types
-│   │   │       ├── cluster_status.go     # Cluster status conditions
-│   │   │       ├── config_types.go       # RoleGroupConfigSpec
-│   │   │       ├── credentials.go        # Credentials types
-│   │   │       ├── graceful_shutdown.go  # Graceful shutdown configuration
-│   │   │       ├── image_types.go        # Image spec
-│   │   │       ├── logging_types.go      # Logging configuration
-│   │   │       ├── overrides_types.go    # Overrides spec
-│   │   │       ├── pdb_types.go          # PodDisruptionBudget spec
-│   │   │       ├── resource_types.go     # Resource requirements
-│   │   │       └── tls.go               # TLS configuration
-│   │   ├── database/             # Database connection CRDs
-│   │   ├── listeners/            # Listener configurations
-│   │   └── s3/                   # S3 connection types
-│   ├── builder/                  # Resource builders
-│   │   ├── configmap_builder.go  # ConfigMap fluent builder
-│   │   ├── pdb_builder.go        # PodDisruptionBudget builder
-│   │   ├── rbac_builder.go       # Role and RoleBinding builders
-│   │   ├── service_builder.go    # Service builder
-│   │   ├── serviceaccount_builder.go # ServiceAccount builder
-│   │   └── statefulset_builder.go # StatefulSet builder
-│   ├── common/                   # Core interfaces and utilities
-│   │   ├── cluster_interface.go  # ClusterInterface, ClusterObject helper
-│   │   ├── role_interface.go     # RoleInterface, RoleInfo, RoleGroupInfo
-│   │   ├── health_interface.go   # ServiceHealthCheck, CompositeHealthCheck
-│   │   ├── extension.go          # Extension interfaces (Cluster/Role/RoleGroup)
-│   │   ├── extension_registry.go # Extension registry
-│   │   └── errors.go             # Common error types
-│   ├── config/                   # Configuration generation
-│   │   ├── format.go             # ConfigFormat interface, format type registry
-│   │   ├── generator.go          # ConfigGenerator, MultiFormatConfigGenerator
-│   │   ├── logging_generator.go  # Logging config generator (Log4j2, Logback, Python)
-│   │   ├── merger.go             # ConfigMerger for role/role-group overrides
-│   │   ├── xml_adapter.go        # XML format adapter
-│   │   ├── yaml_adapter.go       # YAML format adapter
-│   │   ├── properties_adapter.go # Properties format adapter
-│   │   ├── env_adapter.go        # Environment variables adapter
-│   │   └── ini_adapter.go        # INI format adapter
-│   ├── listener/                 # Listener utilities
-│   │   ├── service_builder.go    # Listener service builder
-│   │   └── volume_builder.go     # Listener volume builder
-│   ├── reconciler/               # Reconciliation framework
-│   │   ├── generic_reconciler.go      # GenericReconciler (main entry point)
-│   │   ├── role_group_handler.go      # RoleGroupHandler interface, RoleGroupHandlerFuncs
-│   │   ├── base_role_group_handler.go # BaseRoleGroupHandler (default implementation)
-│   │   ├── health.go                  # Health check manager
-│   │   ├── dependency.go              # Dependency resolver
-│   │   ├── cleaner.go                 # Orphaned resource cleaner
-│   │   ├── event.go                   # Event manager
-│   │   └── errors.go                  # Reconcile errors
-│   ├── security/                 # Security utilities
-│   │   ├── pod_security.go       # Pod security context
-│   │   └── secret_class.go       # Secret class handling
-│   ├── sidecar/                  # Sidecar injection
-│   │   ├── manager.go            # SidecarManager
-│   │   ├── interface.go          # SidecarProvider interface
-│   │   ├── vector.go             # Vector sidecar provider
-│   │   └── jmx_exporter.go       # JMX Exporter sidecar provider
-│   ├── testutil/                 # Testing utilities
-│   │   ├── envtest.go            # Envtest setup helpers
-│   │   ├── mocks.go              # Mock implementations
-│   │   ├── matchers.go           # Gomega matchers
-│   │   └── builder.go            # Builder test utilities
-│   ├── util/                     # General utilities
-│   │   ├── k8s_util.go           # K8s utilities (CreateOrUpdate, etc.)
-│   │   └── exec_util.go          # Execution utilities
-│   └── webhook/                  # Webhook infrastructure
-│       ├── webhook.go            # Webhook setup
-│       ├── defaulter.go          # Default value setter
-│       ├── validator.go          # Validation logic
-│       ├── common_defaults.go    # Common defaulting helpers
-│       ├── common_validators.go  # Common validation helpers
-│       └── errors.go             # Webhook errors
+├── pkg/                          # Core SDK packages (see pkg/AGENTS.md)
+│   ├── apis/                     # Kubernetes API definitions — CRDs (see pkg/apis/AGENTS.md)
+│   ├── builder/                  # Fluent resource builders (see pkg/builder/AGENTS.md)
+│   ├── common/                   # Core interfaces, extensions, errors
+│   ├── config/                   # Config generation, merging, logging (see pkg/config/AGENTS.md)
+│   ├── listener/                 # Listener volume and service builders
+│   ├── reconciler/               # Reconciliation framework (see pkg/reconciler/AGENTS.md)
+│   ├── security/                 # Pod security, secret class handling
+│   ├── sidecar/                  # Sidecar injection (Vector, JMX Exporter)
+│   ├── testutil/                 # Testing utilities (envtest, mocks, matchers)
+│   ├── util/                     # K8s utilities, exec utilities
+│   └── webhook/                  # Webhook infrastructure (defaulter, validator)
 ├── docs/                         # Architecture and design documentation (authoritative design source)
 │   ├── architecture.md           # Core Technical Architecture (English)
 │   ├── architecture_zh.md        # Core Technical Architecture (Chinese)
 │   ├── security.md               # Security Architecture (SecretClass, CSI, RBAC, Pod security)
 │   ├── DOC_CHANGELOG.md          # Documentation changelog
-│   └── examples/                 # CRD example YAMLs
-│       ├── crd-base-example.yaml     # Generic product CRD base template
-│       ├── crd-hdfs-example.yaml     # HDFS cluster CRD example
-│       └── crd-hive-example.yaml     # Hive Metastore CRD example
-├── examples/                     # Example operators
-│   └── trino-operator/           # Trino operator example
-│       ├── api/v1alpha1/         # TrinoCluster CRD
-│       ├── cmd/main.go           # Operator entry point
-│       ├── internal/             # Controller, handlers, extensions, webhooks
-│       │   ├── config/           # Trino-specific config generation
-│       │   ├── constants/        # Product constants
-│       │   ├── controller/       # Trino controller
-│       │   ├── extensions/       # Catalog and health extensions
-│       │   ├── handlers/         # Coordinator and worker handlers
-│       │   └── webhook/          # TrinoCluster webhook
-│       └── test/e2e/             # End-to-end tests
+│   └── examples/                 # CRD example YAMLs (base, HDFS, Hive)
+├── examples/                     # Example operators (see examples/AGENTS.md)
+│   └── trino-operator/           # Trino operator example (see examples/trino-operator/AGENTS.md)
 ├── hack/                         # Scripts and boilerplate
 └── bin/                          # Local binaries (controller-gen, etc.)
 ```
