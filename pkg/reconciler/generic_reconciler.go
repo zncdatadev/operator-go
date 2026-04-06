@@ -477,7 +477,7 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	// 6. Apply MetricsService
 	if resources.MetricsService != nil {
 		if err := r.applyResource(ctx, owner, resources.MetricsService); err != nil {
-			return NewResourceApplyError("MetricsService", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
+			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, buildCtx.ResourceName+"-metrics", "failed to apply metrics service", err)
 		}
 	}
 

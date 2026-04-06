@@ -30,7 +30,8 @@ import (
 //   - Service name: "{resourceName}-metrics"
 //   - ClusterIP: None (headless)
 //   - Prometheus annotations: scrape=true, port, scheme=http
-//   - Selector: same as labels
+//   - Service labels: input labels + "prometheus.io/scrape=true"
+//   - Selector: input labels (without prometheus annotation)
 //
 // Override defaults with WithScheme() and WithPath().
 type MetricsServiceBuilder struct {
@@ -80,6 +81,9 @@ func (b *MetricsServiceBuilder) WithPortName(name string) *MetricsServiceBuilder
 // Build creates the metrics Service.
 func (b *MetricsServiceBuilder) Build() *corev1.Service {
 	serviceLabels := maps.Clone(b.labels)
+	if serviceLabels == nil {
+		serviceLabels = map[string]string{}
+	}
 	serviceLabels["prometheus.io/scrape"] = "true"
 
 	annotations := map[string]string{
@@ -92,6 +96,9 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 	}
 
 	selector := maps.Clone(b.labels)
+	if selector == nil {
+		selector = map[string]string{}
+	}
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
