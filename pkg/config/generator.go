@@ -93,6 +93,7 @@ func (g *MultiFormatConfigGenerator) RegisterDefaultFormats() {
 	g.RegisterFormat(".yaml", NewYAMLAdapter())
 	g.RegisterFormat(".yml", NewYAMLAdapter())
 	g.RegisterFormat(".env", NewEnvAdapter())
+	g.RegisterFormat(".ini", NewINIAdapter())
 }
 
 // Generate generates configuration file content with format detection based on extension.
