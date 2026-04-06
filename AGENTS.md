@@ -106,18 +106,19 @@ operator-go/
 │   ├── apis/                     # Kubernetes API definitions (CRDs)
 │   │   ├── authentication/       # Authentication CRDs
 │   │   ├── commons/              # Core types (cluster, role, resources, etc.)
-│   │   │   ├── cluster_types.go      # GenericClusterSpec, GenericClusterStatus
-│   │   │   ├── cluster_operation.go  # Cluster operation types
-│   │   │   ├── cluster_status.go     # Cluster status conditions
-│   │   │   ├── config_types.go       # RoleGroupConfigSpec
-│   │   │   ├── credentials.go        # Credentials types
-│   │   │   ├── graceful_shutdown.go  # Graceful shutdown configuration
-│   │   │   ├── image_types.go        # Image spec
-│   │   │   ├── logging_types.go      # Logging configuration
-│   │   │   ├── overrides_types.go    # Overrides spec
-│   │   │   ├── pdb_types.go          # PodDisruptionBudget spec
-│   │   │   ├── resource_types.go     # Resource requirements
-│   │   │   └── tls.go               # TLS configuration
+│   │   │   └── v1alpha1/         # Versioned commons API types
+│   │   │       ├── cluster_types.go      # GenericClusterSpec, GenericClusterStatus
+│   │   │       ├── cluster_operation.go  # Cluster operation types
+│   │   │       ├── cluster_status.go     # Cluster status conditions
+│   │   │       ├── config_types.go       # RoleGroupConfigSpec
+│   │   │       ├── credentials.go        # Credentials types
+│   │   │       ├── graceful_shutdown.go  # Graceful shutdown configuration
+│   │   │       ├── image_types.go        # Image spec
+│   │   │       ├── logging_types.go      # Logging configuration
+│   │   │       ├── overrides_types.go    # Overrides spec
+│   │   │       ├── pdb_types.go          # PodDisruptionBudget spec
+│   │   │       ├── resource_types.go     # Resource requirements
+│   │   │       └── tls.go               # TLS configuration
 │   │   ├── database/             # Database connection CRDs
 │   │   ├── listeners/            # Listener configurations
 │   │   └── s3/                   # S3 connection types
@@ -306,7 +307,8 @@ Additional builders: `RoleBuilder`, `RoleBindingBuilder`, `ServiceAccountBuilder
 Multi-format config generation with `ConfigFormat` interface:
 ```go
 generator := config.NewMultiFormatConfigGenerator()
-generator.RegisterDefaultFormats() // .xml, .properties, .yaml, .yml, .env, .ini
+generator.RegisterDefaultFormats() // .xml, .properties, .yaml, .yml, .env
+generator.RegisterFormat(".ini", config.NewINIAdapter()) // INI requires explicit registration
 files, err := generator.GenerateFiles(map[string]map[string]string{
     "config.properties": {"key": "value"},
     "config.yaml":       {"nested": "data"},
