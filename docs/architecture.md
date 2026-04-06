@@ -555,7 +555,7 @@ The SDK uses a **hybrid constants architecture** that separates cross-cutting co
 - **Cross-cutting constants** (`pkg/constant/`): Shared across all packages — domain name, directory paths, Kubernetes labels, and operational labels (enrichment, restarter).
 - **Domain-specific constants** (`pkg/listener/`, `pkg/security/`): Constants meaningful only within their domain — CSI driver names, annotation keys, format/scope types.
 
-All Kubedoop platform constants derive from a single domain constant:
+All labels, annotations, and CSI-related constants in the SDK derive from a single domain constant:
 
 ```go
 // pkg/constant/domain.go
@@ -589,7 +589,7 @@ This ensures changing the organization domain requires updating only one constan
 - Enrichment labels: `LabelEnrichmentEnable`, `LabelEnrichmentNodeAddress`
 
 **`pkg/constant/restarter.go`** — Restarter policy:
-- `LabelRestarterEnable`, `AnnotationSecretRestarterPrefix`, `AnnotationConfigmapRestarterPrefix`, `PrefixLabelRestarterExpiresAt`
+- `LabelRestarterEnable`, `AnnotationSecretRestarterPrefix`, `AnnotationConfigMapRestarterPrefix`, `LabelRestarterExpiresAtPrefix`
 
 **`pkg/listener/`** — Listener operator constants:
 - `ListenerAPIGroup`, `ListenerStorageClass`, `CSIDriverName`

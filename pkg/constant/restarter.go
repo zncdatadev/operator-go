@@ -16,29 +16,30 @@ limitations under the License.
 
 package constant
 
-// Restarter policy has workload restart and pod expiration.
+// Restarter policy covers workload restarts and pod expiration.
 //
 // Workload restarter:
 //
 //	If a workload has the label `restarter.kubedoop.dev/enable=true`,
-//	 and a configmap or secret is updated when mounted as a volume in the pod,
-//	 the restarter will update the annotations in the workload podTemplate.
-//	 The workload controller will update all the pods of the workload.
+//	and a ConfigMap or Secret mounted as a volume in the pod is updated,
+//	the restarter will update the annotations in the workload pod template.
+//	The workload controller will then update all pods of the workload.
 //
 // Pod expiration:
 //
-//	When workload mount with secret-class of secret-operator, some secrets will be
-//	 created and mount for the pod by the secret-operator. Eg: kerberos, tls, etc.
-//	 Tls and kerberos secrets have expiration time, when the secrets is created,
-//	 secret-operator will set the expiration time in the pod annotation.
-//	 The restarter will check the expiration time in the pod annotation, if the expiration time is expired,
-//	 the restarter will restart the pod.
+//	When a workload mounts a secret-class managed by secret-operator, some secrets
+//	are created and mounted for the pod by secret-operator, for example, Kerberos
+//	and TLS secrets.
+//	TLS and Kerberos secrets have expiration times. When the secrets are created,
+//	secret-operator sets the expiration time in the pod annotation.
+//	The restarter checks the expiration time in the pod annotation, and if it has
+//	expired, the restarter restarts the pod.
 const (
 	LabelRestarterEnable      = "restarter." + KubedoopDomain + "/enable"
 	LabelRestarterEnableValue = "true"
 
-	AnnotationSecretRestarterPrefix    = "secret.restarter." + KubedoopDomain + "/"
-	AnnotationConfigmapRestarterPrefix = "configmap.restarter." + KubedoopDomain + "/"
+	AnnotationSecretRestarterPrefix   = "secret.restarter." + KubedoopDomain + "/"
+	AnnotationConfigMapRestarterPrefix = "configmap.restarter." + KubedoopDomain + "/"
 
-	PrefixLabelRestarterExpiresAt = "restarter." + KubedoopDomain + "/expires-at."
+	LabelRestarterExpiresAtPrefix = "restarter." + KubedoopDomain + "/expires-at."
 )

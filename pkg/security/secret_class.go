@@ -41,7 +41,7 @@ const (
 	// Additional annotations for secret provisioning configuration.
 	AnnotationSecretsFormat               = secretAPIGroupPrefix + "format"
 	AnnotationSecretsPKCS12Password       = secretAPIGroupPrefix + "tlsPKCS12Password"
-	AnnotationSecretCertLifeTime          = secretAPIGroupPrefix + "autoTlsCertLifetime"
+	AnnotationSecretsCertLifetime        = secretAPIGroupPrefix + "autoTlsCertLifetime"
 	AnnotationSecretsCertJitterFactor     = secretAPIGroupPrefix + "autoTlsCertJitterFactor"
 	AnnotationSecretsCertRestartBuffer    = secretAPIGroupPrefix + "autoTlsCertRestartBuffer"
 	AnnotationSecretsKerberosServiceNames = secretAPIGroupPrefix + "kerberosServiceNames"

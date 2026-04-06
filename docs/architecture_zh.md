@@ -559,7 +559,7 @@ SDK 采用**混合常量架构**，将跨领域常量与领域特定常量分离
 - **跨领域常量**（`pkg/constant/`）：跨所有包共享 — 域名、目录路径、Kubernetes 标签、运维标签（enrichment、restarter）。
 - **领域特定常量**（`pkg/listener/`、`pkg/security/`）：仅在各自领域内有意义的常量 — CSI 驱动名称、注解键、格式/范围类型。
 
-所有 Kubedoop 平台常量均从单一域名常量派生：
+SDK 中所有标签、注解和 CSI 相关常量均从单一域名常量派生：
 
 ```go
 // pkg/constant/domain.go
@@ -593,7 +593,7 @@ const SecretAPIGroup = "secrets." + constant.KubedoopDomain
 - Enrichment 标签：`LabelEnrichmentEnable`、`LabelEnrichmentNodeAddress`
 
 **`pkg/constant/restarter.go`** — Restarter 策略：
-- `LabelRestarterEnable`、`AnnotationSecretRestarterPrefix`、`AnnotationConfigmapRestarterPrefix`、`PrefixLabelRestarterExpiresAt`
+- `LabelRestarterEnable`、`AnnotationSecretRestarterPrefix`、`AnnotationConfigMapRestarterPrefix`、`LabelRestarterExpiresAtPrefix`
 
 **`pkg/listener/`** — Listener-operator 常量：
 - `ListenerAPIGroup`、`ListenerStorageClass`、`CSIDriverName`
