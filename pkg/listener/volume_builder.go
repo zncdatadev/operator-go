@@ -17,6 +17,7 @@ limitations under the License.
 package listener
 
 import (
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,12 +35,28 @@ const (
 	ListenerClassExternalUnstable ListenerClass = "external-unstable"
 )
 
-// CSI driver constants
+// ListenerAPIGroup is the CSI driver API group for listener-operator.
+// All listener constants derive from this via KubedoopDomain for single source of truth.
 const (
-	CSIDriverName           = "listeners.stackable.tech"
-	ListenerClassAnnotation = "listeners.stackable.tech/class"
-	ListenerScopeAnnotation = "listeners.stackable.tech/scope"
+	ListenerAPIGroup       = "listeners." + constant.KubedoopDomain
+	ListenerStorageClass   = ListenerAPIGroup
+	listenerAPIGroupPrefix = ListenerAPIGroup + "/"
+
+	// CSIDriverName is the CSI driver name for listener-operator.
+	CSIDriverName = ListenerAPIGroup
+	// ListenerClassAnnotation specifies the listener class for PVC templates.
+	ListenerClassAnnotation = listenerAPIGroupPrefix + "class"
+	// ListenerScopeAnnotation specifies the listener scope for PVC templates.
+	ListenerScopeAnnotation = listenerAPIGroupPrefix + "scope"
+	// AnnotationListenerName identifies the listener. Defaults to pod name if unset.
+	AnnotationListenerName = listenerAPIGroupPrefix + "listenerName"
 )
+
+// ListenerStorageClassPtr returns a pointer to the ListenerStorageClass.
+func ListenerStorageClassPtr() *string {
+	v := ListenerStorageClass
+	return &v
+}
 
 // ListenerVolumeBuilder builds PVCs for listener-operator CSI integration.
 type ListenerVolumeBuilder struct {

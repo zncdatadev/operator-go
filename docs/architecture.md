@@ -189,6 +189,7 @@ This section details the core modules of the SDK, organized into five functional
 | **Operational Management** | 4.7-4.8, 4.13-4.14 | Dependencies, health, errors, and events |
 | **Security & Network** | 4.9-4.10 | Security and service exposure |
 | **Operational Control** | 4.11-4.12 | Runtime controls and connections |
+| **Constants & Configuration** | 4.15 | Constants architecture and domain derivation |
 
 ---
 
@@ -544,6 +545,101 @@ K8s Events provide a chronological log of significant occurrences within the clu
 
 - **Auditability**: Provides a trace of actions taken by the Operator.
 - **Troubleshooting**: Warning events appear directly in `kubectl describe`, giving immediate visibility into failures.
+
+## 4.15 Constants Architecture Module
+
+### 4.15.1 Design Philosophy
+
+The SDK uses a **hybrid constants architecture** that separates cross-cutting constants from domain-specific constants:
+
+- **Cross-cutting constants** (`pkg/constant/`): Shared across all packages — domain name, directory paths, Kubernetes labels, and operational labels (enrichment, restarter).
+- **Domain-specific constants** (`pkg/listener/`, `pkg/security/`): Constants meaningful only within their domain — CSI driver names, annotation keys, format/scope types.
+
+All Kubedoop platform constants derive from a single domain constant:
+
+```go
+// pkg/constant/domain.go
+const KubedoopDomain = "kubedoop.dev"
+```
+
+Domain packages derive their constants from this root:
+
+```go
+// pkg/listener/volume_builder.go
+const ListenerAPIGroup = "listeners." + constant.KubedoopDomain
+
+// pkg/security/secret_class.go
+const SecretAPIGroup = "secrets." + constant.KubedoopDomain
+```
+
+This ensures changing the organization domain requires updating only one constant.
+
+### 4.15.2 Constant Categories
+
+**`pkg/constant/domain.go`** — Organization domain:
+- `KubedoopDomain` (`"kubedoop.dev"`)
+
+**`pkg/constant/path.go`** — Directory paths:
+- `KubedoopRoot` (`"/kubedoop/"`)
+- Derived paths: `KubedoopKerberosDir`, `KubedoopTlsDir`, `KubedoopListenerDir`, `KubedoopJmxDir`, `KubedoopSecretDir`, `KubedoopDataDir`, `KubedoopConfigDir`, `KubedoopLogDir`, `KubedoopConfigDirMount`, `KubedoopLogDirMount`
+
+**`pkg/constant/label.go`** — Kubernetes recommended labels:
+- `LabelKubernetesComponent`, `LabelKubernetesInstance`, `LabelKubernetesName`, `LabelKubernetesManagedBy`, `LabelKubernetesRoleGroup`, `LabelKubernetesVersion`
+- `MatchingLabelsNames()` — returns label keys for selector matching
+- Enrichment labels: `LabelEnrichmentEnable`, `LabelEnrichmentNodeAddress`
+
+**`pkg/constant/restarter.go`** — Restarter policy:
+- `LabelRestarterEnable`, `AnnotationSecretRestarterPrefix`, `AnnotationConfigmapRestarterPrefix`, `PrefixLabelRestarterExpiresAt`
+
+**`pkg/listener/`** — Listener operator constants:
+- `ListenerAPIGroup`, `ListenerStorageClass`, `CSIDriverName`
+- Annotations: `ListenerClassAnnotation`, `ListenerScopeAnnotation`, `AnnotationListenerName`
+- Types: `ListenerClass` (cluster-internal, external-stable, external-unstable)
+- Builders: `ListenerVolumeBuilder`
+
+**`pkg/security/`** — Secret operator constants:
+- `SecretAPIGroup`, `SecretStorageClass`, `CSIDriverName`
+- Annotations: `SecretClassAnnotation`, `SecretClassScopeAnnotation`, etc.
+- Labels: `LabelSecretsNode`, `LabelSecretsPod`, `LabelSecretsService`
+- Types: `SecretFormat` (tls-pem, tls-p12, kerberos), `SecretScope` (pod, node, service, listener-volume)
+- Builders: `SecretClassVolumeBuilder`, `SecretVolumeBuilder`
+
+### 4.15.3 Usage Example
+
+```go
+import "github.com/zncdatadev/operator-go/pkg/constant"
+
+// Use path constants
+dataDir := constant.KubedoopDataDir
+// Use Kubernetes labels
+labels := map[string]string{
+    constant.LabelKubernetesName:      "my-component",
+    constant.LabelKubernetesManagedBy: "my-operator",
+}
+```
+
+```go
+import (
+    "github.com/zncdatadev/operator-go/pkg/listener"
+    "github.com/zncdatadev/operator-go/pkg/security"
+)
+
+// Use listener constants
+pvc := listener.NewListenerVolumeBuilder(listener.ListenerClassClusterInternal).
+    BuildPVC("my-listener")
+
+// Use security constants
+volume := security.NewSecretClassVolumeBuilder("my-tls").
+    WithScope(string(security.PodScope)).
+    BuildVolume("tls-volume")
+```
+
+### 4.15.4 Core Value
+
+- **DRY**: All platform constants derive from `KubedoopDomain` — one change propagates everywhere.
+- **Discoverability**: Cross-cutting constants in `pkg/constant/`, domain constants alongside their domain code.
+- **Type Safety**: Domain types like `ListenerClass`, `SecretFormat`, `SecretScope` prevent invalid values at compile time.
+- **Go Idiomatic**: Package named `constant` (singular, per Go convention), MixedCaps naming, `const` blocks for grouping.
 
 # 5. Application of Design Patterns
 

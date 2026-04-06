@@ -17,18 +17,69 @@ limitations under the License.
 package security
 
 import (
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
 )
 
+// Secret constants for secret-operator CSI integration.
+// All annotations and labels derive from KubedoopDomain for single source of truth.
 const (
-	// CSIDriverName is the CSI driver name for secret-operator.
-	CSIDriverName = "secrets.stackable.tech"
-	// SecretClassAnnotation is the annotation key for SecretClass.
-	SecretClassAnnotation = "secrets.stackable.tech/class"
-	// SecretClassScopeAnnotation is the annotation key for SecretClass scope.
-	SecretClassScopeAnnotation = "secrets.stackable.tech/scope"
-	// SecretPodInfoAnnotation is the annotation key for pod info injection.
-	SecretPodInfoAnnotation = "secrets.stackable.tech/pod-info"
+	SecretAPIGroup       = "secrets." + constant.KubedoopDomain
+	secretAPIGroupPrefix = SecretAPIGroup + "/"
+
+	// SecretStorageClass is the CSI storage class name for secret volumes.
+	SecretStorageClass = SecretAPIGroup
+
+	// CSI driver name for secret-operator.
+	CSIDriverName = SecretAPIGroup
+
+	// PVC template annotation keys consumed by the secret-operator CSI driver.
+	SecretClassAnnotation      = secretAPIGroupPrefix + "class"
+	SecretClassScopeAnnotation = secretAPIGroupPrefix + "scope"
+	SecretPodInfoAnnotation    = secretAPIGroupPrefix + "pod-info"
+
+	// Additional annotations for secret provisioning configuration.
+	AnnotationSecretsFormat               = secretAPIGroupPrefix + "format"
+	AnnotationSecretsPKCS12Password       = secretAPIGroupPrefix + "tlsPKCS12Password"
+	AnnotationSecretCertLifeTime          = secretAPIGroupPrefix + "autoTlsCertLifetime"
+	AnnotationSecretsCertJitterFactor     = secretAPIGroupPrefix + "autoTlsCertJitterFactor"
+	AnnotationSecretsCertRestartBuffer    = secretAPIGroupPrefix + "autoTlsCertRestartBuffer"
+	AnnotationSecretsKerberosServiceNames = secretAPIGroupPrefix + "kerberosServiceNames"
+
+	// Labels for secret-operator to identify pods.
+	LabelSecretsNode    = secretAPIGroupPrefix + "node"
+	LabelSecretsPod     = secretAPIGroupPrefix + "pod"
+	LabelSecretsService = secretAPIGroupPrefix + "service"
+
+	// Delimiter constants.
+	CommonDelimiter               = ","
+	ListenerVolumeDelimiter       = CommonDelimiter
+	KerberosServiceNamesDelimiter = CommonDelimiter
+)
+
+// SecretStorageClassPtr returns a pointer to the SecretStorageClass.
+func SecretStorageClassPtr() *string {
+	v := SecretStorageClass
+	return &v
+}
+
+// SecretFormat defines the format of secrets provisioned by secret-operator.
+type SecretFormat string
+
+const (
+	TLSPEM   SecretFormat = "tls-pem"
+	TLSP12   SecretFormat = "tls-p12"
+	Kerberos SecretFormat = "kerberos"
+)
+
+// SecretScope defines the scope of secrets provisioned by secret-operator.
+type SecretScope string
+
+const (
+	PodScope            SecretScope = "pod"
+	NodeScope           SecretScope = "node"
+	ServiceScope        SecretScope = "service"
+	ListenerVolumeScope SecretScope = "listener-volume"
 )
 
 // SecretClassVolumeBuilder builds CSI volumes for SecretClass.
