@@ -602,3 +602,70 @@ func TestProvider_Inject_CustomVolumeMounts(t *testing.T) {
 		t.Error("expected custom volume mount to be present")
 	}
 }
+
+func TestProvider_Inject_CustomDataVolumeSize(t *testing.T) {
+	qty := resource.MustParse("100Mi")
+	p := NewVectorSidecarProvider(WithDataVolumeSize(qty))
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{Enabled: true}
+
+	if err := p.Inject(podSpec, config); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	for _, v := range podSpec.Volumes {
+		if v.Name == VectorDataVolumeName {
+			if v.EmptyDir == nil || v.EmptyDir.SizeLimit == nil {
+				t.Fatal("data volume should have SizeLimit set")
+			}
+			if v.EmptyDir.SizeLimit.String() != "100Mi" {
+				t.Errorf("data volume SizeLimit = %q, want %q", v.EmptyDir.SizeLimit.String(), "100Mi")
+			}
+			return
+		}
+	}
+	t.Fatal("data volume not found")
+}
+
+func TestProvider_Inject_DefaultSecurityContext(t *testing.T) {
+	p := NewVectorSidecarProvider()
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{Enabled: true}
+
+	if err := p.Inject(podSpec, config); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	var vectorContainer *corev1.Container
+	for i := range podSpec.Containers {
+		if podSpec.Containers[i].Name == VectorSidecarName {
+			vectorContainer = &podSpec.Containers[i]
+			break
+		}
+	}
+	if vectorContainer == nil {
+		t.Fatal("vector container not found")
+	}
+
+	sc := vectorContainer.SecurityContext
+	if sc == nil {
+		t.Fatal("SecurityContext should not be nil")
+	}
+	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Error("RunAsNonRoot should be true")
+	}
+	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Error("ReadOnlyRootFilesystem should be true")
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Error("AllowPrivilegeEscalation should be false")
+	}
+}

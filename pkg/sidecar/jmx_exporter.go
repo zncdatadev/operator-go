@@ -56,6 +56,10 @@ func NewJMXExporterSidecarProvider() *JMXExporterSidecarProvider {
 	}
 }
 
+// NOTE: JMX Exporter uses mutating builder methods (WithPort, WithConfigMapName).
+// Vector provider uses functional options (WithImage, WithConfigMapName).
+// A future refactor should unify both to functional options for API consistency.
+
 // WithPort sets a custom metrics port.
 func (p *JMXExporterSidecarProvider) WithPort(port int32) *JMXExporterSidecarProvider {
 	p.port = port

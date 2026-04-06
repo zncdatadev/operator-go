@@ -133,7 +133,8 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 				ReadOnly:  true,
 			},
 		},
-		ReadinessProbe: defaultReadinessProbe(),
+		ReadinessProbe:  defaultReadinessProbe(),
+		SecurityContext: defaultSecurityContext(),
 	}
 
 	// Apply resources if provided
@@ -159,7 +160,11 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	sidecar.AddOrReplaceContainer(podSpec, container)
 
 	// Add required volumes if not present
+	// Resolve data volume size: use custom if set, otherwise default
 	dataVolumeSizeLimit := resource.MustParse(VectorDataVolumeSize)
+	if p.dataVolumeSize != nil {
+		dataVolumeSizeLimit = *p.dataVolumeSize
+	}
 	volumes := []corev1.Volume{
 		{
 			Name: VectorConfigVolumeName,
@@ -202,6 +207,21 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 
 	return nil
 }
+
+// defaultSecurityContext returns a hardened security context for the Vector container.
+func defaultSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             ptrBool(true),
+		ReadOnlyRootFilesystem:   ptrBool(true),
+		AllowPrivilegeEscalation: ptrBool(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
+// ptrBool returns a pointer to the given bool value.
+func ptrBool(b bool) *bool { return &b }
 
 // ConfigMapName returns the ConfigMap name used by this provider.
 func (p *VectorSidecarProvider) ConfigMapName() string {
