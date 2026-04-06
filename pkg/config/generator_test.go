@@ -204,6 +204,13 @@ var _ = Describe("MultiFormatConfigGenerator", func() {
 			Expect(content).To(ContainSubstring("KEY=value"))
 		})
 
+		It("should generate INI format for .ini extension", func() {
+			data := map[string]string{"key": "value"}
+			content, err := generator.Generate("config.ini", data)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(content).To(ContainSubstring("key = value"))
+		})
+
 		It("should fall back to Properties format for unknown extension", func() {
 			data := map[string]string{"key": "value"}
 			content, err := generator.Generate("config.unknown", data)
