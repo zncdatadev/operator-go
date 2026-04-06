@@ -38,7 +38,7 @@ const (
 	LabelRestarterEnable      = "restarter." + KubedoopDomain + "/enable"
 	LabelRestarterEnableValue = "true"
 
-	AnnotationSecretRestarterPrefix   = "secret.restarter." + KubedoopDomain + "/"
+	AnnotationSecretRestarterPrefix    = "secret.restarter." + KubedoopDomain + "/"
 	AnnotationConfigMapRestarterPrefix = "configmap.restarter." + KubedoopDomain + "/"
 
 	LabelRestarterExpiresAtPrefix = "restarter." + KubedoopDomain + "/expires-at."
