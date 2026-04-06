@@ -608,37 +608,7 @@ const SecretAPIGroup = "secrets." + constant.KubedoopDomain
 - 类型：`SecretFormat`（tls-pem、tls-p12、kerberos）、`SecretScope`（pod、node、service、listener-volume）
 - 构建器：`SecretClassVolumeBuilder`、`SecretVolumeBuilder`
 
-### 4.15.3 使用示例
-
-```go
-import "github.com/zncdatadev/operator-go/pkg/constant"
-
-// 使用路径常量
-dataDir := constant.KubedoopDataDir
-// 使用 Kubernetes 标签
-labels := map[string]string{
-    constant.LabelKubernetesName:      "my-component",
-    constant.LabelKubernetesManagedBy: "my-operator",
-}
-```
-
-```go
-import (
-    "github.com/zncdatadev/operator-go/pkg/listener"
-    "github.com/zncdatadev/operator-go/pkg/security"
-)
-
-// 使用 listener 常量
-pvc := listener.NewListenerVolumeBuilder(listener.ListenerClassClusterInternal).
-    BuildPVC("my-listener")
-
-// 使用 security 常量
-volume := security.NewSecretClassVolumeBuilder("my-tls").
-    WithScope(string(security.PodScope)).
-    BuildVolume("tls-volume")
-```
-
-### 4.15.4 核心价值
+### 4.15.3 核心价值
 
 - **DRY 原则**：所有平台常量从 `KubedoopDomain` 派生 — 一处修改全局生效。
 - **可发现性**：跨领域常量在 `pkg/constant/`，领域常量与领域代码共存。

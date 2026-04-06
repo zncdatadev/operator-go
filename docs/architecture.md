@@ -604,37 +604,7 @@ This ensures changing the organization domain requires updating only one constan
 - Types: `SecretFormat` (tls-pem, tls-p12, kerberos), `SecretScope` (pod, node, service, listener-volume)
 - Builders: `SecretClassVolumeBuilder`, `SecretVolumeBuilder`
 
-### 4.15.3 Usage Example
-
-```go
-import "github.com/zncdatadev/operator-go/pkg/constant"
-
-// Use path constants
-dataDir := constant.KubedoopDataDir
-// Use Kubernetes labels
-labels := map[string]string{
-    constant.LabelKubernetesName:      "my-component",
-    constant.LabelKubernetesManagedBy: "my-operator",
-}
-```
-
-```go
-import (
-    "github.com/zncdatadev/operator-go/pkg/listener"
-    "github.com/zncdatadev/operator-go/pkg/security"
-)
-
-// Use listener constants
-pvc := listener.NewListenerVolumeBuilder(listener.ListenerClassClusterInternal).
-    BuildPVC("my-listener")
-
-// Use security constants
-volume := security.NewSecretClassVolumeBuilder("my-tls").
-    WithScope(string(security.PodScope)).
-    BuildVolume("tls-volume")
-```
-
-### 4.15.4 Core Value
+### 4.15.3 Core Value
 
 - **DRY**: All platform constants derive from `KubedoopDomain` — one change propagates everywhere.
 - **Discoverability**: Cross-cutting constants in `pkg/constant/`, domain constants alongside their domain code.
