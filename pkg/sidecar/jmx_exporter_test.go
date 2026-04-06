@@ -307,3 +307,7 @@ var _ = Describe("JMXExporter constants", func() {
 		Expect(sidecar.JMXExporterDefaultConfigMapName).To(Equal("jmx-exporter-config"))
 	})
 })
+
+func ptrBool(b bool) *bool {
+	return &b
+}

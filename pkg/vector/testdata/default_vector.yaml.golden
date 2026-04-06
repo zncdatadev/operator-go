@@ -1,0 +1,132 @@
+---
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  files_stdout:
+    type: "file"
+    include:
+      - "/var/log/app/*.stdout.log"
+    read_from: "beginning"
+    line_delimiter: "\n"
+
+  files_stderr:
+    type: "file"
+    include:
+      - "/var/log/app/*.stderr.log"
+    read_from: "beginning"
+    line_delimiter: "\n"
+
+  files_log4j:
+    type: "file"
+    include:
+      - "/var/log/app/*.log4j.xml"
+    read_from: "beginning"
+    line_delimiter: "\n"
+    multiline:
+      mode: "halt_before"
+      start_pattern: "^<log4j:event"
+      condition_pattern: "^<log4j:event"
+      timeout_ms: 10000
+
+  files_log4j2:
+    type: "file"
+    include:
+      - "/var/log/app/*.log4j2.xml"
+    read_from: "beginning"
+    line_delimiter: "\n"
+    multiline:
+      mode: "halt_before"
+      start_pattern: "^<Event"
+      condition_pattern: "^<Event"
+      timeout_ms: 10000
+
+  files_py:
+    type: "file"
+    include:
+      - "/var/log/app/*.py.json"
+    read_from: "beginning"
+    line_delimiter: "\n"
+
+  files_airlift:
+    type: "file"
+    include:
+      - "/var/log/app/*.airlift.json"
+    read_from: "beginning"
+    line_delimiter: "\n"
+
+  vector:
+    type: "internal_logs"
+
+transforms:
+  parse_stdout:
+    type: "remap"
+    inputs:
+      - "files_stdout"
+    source: |
+      .message = string!(.message) ?? ""
+      .tags.log_type = "stdout"
+
+  parse_stderr:
+    type: "remap"
+    inputs:
+      - "files_stderr"
+    source: |
+      .message = string!(.message) ?? ""
+      .tags.log_type = "stderr"
+
+  parse_log4j:
+    type: "remap"
+    inputs:
+      - "files_log4j"
+    source: |
+      .message = string!(.message) ?? ""
+      .tags.log_type = "log4j"
+
+  parse_log4j2:
+    type: "remap"
+    inputs:
+      - "files_log4j2"
+    source: |
+      .message = string!(.message) ?? ""
+      .tags.log_type = "log4j2"
+
+  parse_py:
+    type: "remap"
+    inputs:
+      - "files_py"
+    source: |
+      .message = string!(.message) ?? ""
+      .tags.log_type = "py"
+
+  parse_airlift:
+    type: "remap"
+    inputs:
+      - "files_airlift"
+    source: |
+      .message = string!(.message) ?? ""
+      .tags.log_type = "airlift"
+
+  enrich_metadata:
+    type: "remap"
+    inputs:
+      - "parse_stdout"
+      - "parse_stderr"
+      - "parse_log4j"
+      - "parse_log4j2"
+      - "parse_py"
+      - "parse_airlift"
+      - "vector"
+    source: |
+      .tags.namespace = "default"
+      .tags.cluster = "test-cluster"
+      .tags.role = "worker"
+      .tags.role_group = "default"
+
+sinks:
+  aggregator:
+    type: "vector"
+    inputs:
+      - "enrich_metadata"
+    address: "vector-aggregator:9000"

@@ -165,7 +165,7 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	}
 
 	// Add container to pod (idempotent — replace if exists)
-	findOrAddContainer(podSpec, *container)
+	AddOrReplaceContainer(podSpec, container)
 
 	// Add required volumes if not present
 	volumes := []corev1.Volume{

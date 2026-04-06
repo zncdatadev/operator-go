@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
+	"github.com/zncdatadev/operator-go/pkg/vector"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -299,10 +300,10 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClient()
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := sidecar.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider()
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 
-			err := manager.ValidateProvider(context.Background(), sidecar.VectorSidecarName)
+			err := manager.ValidateProvider(context.Background(), vector.VectorSidecarName)
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -316,10 +317,10 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClientWithObjects(vectorCM)
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := sidecar.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider()
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 
-			err := manager.ValidateProvider(context.Background(), sidecar.VectorSidecarName)
+			err := manager.ValidateProvider(context.Background(), vector.VectorSidecarName)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -357,7 +358,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClient()
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := sidecar.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider()
 			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
@@ -382,7 +383,7 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClientWithObjects(vectorCM, jmxCm)
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := sidecar.NewVectorSidecarProvider()
+			vectorProvider := vector.NewVectorSidecarProvider()
 			jmxProvider := sidecar.NewJMXExporterSidecarProvider()
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 			manager.Register(jmxProvider, &sidecar.SidecarConfig{Enabled: true})
@@ -403,10 +404,10 @@ var _ = Describe("SidecarManager", func() {
 			fakeClient := testutil.NewFakeClientWithObjects(customCM)
 			manager.WithClient(fakeClient, "test-namespace")
 
-			vectorProvider := sidecar.NewVectorSidecarProvider().WithConfigMapName("my-custom-vector-config")
+			vectorProvider := vector.NewVectorSidecarProvider(vector.WithConfigMapName("my-custom-vector-config"))
 			manager.Register(vectorProvider, &sidecar.SidecarConfig{Enabled: true})
 
-			err := manager.ValidateProvider(context.Background(), sidecar.VectorSidecarName)
+			err := manager.ValidateProvider(context.Background(), vector.VectorSidecarName)
 			Expect(err).NotTo(HaveOccurred())
 		})
 

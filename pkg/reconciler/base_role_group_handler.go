@@ -23,6 +23,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -80,6 +81,10 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
 	// Product-specific annotations to add to all resources.
 	ExtraAnnotations map[string]string
+
+	// SidecarManager manages sidecar injection into pods.
+	// Optional - if nil, no sidecars are injected.
+	sidecarManager *sidecar.SidecarManager
 }
 
 // NewBaseRoleGroupHandler creates a new BaseRoleGroupHandler with defaults.
@@ -94,6 +99,12 @@ func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *r
 		ExtraLabels:        make(map[string]string),
 		ExtraAnnotations:   make(map[string]string),
 	}
+}
+
+// WithSidecarManager sets the SidecarManager for sidecar injection.
+func (h *BaseRoleGroupHandler[CR]) WithSidecarManager(m *sidecar.SidecarManager) *BaseRoleGroupHandler[CR] {
+	h.sidecarManager = m
+	return h
 }
 
 // BuildResources builds the default Kubernetes resources for a role group.
@@ -292,7 +303,7 @@ func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext,
 
 // buildStatefulSet creates the StatefulSet for the role group.
 func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
-	_ context.Context,
+	ctx context.Context,
 	_ client.Client,
 	_ CR,
 	buildCtx *RoleGroupBuildContext,
@@ -340,7 +351,16 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	}
 
 	// Build the StatefulSet
-	return stsBuilder.Build(), nil
+	sts := stsBuilder.Build()
+
+	// Inject sidecars if SidecarManager is configured
+	if h.sidecarManager != nil {
+		if err := h.sidecarManager.InjectAll(&sts.Spec.Template.Spec); err != nil {
+			return nil, fmt.Errorf("sidecar injection failed: %w", err)
+		}
+	}
+
+	return sts, nil
 }
 
 // buildPodDisruptionBudget creates the PDB for the role group.

@@ -267,8 +267,8 @@ func FindInitContainer(podSpec *corev1.PodSpec, name string) *corev1.Container {
 	return nil
 }
 
-// findContainerIndex returns the index of a container by name, or -1 if not found.
-func findContainerIndex(podSpec *corev1.PodSpec, name string) int {
+// FindContainerIndex returns the index of a container by name, or -1 if not found.
+func FindContainerIndex(podSpec *corev1.PodSpec, name string) int {
 	for i := range podSpec.Containers {
 		if podSpec.Containers[i].Name == name {
 			return i
@@ -277,18 +277,19 @@ func findContainerIndex(podSpec *corev1.PodSpec, name string) int {
 	return -1
 }
 
-// findOrAddContainer finds an existing container by name or appends a new one.
-func findOrAddContainer(podSpec *corev1.PodSpec, container corev1.Container) {
-	if idx := findContainerIndex(podSpec, container.Name); idx >= 0 {
-		podSpec.Containers[idx] = container
+// AddOrReplaceContainer finds an existing container by name or appends a new one.
+// If a container with the same name exists, it is replaced. Otherwise the container is appended.
+func AddOrReplaceContainer(podSpec *corev1.PodSpec, container *corev1.Container) {
+	if idx := FindContainerIndex(podSpec, container.Name); idx >= 0 {
+		podSpec.Containers[idx] = *container
 		return
 	}
-	podSpec.Containers = append(podSpec.Containers, container)
+	podSpec.Containers = append(podSpec.Containers, *container)
 }
 
-// findMainContainer finds the main container for shared volume mounting.
+// FindMainContainer finds the main container for shared volume mounting.
 // Uses MainContainerName from config if set, otherwise defaults to the first container.
-func findMainContainer(podSpec *corev1.PodSpec, mainContainerName string) *corev1.Container {
+func FindMainContainer(podSpec *corev1.PodSpec, mainContainerName string) *corev1.Container {
 	if mainContainerName != "" {
 		return FindContainer(podSpec, mainContainerName)
 	}

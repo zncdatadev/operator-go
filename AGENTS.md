@@ -10,7 +10,7 @@
 - **Config Generation**: Multi-format config file generation (XML, YAML, Properties, Env, INI)
 - **Logging Config**: Framework-aware logging configuration generation (Log4j2, Logback, Python)
 - **Health Checks**: Business-level health check interface with composite checks
-- **Sidecar Management**: Pluggable sidecar injection (Vector, JMX Exporter)
+- **Sidecar Management**: Pluggable sidecar injection framework with domain-specific providers
 - **CRD APIs**: Common types for authentication, database, listeners, S3
 
 ## Architecture Documentation (Authoritative Design Source)
@@ -83,7 +83,8 @@ operator-go/
 │   ├── listener/                 # Listener volume and service builders
 │   ├── reconciler/               # Reconciliation framework (see pkg/reconciler/AGENTS.md)
 │   ├── security/                 # Pod security, secret class handling
-│   ├── sidecar/                  # Sidecar injection (Vector, JMX Exporter)
+│   ├── sidecar/                  # Sidecar injection framework (SidecarManager, SidecarProvider interface)
+│   ├── vector/                   # Vector sidecar implementation (config generation, discovery, provider)
 │   ├── testutil/                 # Testing utilities (envtest, mocks, matchers)
 │   ├── util/                     # K8s utilities, exec utilities
 │   └── webhook/                  # Webhook infrastructure (defaulter, validator)
