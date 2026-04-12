@@ -175,6 +175,9 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 
 	// Mount log volume on main container for shared log access
 	mainContainer := FindMainContainer(podSpec, config.MainContainerName)
+	if config.MainContainerName != "" && mainContainer == nil {
+		return fmt.Errorf("main container %q not found for vector log volume mount", config.MainContainerName)
+	}
 	if mainContainer != nil {
 		AddVolumeMounts(mainContainer, []corev1.VolumeMount{
 			{
