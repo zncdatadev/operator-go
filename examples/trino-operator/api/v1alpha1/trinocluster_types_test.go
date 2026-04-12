@@ -182,7 +182,7 @@ var _ = Describe("TrinoCluster", func() {
 
 	Describe("DeepCopyCluster", func() {
 		It("should return a deep copy implementing ClusterInterface", func() {
-			cr.Spec.Image = "trinodb/trino:435"
+			cr.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
 			copy := cr.DeepCopyCluster()
 			Expect(copy).NotTo(BeNil())
 			Expect(copy.GetName()).To(Equal(cr.GetName()))
@@ -198,7 +198,7 @@ var _ = Describe("TrinoCluster", func() {
 	Describe("TrinoClusterSpec structure", func() {
 		It("should not expose a top-level roles field in JSON", func() {
 			// Verify spec fields are the typed ones only
-			cr.Spec.Image = "trinodb/trino:435"
+			cr.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
 			cr.Spec.Coordinators = &trinov1alpha1.CoordinatorsSpec{}
 			cr.Spec.Workers = &trinov1alpha1.WorkersSpec{}
 

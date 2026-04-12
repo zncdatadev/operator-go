@@ -137,7 +137,9 @@ kind: TrinoCluster
 metadata:
   name: demo-trino
 spec:
-  image: trinodb/trino:435
+  image:
+    productVersion: "476"
+    kubedoopVersion: "0.0.0-dev"
 
   coordinators:
     roleGroups:

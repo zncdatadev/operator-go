@@ -18,8 +18,14 @@ package constants
 
 // Image constants
 const (
-	// DefaultImage is the default Trino container image
-	DefaultImage = "trinodb/trino:435"
+	// DefaultImageRepo is the default container image repository
+	DefaultImageRepo = "quay.io/zncdatadev"
+	// DefaultImageProductVersion is the default Trino product version
+	DefaultImageProductVersion = "476"
+	// DefaultImageKubedoopVersion is the default kubedoop stack version
+	DefaultImageKubedoopVersion = "0.0.0-dev"
+	// ProductName is the product name used for image resolution
+	ProductName = "trino"
 )
 
 // RoleGroup constants

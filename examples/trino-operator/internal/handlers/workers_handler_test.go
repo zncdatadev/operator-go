@@ -45,7 +45,7 @@ var _ = Describe("WorkersHandler", func() {
 				Namespace: "default",
 			},
 			Spec: trinov1alpha1.TrinoClusterSpec{
-				Image: "trinodb/trino:435",
+				Image: &v1alpha1.ImageSpec{Custom: "trinodb/trino:435"},
 			},
 		}
 		buildCtx = &reconciler.RoleGroupBuildContext{

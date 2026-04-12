@@ -36,9 +36,10 @@ type TrinoClusterSpec struct {
 	// +kubebuilder:validation:Optional
 	ClusterOperation *commonsv1alpha1.ClusterOperationSpec `json:"clusterOperation,omitempty"`
 
-	// Image specifies the Trino container image
-	// +kubebuilder:default="trinodb/trino:435"
-	Image string `json:"image,omitempty"`
+	// Image specifies the Trino container image configuration.
+	// If not set, the webhook defaulter will provide product defaults.
+	// +kubebuilder:validation:Optional
+	Image *commonsv1alpha1.ImageSpec `json:"image,omitempty"`
 
 	// Coordinators defines the Coordinators role configuration (plural naming)
 	// Coordinator is responsible for query coordination, metadata management, and client request handling
@@ -140,6 +141,7 @@ func (t *TrinoCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
 		roles["workers"] = t.Spec.Workers.RoleSpec
 	}
 	return &commonsv1alpha1.GenericClusterSpec{
+		Image:            t.Spec.Image,
 		ClusterOperation: t.Spec.ClusterOperation,
 		Roles:            roles,
 	}

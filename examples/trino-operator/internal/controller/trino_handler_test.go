@@ -64,6 +64,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 		BeforeEach(func() {
 			cr = &trinov1alpha1.TrinoCluster{
 				Spec: trinov1alpha1.TrinoClusterSpec{
+					Image: &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"},
 					Coordinators: &trinov1alpha1.CoordinatorsSpec{
 						RoleSpec: commonsv1alpha1.RoleSpec{
 							RoleGroups: map[string]commonsv1alpha1.RoleGroupSpec{

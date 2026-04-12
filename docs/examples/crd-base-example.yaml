@@ -30,7 +30,7 @@ spec:
     productVersion: "3.4.1"
     # Pull Policy: Always, IfNotPresent, Never
     pullPolicy: IfNotPresent
-    repo: "quay.io/kubedoop"
+    repo: "quay.io/zncdatadev"
     # KubedooP Operator version to ensure compatibility.
     kubedoopVersion: "0.2.0"
 

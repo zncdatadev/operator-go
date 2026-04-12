@@ -480,9 +480,41 @@ spec:
                     type: object
                 type: object
               image:
-                default: trinodb/trino:435
-                description: Image specifies the Trino container image
-                type: string
+                description: |-
+                  Image specifies the Trino container image configuration.
+                  If not set, the webhook defaulter will provide product defaults.
+                properties:
+                  custom:
+                    description: |-
+                      Custom is a fully qualified image reference (e.g. "my-registry.com/ns/product:3.4.1").
+                      When set, Repo, ProductVersion and KubedoopVersion are ignored.
+                    type: string
+                  kubedoopVersion:
+                    description: |-
+                      KubedoopVersion is the version of the kubedoop operator stack (e.g. "0.2.0").
+                      Used only when Custom is not set.
+                    type: string
+                  productVersion:
+                    description: |-
+                      ProductVersion is the version of the product to deploy (e.g. "3.4.1").
+                      Used only when Custom is not set.
+                    type: string
+                  pullPolicy:
+                    default: IfNotPresent
+                    description: |-
+                      PullPolicy defines the image pull policy for the container.
+                      Defaults to IfNotPresent.
+                    enum:
+                    - Always
+                    - Never
+                    - IfNotPresent
+                    type: string
+                  repo:
+                    description: |-
+                      Repo is the image repository (e.g. "quay.io/kubedoop").
+                      Used only when Custom is not set.
+                    type: string
+                type: object
               workers:
                 description: |-
                   Workers defines the Workers role configuration (plural naming)
