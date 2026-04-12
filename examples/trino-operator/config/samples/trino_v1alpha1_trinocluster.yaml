@@ -7,7 +7,9 @@ metadata:
     app.kubernetes.io/instance: demo-trino
     app.kubernetes.io/managed-by: trino-operator
 spec:
-  image: trinodb/trino:435
+  image:
+    productVersion: "476"
+    kubedoopVersion: "0.0.0-dev"
 
   # Coordinators role configuration (plural naming)
   coordinators:

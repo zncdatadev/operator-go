@@ -24,6 +24,7 @@ import (
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
 var _ = Describe("TrinoCluster Webhook", func() {
@@ -49,15 +50,20 @@ var _ = Describe("TrinoCluster Webhook", func() {
 
 	Context("When creating TrinoCluster under Defaulting Webhook", func() {
 		It("Should apply default image when not specified", func() {
-			obj.Spec.Image = ""
+			obj.Spec.Image = nil
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-			Expect(obj.Spec.Image).To(Equal(constants.DefaultImage))
+			Expect(obj.Spec.Image).NotTo(BeNil())
+			Expect(obj.Spec.Image.Repo).To(Equal(constants.DefaultImageRepo))
+			Expect(obj.Spec.Image.ProductVersion).To(Equal(constants.DefaultImageProductVersion))
+			Expect(obj.Spec.Image.KubedoopVersion).To(Equal(constants.DefaultImageKubedoopVersion))
 		})
 
 		It("Should not override image when specified", func() {
-			obj.Spec.Image = "custom/trino:latest"
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "custom/trino:latest"}
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-			Expect(obj.Spec.Image).To(Equal("custom/trino:latest"))
+			Expect(obj.Spec.Image.Custom).To(Equal("custom/trino:latest"))
+			Expect(obj.Spec.Image.Repo).To(BeEmpty())
+			Expect(obj.Spec.Image.ProductVersion).To(BeEmpty())
 		})
 
 		It("Should initialize coordinators with default port", func() {
@@ -89,7 +95,10 @@ var _ = Describe("TrinoCluster Webhook", func() {
 
 	Context("When creating TrinoCluster under Validating Webhook", func() {
 		It("Should admit valid TrinoCluster", func() {
-			obj.Spec.Image = constants.DefaultImage
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{
+				Repo:           constants.DefaultImageRepo,
+				ProductVersion: constants.DefaultImageProductVersion,
+			}
 			obj.Spec.Coordinators = &trinov1alpha1.CoordinatorsSpec{HTTPPort: 8080}
 			obj.Spec.Workers = &trinov1alpha1.WorkersSpec{HTTPPort: 8080}
 			warnings, err := validator.ValidateCreate(ctx, obj)
@@ -98,7 +107,7 @@ var _ = Describe("TrinoCluster Webhook", func() {
 		})
 
 		It("Should deny invalid image format", func() {
-			obj.Spec.Image = "INVALID_IMAGE!"
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "INVALID_IMAGE!"}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("spec.image"))
@@ -187,23 +196,26 @@ var _ = Describe("TrinoCluster Webhook", func() {
 
 	Context("When updating TrinoCluster under Validating Webhook", func() {
 		It("Should admit valid update", func() {
-			oldObj.Spec.Image = "trinodb/trino:435"
-			obj.Spec.Image = constants.DefaultImage
+			oldObj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(Succeed())
 		})
 
 		It("Should deny image change", func() {
-			oldObj.Spec.Image = "trinodb/trino:435"
-			obj.Spec.Image = "trinodb/trino:436"
+			oldObj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:436"}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("image cannot be changed"))
 		})
 
-		It("Should admit update when old image was empty", func() {
-			oldObj.Spec.Image = ""
-			obj.Spec.Image = constants.DefaultImage
+		It("Should admit update when old image was nil", func() {
+			oldObj.Spec.Image = nil
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{
+				Repo:           constants.DefaultImageRepo,
+				ProductVersion: constants.DefaultImageProductVersion,
+			}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(Succeed())
 		})

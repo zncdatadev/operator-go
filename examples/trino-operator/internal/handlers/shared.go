@@ -76,6 +76,11 @@ func BuildStatefulSet(
 	replicas int32,
 	cpuRequest, cpuLimit, memoryLimit string,
 ) *appsv1.StatefulSet {
+	// Guard against nil ImageSpec — should never happen after webhook defaults
+	if cr.Spec.Image == nil {
+		return nil
+	}
+
 	// Build resources spec
 	maxCPU := resource.MustParse(cpuLimit)
 	minCPU := resource.MustParse(cpuRequest)
@@ -88,7 +93,7 @@ func BuildStatefulSet(
 	stsBuilder := builder.NewStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
 		WithLabels(buildCtx.ClusterLabels).
 		WithReplicas(replicas).
-		WithImage(cr.Spec.Image, corev1.PullIfNotPresent).
+		WithImage(cr.Spec.Image.GetImage(constants.ProductName), cr.Spec.Image.GetPullPolicy()).
 		WithResources(resources).
 		AddPort("http", port, corev1.ProtocolTCP).
 		AddVolume(corev1.Volume{

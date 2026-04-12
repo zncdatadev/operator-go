@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
 var _ = Describe("HealthExtension", func() {
@@ -43,7 +44,7 @@ var _ = Describe("HealthExtension", func() {
 				Namespace: "default",
 			},
 			Spec: trinov1alpha1.TrinoClusterSpec{
-				Image: "trinodb/trino:435",
+				Image: &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"},
 			},
 		}
 	})

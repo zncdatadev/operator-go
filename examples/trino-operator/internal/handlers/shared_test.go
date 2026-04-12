@@ -28,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+const testClusterName = "my-trino-cluster"
+
 var _ = Describe("Shared Handlers", func() {
 	var buildCtx *reconciler.RoleGroupBuildContext
 
@@ -183,7 +185,7 @@ var _ = Describe("Shared Handlers", func() {
 		BeforeEach(func() {
 			cr = &trinov1alpha1.TrinoCluster{
 				Spec: trinov1alpha1.TrinoClusterSpec{
-					Image: "trinodb/trino:435",
+					Image: &v1alpha1.ImageSpec{Custom: "trinodb/trino:435"},
 				},
 			}
 		})
@@ -379,7 +381,7 @@ var _ = Describe("Shared Handlers", func() {
 			cr := &trinov1alpha1.TrinoCluster{
 				Spec: trinov1alpha1.TrinoClusterSpec{},
 			}
-			cr.Name = "my-trino-cluster"
+			cr.Name = testClusterName
 
 			name := GetCoordinatorServiceName(cr)
 			Expect(name).To(Equal("my-trino-cluster-coordinator"))
@@ -397,7 +399,7 @@ var _ = Describe("Shared Handlers", func() {
 					},
 				},
 			}
-			cr.Name = "my-trino-cluster"
+			cr.Name = testClusterName
 
 			name := GetCoordinatorServiceName(cr)
 			Expect(name).To(Equal("my-trino-cluster-default"))
@@ -409,7 +411,7 @@ var _ = Describe("Shared Handlers", func() {
 			cr := &trinov1alpha1.TrinoCluster{
 				Spec: trinov1alpha1.TrinoClusterSpec{},
 			}
-			cr.Name = "my-trino-cluster"
+			cr.Name = testClusterName
 
 			uri := GetDiscoveryURI(cr, 8080)
 			Expect(uri).To(Equal("http://my-trino-cluster-coordinator:8080"))

@@ -39,7 +39,6 @@ import (
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 
 	// Import Trino Operator internal implementation
-	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
 	trinocontroller "github.com/zncdatadev/operator-go/examples/trino-operator/internal/controller"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/extensions"
 	webhookv1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/internal/webhook/v1alpha1"
@@ -98,7 +97,7 @@ func main() {
 	// Use operator-go SDK's GenericReconciler instead of traditional Controller
 
 	// Create RoleGroupHandler
-	roleGroupHandler := trinocontroller.NewTrinoRoleGroupHandler(constants.DefaultImage)
+	roleGroupHandler := trinocontroller.NewTrinoRoleGroupHandler()
 
 	// Create GenericReconciler config
 	reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{

@@ -10,7 +10,7 @@ spec:
     custom: "my-registry.com/namespace/hive-custom-image:3.0.0"
     productVersion: "3.0.0"
     pullPolicy: IfNotPresent
-    repo: "quay.io/kubedoop"
+    repo: "quay.io/zncdatadev"
     kubedoopVersion: "0.2.0"
   clusterConfig:
     # Security Configuration:

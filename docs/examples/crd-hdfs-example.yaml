@@ -11,7 +11,7 @@ spec:
     custom: "my-registry.com/namespace/hdfs-custom-image:3.4.1"
     productVersion: "3.4.1"
     pullPolicy: IfNotPresent
-    repo: "quay.io/kubedoop"
+    repo: "quay.io/zncdatadev"
     kubedoopVersion: "0.2.0"
   clusterConfig:
     # Security Configuration:

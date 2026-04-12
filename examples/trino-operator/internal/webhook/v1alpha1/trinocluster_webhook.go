@@ -19,12 +19,15 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
@@ -54,10 +57,21 @@ func (d *TrinoClusterCustomDefaulter) Default(_ context.Context, obj *trinov1alp
 	trinoclusterlog.Info("Defaulting for TrinoCluster", "name", obj.GetName())
 
 	// Set default image if not specified
-	if obj.Spec.Image == "" {
-		obj.Spec.Image = constants.DefaultImage
-		trinoclusterlog.Info("Set default image", "image", constants.DefaultImage)
+	if obj.Spec.Image == nil {
+		obj.Spec.Image = &commonsv1alpha1.ImageSpec{}
 	}
+	if obj.Spec.Image.Custom == "" {
+		if obj.Spec.Image.Repo == "" {
+			obj.Spec.Image.Repo = constants.DefaultImageRepo
+		}
+		if obj.Spec.Image.ProductVersion == "" {
+			obj.Spec.Image.ProductVersion = constants.DefaultImageProductVersion
+		}
+		if obj.Spec.Image.KubedoopVersion == "" {
+			obj.Spec.Image.KubedoopVersion = constants.DefaultImageKubedoopVersion
+		}
+	}
+	trinoclusterlog.Info("Set default image", "repo", obj.Spec.Image.Repo, "productVersion", obj.Spec.Image.ProductVersion, "kubedoopVersion", obj.Spec.Image.KubedoopVersion)
 
 	// Initialize coordinators if not specified
 	if obj.Spec.Coordinators == nil {
@@ -109,7 +123,7 @@ func (v *TrinoClusterCustomValidator) ValidateUpdate(_ context.Context, oldObj, 
 	errs := v.validateTrinoCluster(newObj)
 
 	// Validate immutable fields
-	if oldObj.Spec.Image != "" && oldObj.Spec.Image != newObj.Spec.Image {
+	if oldObj.Spec.Image != nil && !reflect.DeepEqual(oldObj.Spec.Image, newObj.Spec.Image) {
 		errs.Add("spec.image", "image cannot be changed after creation")
 	}
 
@@ -133,9 +147,13 @@ func (v *TrinoClusterCustomValidator) validateTrinoCluster(obj *trinov1alpha1.Tr
 	errs := webhook.ValidationErrors{}
 
 	// Validate image
-	if obj.Spec.Image != "" {
-		if err := validateImage(obj.Spec.Image); err != nil {
-			errs.AddWithValue("spec.image", err.Error(), obj.Spec.Image)
+	if obj.Spec.Image != nil {
+		if obj.Spec.Image.Custom != "" {
+			if err := validateImage(obj.Spec.Image.Custom); err != nil {
+				errs.AddWithValue("spec.image.custom", err.Error(), obj.Spec.Image.Custom)
+			}
+		} else if obj.Spec.Image.GetImage(constants.ProductName) == "" {
+			errs.Add("spec.image", "image must specify either custom or repo with productVersion")
 		}
 	}
 
