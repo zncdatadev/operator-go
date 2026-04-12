@@ -27,8 +27,6 @@ import (
 const (
 	// VectorSidecarName is the name of the Vector sidecar container.
 	VectorSidecarName = "vector"
-	// VectorDefaultImage is the default Vector image.
-	VectorDefaultImage = "timberio/vector:0.40.0-debian"
 	// VectorConfigVolumeName is the name of the config volume.
 	VectorConfigVolumeName = "vector-config"
 	// VectorDataVolumeName is the name of the data volume.
@@ -84,9 +82,8 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 	}
 
 	// Get image
-	image := config.Image
-	if image == "" {
-		image = VectorDefaultImage
+	if config.Image == "" {
+		return fmt.Errorf("sidecar %s: image is required but not set", p.name)
 	}
 
 	// Get pull policy
@@ -98,7 +95,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 	// Create Vector container
 	container := &corev1.Container{
 		Name:            p.name,
-		Image:           image,
+		Image:           config.Image,
 		ImagePullPolicy: pullPolicy,
 		Command: []string{
 			"/usr/bin/vector",

@@ -28,8 +28,6 @@ import (
 const (
 	// JMXExporterSidecarName is the name of the JMX Exporter sidecar container.
 	JMXExporterSidecarName = "jmx-exporter"
-	// JMXExporterDefaultImage is the default JMX Exporter image.
-	JMXExporterDefaultImage = "bitnami/jmx-exporter:0.20.0"
 	// JMXExporterPort is the default JMX Exporter metrics port.
 	JMXExporterPort = 5556
 	// JMXExporterConfigVolumeName is the name of the config volume.
@@ -93,9 +91,8 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	}
 
 	// Get image
-	image := config.Image
-	if image == "" {
-		image = JMXExporterDefaultImage
+	if config.Image == "" {
+		return fmt.Errorf("sidecar %s: image is required but not set", p.name)
 	}
 
 	// Get pull policy
@@ -113,7 +110,7 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	// Create JMX Exporter container
 	container := &corev1.Container{
 		Name:            p.name,
-		Image:           image,
+		Image:           config.Image,
 		ImagePullPolicy: pullPolicy,
 		Ports: []corev1.ContainerPort{
 			{
