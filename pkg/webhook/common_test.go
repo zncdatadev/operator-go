@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	authv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/authentication/v1alpha1"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/webhook"
 )
@@ -160,6 +161,112 @@ var _ = Describe("DefaultGenericClusterSpec", func() {
 		}
 		webhook.DefaultGenericClusterSpec(spec, nil)
 		Expect(spec.Image.PullPolicy).To(Equal(corev1.PullAlways))
+	})
+})
+
+var _ = Describe("ValidateOneOf", func() {
+	fldPath := field.NewPath("spec").Child("provider")
+
+	It("should return no errors when exactly one field is set", func() {
+		errs := webhook.ValidateOneOf(fldPath, map[string]any{
+			"alpha": &struct{}{},
+			"beta":  nil,
+			"gamma": nil,
+		})
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("should return a Required error when no fields are set", func() {
+		errs := webhook.ValidateOneOf(fldPath, map[string]any{
+			"alpha": nil,
+			"beta":  nil,
+		})
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Type).To(Equal(field.ErrorTypeRequired))
+	})
+
+	It("should return an Invalid error when more than one field is set", func() {
+		errs := webhook.ValidateOneOf(fldPath, map[string]any{
+			"alpha": &struct{}{},
+			"beta":  &struct{}{},
+			"gamma": nil,
+		})
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Type).To(Equal(field.ErrorTypeInvalid))
+	})
+})
+
+var _ = Describe("ValidateAuthenticationProvider", func() {
+	fldPath := field.NewPath("spec").Child("provider")
+
+	It("should return nil when provider is nil", func() {
+		errs := webhook.ValidateAuthenticationProvider(nil, fldPath)
+		Expect(errs).To(BeNil())
+	})
+
+	It("should return no errors when exactly one provider is set (OIDC)", func() {
+		provider := &authv1alpha1.AuthenticationProvider{
+			OIDC: &authv1alpha1.OIDCProvider{
+				Hostname:       "keycloak.example.com",
+				PrincipalClaim: "sub",
+				ProviderHint:   "keycloak",
+			},
+		}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("should return no errors when exactly one provider is set (TLS)", func() {
+		provider := &authv1alpha1.AuthenticationProvider{
+			TLS: &authv1alpha1.TLSProvider{},
+		}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("should return no errors when exactly one provider is set (Static)", func() {
+		provider := &authv1alpha1.AuthenticationProvider{
+			Static: &authv1alpha1.StaticProvider{},
+		}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("should return no errors when exactly one provider is set (LDAP)", func() {
+		provider := &authv1alpha1.AuthenticationProvider{
+			LDAP: &authv1alpha1.LDAPProvider{Hostname: "ldap.example.com"},
+		}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("should return no errors when exactly one provider is set (Kerberos)", func() {
+		provider := &authv1alpha1.AuthenticationProvider{
+			Kerberos: &authv1alpha1.KerberosProvider{},
+		}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("should return a Required error when no provider is set", func() {
+		provider := &authv1alpha1.AuthenticationProvider{}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Type).To(Equal(field.ErrorTypeRequired))
+	})
+
+	It("should return an Invalid error when multiple providers are set", func() {
+		provider := &authv1alpha1.AuthenticationProvider{
+			OIDC: &authv1alpha1.OIDCProvider{
+				Hostname:       "keycloak.example.com",
+				PrincipalClaim: "sub",
+				ProviderHint:   "keycloak",
+			},
+			TLS: &authv1alpha1.TLSProvider{},
+		}
+		errs := webhook.ValidateAuthenticationProvider(provider, fldPath)
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Type).To(Equal(field.ErrorTypeInvalid))
 	})
 })
 

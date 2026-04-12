@@ -17,9 +17,15 @@ limitations under the License.
 package webhook
 
 import (
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	authv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/authentication/v1alpha1"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
@@ -53,6 +59,99 @@ func ValidateGenericClusterSpec(spec *commonsv1alpha1.GenericClusterSpec, fldPat
 	}
 
 	return errs
+}
+
+// isPresent returns true if val is a non-nil interface and, when it holds a
+// pointer/slice/map/chan/func value, that value is also non-nil.
+// This handles the common Go pitfall where a typed nil pointer stored in an
+// interface{}  is not equal to a plain nil interface.
+func isPresent(val any) bool {
+	if val == nil {
+		return false
+	}
+	v := reflect.ValueOf(val)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+		return !v.IsNil()
+	default:
+		return true
+	}
+}
+
+// ValidateOneOf validates that exactly one of the provided named values is non-nil.
+// Each entry in fields is a (name, value) pair where value is nil when the field is absent.
+// If zero or more than one field is set, an error is added to the returned ErrorList.
+//
+// Example:
+//
+//	errs := webhook.ValidateOneOf(fldPath, map[string]any{
+//	    "oidc":     provider.OIDC,
+//	    "tls":      provider.TLS,
+//	    "static":   provider.Static,
+//	    "ldap":     provider.LDAP,
+//	    "kerberos": provider.Kerberos,
+//	})
+func ValidateOneOf(fldPath *field.Path, fields map[string]any) field.ErrorList {
+	var errs field.ErrorList
+
+	var set []string
+	for name, val := range fields {
+		if isPresent(val) {
+			set = append(set, name)
+		}
+	}
+
+	// Collect all valid field names for the error message (sorted for deterministic output).
+	all := make([]string, 0, len(fields))
+	for name := range fields {
+		all = append(all, name)
+	}
+	sort.Strings(all)
+	sort.Strings(set)
+
+	switch len(set) {
+	case 0:
+		errs = append(errs, field.Required(fldPath,
+			fmt.Sprintf("exactly one of [%s] must be set", strings.Join(all, ", "))))
+	case 1:
+		// valid — exactly one is set
+	default:
+		errs = append(errs, field.Invalid(fldPath, strings.Join(set, ", "),
+			fmt.Sprintf("exactly one of [%s] must be set, but multiple are configured: [%s]",
+				strings.Join(all, ", "), strings.Join(set, ", "))))
+	}
+
+	return errs
+}
+
+// ValidateAuthenticationProvider validates that exactly one provider is configured
+// in the AuthenticationProvider spec (oneOf constraint).
+// It follows the same field.ErrorList pattern used by ValidateGenericClusterSpec.
+//
+// Example:
+//
+//	func (v *MyValidator) ValidateCreate(ctx context.Context, cr *MyCluster) (admission.Warnings, error) {
+//	    fldErrs := webhook.ValidateAuthenticationProvider(
+//	        cr.Spec.AuthenticationProvider,
+//	        field.NewPath("spec").Child("provider"),
+//	    )
+//	    if len(fldErrs) > 0 {
+//	        return nil, apierrors.NewInvalid(cr.GroupVersionKind().GroupKind(), cr.Name, fldErrs)
+//	    }
+//	    return nil, nil
+//	}
+func ValidateAuthenticationProvider(provider *authv1alpha1.AuthenticationProvider, fldPath *field.Path) field.ErrorList {
+	if provider == nil {
+		return nil
+	}
+
+	return ValidateOneOf(fldPath, map[string]any{
+		"oidc":     provider.OIDC,
+		"tls":      provider.TLS,
+		"static":   provider.Static,
+		"ldap":     provider.LDAP,
+		"kerberos": provider.Kerberos,
+	})
 }
 
 // validateImageSpec validates an ImageSpec field.
