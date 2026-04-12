@@ -157,7 +157,7 @@ var _ = Describe("PDBBuilder", func() {
 		})
 
 		It("should set max unavailable from spec", func() {
-			maxUnavailable := int32(2)
+			maxUnavailable := intstr.FromInt32(2)
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
 				Enabled:        true,
 				MaxUnavailable: &maxUnavailable,
@@ -181,7 +181,7 @@ var _ = Describe("PDBBuilder", func() {
 		})
 
 		It("should build PDB with spec values", func() {
-			maxUnavailable := int32(3)
+			maxUnavailable := intstr.FromInt32(3)
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
 				Enabled:        true,
 				MaxUnavailable: &maxUnavailable,
@@ -197,7 +197,7 @@ var _ = Describe("PDBBuilder", func() {
 		})
 
 		It("should combine WithSpec with other builders", func() {
-			maxUnavailable := int32(1)
+			maxUnavailable := intstr.FromInt32(1)
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
 				Enabled:        true,
 				MaxUnavailable: &maxUnavailable,
@@ -214,5 +214,18 @@ var _ = Describe("PDBBuilder", func() {
 			Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "test-app"))
 			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
 		})
+		It("should set max unavailable as a percentage string from spec", func() {
+			maxUnavailable := intstr.FromString("25%")
+			spec := &v1alpha1.PodDisruptionBudgetSpec{
+				Enabled:        true,
+				MaxUnavailable: &maxUnavailable,
+			}
+			result := pdbBuilder.WithSpec(spec)
+
+			Expect(result).To(Equal(pdbBuilder))
+			Expect(pdbBuilder.MaxUnavailable).NotTo(BeNil())
+			Expect(pdbBuilder.MaxUnavailable.String()).To(Equal("25%"))
+		})
+
 	})
 })

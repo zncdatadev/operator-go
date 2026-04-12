@@ -16,6 +16,8 @@ limitations under the License.
 
 package v1alpha1
 
+import "k8s.io/apimachinery/pkg/util/intstr"
+
 // This struct is used to configure:
 //  1. If PodDisruptionBudgets are created by the operator
 //  2. The allowed number of Pods to be unavailable (`maxUnavailable`)
@@ -31,8 +33,9 @@ type PodDisruptionBudgetSpec struct {
 	Enabled bool `json:"enabled"`
 
 	// The number of Pods that are allowed to be down because of voluntary disruptions.
+	// Accepts either an absolute number (e.g. 1) or a percentage of total Pods (e.g. "25%").
 	// If you don't explicitly set this, the operator will use a sane default based
 	// upon knowledge about the individual product.
 	// +kubebuilder:validation:Optional
-	MaxUnavailable *int32 `json:"maxUnavailable,omitempty"`
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }

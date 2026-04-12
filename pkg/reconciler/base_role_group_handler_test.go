@@ -187,7 +187,7 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 
 		It("should build PDB when configured", func() {
-			maxUnavailable := int32(1)
+			maxUnavailable := intstr.FromInt32(1)
 			buildCtx.RoleSpec = &v1alpha1.RoleSpec{
 				RoleConfig: &v1alpha1.RoleConfigSpec{
 					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
@@ -394,7 +394,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 	})
 
 	It("should set maxUnavailable correctly", func() {
-		maxUnavailable := int32(2)
+		maxUnavailable := intstr.FromInt32(2)
 		buildCtx.RoleSpec.RoleConfig = &v1alpha1.RoleConfigSpec{
 			PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
 				Enabled:        true,
@@ -694,7 +694,7 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 	})
 
 	It("should create PDB when MaxUnavailable is set and Enabled is true", func() {
-		maxUnavailable := int32(1)
+		maxUnavailable := intstr.FromInt32(1)
 		buildCtx.RoleSpec = &v1alpha1.RoleSpec{
 			RoleConfig: &v1alpha1.RoleConfigSpec{
 				PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
@@ -711,7 +711,7 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 	})
 
 	It("should not create PDB when Enabled is false", func() {
-		maxUnavailable := int32(1)
+		maxUnavailable := intstr.FromInt32(1)
 		buildCtx.RoleSpec = &v1alpha1.RoleSpec{
 			RoleConfig: &v1alpha1.RoleConfigSpec{
 				PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{

@@ -30,7 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -399,10 +398,7 @@ func (h *BaseRoleGroupHandler[CR]) buildPodDisruptionBudget(buildCtx *RoleGroupB
 
 	// Set max unavailable (only option available in PodDisruptionBudgetSpec)
 	if pdbSpec.MaxUnavailable != nil {
-		pdb.Spec.MaxUnavailable = &intstr.IntOrString{
-			Type:   intstr.Int,
-			IntVal: *pdbSpec.MaxUnavailable,
-		}
+		pdb.Spec.MaxUnavailable = pdbSpec.MaxUnavailable
 	}
 
 	return pdb
