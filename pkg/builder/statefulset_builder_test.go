@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 var _ = Describe("StatefulSetBuilder", func() {
@@ -269,6 +270,183 @@ var _ = Describe("StatefulSetBuilder", func() {
 			container := sts.Spec.Template.Spec.Containers[0]
 			Expect(container.LivenessProbe).To(BeNil())
 			Expect(container.ReadinessProbe).To(BeNil())
+		})
+
+		Describe("Probe configuration", func() {
+			It("should use custom HTTP liveness probe", func() {
+				customProbe := &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/healthz",
+							Port: intstr.FromInt(8080),
+						},
+					},
+					InitialDelaySeconds: 5,
+					TimeoutSeconds:      3,
+					PeriodSeconds:       10,
+				}
+				sts := stsBuilder.
+					WithLivenessProbe(customProbe).
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.LivenessProbe).NotTo(BeNil())
+				Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
+				Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/healthz"))
+				Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(5)))
+				Expect(container.ReadinessProbe).NotTo(BeNil())
+				Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+			})
+
+			It("should use custom Exec readiness probe", func() {
+				execProbe := &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						Exec: &corev1.ExecAction{
+							Command: []string{"cat", "/tmp/healthy"},
+						},
+					},
+					InitialDelaySeconds: 0,
+					TimeoutSeconds:      1,
+					PeriodSeconds:       5,
+				}
+				sts := stsBuilder.
+					WithReadinessProbe(execProbe).
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.ReadinessProbe).NotTo(BeNil())
+				Expect(container.ReadinessProbe.Exec).NotTo(BeNil())
+				Expect(container.ReadinessProbe.Exec.Command).To(Equal([]string{"cat", "/tmp/healthy"}))
+				Expect(container.LivenessProbe).NotTo(BeNil())
+				Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+			})
+
+			It("should set startup probe when configured", func() {
+				startupProbe := &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/started",
+							Port: intstr.FromInt(8080),
+						},
+					},
+					InitialDelaySeconds: 0,
+					TimeoutSeconds:      1,
+					PeriodSeconds:       5,
+					FailureThreshold:    30,
+				}
+				sts := stsBuilder.
+					WithStartupProbe(startupProbe).
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.StartupProbe).NotTo(BeNil())
+				Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/started"))
+				Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
+				Expect(container.LivenessProbe).NotTo(BeNil())
+				Expect(container.ReadinessProbe).NotTo(BeNil())
+			})
+
+			It("should not set startup probe by default", func() {
+				sts := stsBuilder.
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.StartupProbe).To(BeNil())
+			})
+
+			It("should disable liveness probe", func() {
+				sts := stsBuilder.
+					DisableLivenessProbe().
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.LivenessProbe).To(BeNil())
+				Expect(container.ReadinessProbe).NotTo(BeNil())
+			})
+
+			It("should disable readiness probe", func() {
+				sts := stsBuilder.
+					DisableReadinessProbe().
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.ReadinessProbe).To(BeNil())
+				Expect(container.LivenessProbe).NotTo(BeNil())
+			})
+
+			It("should disable all probes", func() {
+				sts := stsBuilder.
+					DisableLivenessProbe().
+					DisableReadinessProbe().
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.LivenessProbe).To(BeNil())
+				Expect(container.ReadinessProbe).To(BeNil())
+				Expect(container.StartupProbe).To(BeNil())
+			})
+
+			It("should disable startup probe after setting it", func() {
+				startupProbe := &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/started",
+							Port: intstr.FromInt(8080),
+						},
+					},
+				}
+				sts := stsBuilder.
+					WithStartupProbe(startupProbe).
+					DisableStartupProbe().
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.StartupProbe).To(BeNil())
+			})
+
+			It("should re-enable liveness probe after disabling", func() {
+				customProbe := &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/healthz",
+							Port: intstr.FromInt(8080),
+						},
+					},
+				}
+				sts := stsBuilder.
+					DisableLivenessProbe().
+					WithLivenessProbe(customProbe).
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.LivenessProbe).NotTo(BeNil())
+				Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
+			})
+
+			It("should use default TCP probe timing when no probe setter is called", func() {
+				sts := stsBuilder.
+					AddPort("http", 8080, corev1.ProtocolTCP).
+					Build()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+				Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(30)))
+				Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
+				Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(30)))
+				Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+				Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(10)))
+				Expect(container.ReadinessProbe.TimeoutSeconds).To(Equal(int32(5)))
+				Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(10)))
+			})
 		})
 
 		It("should include preStop hook when set", func() {
