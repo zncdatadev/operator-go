@@ -353,9 +353,13 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
 
-	// Inject sidecars if SidecarManager is configured
-	if h.sidecarManager != nil {
-		if err := h.sidecarManager.InjectAll(&sts.Spec.Template.Spec); err != nil {
+	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
+	sidecarMgr := buildCtx.SidecarManager
+	if sidecarMgr == nil {
+		sidecarMgr = h.sidecarManager
+	}
+	if sidecarMgr != nil {
+		if err := sidecarMgr.InjectAll(&sts.Spec.Template.Spec); err != nil {
 			return nil, fmt.Errorf("sidecar injection failed: %w", err)
 		}
 	}

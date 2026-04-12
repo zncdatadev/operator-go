@@ -25,6 +25,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -390,6 +391,9 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	// Build context
 	buildCtx := r.buildRoleGroupContext(cr, roleName, roleSpec, groupName, groupSpec)
 
+	// Auto-create SidecarManager based on CRD configuration
+	buildCtx.SidecarManager = r.buildSidecarManager(ctx, buildCtx)
+
 	// Delegate to handler for resource building
 	resources, err := r.roleGroupHandler.BuildResources(ctx, r.client, cr, buildCtx)
 	if err != nil {
@@ -432,6 +436,44 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 		MergedConfig:     mergedConfig,
 		ResourceName:     resourceName,
 	}
+}
+
+// buildSidecarManager creates a SidecarManager based on CRD configuration.
+// It reads Logging configuration from Role and RoleGroup specs, merging them
+// to determine which sidecar providers should be registered.
+// Returns nil if no sidecar configuration is found.
+func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
+	var mgr *sidecar.SidecarManager
+
+	// Merge Logging config from Role and RoleGroup levels
+	roleLogging := buildCtx.RoleSpec.GetConfig().Logging
+	groupLogging := buildCtx.RoleGroupSpec.GetConfig().Logging
+
+	logging := mergeLogging(roleLogging, groupLogging)
+
+	if logging == nil {
+		return nil
+	}
+
+	// Register Vector sidecar if enabled
+	if logging.EnableVectorAgent != nil && *logging.EnableVectorAgent {
+		mgr = sidecar.NewSidecarManager()
+		mgr.Register(
+			sidecar.NewVectorSidecarProvider(),
+			&sidecar.SidecarConfig{Enabled: true},
+		)
+	}
+
+	return mgr
+}
+
+// mergeLogging merges role-level and roleGroup-level Logging configurations.
+// RoleGroup values take precedence over Role values.
+func mergeLogging(role, group *v1alpha1.LoggingSpec) *v1alpha1.LoggingSpec {
+	if group != nil {
+		return group
+	}
+	return role
 }
 
 // applyResources applies all resources in the correct dependency order.
