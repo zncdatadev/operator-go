@@ -67,6 +67,11 @@ type StatefulSetBuilder struct {
 
 	// Lifecycle hooks
 	lifecycle *corev1.Lifecycle
+
+	// Probes
+	livenessProbe  *corev1.Probe
+	readinessProbe *corev1.Probe
+	startupProbe   *corev1.Probe
 }
 
 // StorageConfig defines storage configuration for StatefulSet.
@@ -309,6 +314,74 @@ func (b *StatefulSetBuilder) WithPostStartHook(command []string) *StatefulSetBui
 	return b
 }
 
+// WithLivenessProbe sets a custom liveness probe, replacing the default TCP probe.
+func (b *StatefulSetBuilder) WithLivenessProbe(probe *corev1.Probe) *StatefulSetBuilder {
+	b.livenessProbe = probe
+	return b
+}
+
+// WithReadinessProbe sets a custom readiness probe, replacing the default TCP probe.
+func (b *StatefulSetBuilder) WithReadinessProbe(probe *corev1.Probe) *StatefulSetBuilder {
+	b.readinessProbe = probe
+	return b
+}
+
+// WithStartupProbe sets a startup probe.
+func (b *StatefulSetBuilder) WithStartupProbe(probe *corev1.Probe) *StatefulSetBuilder {
+	b.startupProbe = probe
+	return b
+}
+
+// NewTCPSocketProbe creates a TCP socket probe for the given port with the provided timing overrides.
+// Zero values in the timing fields are replaced with sensible defaults.
+func NewTCPSocketProbe(port int32, initialDelay, timeout, period, success, failure int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromInt(int(port)),
+			},
+		},
+		InitialDelaySeconds: initialDelay,
+		TimeoutSeconds:      timeout,
+		PeriodSeconds:       period,
+		SuccessThreshold:    success,
+		FailureThreshold:    failure,
+	}
+}
+
+// NewHTTPGetProbe creates an HTTP GET probe for the given path and port with the provided timing overrides.
+func NewHTTPGetProbe(path string, port int32, initialDelay, timeout, period, success, failure int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: path,
+				Port: intstr.FromInt(int(port)),
+			},
+		},
+		InitialDelaySeconds: initialDelay,
+		TimeoutSeconds:      timeout,
+		PeriodSeconds:       period,
+		SuccessThreshold:    success,
+		FailureThreshold:    failure,
+	}
+}
+
+// NewExecProbe creates an exec probe that runs the given command with the provided timing overrides.
+func NewExecProbe(command []string, initialDelay, timeout, period, success, failure int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: command,
+			},
+		},
+		InitialDelaySeconds: initialDelay,
+		TimeoutSeconds:      timeout,
+		PeriodSeconds:       period,
+		SuccessThreshold:    success,
+		FailureThreshold:    failure,
+	}
+}
+
 // Build creates the StatefulSet.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 	sts := &appsv1.StatefulSet{
@@ -413,12 +486,19 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 	// Setup probes
 	container.LivenessProbe = b.buildLivenessProbe()
 	container.ReadinessProbe = b.buildReadinessProbe()
+	container.StartupProbe = b.buildStartupProbe()
 
 	return container
 }
 
-// buildLivenessProbe creates a liveness probe.
+// buildLivenessProbe returns the configured liveness probe.
+// If a custom probe was set via WithLivenessProbe it is returned as-is.
+// Otherwise a default TCP socket probe using the first port is returned (nil when no ports are defined).
 func (b *StatefulSetBuilder) buildLivenessProbe() *corev1.Probe {
+	if b.livenessProbe != nil {
+		return b.livenessProbe
+	}
+
 	if len(b.Ports) == 0 {
 		return nil
 	}
@@ -437,8 +517,14 @@ func (b *StatefulSetBuilder) buildLivenessProbe() *corev1.Probe {
 	}
 }
 
-// buildReadinessProbe creates a readiness probe.
+// buildReadinessProbe returns the configured readiness probe.
+// If a custom probe was set via WithReadinessProbe it is returned as-is.
+// Otherwise a default TCP socket probe using the first port is returned (nil when no ports are defined).
 func (b *StatefulSetBuilder) buildReadinessProbe() *corev1.Probe {
+	if b.readinessProbe != nil {
+		return b.readinessProbe
+	}
+
 	if len(b.Ports) == 0 {
 		return nil
 	}
@@ -455,6 +541,11 @@ func (b *StatefulSetBuilder) buildReadinessProbe() *corev1.Probe {
 		SuccessThreshold:    1,
 		FailureThreshold:    3,
 	}
+}
+
+// buildStartupProbe returns the startup probe if one was set via WithStartupProbe, otherwise nil.
+func (b *StatefulSetBuilder) buildStartupProbe() *corev1.Probe {
+	return b.startupProbe
 }
 
 // applyPodOverrides applies pod template overrides to the StatefulSet.

@@ -734,6 +734,84 @@ var _ = Describe("StatefulSetBuilder", func() {
 			Expect(container.Args).To(Equal([]string{"--config", "/etc/config.yaml"}))
 		})
 	})
+
+	Describe("Probe configuration", func() {
+		It("should use custom HTTP GET liveness probe when set", func() {
+			probe := builder.NewHTTPGetProbe("/healthz", 8080, 15, 5, 20, 1, 3)
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithLivenessProbe(probe).
+				Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.LivenessProbe).NotTo(BeNil())
+			Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
+			Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/healthz"))
+			Expect(container.LivenessProbe.HTTPGet.Port.IntValue()).To(Equal(8080))
+			Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
+		})
+
+		It("should use custom exec readiness probe when set", func() {
+			probe := builder.NewExecProbe([]string{"/bin/check"}, 5, 3, 10, 1, 3)
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithReadinessProbe(probe).
+				Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.ReadinessProbe).NotTo(BeNil())
+			Expect(container.ReadinessProbe.Exec).NotTo(BeNil())
+			Expect(container.ReadinessProbe.Exec.Command).To(Equal([]string{"/bin/check"}))
+		})
+
+		It("should use custom TCP socket probe via NewTCPSocketProbe", func() {
+			probe := builder.NewTCPSocketProbe(9090, 10, 5, 15, 1, 3)
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithLivenessProbe(probe).
+				Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.LivenessProbe).NotTo(BeNil())
+			Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+			Expect(container.LivenessProbe.TCPSocket.Port.IntValue()).To(Equal(9090))
+			Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(15)))
+		})
+
+		It("should set and use a startup probe", func() {
+			probe := builder.NewExecProbe([]string{"/bin/startup-check"}, 0, 5, 10, 1, 30)
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithStartupProbe(probe).
+				Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.StartupProbe).NotTo(BeNil())
+			Expect(container.StartupProbe.Exec).NotTo(BeNil())
+			Expect(container.StartupProbe.Exec.Command).To(Equal([]string{"/bin/startup-check"}))
+			Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
+		})
+
+		It("should not have a startup probe by default", func() {
+			sts := stsBuilder.Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.StartupProbe).To(BeNil())
+		})
+
+		It("should override default TCP liveness probe with custom probe even when ports are defined", func() {
+			httpProbe := builder.NewHTTPGetProbe("/ready", 8080, 5, 3, 10, 1, 3)
+			sts := stsBuilder.
+				AddPort("http", 8080, corev1.ProtocolTCP).
+				WithLivenessProbe(httpProbe).
+				Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.LivenessProbe).NotTo(BeNil())
+			Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
+			Expect(container.LivenessProbe.TCPSocket).To(BeNil())
+		})
+	})
 })
 
 func boolPtr(b bool) *bool {
