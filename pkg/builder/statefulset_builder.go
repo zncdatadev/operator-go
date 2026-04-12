@@ -332,8 +332,7 @@ func (b *StatefulSetBuilder) WithStartupProbe(probe *corev1.Probe) *StatefulSetB
 	return b
 }
 
-// NewTCPSocketProbe creates a TCP socket probe for the given port with the provided timing overrides.
-// Zero values in the timing fields are replaced with sensible defaults.
+// NewTCPSocketProbe creates a TCP socket probe for the given port with the specified timing parameters.
 func NewTCPSocketProbe(port int32, initialDelay, timeout, period, success, failure int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -349,7 +348,7 @@ func NewTCPSocketProbe(port int32, initialDelay, timeout, period, success, failu
 	}
 }
 
-// NewHTTPGetProbe creates an HTTP GET probe for the given path and port with the provided timing overrides.
+// NewHTTPGetProbe creates an HTTP GET probe for the given path and port with the specified timing parameters.
 func NewHTTPGetProbe(path string, port int32, initialDelay, timeout, period, success, failure int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -366,7 +365,7 @@ func NewHTTPGetProbe(path string, port int32, initialDelay, timeout, period, suc
 	}
 }
 
-// NewExecProbe creates an exec probe that runs the given command with the provided timing overrides.
+// NewExecProbe creates an exec probe that runs the given command with the specified timing parameters.
 func NewExecProbe(command []string, initialDelay, timeout, period, success, failure int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{

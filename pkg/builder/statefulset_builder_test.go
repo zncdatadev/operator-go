@@ -793,7 +793,9 @@ var _ = Describe("StatefulSetBuilder", func() {
 		})
 
 		It("should not have a startup probe by default", func() {
-			sts := stsBuilder.Build()
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				Build()
 
 			container := sts.Spec.Template.Spec.Containers[0]
 			Expect(container.StartupProbe).To(BeNil())
