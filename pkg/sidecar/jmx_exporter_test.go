@@ -58,6 +58,8 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		var provider *sidecar.JMXExporterSidecarProvider
 		var podSpec *corev1.PodSpec
 
+		const testImage = "test-product-image:latest"
+
 		BeforeEach(func() {
 			provider = sidecar.NewJMXExporterSidecarProvider()
 			podSpec = &corev1.PodSpec{
@@ -68,18 +70,18 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 
 		It("should inject JMX exporter container into pod spec", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podSpec.Containers).To(HaveLen(2))
 			Expect(podSpec.Containers[1].Name).To(Equal(sidecar.JMXExporterSidecarName))
 		})
 
-		It("should use default image when not specified", func() {
+		It("should return error when image is not specified", func() {
 			config := &sidecar.SidecarConfig{Enabled: true}
 			err := provider.Inject(podSpec, config)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers[1].Image).To(Equal(sidecar.JMXExporterDefaultImage))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("image is required"))
 		})
 
 		It("should use custom image when specified", func() {
@@ -93,7 +95,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 
 		It("should use default port", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podSpec.Containers[1].Ports[0].ContainerPort).To(Equal(int32(sidecar.JMXExporterPort)))
@@ -101,7 +103,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 
 		It("should use custom port from provider", func() {
 			provider = provider.WithPort(9999)
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podSpec.Containers[1].Ports[0].ContainerPort).To(Equal(int32(9999)))
@@ -110,6 +112,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		It("should use custom port from config", func() {
 			config := &sidecar.SidecarConfig{
 				Enabled: true,
+				Image:   testImage,
 				Ports: []corev1.ContainerPort{
 					{ContainerPort: 8888},
 				},
@@ -120,7 +123,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 
 		It("should add config volume mount", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -132,7 +135,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 
 		It("should add config volume to pod", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -150,7 +153,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 
 		It("should set readiness probe", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -169,6 +172,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			}
 			config := &sidecar.SidecarConfig{
 				Enabled:   true,
+				Image:     testImage,
 				Resources: &resources,
 			}
 			err := provider.Inject(podSpec, config)
@@ -180,6 +184,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		It("should apply custom environment variables", func() {
 			config := &sidecar.SidecarConfig{
 				Enabled: true,
+				Image:   testImage,
 				EnvVars: map[string]string{
 					"JAVA_OPTS": "-Xmx256m",
 				},
@@ -196,6 +201,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			}
 			config := &sidecar.SidecarConfig{
 				Enabled:      true,
+				Image:        testImage,
 				VolumeMounts: customMounts,
 			}
 			err := provider.Inject(podSpec, config)
@@ -219,6 +225,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			}
 			config := &sidecar.SidecarConfig{
 				Enabled:         true,
+				Image:           testImage,
 				SecurityContext: securityContext,
 			}
 			err := provider.Inject(podSpec, config)
@@ -231,6 +238,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		It("should apply custom image pull policy when provided", func() {
 			config := &sidecar.SidecarConfig{
 				Enabled:         true,
+				Image:           testImage,
 				ImagePullPolicy: corev1.PullAlways,
 			}
 			err := provider.Inject(podSpec, config)
@@ -240,21 +248,21 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 		})
 
 		It("should use default pull policy when not specified", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
 		})
 
-		It("should work with nil config", func() {
+		It("should return error with nil config", func() {
 			err := provider.Inject(podSpec, nil)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers).To(HaveLen(2))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("image is required"))
 		})
 
 		It("should be idempotent - not duplicate container on repeated inject", func() {
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podSpec.Containers).To(HaveLen(2))
@@ -278,7 +286,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 
 		It("should use custom ConfigMap name for volume", func() {
 			provider = sidecar.NewJMXExporterSidecarProvider().WithConfigMapName("custom-jmx-config")
-			config := &sidecar.SidecarConfig{Enabled: true}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -300,7 +308,6 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 var _ = Describe("JMXExporter constants", func() {
 	It("should have correct default values", func() {
 		Expect(sidecar.JMXExporterSidecarName).To(Equal("jmx-exporter"))
-		Expect(sidecar.JMXExporterDefaultImage).To(ContainSubstring("jmx-exporter"))
 		Expect(int32(sidecar.JMXExporterPort)).To(Equal(int32(5556)))
 		Expect(sidecar.JMXExporterConfigVolumeName).To(Equal("jmx-exporter-config"))
 		Expect(sidecar.JMXExporterConfigMountPath).To(Equal("/opt/jmx_exporter"))

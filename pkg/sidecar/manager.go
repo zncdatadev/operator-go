@@ -188,6 +188,28 @@ func (m *SidecarManager) Count() int {
 	return len(m.providers)
 }
 
+// SetProductImage sets the product image on all enabled sidecar configs that
+// don't already have an image or pull policy set. This is used to propagate
+// the product container image to built-in sidecars (e.g. JMX Exporter) that
+// run as different commands within the same product image.
+func (m *SidecarManager) SetProductImage(image string, pullPolicy corev1.PullPolicy) error {
+	if image == "" {
+		return fmt.Errorf("product image must not be empty")
+	}
+	for _, config := range m.configs {
+		if !config.Enabled {
+			continue
+		}
+		if config.Image == "" {
+			config.Image = image
+		}
+		if config.ImagePullPolicy == "" {
+			config.ImagePullPolicy = pullPolicy
+		}
+	}
+	return nil
+}
+
 // AddVolumes adds volumes to the pod spec.
 func AddVolumes(podSpec *corev1.PodSpec, volumes []corev1.Volume) {
 	existingVolumes := make(map[string]bool)

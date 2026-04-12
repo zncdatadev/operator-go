@@ -212,6 +212,80 @@ var _ = Describe("SidecarManager", func() {
 		})
 	})
 
+	Describe("SetProductImage", func() {
+		It("should set image on all enabled configs", func() {
+			provider1 := &mockSidecarProvider{name: "sidecar-1"}
+			provider2 := &mockSidecarProvider{name: "sidecar-2"}
+			config1 := &sidecar.SidecarConfig{Enabled: true}
+			config2 := &sidecar.SidecarConfig{Enabled: true}
+			manager.Register(provider1, config1)
+			manager.Register(provider2, config2)
+
+			err := manager.SetProductImage("product:latest", corev1.PullAlways)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(config1.Image).To(Equal("product:latest"))
+			Expect(config1.ImagePullPolicy).To(Equal(corev1.PullAlways))
+			Expect(config2.Image).To(Equal("product:latest"))
+			Expect(config2.ImagePullPolicy).To(Equal(corev1.PullAlways))
+		})
+
+		It("should not overwrite existing image", func() {
+			provider1 := &mockSidecarProvider{name: "sidecar-1"}
+			provider2 := &mockSidecarProvider{name: "sidecar-2"}
+			config1 := &sidecar.SidecarConfig{Enabled: true, Image: "custom-image:1.0"}
+			config2 := &sidecar.SidecarConfig{Enabled: true}
+			manager.Register(provider1, config1)
+			manager.Register(provider2, config2)
+
+			err := manager.SetProductImage("product:latest", corev1.PullIfNotPresent)
+			Expect(err).NotTo(HaveOccurred())
+
+			// config1 should keep its custom image
+			Expect(config1.Image).To(Equal("custom-image:1.0"))
+			// config2 should get the product image
+			Expect(config2.Image).To(Equal("product:latest"))
+		})
+
+		It("should not overwrite existing ImagePullPolicy", func() {
+			provider := &mockSidecarProvider{name: "sidecar-1"}
+			config := &sidecar.SidecarConfig{
+				Enabled:         true,
+				ImagePullPolicy: corev1.PullNever,
+			}
+			manager.Register(provider, config)
+
+			err := manager.SetProductImage("product:latest", corev1.PullAlways)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(config.ImagePullPolicy).To(Equal(corev1.PullNever))
+		})
+
+		It("should skip disabled configs", func() {
+			provider := &mockSidecarProvider{name: "sidecar-1"}
+			config := &sidecar.SidecarConfig{Enabled: false}
+			manager.Register(provider, config)
+
+			err := manager.SetProductImage("product:latest", corev1.PullAlways)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Disabled config should not be modified
+			Expect(config.Image).To(BeEmpty())
+			Expect(config.ImagePullPolicy).To(BeEmpty())
+		})
+
+		It("should return error when image is empty", func() {
+			err := manager.SetProductImage("", corev1.PullIfNotPresent)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("product image must not be empty"))
+		})
+
+		It("should handle empty manager", func() {
+			err := manager.SetProductImage("product:latest", corev1.PullIfNotPresent)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("WithClient", func() {
 		It("should set client and namespace", func() {
 			fakeClient := testutil.NewFakeClient()
