@@ -19,6 +19,7 @@ package sidecar
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/zncdatadev/operator-go/pkg/common"
 	corev1 "k8s.io/api/core/v1"
@@ -49,7 +50,7 @@ func (m *SidecarManager) WithClient(c client.Client, namespace string) *SidecarM
 }
 
 // ValidateProvider validates a sidecar provider configuration
-func (m *SidecarManager) ValidateProvider(name string) error {
+func (m *SidecarManager) ValidateProvider(ctx context.Context, name string) error {
 	if m.client == nil || m.namespace == "" {
 		return nil
 	}
@@ -68,18 +69,20 @@ func (m *SidecarManager) ValidateProvider(name string) error {
 		return nil
 	}
 
-	return validateProviderConfig(m.client, m.namespace, provider)
+	return provider.Validate(ctx, m.client, m.namespace)
 }
 
 // ValidateAll validates all registered providers
-func (m *SidecarManager) ValidateAll() error {
+func (m *SidecarManager) ValidateAll(ctx context.Context) error {
 	if m.client == nil || m.namespace == "" {
 		return nil
 	}
 
 	var errors []error
-	for name := range m.providers {
-		if err := m.ValidateProvider(name); err != nil {
+	names := m.ListProviders()
+	sort.Strings(names)
+	for _, name := range names {
+		if err := m.ValidateProvider(ctx, name); err != nil {
 			errors = append(errors, common.CreateResourceError("sidecar", m.namespace, name, fmt.Errorf("provider %s: %w", name, err)))
 		}
 	}
@@ -90,27 +93,10 @@ func (m *SidecarManager) ValidateAll() error {
 	return nil
 }
 
-// validateProviderConfig validates the configuration for a provider
-func validateProviderConfig(c client.Client, namespace string, provider SidecarProvider) error {
-	switch provider.(type) {
-	case *VectorSidecarProvider:
-		cmName := "vector-config"
-		if err := validateConfigMapExists(c, namespace, cmName); err != nil {
-			return common.ResourceNotFoundError("config map", namespace, cmName, fmt.Errorf("vector config map %q not found: %w", cmName, err))
-		}
-	case *JMXExporterSidecarProvider:
-		cmName := "jmx-exporter-config"
-		if err := validateConfigMapExists(c, namespace, cmName); err != nil {
-			return common.ResourceNotFoundError("config map", namespace, cmName, fmt.Errorf("jmx-exporter config map %q not found: %w", cmName, err))
-		}
-	}
-	return nil
-}
-
-// validateConfigMapExists validates that a ConfigMap exists
-func validateConfigMapExists(c client.Client, namespace, name string) error {
+// ValidateConfigMapExists validates that a ConfigMap exists.
+func ValidateConfigMapExists(ctx context.Context, c client.Client, namespace, name string) error {
 	cm := &corev1.ConfigMap{}
-	err := c.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, cm)
+	err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, cm)
 	if err != nil {
 		return err
 	}
@@ -150,9 +136,13 @@ func (m *SidecarManager) ListProviders() []string {
 	return names
 }
 
-// InjectAll injects all enabled sidecars into the pod spec.
+// InjectAll injects all enabled sidecars into the pod spec in deterministic order.
 func (m *SidecarManager) InjectAll(podSpec *corev1.PodSpec) error {
-	for name, provider := range m.providers {
+	names := m.ListProviders()
+	sort.Strings(names)
+
+	for _, name := range names {
+		provider := m.providers[name]
 		config, exists := m.configs[name]
 		if !exists {
 			config = &SidecarConfig{Enabled: true}
@@ -273,6 +263,38 @@ func FindInitContainer(podSpec *corev1.PodSpec, name string) *corev1.Container {
 		if podSpec.InitContainers[i].Name == name {
 			return &podSpec.InitContainers[i]
 		}
+	}
+	return nil
+}
+
+// FindContainerIndex returns the index of a container by name, or -1 if not found.
+func FindContainerIndex(podSpec *corev1.PodSpec, name string) int {
+	for i := range podSpec.Containers {
+		if podSpec.Containers[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// AddOrReplaceContainer finds an existing container by name or appends a new one.
+// If a container with the same name exists, it is replaced. Otherwise the container is appended.
+func AddOrReplaceContainer(podSpec *corev1.PodSpec, container *corev1.Container) {
+	if idx := FindContainerIndex(podSpec, container.Name); idx >= 0 {
+		podSpec.Containers[idx] = *container
+		return
+	}
+	podSpec.Containers = append(podSpec.Containers, *container)
+}
+
+// FindMainContainer finds the main container for shared volume mounting.
+// Uses MainContainerName from config if set, otherwise defaults to the first container.
+func FindMainContainer(podSpec *corev1.PodSpec, mainContainerName string) *corev1.Container {
+	if mainContainerName != "" {
+		return FindContainer(podSpec, mainContainerName)
+	}
+	if len(podSpec.Containers) > 0 {
+		return &podSpec.Containers[0]
 	}
 	return nil
 }

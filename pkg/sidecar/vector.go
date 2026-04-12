@@ -17,38 +17,50 @@ limitations under the License.
 package sidecar
 
 import (
+	"context"
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
 	// VectorSidecarName is the name of the Vector sidecar container.
 	VectorSidecarName = "vector"
 	// VectorDefaultImage is the default Vector image.
-	VectorDefaultImage = "timberio/vector:0.30.0-debian"
-	// VectorConfigVolumeName is the name of the Vector config volume.
+	VectorDefaultImage = "timberio/vector:0.40.0-debian"
+	// VectorConfigVolumeName is the name of the config volume.
 	VectorConfigVolumeName = "vector-config"
-	// VectorDataVolumeName is the name of the Vector data volume.
+	// VectorDataVolumeName is the name of the data volume.
 	VectorDataVolumeName = "vector-data"
 	// VectorLogVolumeName is the name of the shared log volume.
-	VectorLogVolumeName = "log-volume"
+	VectorLogVolumeName = "vector-logs"
 	// VectorConfigMountPath is the mount path for Vector config.
 	VectorConfigMountPath = "/etc/vector"
 	// VectorDataMountPath is the mount path for Vector data.
 	VectorDataMountPath = "/var/lib/vector"
-	// VectorLogMountPath is the mount path for logs.
-	VectorLogMountPath = "/var/log/app"
+	// VectorLogMountPath is the mount path for shared logs.
+	VectorLogMountPath = "/var/log/vector"
 )
 
 // VectorSidecarProvider injects the Vector log collection sidecar.
 type VectorSidecarProvider struct {
-	name string
+	name          string
+	configMapName string
 }
 
 // NewVectorSidecarProvider creates a new VectorSidecarProvider.
 func NewVectorSidecarProvider() *VectorSidecarProvider {
 	return &VectorSidecarProvider{
-		name: VectorSidecarName,
+		name:          VectorSidecarName,
+		configMapName: "vector-config",
 	}
+}
+
+// WithConfigMapName sets a custom ConfigMap name for the Vector configuration.
+func (p *VectorSidecarProvider) WithConfigMapName(name string) *VectorSidecarProvider {
+	p.configMapName = name
+	return p
 }
 
 // Name returns the sidecar name.
@@ -56,7 +68,16 @@ func (p *VectorSidecarProvider) Name() string {
 	return p.name
 }
 
+// Validate validates that the Vector ConfigMap exists.
+func (p *VectorSidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
+	if err := ValidateConfigMapExists(ctx, c, namespace, p.configMapName); err != nil {
+		return fmt.Errorf("vector config map %q not found: %w", p.configMapName, err)
+	}
+	return nil
+}
+
 // Inject injects the Vector sidecar into the pod spec.
+// This method is idempotent — calling it multiple times will not duplicate the container.
 func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarConfig) error {
 	if config == nil {
 		config = &SidecarConfig{Enabled: true}
@@ -68,13 +89,19 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		image = VectorDefaultImage
 	}
 
+	// Get pull policy
+	pullPolicy := corev1.PullIfNotPresent
+	if config.ImagePullPolicy != "" {
+		pullPolicy = config.ImagePullPolicy
+	}
+
 	// Create Vector container
 	container := &corev1.Container{
 		Name:            p.name,
 		Image:           image,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: pullPolicy,
 		Command: []string{
-			"vector",
+			"/usr/bin/vector",
 			"--config",
 			VectorConfigMountPath + "/vector.yaml",
 		},
@@ -101,6 +128,11 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		container.Resources = *config.Resources
 	}
 
+	// Apply security context if provided
+	if config.SecurityContext != nil {
+		container.SecurityContext = config.SecurityContext
+	}
+
 	// Apply custom configuration
 	if len(config.EnvVars) > 0 {
 		AddEnvVars(container, config.EnvVars)
@@ -110,8 +142,8 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		AddVolumeMounts(container, config.VolumeMounts)
 	}
 
-	// Add container to pod
-	podSpec.Containers = append(podSpec.Containers, *container)
+	// Add container to pod (idempotent — replace if exists)
+	AddOrReplaceContainer(podSpec, container)
 
 	// Add required volumes if not present
 	volumes := []corev1.Volume{
@@ -120,7 +152,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "vector-config",
+						Name: p.configMapName,
 					},
 				},
 			},
@@ -141,9 +173,13 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 
 	AddVolumes(podSpec, volumes)
 
-	// Also mount log volume to main container for shared logging
-	if len(podSpec.Containers) > 0 {
-		AddVolumeMounts(&podSpec.Containers[0], []corev1.VolumeMount{
+	// Mount log volume on main container for shared log access
+	mainContainer := FindMainContainer(podSpec, config.MainContainerName)
+	if config.MainContainerName != "" && mainContainer == nil {
+		return fmt.Errorf("main container %q not found for vector log volume mount", config.MainContainerName)
+	}
+	if mainContainer != nil {
+		AddVolumeMounts(mainContainer, []corev1.VolumeMount{
 			{
 				Name:      VectorLogVolumeName,
 				MountPath: VectorLogMountPath,

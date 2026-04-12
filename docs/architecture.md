@@ -358,10 +358,11 @@ Operations such as log collection (Vector), metric monitoring (JMX Exporter), an
 
 - **SidecarProvider Interface**: Defines the abstraction for sidecar injection.
   - `Inject(podSpec *corev1.PodSpec, config SidecarConfig) error`
+- **Provider Placement**: Providers with config generation or external service discovery are placed in their own domain package. Trivial providers remain in `pkg/sidecar/`.
 - **Standard Implementations**:
-  - `VectorSidecarProvider`: Injects Vector agent container, mounts log volumes, and configures environment variables based on `vectorAgentConfigMap`.
-  - `JmxExporterSidecarProvider`: Injects Prometheus JMX Exporter agent and exposes metric ports.
-- **Workflow**: The `StatefulSetBuilder` invokes the `SidecarManager` during Pod Spec construction. The manager iterates through enabled providers and injects Containers, Volumes, and VolumeMounts.
+  - `VectorSidecarProvider` (in `pkg/vector/`): Injects Vector agent container, mounts log volumes, validates ConfigMap existence. Config generation (`RenderVectorConfig`) and aggregator discovery (`DiscoverAggregatorAddress`) are separate pure functions in the same package.
+  - `JmxExporterSidecarProvider` (in `pkg/sidecar/`): Injects Prometheus JMX Exporter agent and exposes metric ports.
+- **Workflow**: The `BaseRoleGroupHandler` invokes the `SidecarManager` after StatefulSet construction. The manager iterates through enabled providers and injects Containers, Volumes, and VolumeMounts. Product operators are responsible for config generation and ConfigMap creation before registering the provider.
 
 ### 4.6.3 Core Value
 

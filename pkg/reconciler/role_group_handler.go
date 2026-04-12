@@ -22,6 +22,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -82,6 +83,11 @@ type RoleGroupBuildContext struct {
 
 	// ResourceName is the derived resource name: {cluster}-{group}.
 	ResourceName string
+
+	// SidecarManager is the auto-created sidecar manager based on CRD configuration.
+	// Set by GenericReconciler when sidecar-related config (e.g., EnableVectorAgent) is detected.
+	// Nil if no sidecars are configured.
+	SidecarManager *sidecar.SidecarManager
 }
 
 // RoleGroupHandler is the interface that product operators must implement

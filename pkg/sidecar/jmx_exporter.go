@@ -17,10 +17,12 @@ limitations under the License.
 package sidecar
 
 import (
+	"context"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -34,25 +36,39 @@ const (
 	JMXExporterConfigVolumeName = "jmx-exporter-config"
 	// JMXExporterConfigMountPath is the mount path for config.
 	JMXExporterConfigMountPath = "/opt/jmx_exporter"
+	// JMXExporterDefaultConfigMapName is the default ConfigMap name for JMX Exporter config.
+	JMXExporterDefaultConfigMapName = "jmx-exporter-config"
 )
 
 // JMXExporterSidecarProvider injects the Prometheus JMX Exporter sidecar.
 type JMXExporterSidecarProvider struct {
-	name string
-	port int32
+	name          string
+	port          int32
+	configMapName string
 }
 
 // NewJMXExporterSidecarProvider creates a new JMXExporterSidecarProvider.
 func NewJMXExporterSidecarProvider() *JMXExporterSidecarProvider {
 	return &JMXExporterSidecarProvider{
-		name: JMXExporterSidecarName,
-		port: JMXExporterPort,
+		name:          JMXExporterSidecarName,
+		port:          JMXExporterPort,
+		configMapName: JMXExporterDefaultConfigMapName,
 	}
 }
+
+// NOTE: JMX Exporter uses mutating builder methods (WithPort, WithConfigMapName).
+// Vector provider uses functional options (WithImage, WithConfigMapName).
+// A future refactor should unify both to functional options for API consistency.
 
 // WithPort sets a custom metrics port.
 func (p *JMXExporterSidecarProvider) WithPort(port int32) *JMXExporterSidecarProvider {
 	p.port = port
+	return p
+}
+
+// WithConfigMapName sets a custom ConfigMap name for the JMX Exporter configuration.
+func (p *JMXExporterSidecarProvider) WithConfigMapName(name string) *JMXExporterSidecarProvider {
+	p.configMapName = name
 	return p
 }
 
@@ -61,7 +77,16 @@ func (p *JMXExporterSidecarProvider) Name() string {
 	return p.name
 }
 
+// Validate validates that the JMX Exporter ConfigMap exists.
+func (p *JMXExporterSidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
+	if err := ValidateConfigMapExists(ctx, c, namespace, p.configMapName); err != nil {
+		return fmt.Errorf("jmx-exporter config map %q not found: %w", p.configMapName, err)
+	}
+	return nil
+}
+
 // Inject injects the JMX Exporter sidecar into the pod spec.
+// This method is idempotent — calling it multiple times will not duplicate the container.
 func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarConfig) error {
 	if config == nil {
 		config = &SidecarConfig{Enabled: true}
@@ -71,6 +96,12 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	image := config.Image
 	if image == "" {
 		image = JMXExporterDefaultImage
+	}
+
+	// Get pull policy
+	pullPolicy := corev1.PullIfNotPresent
+	if config.ImagePullPolicy != "" {
+		pullPolicy = config.ImagePullPolicy
 	}
 
 	// Get port
@@ -83,7 +114,7 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	container := &corev1.Container{
 		Name:            p.name,
 		Image:           image,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: pullPolicy,
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "metrics",
@@ -123,6 +154,11 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 		container.Resources = *config.Resources
 	}
 
+	// Apply security context if provided
+	if config.SecurityContext != nil {
+		container.SecurityContext = config.SecurityContext
+	}
+
 	// Apply custom configuration
 	if len(config.EnvVars) > 0 {
 		AddEnvVars(container, config.EnvVars)
@@ -132,8 +168,8 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 		AddVolumeMounts(container, config.VolumeMounts)
 	}
 
-	// Add container to pod
-	podSpec.Containers = append(podSpec.Containers, *container)
+	// Add container to pod (idempotent — replace if exists)
+	AddOrReplaceContainer(podSpec, container)
 
 	// Add required volumes if not present
 	volumes := []corev1.Volume{
@@ -142,7 +178,7 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "jmx-exporter-config",
+						Name: p.configMapName,
 					},
 				},
 			},

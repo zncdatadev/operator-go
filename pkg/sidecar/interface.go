@@ -17,7 +17,10 @@ limitations under the License.
 package sidecar
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // SidecarConfig contains configuration for sidecar injection.
@@ -45,6 +48,13 @@ type SidecarConfig struct {
 
 	// Enabled determines if this sidecar should be injected.
 	Enabled bool
+
+	// SecurityContext defines the security context for the sidecar container.
+	SecurityContext *corev1.SecurityContext
+
+	// MainContainerName specifies which container to target for shared volume mounts.
+	// If empty, defaults to the first container in the pod spec.
+	MainContainerName string
 }
 
 // SidecarProvider defines the interface for sidecar injection.
@@ -55,4 +65,7 @@ type SidecarProvider interface {
 	// Inject injects the sidecar into the pod spec.
 	// Returns the modified pod spec or an error.
 	Inject(podSpec *corev1.PodSpec, config *SidecarConfig) error
+
+	// Validate validates the provider's dependencies (e.g., required ConfigMaps).
+	Validate(ctx context.Context, c client.Client, namespace string) error
 }
