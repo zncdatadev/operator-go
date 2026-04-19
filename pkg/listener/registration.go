@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 // ServiceRegistration declares a Kubernetes Service need mapped from a ListenerClass.
@@ -145,15 +146,9 @@ func (r *VolumeRegistration) buildVolume() corev1.Volume {
 						Annotations: r.buildAnnotations(),
 					},
 					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-						StorageClassName: func() *string {
-							v := ListenerStorageClass
-							return &v
-						}(),
-						VolumeMode: func() *corev1.PersistentVolumeMode {
-							v := corev1.PersistentVolumeFilesystem
-							return &v
-						}(),
+						AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+						StorageClassName: ptr.To(ListenerStorageClass),
+						VolumeMode:       ptr.To(corev1.PersistentVolumeFilesystem),
 						Resources: corev1.VolumeResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceStorage: resource.MustParse("1Mi"),

@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 // SecretVolumeRegistration declares a CSI secret volume need.
@@ -234,15 +235,9 @@ func (r *SecretVolumeRegistration) buildVolume() corev1.Volume {
 						Annotations: r.buildAnnotations(),
 					},
 					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-						StorageClassName: func() *string {
-							v := string(SecretStorageClass)
-							return &v
-						}(),
-						VolumeMode: func() *corev1.PersistentVolumeMode {
-							v := corev1.PersistentVolumeFilesystem
-							return &v
-						}(),
+						AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+						StorageClassName: ptr.To(string(SecretStorageClass)),
+						VolumeMode:       ptr.To(corev1.PersistentVolumeFilesystem),
 						Resources: corev1.VolumeResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceStorage: resource.MustParse(r.storageSize),

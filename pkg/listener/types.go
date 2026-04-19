@@ -16,6 +16,8 @@ limitations under the License.
 
 package listener
 
+import "k8s.io/utils/ptr"
+
 // ListenerScope defines the scope of listener volumes provisioned by listener-operator.
 type ListenerScope string
 
@@ -29,6 +31,5 @@ const (
 // ListenerStorageClassPtr returns a pointer to the ListenerStorageClass constant.
 // Useful for Kubernetes PVC spec fields that require *string.
 func ListenerStorageClassPtr() *string {
-	v := ListenerStorageClass
-	return &v
+	return ptr.To(ListenerStorageClass)
 }
