@@ -606,7 +606,7 @@ const SecretAPIGroup = "secrets." + constant.KubedoopDomain
 - 注解：`SecretClassAnnotation`、`SecretClassScopeAnnotation` 等
 - 标签：`LabelSecretsNode`、`LabelSecretsPod`、`LabelSecretsService`
 - 类型：`SecretFormat`（tls-pem、tls-p12、kerberos）、`SecretScope`（pod、node、service、listener-volume）
-- 构建器：`SecretClassVolumeBuilder`、`SecretVolumeBuilder`
+- 供给器：`SecretProvisioner`（声明式 CSI 密钥卷注册，提供 `TLS()`、`KerberosVolume()`、`Custom()` 构造函数）
 
 ### 4.15.3 核心价值
 

@@ -31,4 +31,8 @@ const (
 	KubedoopLogDir         = KubedoopRoot + "log/"
 	KubedoopConfigDirMount = KubedoopRoot + "mount/config/"
 	KubedoopLogDirMount    = KubedoopRoot + "mount/log/"
+
+	// KubedoopMountDir is the canonical base directory for all CSI secret volume mounts.
+	// No trailing slash — consumers compose paths via fmt.Sprintf("%s/keystore.p12", path).
+	KubedoopMountDir = "/kubedoop/mount"
 )
