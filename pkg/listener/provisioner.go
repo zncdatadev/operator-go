@@ -61,19 +61,19 @@ func (p *ListenerProvisioner) WithMountBasePath(basePath string) *ListenerProvis
 }
 
 // RegisterService adds service declarations to the provisioner.
-// Panics if a service with the same name is already registered, or if a service
-// name would collide with an auto-generated headless name (name + "-headless").
+// Panics if a service with the same name is already registered, or if a headless
+// service name would collide with its auto-generated headless name (name + "-headless").
 func (p *ListenerProvisioner) RegisterService(registrations ...*ServiceRegistration) *ListenerProvisioner {
 	for _, reg := range registrations {
-		headlessName := reg.name + "-headless"
 		if _, exists := p.serviceNames[reg.name]; exists {
 			panic(fmt.Sprintf("listener service %q is already registered", reg.name))
 		}
-		if _, exists := p.serviceNames[headlessName]; exists {
-			panic(fmt.Sprintf("listener service %q collides with existing headless service name", reg.name))
-		}
 		p.serviceNames[reg.name] = struct{}{}
 		if reg.headless {
+			headlessName := reg.name + "-headless"
+			if _, exists := p.serviceNames[headlessName]; exists {
+				panic(fmt.Sprintf("listener service %q collides with existing headless service name", reg.name))
+			}
 			p.serviceNames[headlessName] = struct{}{}
 		}
 		p.serviceRegs = append(p.serviceRegs, reg)

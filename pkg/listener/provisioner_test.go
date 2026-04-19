@@ -271,11 +271,38 @@ var _ = Describe("ListenerProvisioner", func() {
 		It("should panic when service name collides with headless name", func() {
 			Expect(func() {
 				provisioner.RegisterService(
+					listener.NewService("zk", listener.ListenerClassClusterInternal),
+				)
+				provisioner.RegisterService(
 					listener.NewService("zk", listener.ListenerClassClusterInternal).
 						WithHeadless(true),
 				)
+			}).To(Panic())
+		})
+
+		It("should allow non-headless service with headless-suffix name after headless registration", func() {
+			provisioner.RegisterService(
+				listener.NewService("zk", listener.ListenerClassClusterInternal).
+					WithHeadless(true),
+			)
+			// Registering "zk-headless" as a regular service should panic
+			Expect(func() {
 				provisioner.RegisterService(
 					listener.NewService("zk-headless", listener.ListenerClassClusterInternal),
+				)
+			}).To(Panic())
+		})
+
+		It("should allow registering non-headless service when headless-suffix name is taken", func() {
+			// Register "zk-headless" first as a regular service
+			provisioner.RegisterService(
+				listener.NewService("zk-headless", listener.ListenerClassClusterInternal),
+			)
+			// Then registering "zk" with headless=true should panic (headless name collision)
+			Expect(func() {
+				provisioner.RegisterService(
+					listener.NewService("zk", listener.ListenerClassClusterInternal).
+						WithHeadless(true),
 				)
 			}).To(Panic())
 		})
