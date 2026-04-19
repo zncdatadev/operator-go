@@ -18,6 +18,7 @@ package listener
 
 import (
 	"github.com/zncdatadev/operator-go/pkg/constant"
+	"k8s.io/utils/ptr"
 )
 
 // ListenerClass defines the exposure strategy.
@@ -30,6 +31,16 @@ const (
 	ListenerClassExternalStable ListenerClass = "external-stable"
 	// ListenerClassExternalUnstable creates LoadBalancer with dynamic IPs.
 	ListenerClassExternalUnstable ListenerClass = "external-unstable"
+)
+
+// ListenerScope defines the scope of listener volumes provisioned by listener-operator.
+type ListenerScope string
+
+const (
+	// ListenerScopeNode limits listener discovery to the node level.
+	ListenerScopeNode ListenerScope = "Node"
+	// ListenerScopeCluster enables listener discovery across the cluster.
+	ListenerScopeCluster ListenerScope = "Cluster"
 )
 
 // Listener constants for listener-operator CSI integration.
@@ -48,3 +59,9 @@ const (
 	// AnnotationListenerName identifies the listener. Defaults to pod name if unset.
 	AnnotationListenerName = listenerAPIGroupPrefix + "listenerName"
 )
+
+// ListenerStorageClassPtr returns a pointer to the ListenerStorageClass constant.
+// Useful for Kubernetes PVC spec fields that require *string.
+func ListenerStorageClassPtr() *string {
+	return ptr.To(ListenerStorageClass)
+}
