@@ -76,6 +76,9 @@ func TLSPEMFormat(volumeName, secretClass string) *SecretVolumeRegistration {
 // serviceName is required and specifies the primary Kerberos service principal name.
 // Additional service names can be provided via variadic arguments.
 func KerberosVolume(volumeName, secretClass, serviceName string, additionalServiceNames ...string) *SecretVolumeRegistration {
+	if serviceName == "" {
+		panic("serviceName is required for Kerberos volume")
+	}
 	svcNames := append([]string{serviceName}, additionalServiceNames...)
 	return &SecretVolumeRegistration{
 		volumeName:       volumeName,
@@ -191,8 +194,8 @@ func (r *SecretVolumeRegistration) buildAnnotations() map[string]string {
 		AnnotationSecretsFormat:    string(r.format),
 	}
 
-	// PKCS12 password for TLS formats
-	if r.password != "" {
+	// PKCS12 password is only applicable to PKCS12 format
+	if r.password != "" && r.format == TLSP12 {
 		annotations[AnnotationSecretsPKCS12Password] = r.password
 	}
 
@@ -276,9 +279,13 @@ func NewSecretProvisioner() *SecretProvisioner {
 }
 
 // WithMountBasePath overrides the default mount base path.
-// Trailing slashes are stripped automatically.
+// The path is normalized automatically while preserving the root path ("/").
 func (p *SecretProvisioner) WithMountBasePath(basePath string) *SecretProvisioner {
-	p.mountBasePath = strings.TrimRight(basePath, "/")
+	if basePath == "" {
+		p.mountBasePath = ""
+		return p
+	}
+	p.mountBasePath = path.Clean(basePath)
 	return p
 }
 

@@ -276,6 +276,54 @@ var _ = Describe("SecretProvisioner", func() {
 		})
 	})
 
+	Describe("KerberosVolume Validation", func() {
+		It("should panic when serviceName is empty", func() {
+			Expect(func() {
+				security.KerberosVolume("zk-keytab", "krb-class", "")
+			}).To(Panic())
+		})
+	})
+
+	Describe("PKCS12 Password Scope", func() {
+		It("should not emit password annotation for PEM format even if password is set", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLSPEMFormat("pem-vol", "pem-class").WithPassword("should-be-ignored"))
+
+			vols := prov.Volumes()
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			_, hasPassword := annotations[security.AnnotationSecretsPKCS12Password]
+			Expect(hasPassword).To(BeFalse())
+		})
+
+		It("should not emit password annotation for Kerberos format even if password is set", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.KerberosVolume("krb-vol", "krb-class", "zookeeper").WithPassword("should-be-ignored"))
+
+			vols := prov.Volumes()
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			_, hasPassword := annotations[security.AnnotationSecretsPKCS12Password]
+			Expect(hasPassword).To(BeFalse())
+		})
+	})
+
+	Describe("WithMountBasePath Edge Cases", func() {
+		It("should preserve root path /", func() {
+			prov := security.NewSecretProvisioner().WithMountBasePath("/")
+			prov.Register(security.TLS("my-tls", "my-class"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts[0].MountPath).To(Equal("/my-tls"))
+		})
+
+		It("should normalize paths with double slashes", func() {
+			prov := security.NewSecretProvisioner().WithMountBasePath("//custom//mount//")
+			prov.Register(security.TLS("my-tls", "my-class"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts[0].MountPath).To(Equal("/custom/mount/my-tls"))
+		})
+	})
+
 	Describe("ListenerVolume", func() {
 		It("should build a volume with listener-volume scope", func() {
 			prov := security.NewSecretProvisioner()
