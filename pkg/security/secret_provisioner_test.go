@@ -14,209 +14,246 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package security
+package security_test
 
 import (
 	"fmt"
-	"testing"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/builder"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/zncdatadev/operator-go/pkg/security"
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestTLSRegistration(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(TLS("server-tls", "my-secret-class").WithPassword("mypass"))
+var _ = Describe("SecretProvisioner", func() {
+	Describe("TLS Registration", func() {
+		It("should build a TLS P12 volume with correct annotations", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLS("server-tls", "my-secret-class").WithPassword("mypass"))
 
-	vols := prov.Volumes()
-	require.Len(t, vols, 1)
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
 
-	vol := vols[0]
-	assert.Equal(t, "server-tls", vol.Name)
-	require.NotNil(t, vol.Ephemeral)
-	require.NotNil(t, vol.Ephemeral.VolumeClaimTemplate)
+			vol := vols[0]
+			Expect(vol.Name).To(Equal("server-tls"))
+			Expect(vol.Ephemeral).NotTo(BeNil())
+			Expect(vol.Ephemeral.VolumeClaimTemplate).NotTo(BeNil())
 
-	pvc := vol.Ephemeral.VolumeClaimTemplate
-	annotations := pvc.Annotations
-	assert.Equal(t, "my-secret-class", annotations[SecretClassAnnotation])
-	assert.Equal(t, "pod,node", annotations[SecretClassScopeAnnotation])
-	assert.Equal(t, "tls-p12", annotations[AnnotationSecretsFormat])
-	assert.Equal(t, "mypass", annotations[AnnotationSecretsPKCS12Password])
-	assert.Equal(t, "secrets.kubedoop.dev", *pvc.Spec.StorageClassName)
-	assert.Equal(t, corev1.ReadWriteOnce, pvc.Spec.AccessModes[0])
-	require.NotNil(t, pvc.Spec.VolumeMode)
-	assert.Equal(t, corev1.PersistentVolumeFilesystem, *pvc.Spec.VolumeMode)
-	assert.Equal(t, "10Mi", pvc.Spec.Resources.Requests.Storage().String())
+			pvc := vol.Ephemeral.VolumeClaimTemplate
+			annotations := pvc.Annotations
+			Expect(annotations[security.SecretClassAnnotation]).To(Equal("my-secret-class"))
+			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("pod,node"))
+			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("tls-p12"))
+			Expect(annotations[security.AnnotationSecretsPKCS12Password]).To(Equal("mypass"))
+			Expect(*pvc.Spec.StorageClassName).To(Equal("secrets.kubedoop.dev"))
+			Expect(pvc.Spec.AccessModes[0]).To(Equal(corev1.ReadWriteOnce))
+			Expect(*pvc.Spec.VolumeMode).To(Equal(corev1.PersistentVolumeFilesystem))
+			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("10Mi"))
 
-	mounts := prov.VolumeMounts()
-	require.Len(t, mounts, 1)
-	assert.Equal(t, "server-tls", mounts[0].Name)
-	assert.Equal(t, "/kubedoop/mount/server-tls", mounts[0].MountPath)
-	assert.True(t, mounts[0].ReadOnly)
-}
-
-func TestTLSPEMRegistration(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(TLSPEMFormat("client-pem", "pem-class"))
-
-	vols := prov.Volumes()
-	require.Len(t, vols, 1)
-
-	annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
-	assert.Equal(t, "tls-pem", annotations[AnnotationSecretsFormat])
-	// PEM format should not have PKCS12 password
-	_, hasPassword := annotations[AnnotationSecretsPKCS12Password]
-	assert.False(t, hasPassword, "PEM format should not have PKCS12 password annotation")
-}
-
-func TestKerberosVolumeRegistration(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(KerberosVolume("zk-keytab", "krb-class").
-		WithKerberosServiceNames("zookeeper", "zk"))
-
-	vols := prov.Volumes()
-	require.Len(t, vols, 1)
-
-	annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
-	assert.Equal(t, "kerberos", annotations[AnnotationSecretsFormat])
-	assert.Equal(t, "zookeeper,zk", annotations[AnnotationSecretsKerberosServiceNames])
-	// Kerberos should not have PKCS12 password
-	_, hasPassword := annotations[AnnotationSecretsPKCS12Password]
-	assert.False(t, hasPassword, "Kerberos format should not have PKCS12 password")
-
-	mounts := prov.VolumeMounts()
-	require.Len(t, mounts, 1)
-	assert.Equal(t, "/kubedoop/mount/zk-keytab", mounts[0].MountPath)
-}
-
-func TestCustomScope(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(TLS("broker-tls", "broker-class").
-		WithScope("pod,node,service=zk-server"))
-
-	vols := prov.Volumes()
-	require.Len(t, vols, 1)
-
-	annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
-	assert.Equal(t, "pod,node,service=zk-server", annotations[SecretClassScopeAnnotation])
-}
-
-func TestCertRotationAnnotations(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(TLS("server-tls", "my-class").
-		WithCertLifetime(168 * time.Hour).
-		WithCertJitter(0.2).
-		WithCertBuffer(8 * time.Hour))
-
-	vols := prov.Volumes()
-	require.Len(t, vols, 1)
-
-	annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
-	assert.Equal(t, "168h0m0s", annotations[AnnotationSecretsCertLifetime])
-	assert.Equal(t, "0.2", annotations[AnnotationSecretsCertJitterFactor])
-	assert.Equal(t, "8h0m0s", annotations[AnnotationSecretsCertRestartBuffer])
-}
-
-func TestAutoInject(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(
-		TLS("server-tls", "server-class"),
-		KerberosVolume("zk-keytab", "krb-class"),
-	)
-
-	stsBuilder := builder.NewStatefulSetBuilder("test-sts", "default")
-	prov.AutoInject(stsBuilder)
-
-	require.Len(t, stsBuilder.Volumes, 2)
-	require.Len(t, stsBuilder.VolumeMounts, 2)
-
-	assert.Equal(t, "server-tls", stsBuilder.Volumes[0].Name)
-	assert.Equal(t, "zk-keytab", stsBuilder.Volumes[1].Name)
-	assert.Equal(t, "/kubedoop/mount/server-tls", stsBuilder.VolumeMounts[0].MountPath)
-	assert.Equal(t, "/kubedoop/mount/zk-keytab", stsBuilder.VolumeMounts[1].MountPath)
-}
-
-func TestPathAPI(t *testing.T) {
-	prov := NewSecretProvisioner()
-	prov.Register(
-		TLS("server-tls", "server-class"),
-		TLS("quorum-tls", "quorum-class"),
-	)
-
-	// Path() returns without trailing slash
-	path, err := prov.Path("server-tls")
-	assert.NoError(t, err)
-	assert.Equal(t, "/kubedoop/mount/server-tls", path)
-	assert.NotContains(t, path[len("/kubedoop/mount/"):], "/", "Path should have no trailing slash")
-
-	path2, err := prov.Path("quorum-tls")
-	assert.NoError(t, err)
-	assert.Equal(t, "/kubedoop/mount/quorum-tls", path2)
-
-	// Unregistered name returns error
-	_, err = prov.Path("nonexistent")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not registered")
-
-	// MustPath returns correct path
-	assert.Equal(t, "/kubedoop/mount/server-tls", prov.MustPath("server-tls"))
-
-	// MustPath panics on unregistered name
-	assert.Panics(t, func() {
-		prov.MustPath("nonexistent")
+			mounts := prov.VolumeMounts()
+			Expect(mounts).To(HaveLen(1))
+			Expect(mounts[0].Name).To(Equal("server-tls"))
+			Expect(mounts[0].MountPath).To(Equal("/kubedoop/mount/server-tls"))
+			Expect(mounts[0].ReadOnly).To(BeTrue())
+		})
 	})
-}
 
-func TestDefaultValues(t *testing.T) {
-	reg := TLS("test-vol", "test-class")
+	Describe("TLS PEM Registration", func() {
+		It("should build a TLS PEM volume without PKCS12 password", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLSPEMFormat("client-pem", "pem-class"))
 
-	assert.Equal(t, "pod,node", reg.scope)
-	assert.Equal(t, "changeit", reg.password)
-	assert.Equal(t, "10Mi", reg.storageSize)
-	assert.Equal(t, TLSP12, reg.format)
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
 
-	prov := NewSecretProvisioner()
-	prov.Register(reg)
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("tls-pem"))
+			_, hasPassword := annotations[security.AnnotationSecretsPKCS12Password]
+			Expect(hasPassword).To(BeFalse())
+		})
+	})
 
-	vols := prov.Volumes()
-	require.Len(t, vols, 1)
+	Describe("Kerberos Volume Registration", func() {
+		It("should build a Kerberos volume with service names", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.KerberosVolume("zk-keytab", "krb-class").
+				WithKerberosServiceNames("zookeeper", "zk"))
 
-	pvc := vols[0].Ephemeral.VolumeClaimTemplate
-	assert.Equal(t, "10Mi", pvc.Spec.Resources.Requests.Storage().String())
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
 
-	mounts := prov.VolumeMounts()
-	require.Len(t, mounts, 1)
-	assert.True(t, mounts[0].ReadOnly, "Default mount should be ReadOnly=true")
-}
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("kerberos"))
+			Expect(annotations[security.AnnotationSecretsKerberosServiceNames]).To(Equal("zookeeper,zk"))
+			_, hasPassword := annotations[security.AnnotationSecretsPKCS12Password]
+			Expect(hasPassword).To(BeFalse())
 
-func TestConfigIntegration(t *testing.T) {
-	// Simulates the full ZK config generation flow
-	prov := NewSecretProvisioner()
-	prov.Register(
-		TLS("server-tls", "server-class"),
-		TLS("quorum-tls", "quorum-class"),
-	)
+			mounts := prov.VolumeMounts()
+			Expect(mounts).To(HaveLen(1))
+			Expect(mounts[0].MountPath).To(Equal("/kubedoop/mount/zk-keytab"))
+		})
+	})
 
-	// Verify volumes and mounts are generated correctly
-	vols := prov.Volumes()
-	mounts := prov.VolumeMounts()
-	assert.Len(t, vols, 2)
-	assert.Len(t, mounts, 2)
+	Describe("Custom Scope", func() {
+		It("should set custom scope annotation", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLS("broker-tls", "broker-class").
+				WithScope("pod,node,service=zk-server"))
 
-	// Simulate config generation using Path() API
-	// This mirrors how ZK operator would compose zoo.cfg properties
-	keystorePath := fmt.Sprintf("%s/keystore.p12", prov.MustPath("server-tls"))
-	truststorePath := fmt.Sprintf("%s/truststore.p12", prov.MustPath("server-tls"))
-	quorumKeystorePath := fmt.Sprintf("%s/keystore.p12", prov.MustPath("quorum-tls"))
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
 
-	assert.Equal(t, "/kubedoop/mount/server-tls/keystore.p12", keystorePath)
-	assert.Equal(t, "/kubedoop/mount/server-tls/truststore.p12", truststorePath)
-	assert.Equal(t, "/kubedoop/mount/quorum-tls/keystore.p12", quorumKeystorePath)
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("pod,node,service=zk-server"))
+		})
+	})
 
-	// Verify no double slashes (trailing slash safety)
-	assert.NotContains(t, keystorePath, "//", "Path composition should not produce double slashes")
-	assert.NotContains(t, quorumKeystorePath, "//", "Path composition should not produce double slashes")
-}
+	Describe("Cert Rotation Annotations", func() {
+		It("should set lifetime, jitter, and buffer annotations", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLS("server-tls", "my-class").
+				WithCertLifetime(168 * time.Hour).
+				WithCertJitter(0.2).
+				WithCertBuffer(8 * time.Hour))
+
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
+
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.AnnotationSecretsCertLifetime]).To(Equal("168h0m0s"))
+			Expect(annotations[security.AnnotationSecretsCertJitterFactor]).To(Equal("0.2"))
+			Expect(annotations[security.AnnotationSecretsCertRestartBuffer]).To(Equal("8h0m0s"))
+		})
+	})
+
+	Describe("AutoInject", func() {
+		It("should inject volumes and mounts into StatefulSetBuilder", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(
+				security.TLS("server-tls", "server-class"),
+				security.KerberosVolume("zk-keytab", "krb-class"),
+			)
+
+			stsBuilder := builder.NewStatefulSetBuilder("test-sts", "default")
+			prov.AutoInject(stsBuilder)
+
+			Expect(stsBuilder.Volumes).To(HaveLen(2))
+			Expect(stsBuilder.VolumeMounts).To(HaveLen(2))
+			Expect(stsBuilder.Volumes[0].Name).To(Equal("server-tls"))
+			Expect(stsBuilder.Volumes[1].Name).To(Equal("zk-keytab"))
+			Expect(stsBuilder.VolumeMounts[0].MountPath).To(Equal("/kubedoop/mount/server-tls"))
+			Expect(stsBuilder.VolumeMounts[1].MountPath).To(Equal("/kubedoop/mount/zk-keytab"))
+		})
+	})
+
+	Describe("Path API", func() {
+		It("should return mount paths and handle errors", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(
+				security.TLS("server-tls", "server-class"),
+				security.TLS("quorum-tls", "quorum-class"),
+			)
+
+			p, err := prov.Path("server-tls")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p).To(Equal("/kubedoop/mount/server-tls"))
+			Expect(p[len("/kubedoop/mount/"):]).NotTo(ContainSubstring("/"))
+
+			p2, err := prov.Path("quorum-tls")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p2).To(Equal("/kubedoop/mount/quorum-tls"))
+
+			_, err = prov.Path("nonexistent")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not registered"))
+
+			Expect(prov.MustPath("server-tls")).To(Equal("/kubedoop/mount/server-tls"))
+
+			Expect(func() { prov.MustPath("nonexistent") }).To(Panic())
+		})
+	})
+
+	Describe("Default Values", func() {
+		It("should have correct TLS defaults through the public API", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLS("test-vol", "test-class"))
+
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
+
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("pod,node"))
+			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("tls-p12"))
+			Expect(annotations[security.AnnotationSecretsPKCS12Password]).To(Equal("changeit"))
+
+			pvc := vols[0].Ephemeral.VolumeClaimTemplate
+			Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("10Mi"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts).To(HaveLen(1))
+			Expect(mounts[0].ReadOnly).To(BeTrue())
+		})
+
+		It("should omit password when WithNoPassword is called", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLS("test-vol", "test-class").WithNoPassword())
+
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
+
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			_, hasPassword := annotations[security.AnnotationSecretsPKCS12Password]
+			Expect(hasPassword).To(BeFalse())
+		})
+	})
+
+	Describe("Config Integration", func() {
+		It("should compose file paths correctly without double slashes", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(
+				security.TLS("server-tls", "server-class"),
+				security.TLS("quorum-tls", "quorum-class"),
+			)
+
+			vols := prov.Volumes()
+			mounts := prov.VolumeMounts()
+			Expect(vols).To(HaveLen(2))
+			Expect(mounts).To(HaveLen(2))
+
+			keystorePath := fmt.Sprintf("%s/keystore.p12", prov.MustPath("server-tls"))
+			truststorePath := fmt.Sprintf("%s/truststore.p12", prov.MustPath("server-tls"))
+			quorumKeystorePath := fmt.Sprintf("%s/keystore.p12", prov.MustPath("quorum-tls"))
+
+			Expect(keystorePath).To(Equal("/kubedoop/mount/server-tls/keystore.p12"))
+			Expect(truststorePath).To(Equal("/kubedoop/mount/server-tls/truststore.p12"))
+			Expect(quorumKeystorePath).To(Equal("/kubedoop/mount/quorum-tls/keystore.p12"))
+
+			Expect(keystorePath).NotTo(ContainSubstring("//"))
+			Expect(quorumKeystorePath).NotTo(ContainSubstring("//"))
+		})
+	})
+
+	Describe("Duplicate Registration", func() {
+		It("should panic on duplicate volume name", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.TLS("tls", "class"))
+			Expect(func() {
+				prov.Register(security.TLS("tls", "other-class"))
+			}).To(Panic())
+		})
+	})
+
+	Describe("WithMountBasePath", func() {
+		It("should handle trailing slashes in custom base path", func() {
+			prov := security.NewSecretProvisioner().WithMountBasePath("/custom/mount/")
+			prov.Register(security.TLS("my-tls", "my-class"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts).To(HaveLen(1))
+			Expect(mounts[0].MountPath).To(Equal("/custom/mount/my-tls"))
+			Expect(mounts[0].MountPath).NotTo(ContainSubstring("//"))
+		})
+	})
+})

@@ -18,6 +18,7 @@ package security
 
 import (
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -28,27 +29,27 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// DefaultMountBasePath is the canonical base directory for all CSI secret volume mounts.
-// Aliased from constant.KubedoopMountDir for single source of truth.
-var DefaultMountBasePath = constant.KubedoopMountDir
-
 // SecretVolumeRegistration declares a CSI secret volume need.
 // Created via convenience constructors (TLS, Kerberos) or Custom builder.
 type SecretVolumeRegistration struct {
-	volumeName        string
-	secretClass       string
-	format            SecretFormat
-	scope             string
-	password          string
-	storageSize       string
-	certLifetime      *time.Duration
-	certJitter        *float64
-	certBuffer        *time.Duration
-	kerberosSvcNames  []string
-	extraAnnotations  map[string]string
+	volumeName       string
+	secretClass      string
+	format           SecretFormat
+	scope            string
+	password         string
+	storageSize      string
+	certLifetime     *time.Duration
+	certJitter       *float64
+	certBuffer       *time.Duration
+	kerberosSvcNames []string
+	extraAnnotations map[string]string
 }
 
 // TLS creates a TLS PKCS12 secret volume registration with scope "pod,node".
+//
+// Note: the default PKCS12 password "changeit" is stored as a PVC template annotation
+// and is therefore visible in etcd to anyone with get/pvc access.
+// Use WithPassword() to set a custom password or WithNoPassword() to omit it.
 func TLS(volumeName, secretClass string) *SecretVolumeRegistration {
 	return &SecretVolumeRegistration{
 		volumeName:  volumeName,
@@ -102,6 +103,12 @@ func (r *SecretVolumeRegistration) WithScope(scope string) *SecretVolumeRegistra
 // WithPassword sets the PKCS12 password. Default is "changeit" for TLS P12 format.
 func (r *SecretVolumeRegistration) WithPassword(password string) *SecretVolumeRegistration {
 	r.password = password
+	return r
+}
+
+// WithNoPassword removes the PKCS12 password annotation from the volume.
+func (r *SecretVolumeRegistration) WithNoPassword() *SecretVolumeRegistration {
+	r.password = ""
 	return r
 }
 
@@ -224,19 +231,22 @@ func (r *SecretVolumeRegistration) buildVolume() corev1.Volume {
 //   - AutoInject() for operators using StatefulSetBuilder
 type SecretProvisioner struct {
 	registrations []*SecretVolumeRegistration
+	volumeNames   map[string]struct{}
 	mountBasePath string
 }
 
 // NewSecretProvisioner creates a provisioner with the default mount base path.
 func NewSecretProvisioner() *SecretProvisioner {
 	return &SecretProvisioner{
-		mountBasePath: DefaultMountBasePath,
+		mountBasePath: constant.KubedoopMountDir,
+		volumeNames:   make(map[string]struct{}),
 	}
 }
 
-// WithMountBasePath overrides the default mount base path ("/kubedoop/mount").
-func (p *SecretProvisioner) WithMountBasePath(path string) *SecretProvisioner {
-	p.mountBasePath = path
+// WithMountBasePath overrides the default mount base path.
+// Trailing slashes are stripped automatically.
+func (p *SecretProvisioner) WithMountBasePath(basePath string) *SecretProvisioner {
+	p.mountBasePath = strings.TrimRight(basePath, "/")
 	return p
 }
 
@@ -244,11 +254,10 @@ func (p *SecretProvisioner) WithMountBasePath(path string) *SecretProvisioner {
 // Panics if a volume with the same name is already registered.
 func (p *SecretProvisioner) Register(registrations ...*SecretVolumeRegistration) *SecretProvisioner {
 	for _, reg := range registrations {
-		for _, existing := range p.registrations {
-			if existing.volumeName == reg.volumeName {
-				panic(fmt.Sprintf("secret volume %q is already registered", reg.volumeName))
-			}
+		if _, exists := p.volumeNames[reg.volumeName]; exists {
+			panic(fmt.Sprintf("secret volume %q is already registered", reg.volumeName))
 		}
+		p.volumeNames[reg.volumeName] = struct{}{}
 		p.registrations = append(p.registrations, reg)
 	}
 	return p
@@ -304,11 +313,11 @@ func (p *SecretProvisioner) Path(volumeName string) (string, error) {
 //
 //	provisioner.MustPath("server-tls") // => "/kubedoop/mount/server-tls"
 func (p *SecretProvisioner) MustPath(volumeName string) string {
-	path, err := p.Path(volumeName)
+	result, err := p.Path(volumeName)
 	if err != nil {
 		panic(err)
 	}
-	return path
+	return result
 }
 
 // AutoInject adds all registered volumes and mounts to a StatefulSetBuilder.
@@ -325,5 +334,5 @@ func (p *SecretProvisioner) AutoInject(stsBuilder *builder.StatefulSetBuilder) {
 
 // mountPath returns the full mount path for a volume name (no trailing slash).
 func (p *SecretProvisioner) mountPath(volumeName string) string {
-	return p.mountBasePath + "/" + volumeName
+	return path.Join(p.mountBasePath, volumeName)
 }
