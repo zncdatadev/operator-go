@@ -18,9 +18,6 @@ package listener
 
 import (
 	"github.com/zncdatadev/operator-go/pkg/constant"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ListenerClass defines the exposure strategy.
@@ -35,8 +32,8 @@ const (
 	ListenerClassExternalUnstable ListenerClass = "external-unstable"
 )
 
-// ListenerAPIGroup is the CSI driver API group for listener-operator.
-// All listener constants derive from this via KubedoopDomain for single source of truth.
+// Listener constants for listener-operator CSI integration.
+// All annotations and labels derive from KubedoopDomain for single source of truth.
 const (
 	ListenerAPIGroup       = "listeners." + constant.KubedoopDomain
 	ListenerStorageClass   = ListenerAPIGroup
@@ -51,65 +48,3 @@ const (
 	// AnnotationListenerName identifies the listener. Defaults to pod name if unset.
 	AnnotationListenerName = listenerAPIGroupPrefix + "listenerName"
 )
-
-// ListenerStorageClassPtr returns a pointer to the ListenerStorageClass.
-func ListenerStorageClassPtr() *string {
-	v := ListenerStorageClass
-	return &v
-}
-
-// ListenerVolumeBuilder builds PVCs for listener-operator CSI integration.
-type ListenerVolumeBuilder struct {
-	listenerClass ListenerClass
-	scope         string
-}
-
-// NewListenerVolumeBuilder creates a new ListenerVolumeBuilder.
-func NewListenerVolumeBuilder(listenerClass ListenerClass) *ListenerVolumeBuilder {
-	return &ListenerVolumeBuilder{
-		listenerClass: listenerClass,
-	}
-}
-
-// WithScope sets the scope (pod, service, node).
-func (b *ListenerVolumeBuilder) WithScope(scope string) *ListenerVolumeBuilder {
-	b.scope = scope
-	return b
-}
-
-// BuildPVC creates a PersistentVolumeClaim with listener annotations.
-func (b *ListenerVolumeBuilder) BuildPVC(name string) corev1.PersistentVolumeClaim {
-	annotations := map[string]string{
-		ListenerClassAnnotation: string(b.listenerClass),
-	}
-
-	if b.scope != "" {
-		annotations[ListenerScopeAnnotation] = b.scope
-	}
-
-	return corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{
-				corev1.ReadWriteOnce,
-			},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("1Mi"),
-				},
-			},
-		},
-	}
-}
-
-// BuildVolumeMount creates a VolumeMount for the listener volume.
-func (b *ListenerVolumeBuilder) BuildVolumeMount(name, mountPath string) corev1.VolumeMount {
-	return corev1.VolumeMount{
-		Name:      name,
-		MountPath: mountPath,
-		ReadOnly:  true,
-	}
-}

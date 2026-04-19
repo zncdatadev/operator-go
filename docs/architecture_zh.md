@@ -599,7 +599,7 @@ const SecretAPIGroup = "secrets." + constant.KubedoopDomain
 - `ListenerAPIGroup`、`ListenerStorageClass`、`CSIDriverName`
 - 注解：`ListenerClassAnnotation`、`ListenerScopeAnnotation`、`AnnotationListenerName`
 - 类型：`ListenerClass`（cluster-internal、external-stable、external-unstable）
-- 构建器：`ListenerVolumeBuilder`
+- 供给器：`ListenerProvisioner`（声明式 CSI 监听器卷和服务注册，提供 `RegisterService()`、`RegisterVolume()`、`AutoInject()` 方法）
 
 **`pkg/security/`** — Secret-operator 常量：
 - `SecretAPIGroup`、`SecretStorageClass`、`CSIDriverName`

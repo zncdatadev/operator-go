@@ -566,7 +566,7 @@ const KubedoopDomain = "kubedoop.dev"
 Domain packages derive their constants from this root:
 
 ```go
-// pkg/listener/volume_builder.go
+// pkg/listener/volume_builder.go (constants)
 const ListenerAPIGroup = "listeners." + constant.KubedoopDomain
 
 // pkg/security/secret_class.go
@@ -596,7 +596,7 @@ This ensures changing the organization domain requires updating only one constan
 - `ListenerAPIGroup`, `ListenerStorageClass`, `CSIDriverName`
 - Annotations: `ListenerClassAnnotation`, `ListenerScopeAnnotation`, `AnnotationListenerName`
 - Types: `ListenerClass` (cluster-internal, external-stable, external-unstable)
-- Builders: `ListenerVolumeBuilder`
+- Provisioner: `ListenerProvisioner` (declarative CSI listener volume and service registration with `RegisterService()`, `RegisterVolume()`, `AutoInject()`)
 
 **`pkg/security/`** — Secret operator constants:
 - `SecretAPIGroup`, `SecretStorageClass`, `CSIDriverName`

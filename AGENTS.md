@@ -80,7 +80,7 @@ operator-go/
 │   ├── builder/                  # Fluent resource builders (see pkg/builder/AGENTS.md)
 │   ├── common/                   # Core interfaces, extensions, errors
 │   ├── config/                   # Config generation, merging, logging (see pkg/config/AGENTS.md)
-│   ├── listener/                 # Listener volume and service builders
+│   ├── listener/                 # Listener provisioner (CSI volume and service registration)
 │   ├── reconciler/               # Reconciliation framework (see pkg/reconciler/AGENTS.md)
 │   ├── security/                 # Pod security, secret class handling
 │   ├── sidecar/                  # Sidecar injection framework (SidecarManager, SidecarProvider interface)
