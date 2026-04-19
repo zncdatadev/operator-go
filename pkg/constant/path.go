@@ -31,4 +31,8 @@ const (
 	KubedoopLogDir         = KubedoopRoot + "log/"
 	KubedoopConfigDirMount = KubedoopRoot + "mount/config/"
 	KubedoopLogDirMount    = KubedoopRoot + "mount/log/"
+
+	// KubedoopMountDir is the canonical base directory for all CSI secret volume mounts.
+	// Consumers should use path.Join or the SecretProvisioner API to compose sub-paths.
+	KubedoopMountDir = KubedoopRoot + "mount/"
 )

@@ -603,7 +603,7 @@ This ensures changing the organization domain requires updating only one constan
 - Annotations: `SecretClassAnnotation`, `SecretClassScopeAnnotation`, etc.
 - Labels: `LabelSecretsNode`, `LabelSecretsPod`, `LabelSecretsService`
 - Types: `SecretFormat` (tls-pem, tls-p12, kerberos), `SecretScope` (pod, node, service, listener-volume)
-- Builders: `SecretClassVolumeBuilder`, `SecretVolumeBuilder`
+- Provisioner: `SecretProvisioner` (declarative CSI secret volume registration with `TLS()`, `KerberosVolume()`, `Custom()` constructors)
 
 ### 4.15.3 Core Value
 
