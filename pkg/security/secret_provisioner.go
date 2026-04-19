@@ -73,12 +73,44 @@ func TLSPEMFormat(volumeName, secretClass string) *SecretVolumeRegistration {
 }
 
 // KerberosVolume creates a Kerberos keytab secret volume registration with scope "pod,node".
-func KerberosVolume(volumeName, secretClass string) *SecretVolumeRegistration {
+// serviceName is required and specifies the primary Kerberos service principal name.
+// Additional service names can be provided via variadic arguments.
+func KerberosVolume(volumeName, secretClass, serviceName string, additionalServiceNames ...string) *SecretVolumeRegistration {
+	svcNames := append([]string{serviceName}, additionalServiceNames...)
+	return &SecretVolumeRegistration{
+		volumeName:       volumeName,
+		secretClass:      secretClass,
+		format:           Kerberos,
+		scope:            string(PodScope) + CommonDelimiter + string(NodeScope),
+		storageSize:      "10Mi",
+		kerberosSvcNames: svcNames,
+	}
+}
+
+// ServiceTLS creates a TLS PKCS12 secret volume registration with scope "pod,node,service=<serviceName>".
+// This is used for service-scoped TLS certificates where each service instance gets a unique certificate.
+//
+// Note: the default PKCS12 password "changeit" is stored as a PVC template annotation.
+// Use WithPassword() to set a custom password or WithNoPassword() to omit it.
+func ServiceTLS(volumeName, secretClass, serviceName string) *SecretVolumeRegistration {
 	return &SecretVolumeRegistration{
 		volumeName:  volumeName,
 		secretClass: secretClass,
-		format:      Kerberos,
-		scope:       string(PodScope) + CommonDelimiter + string(NodeScope),
+		format:      TLSP12,
+		scope:       string(PodScope) + CommonDelimiter + string(NodeScope) + CommonDelimiter + "service=" + serviceName,
+		password:    "changeit",
+		storageSize: "10Mi",
+	}
+}
+
+// ListenerVolume creates a secret volume registration with "listener-volume" scope.
+// This is used for listener-scoped secrets shared across service instances.
+func ListenerVolume(volumeName, secretClass string, format SecretFormat) *SecretVolumeRegistration {
+	return &SecretVolumeRegistration{
+		volumeName:  volumeName,
+		secretClass: secretClass,
+		format:      format,
+		scope:       string(ListenerVolumeScope),
 		storageSize: "10Mi",
 	}
 }

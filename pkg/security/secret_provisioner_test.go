@@ -78,8 +78,7 @@ var _ = Describe("SecretProvisioner", func() {
 	Describe("Kerberos Volume Registration", func() {
 		It("should build a Kerberos volume with service names", func() {
 			prov := security.NewSecretProvisioner()
-			prov.Register(security.KerberosVolume("zk-keytab", "krb-class").
-				WithKerberosServiceNames("zookeeper", "zk"))
+			prov.Register(security.KerberosVolume("zk-keytab", "krb-class", "zookeeper", "zk"))
 
 			vols := prov.Volumes()
 			Expect(vols).To(HaveLen(1))
@@ -133,7 +132,7 @@ var _ = Describe("SecretProvisioner", func() {
 			prov := security.NewSecretProvisioner()
 			prov.Register(
 				security.TLS("server-tls", "server-class"),
-				security.KerberosVolume("zk-keytab", "krb-class"),
+				security.KerberosVolume("zk-keytab", "krb-class", "zookeeper"),
 			)
 
 			stsBuilder := builder.NewStatefulSetBuilder("test-sts", "default")
@@ -254,6 +253,44 @@ var _ = Describe("SecretProvisioner", func() {
 			Expect(mounts).To(HaveLen(1))
 			Expect(mounts[0].MountPath).To(Equal("/custom/mount/my-tls"))
 			Expect(mounts[0].MountPath).NotTo(ContainSubstring("//"))
+		})
+	})
+
+	Describe("ServiceTLS", func() {
+		It("should build a TLS P12 volume with service scope", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.ServiceTLS("broker-tls", "tls-class", "zk-server"))
+
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
+
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.SecretClassAnnotation]).To(Equal("tls-class"))
+			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("pod,node,service=zk-server"))
+			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("tls-p12"))
+			Expect(annotations[security.AnnotationSecretsPKCS12Password]).To(Equal("changeit"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts).To(HaveLen(1))
+			Expect(mounts[0].MountPath).To(Equal("/kubedoop/mount/broker-tls"))
+		})
+	})
+
+	Describe("ListenerVolume", func() {
+		It("should build a volume with listener-volume scope", func() {
+			prov := security.NewSecretProvisioner()
+			prov.Register(security.ListenerVolume("listener-vol", "tls-class", security.Kerberos))
+
+			vols := prov.Volumes()
+			Expect(vols).To(HaveLen(1))
+
+			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("listener-volume"))
+			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("kerberos"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts).To(HaveLen(1))
+			Expect(mounts[0].MountPath).To(Equal("/kubedoop/mount/listener-vol"))
 		})
 	})
 })

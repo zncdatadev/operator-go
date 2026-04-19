@@ -335,6 +335,7 @@ func TestProvider_Inject_ConfigMapVolume(t *testing.T) {
 	}
 	if configVolume == nil {
 		t.Fatal("config volume not found")
+		return
 	}
 	if configVolume.ConfigMap == nil {
 		t.Fatal("config volume should have ConfigMap source")
@@ -428,6 +429,7 @@ func TestProvider_Inject_ReadinessProbe(t *testing.T) {
 	probe := podSpec.Containers[1].ReadinessProbe
 	if probe == nil {
 		t.Fatal("readiness probe should not be nil")
+		return
 	}
 	if probe.HTTPGet == nil {
 		t.Fatal("readiness probe HTTPGet should not be nil")
@@ -656,11 +658,13 @@ func TestProvider_Inject_DefaultSecurityContext(t *testing.T) {
 	}
 	if vectorContainer == nil {
 		t.Fatal("vector container not found")
+		return
 	}
 
 	sc := vectorContainer.SecurityContext
 	if sc == nil {
 		t.Fatal("SecurityContext should not be nil")
+		return
 	}
 	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
 		t.Error("RunAsNonRoot should be true")
