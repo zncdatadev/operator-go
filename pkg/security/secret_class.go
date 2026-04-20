@@ -56,12 +56,6 @@ const (
 	KerberosServiceNamesDelimiter = CommonDelimiter
 )
 
-// SecretStorageClassPtr returns a pointer to the SecretStorageClass.
-func SecretStorageClassPtr() *string {
-	v := SecretStorageClass
-	return &v
-}
-
 // SecretFormat defines the format of secrets provisioned by secret-operator.
 type SecretFormat string
 

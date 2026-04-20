@@ -23,6 +23,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -205,17 +206,14 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 // defaultSecurityContext returns a hardened security context for the Vector container.
 func defaultSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		RunAsNonRoot:             ptrBool(true),
-		ReadOnlyRootFilesystem:   ptrBool(true),
-		AllowPrivilegeEscalation: ptrBool(false),
+		RunAsNonRoot:             ptr.To(true),
+		ReadOnlyRootFilesystem:   ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
 	}
 }
-
-// ptrBool returns a pointer to the given bool value.
-func ptrBool(b bool) *bool { return &b }
 
 // ConfigMapName returns the ConfigMap name used by this provider.
 func (p *VectorSidecarProvider) ConfigMapName() string {

@@ -18,6 +18,7 @@ package security
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -166,14 +167,11 @@ func (b *PodSecurityBuilder) BuildPodSecurityContext() *corev1.PodSecurityContex
 
 // BuildDefaultSecurityContext creates a container security context with secure defaults.
 func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityContext {
-	nonRoot := true
-	allowEscalation := false
-
 	return &corev1.SecurityContext{
-		RunAsUser:                ptrInt64(DefaultRunAsUser),
-		RunAsGroup:               ptrInt64(DefaultRunAsGroup),
-		RunAsNonRoot:             &nonRoot,
-		AllowPrivilegeEscalation: &allowEscalation,
+		RunAsUser:                ptr.To(DefaultRunAsUser),
+		RunAsGroup:               ptr.To(DefaultRunAsGroup),
+		RunAsNonRoot:             ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
@@ -185,22 +183,15 @@ func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityConte
 
 // BuildDefaultPodSecurityContext creates a pod security context with secure defaults.
 func (b *PodSecurityBuilder) BuildDefaultPodSecurityContext() *corev1.PodSecurityContext {
-	nonRoot := true
-
 	return &corev1.PodSecurityContext{
-		RunAsUser:    ptrInt64(DefaultRunAsUser),
-		RunAsGroup:   ptrInt64(DefaultRunAsGroup),
-		RunAsNonRoot: &nonRoot,
-		FSGroup:      ptrInt64(DefaultFSGroup),
+		RunAsUser:    ptr.To(DefaultRunAsUser),
+		RunAsGroup:   ptr.To(DefaultRunAsGroup),
+		RunAsNonRoot: ptr.To(true),
+		FSGroup:      ptr.To(DefaultFSGroup),
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
-}
-
-// ptrInt64 returns a pointer to an int64.
-func ptrInt64(v int64) *int64 {
-	return &v
 }
 
 // DefaultPodSecurityBuilder returns a builder with secure defaults.
