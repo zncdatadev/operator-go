@@ -200,3 +200,6 @@ _bmad*
 .omc
 .claude/worktrees
 .serena
+
+# AI worktree
+.worktree/
