@@ -30,6 +30,9 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+// defaultSecretStorageSize is the default PVC storage request for secret volumes.
+const defaultSecretStorageSize = "10Mi"
+
 // SecretVolumeRegistration declares a CSI secret volume need.
 // Created via convenience constructors (TLS, Kerberos) or Custom builder.
 type SecretVolumeRegistration struct {
@@ -58,7 +61,7 @@ func TLS(volumeName, secretClass string) *SecretVolumeRegistration {
 		format:      TLSP12,
 		scope:       string(PodScope) + CommonDelimiter + string(NodeScope),
 		password:    "changeit",
-		storageSize: "10Mi",
+		storageSize: defaultSecretStorageSize,
 	}
 }
 
@@ -69,7 +72,7 @@ func TLSPEMFormat(volumeName, secretClass string) *SecretVolumeRegistration {
 		secretClass: secretClass,
 		format:      TLSPEM,
 		scope:       string(PodScope) + CommonDelimiter + string(NodeScope),
-		storageSize: "10Mi",
+		storageSize: defaultSecretStorageSize,
 	}
 }
 
@@ -86,7 +89,7 @@ func KerberosVolume(volumeName, secretClass, serviceName string, additionalServi
 		secretClass:      secretClass,
 		format:           Kerberos,
 		scope:            string(PodScope) + CommonDelimiter + string(NodeScope),
-		storageSize:      "10Mi",
+		storageSize:      defaultSecretStorageSize,
 		kerberosSvcNames: svcNames,
 	}
 }
@@ -103,7 +106,7 @@ func ServiceTLS(volumeName, secretClass, serviceName string) *SecretVolumeRegist
 		format:      TLSP12,
 		scope:       string(PodScope) + CommonDelimiter + string(NodeScope) + CommonDelimiter + "service=" + serviceName,
 		password:    "changeit",
-		storageSize: "10Mi",
+		storageSize: defaultSecretStorageSize,
 	}
 }
 
@@ -115,7 +118,7 @@ func ListenerVolume(volumeName, secretClass string, format SecretFormat) *Secret
 		secretClass: secretClass,
 		format:      format,
 		scope:       string(ListenerVolumeScope),
-		storageSize: "10Mi",
+		storageSize: defaultSecretStorageSize,
 	}
 }
 
@@ -126,7 +129,7 @@ func Custom(volumeName, secretClass string, format SecretFormat) *SecretVolumeRe
 		secretClass: secretClass,
 		format:      format,
 		scope:       string(PodScope) + CommonDelimiter + string(NodeScope),
-		storageSize: "10Mi",
+		storageSize: defaultSecretStorageSize,
 	}
 }
 

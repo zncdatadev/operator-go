@@ -53,7 +53,7 @@ func RenderVectorConfig(data VectorConfigData) (string, error) {
 		return "", fmt.Errorf("LogDir is required")
 	}
 
-	tmpl, err := template.New("vector").Funcs(template.FuncMap{
+	tmpl, err := template.New(VectorSidecarName).Funcs(template.FuncMap{
 		"APIPort": func() int { return VectorAPIPort },
 	}).Parse(vectorConfigTemplate)
 	if err != nil {

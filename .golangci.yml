@@ -35,6 +35,10 @@ linters:
           - dupl
           - lll
         path: pkg/*
+      # Repeated literals in test fixtures and test helpers are expected; goconst is noise there.
+      - linters:
+          - goconst
+        path: (_test\.go$|^pkg/testutil/)
     paths:
       - third_party$
       - builtin$
