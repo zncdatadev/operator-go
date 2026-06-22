@@ -18,8 +18,11 @@ package reconciler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -427,12 +430,34 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	return nil
 }
 
+// maxRoleGroupNameLen bounds the role group resource name so that, even with the longest
+// suffix the framework appends ("-headless" = 9 chars), the result stays within the 63-char
+// DNS label limit that applies to Service names and StatefulSet .spec.serviceName.
+const maxRoleGroupNameLen = 54
+
+// RoleGroupResourceName returns the canonical resource name for a role group:
+// "<cluster>-<role>-<group>". Including the role prevents collisions between role groups of
+// different roles that share a group name (e.g. namenode/default vs datanode/default).
+//
+// If the name would exceed maxRoleGroupNameLen, it is deterministically truncated and a short
+// hash suffix is appended to preserve uniqueness while staying within the 63-char DNS limit.
+func RoleGroupResourceName(clusterName, roleName, groupName string) string {
+	name := fmt.Sprintf("%s-%s-%s", clusterName, roleName, groupName)
+	if len(name) <= maxRoleGroupNameLen {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	head := strings.TrimRight(name[:maxRoleGroupNameLen-len(suffix)-1], "-")
+	return head + "-" + suffix
+}
+
 // buildRoleGroupContext creates the build context for a role group.
 func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec) *RoleGroupBuildContext {
 	// Merge configurations
 	mergedConfig := r.configMerger.Merge(roleSpec.GetOverrides(), groupSpec.GetOverrides())
 
-	resourceName := fmt.Sprintf("%s-%s", cr.GetName(), groupName)
+	resourceName := RoleGroupResourceName(cr.GetName(), roleName, groupName)
 
 	return &RoleGroupBuildContext{
 		ClusterName:      cr.GetName(),
@@ -450,10 +475,14 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 
 // buildSidecarManager creates a SidecarManager based on CRD configuration.
 // It reads Logging configuration from Role and RoleGroup specs, merging them
-// to determine which sidecar providers should be registered.
-// Returns nil if no sidecar configuration is found.
+// to determine which built-in sidecar providers should be registered.
+//
+// It ALWAYS returns a non-nil manager (possibly empty). This guarantees products always
+// have a SidecarManager to register their own containers with (e.g. init containers via
+// StaticContainerProvider), so pod container injection always flows through the manager
+// rather than being mutated directly.
 func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
-	var mgr *sidecar.SidecarManager
+	mgr := sidecar.NewSidecarManager()
 
 	// Merge Logging config from Role and RoleGroup levels
 	roleLogging := buildCtx.RoleSpec.GetConfig().Logging
@@ -461,13 +490,8 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 
 	logging := mergeLogging(roleLogging, groupLogging)
 
-	if logging == nil {
-		return nil
-	}
-
 	// Register Vector sidecar if enabled
-	if logging.EnableVectorAgent != nil && *logging.EnableVectorAgent {
-		mgr = sidecar.NewSidecarManager()
+	if logging != nil && logging.EnableVectorAgent != nil && *logging.EnableVectorAgent {
 		mgr.Register(
 			sidecar.NewVectorSidecarProvider(),
 			&sidecar.SidecarConfig{Enabled: true},
@@ -572,7 +596,7 @@ func (r *GenericReconciler[CR]) handleStoppedCluster(ctx context.Context, cr CR)
 	// Scale all role groups to 0
 	for roleName, roleSpec := range spec.Roles {
 		for groupName := range roleSpec.GetRoleGroups() {
-			resourceName := fmt.Sprintf("%s-%s", cr.GetName(), groupName)
+			resourceName := RoleGroupResourceName(cr.GetName(), roleName, groupName)
 			if err := r.scaleToZero(ctx, cr.GetNamespace(), resourceName); err != nil {
 				logger.Error(err, "Failed to scale role group to zero", "role", roleName, "group", groupName)
 				// Continue with other groups

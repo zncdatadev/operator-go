@@ -82,6 +82,25 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// Product-specific annotations to add to all resources.
 	ExtraAnnotations map[string]string
 
+	// StorageMountPath, when non-empty, opts the role group into a data PVC. The base
+	// StatefulSet then gets a VolumeClaimTemplate built from RoleGroupConfig.Resources.Storage
+	// mounted at this path, keeping the volume/mount contract consistent. Left empty for
+	// backward compatibility (no data PVC unless a product opts in).
+	StorageMountPath string
+
+	// PublishNotReadyAddresses, when true, sets the same flag on the headless Service so
+	// peers can resolve each other's DNS before readiness (required by quorum systems).
+	PublishNotReadyAddresses bool
+
+	// LabelDomain, when set (e.g. "zookeeper.kubedoop.dev"), enables product-owned identity
+	// labels — "<domain>/cluster", "<domain>/role", "<domain>/role-group" — that are used
+	// for resource selectors (StatefulSet, Services, PDB) instead of the descriptive
+	// app.kubernetes.io/* labels. The product-domain prefix guarantees the selectors never
+	// match another product's pods, and decoupling from app.kubernetes.io/* keeps the
+	// immutable StatefulSet selector stable and free of user-mutable labels.
+	// When empty, selectors fall back to the descriptive labels (backward compatible).
+	LabelDomain string
+
 	// SidecarManager manages sidecar injection into pods.
 	// Optional - if nil, no sidecars are injected.
 	sidecarManager *sidecar.SidecarManager
@@ -189,7 +208,18 @@ func (h *BaseRoleGroupHandler[CR]) servicePorts(roleName, _ string) []corev1.Ser
 	return nil
 }
 
-// buildLabels creates the labels for resources.
+// ClusterLabelKey returns the identity label key for the cluster, under the given domain.
+func ClusterLabelKey(domain string) string { return domain + "/cluster" }
+
+// RoleLabelKey returns the identity label key for the role, under the given domain.
+func RoleLabelKey(domain string) string { return domain + "/role" }
+
+// RoleGroupLabelKey returns the identity label key for the role group, under the given domain.
+func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
+
+// buildLabels creates the descriptive labels for resources. When LabelDomain is set, the
+// product-owned identity labels are added too (they are also used as selectors — see
+// buildSelectorLabels).
 func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	labels := make(map[string]string)
 
@@ -206,12 +236,46 @@ func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) 
 	// Role group label
 	labels[buildCtx.ClusterName+"-"+buildCtx.RoleGroupName] = "true"
 
+	// Product-owned identity labels (also used for selectors).
+	for k, v := range h.identityLabels(buildCtx) {
+		labels[k] = v
+	}
+
 	// Add extra labels
 	for k, v := range h.ExtraLabels {
 		labels[k] = v
 	}
 
 	return labels
+}
+
+// identityLabels returns the product-owned identity labels when LabelDomain is set, else nil.
+func (h *BaseRoleGroupHandler[CR]) identityLabels(buildCtx *RoleGroupBuildContext) map[string]string {
+	if h.LabelDomain == "" {
+		return nil
+	}
+	return map[string]string{
+		ClusterLabelKey(h.LabelDomain):   buildCtx.ClusterName,
+		RoleLabelKey(h.LabelDomain):      buildCtx.RoleName,
+		RoleGroupLabelKey(h.LabelDomain): buildCtx.RoleGroupName,
+	}
+}
+
+// buildSelectorLabels returns the labels used for resource selectors. When LabelDomain is
+// set, these are the product-owned identity labels (cluster + role + role-group), which are
+// product-namespaced and stable. Otherwise it falls back to the full descriptive labels for
+// backward compatibility.
+func (h *BaseRoleGroupHandler[CR]) buildSelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
+	if h.LabelDomain == "" {
+		return h.buildLabels(buildCtx)
+	}
+	return h.identityLabels(buildCtx)
+}
+
+// SelectorLabels exposes the role group's selector labels so embedding products can build
+// matching selectors for resources they add themselves (e.g. a metrics Service).
+func (h *BaseRoleGroupHandler[CR]) SelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
+	return h.buildSelectorLabels(buildCtx)
 }
 
 // buildAnnotations creates the annotations for resources.
@@ -278,9 +342,10 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 			Annotations: h.buildAnnotations(buildCtx),
 		},
 		Spec: corev1.ServiceSpec{
-			ClusterIP: corev1.ClusterIPNone,
-			Selector:  labels,
-			Ports:     h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName),
+			ClusterIP:                corev1.ClusterIPNone,
+			PublishNotReadyAddresses: h.PublishNotReadyAddresses,
+			Selector:                 h.buildSelectorLabels(buildCtx),
+			Ports:                    h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName),
 		},
 	}
 }
@@ -295,7 +360,7 @@ func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext,
 			Annotations: h.buildAnnotations(buildCtx),
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: labels,
+			Selector: h.buildSelectorLabels(buildCtx),
 			Ports:    ports,
 		},
 	}
@@ -314,6 +379,7 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 
 	// Set basic properties
 	stsBuilder.WithLabels(labels).
+		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithReplicas(buildCtx.RoleGroupSpec.GetReplicas()).
 		WithImage(h.containerImage(buildCtx.RoleName), h.ImagePullPolicy).
@@ -324,6 +390,12 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
 	if roleGroupConfig != nil && roleGroupConfig.Resources != nil {
 		stsBuilder.WithResources(roleGroupConfig.Resources)
+		// Opt-in data PVC: when a product sets StorageMountPath, build a VolumeClaimTemplate
+		// from the configured storage and mount it, so the volume/mount contract is enforced
+		// by the builder instead of being hand-assembled by each product.
+		if h.StorageMountPath != "" && roleGroupConfig.Resources.Storage != nil {
+			stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
+		}
 	}
 
 	// Set pod overrides if present
@@ -392,7 +464,7 @@ func (h *BaseRoleGroupHandler[CR]) buildPodDisruptionBudget(buildCtx *RoleGroupB
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
+				MatchLabels: h.buildSelectorLabels(buildCtx),
 			},
 		},
 	}

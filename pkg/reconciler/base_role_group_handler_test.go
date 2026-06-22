@@ -27,6 +27,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -746,5 +747,95 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.PodDisruptionBudget).To(BeNil())
+	})
+})
+
+var _ = Describe("BaseRoleGroupHandler enhancements", func() {
+	var ctx context.Context
+	var mockCR *testutil.ClusterWrapper
+
+	newBuildCtx := func(storage *v1alpha1.StorageResource) *reconciler.RoleGroupBuildContext {
+		cfg := &v1alpha1.RoleGroupConfigSpec{}
+		if storage != nil {
+			cfg.Resources = &v1alpha1.ResourcesSpec{Storage: storage}
+		}
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(3)), Config: cfg},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-default",
+		}
+	}
+
+	var buildCtx *reconciler.RoleGroupBuildContext
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx = newBuildCtx(&v1alpha1.StorageResource{Capacity: resource.MustParse("10Gi")})
+	})
+
+	It("creates a data PVC from storage when StorageMountPath is set", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.StorageMountPath = "/kubedoop/data"
+
+		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		pvc := resources.StatefulSet.Spec.VolumeClaimTemplates[0]
+		q := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(q.String()).To(Equal("10Gi"))
+		mounts := resources.StatefulSet.Spec.Template.Spec.Containers[0].VolumeMounts
+		Expect(mounts).To(ContainElement(HaveField("MountPath", "/kubedoop/data")))
+	})
+
+	It("does not create a data PVC when StorageMountPath is unset (backward compatible)", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.VolumeClaimTemplates).To(BeEmpty())
+	})
+
+	It("sets PublishNotReadyAddresses on the headless service when enabled", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.PublishNotReadyAddresses = true
+		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.HeadlessService.Spec.PublishNotReadyAddresses).To(BeTrue())
+	})
+
+	It("uses product-owned identity labels for selectors when LabelDomain is set", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.LabelDomain = "zookeeper.kubedoop.dev"
+		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The immutable StatefulSet selector is the identity subset, decoupled from
+		// the descriptive app.kubernetes.io/* labels.
+		sel := resources.StatefulSet.Spec.Selector.MatchLabels
+		Expect(sel).To(HaveKeyWithValue("zookeeper.kubedoop.dev/cluster", "test-cluster"))
+		Expect(sel).To(HaveKeyWithValue("zookeeper.kubedoop.dev/role", "server"))
+		Expect(sel).To(HaveKeyWithValue("zookeeper.kubedoop.dev/role-group", "default"))
+		Expect(sel).NotTo(HaveKey("app.kubernetes.io/component"))
+
+		// Descriptive labels and identity labels are both on the pod template.
+		tmpl := resources.StatefulSet.Spec.Template.Labels
+		Expect(tmpl).To(HaveKeyWithValue("app.kubernetes.io/component", "server"))
+		Expect(tmpl).To(HaveKeyWithValue("zookeeper.kubedoop.dev/cluster", "test-cluster"))
+
+		// The headless Service selector is identity-only too.
+		Expect(resources.HeadlessService.Spec.Selector).To(HaveKey("zookeeper.kubedoop.dev/role"))
+		Expect(resources.HeadlessService.Spec.Selector).NotTo(HaveKey("app.kubernetes.io/component"))
+	})
+
+	It("falls back to descriptive labels for selectors when LabelDomain is empty", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "server"))
 	})
 })

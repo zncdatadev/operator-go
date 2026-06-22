@@ -73,8 +73,8 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers).To(HaveLen(2))
-			Expect(podSpec.Containers[1].Name).To(Equal(sidecar.JMXExporterSidecarName))
+			Expect(podSpec.InitContainers).To(HaveLen(1))
+			Expect(podSpec.InitContainers[0].Name).To(Equal(sidecar.JMXExporterSidecarName))
 		})
 
 		It("should return error when image is not specified", func() {
@@ -91,14 +91,14 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers[1].Image).To(Equal("custom/jmx-exporter:latest"))
+			Expect(podSpec.InitContainers[0].Image).To(Equal("custom/jmx-exporter:latest"))
 		})
 
 		It("should use default port", func() {
 			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers[1].Ports[0].ContainerPort).To(Equal(int32(sidecar.JMXExporterPort)))
+			Expect(podSpec.InitContainers[0].Ports[0].ContainerPort).To(Equal(int32(sidecar.JMXExporterPort)))
 		})
 
 		It("should use custom port from provider", func() {
@@ -106,7 +106,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers[1].Ports[0].ContainerPort).To(Equal(int32(9999)))
+			Expect(podSpec.InitContainers[0].Ports[0].ContainerPort).To(Equal(int32(9999)))
 		})
 
 		It("should use custom port from config", func() {
@@ -119,7 +119,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers[1].Ports[0].ContainerPort).To(Equal(int32(8888)))
+			Expect(podSpec.InitContainers[0].Ports[0].ContainerPort).To(Equal(int32(8888)))
 		})
 
 		It("should add config volume mount", func() {
@@ -127,7 +127,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			volumeMounts := podSpec.Containers[1].VolumeMounts
+			volumeMounts := podSpec.InitContainers[0].VolumeMounts
 			Expect(volumeMounts).NotTo(BeEmpty())
 			Expect(volumeMounts[0].Name).To(Equal(sidecar.JMXExporterConfigVolumeName))
 			Expect(volumeMounts[0].MountPath).To(Equal(sidecar.JMXExporterConfigMountPath))
@@ -157,7 +157,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			probe := podSpec.Containers[1].ReadinessProbe
+			probe := podSpec.InitContainers[0].ReadinessProbe
 			Expect(probe).NotTo(BeNil())
 			Expect(probe.HTTPGet).NotTo(BeNil())
 			Expect(probe.HTTPGet.Path).To(Equal("/metrics"))
@@ -178,7 +178,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(podSpec.Containers[1].Resources.Limits).To(HaveKey(corev1.ResourceCPU))
+			Expect(podSpec.InitContainers[0].Resources.Limits).To(HaveKey(corev1.ResourceCPU))
 		})
 
 		It("should apply custom environment variables", func() {
@@ -192,7 +192,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(podSpec.Containers[1].Env).NotTo(BeEmpty())
+			Expect(podSpec.InitContainers[0].Env).NotTo(BeEmpty())
 		})
 
 		It("should apply custom volume mounts", func() {
@@ -208,7 +208,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			var found bool
-			for _, m := range podSpec.Containers[1].VolumeMounts {
+			for _, m := range podSpec.InitContainers[0].VolumeMounts {
 				if m.Name == "custom" {
 					found = true
 					break
@@ -231,8 +231,8 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(podSpec.Containers[1].SecurityContext).NotTo(BeNil())
-			Expect(*podSpec.Containers[1].SecurityContext.RunAsNonRoot).To(BeTrue())
+			Expect(podSpec.InitContainers[0].SecurityContext).NotTo(BeNil())
+			Expect(*podSpec.InitContainers[0].SecurityContext.RunAsNonRoot).To(BeTrue())
 		})
 
 		It("should apply custom image pull policy when provided", func() {
@@ -244,7 +244,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullAlways))
+			Expect(podSpec.InitContainers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
 		})
 
 		It("should use default pull policy when not specified", func() {
@@ -252,7 +252,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(podSpec.Containers[1].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+			Expect(podSpec.InitContainers[0].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
 		})
 
 		It("should return error with nil config", func() {
@@ -265,18 +265,18 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podSpec.Containers).To(HaveLen(2))
+			Expect(podSpec.InitContainers).To(HaveLen(1))
 
 			// Inject again
 			err = provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Should still have 2 containers (main + jmx-exporter), not 3
-			Expect(podSpec.Containers).To(HaveLen(2))
+			Expect(podSpec.InitContainers).To(HaveLen(1))
 
 			// Count jmx-exporter containers
 			jmxCount := 0
-			for _, c := range podSpec.Containers {
+			for _, c := range podSpec.InitContainers {
 				if c.Name == sidecar.JMXExporterSidecarName {
 					jmxCount++
 				}

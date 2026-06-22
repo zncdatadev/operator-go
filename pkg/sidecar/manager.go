@@ -309,6 +309,76 @@ func AddOrReplaceContainer(podSpec *corev1.PodSpec, container *corev1.Container)
 	podSpec.Containers = append(podSpec.Containers, *container)
 }
 
+// FindInitContainerIndex returns the index of an init container by name, or -1 if not found.
+func FindInitContainerIndex(podSpec *corev1.PodSpec, name string) int {
+	for i := range podSpec.InitContainers {
+		if podSpec.InitContainers[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// addOrReplaceInitContainer finds an existing init container by name or appends a new one.
+//
+// It is intentionally unexported: under the native-sidecar model the SidecarManager is the
+// single owner of pod container injection. Providers (Vector, JMX, StaticContainerProvider)
+// use this from their Inject methods; products must NOT mutate the pod directly — they
+// register a provider and let InjectAll place containers, so the Enabled gating, ordering
+// and deduplication of the manager always apply.
+//
+// All managed containers go into podSpec.InitContainers: a long-running sidecar is simply
+// an init container whose RestartPolicy is Always (see SidecarRestartPolicy); a one-shot
+// init (e.g. node-id generation) has a nil RestartPolicy. This relies on the kubelet's
+// native sidecar semantics (Kubernetes 1.28+) for startup and shutdown ordering.
+func addOrReplaceInitContainer(podSpec *corev1.PodSpec, container *corev1.Container) {
+	if idx := FindInitContainerIndex(podSpec, container.Name); idx >= 0 {
+		podSpec.InitContainers[idx] = *container
+		return
+	}
+	podSpec.InitContainers = append(podSpec.InitContainers, *container)
+}
+
+// SidecarRestartPolicy returns the RestartPolicy that turns an init container into a native
+// sidecar (Kubernetes 1.28+): the kubelet starts it before the main container, keeps it
+// running alongside, and terminates it only after the main container exits. Set this on a
+// container's RestartPolicy before registering it (e.g. via StaticContainerProvider) to
+// make it a long-running sidecar instead of a one-shot init container.
+func SidecarRestartPolicy() *corev1.ContainerRestartPolicy {
+	policy := corev1.ContainerRestartPolicyAlways
+	return &policy
+}
+
+// StaticContainerProvider injects a fixed, product-supplied container into InitContainers.
+// It is the simplest way to register a bespoke container — whether a one-shot init (e.g.
+// node-id generation, RestartPolicy nil) or a sidecar (RestartPolicy set via
+// SidecarRestartPolicy) — so it flows through the SidecarManager like any other.
+type StaticContainerProvider struct {
+	container corev1.Container
+}
+
+var _ SidecarProvider = &StaticContainerProvider{}
+
+// NewStaticContainerProvider creates a provider that injects the given container verbatim.
+// The provider name is the container name. Set container.RestartPolicy to make it a sidecar.
+func NewStaticContainerProvider(container corev1.Container) *StaticContainerProvider {
+	return &StaticContainerProvider{container: container}
+}
+
+// Name returns the container name.
+func (p *StaticContainerProvider) Name() string { return p.container.Name }
+
+// Inject adds a copy of the static container to InitContainers.
+func (p *StaticContainerProvider) Inject(podSpec *corev1.PodSpec, _ *SidecarConfig) error {
+	addOrReplaceInitContainer(podSpec, p.container.DeepCopy())
+	return nil
+}
+
+// Validate has no dependencies for a static container.
+func (p *StaticContainerProvider) Validate(_ context.Context, _ client.Client, _ string) error {
+	return nil
+}
+
 // FindMainContainer finds the main container for shared volume mounting.
 // Uses MainContainerName from config if set, otherwise defaults to the first container.
 func FindMainContainer(podSpec *corev1.PodSpec, mainContainerName string) *corev1.Container {

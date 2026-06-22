@@ -318,7 +318,7 @@ var _ = Describe("HealthManager with StatefulSet", func() {
 			replicas := int32(2)
 			sts := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "health-test-available",
+					Name:      reconciler.RoleGroupResourceName("health-test", "test-role", "available"),
 					Namespace: namespace,
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -373,7 +373,7 @@ var _ = Describe("HealthManager with StatefulSet", func() {
 			replicas := int32(2)
 			sts := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "health-test-progressing",
+					Name:      reconciler.RoleGroupResourceName("health-test", "test-role", "progressing"),
 					Namespace: namespace,
 				},
 				Spec: appsv1.StatefulSetSpec{

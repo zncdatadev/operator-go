@@ -147,20 +147,79 @@ func GenerateLog4j2(configs map[string]LoggerConfig) (string, error) {
 //
 // </configuration>
 func GenerateLogback(configs map[string]LoggerConfig) (string, error) {
-	var sb strings.Builder
+	return GenerateLogbackWithOptions(configs, LogbackOptions{})
+}
 
-	sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+// LogbackOptions tunes logback generation. The zero value reproduces the console-only
+// output of GenerateLogback.
+type LogbackOptions struct {
+	// FileOutputPath, when set, adds a bounded RollingFileAppender writing to this path in
+	// addition to the console appender. The filename must match the log consumer's glob —
+	// e.g. the Vector sidecar collects "<LogDir>/*.stdout.log", so pass
+	// "<LogDir>/<app>.stdout.log". Without this, log aggregation has nothing to read.
+	FileOutputPath string
+
+	// Pattern overrides the encoder pattern for both appenders.
+	Pattern string
+
+	// MaxFileSize / MaxHistory / TotalSizeCap bound the rolling file appender so it cannot
+	// exhaust the log volume. Sensible defaults are applied when left zero.
+	MaxFileSize  string
+	MaxHistory   int
+	TotalSizeCap string
+}
+
+// GenerateLogbackWithOptions generates logback XML with optional file output.
+func GenerateLogbackWithOptions(configs map[string]LoggerConfig, opts LogbackOptions) (string, error) {
+	pattern := opts.Pattern
+	if pattern == "" {
+		pattern = "%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n")
+	fmt.Fprintf(&sb, `  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n</pattern>
+      <pattern>%s</pattern>
     </encoder>
   </appender>
+`, pattern)
 
-  <root level="INFO">
-    <appender-ref ref="STDOUT" />
-  </root>
-`)
+	hasFile := opts.FileOutputPath != ""
+	if hasFile {
+		maxFileSize := opts.MaxFileSize
+		if maxFileSize == "" {
+			maxFileSize = "5MB"
+		}
+		totalSizeCap := opts.TotalSizeCap
+		if totalSizeCap == "" {
+			totalSizeCap = "8MB"
+		}
+		maxHistory := opts.MaxHistory
+		if maxHistory <= 0 {
+			maxHistory = 1
+		}
+		fmt.Fprintf(&sb, `
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>%s</file>
+    <encoder>
+      <pattern>%s</pattern>
+    </encoder>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>%s.%%d{yyyy-MM-dd}.%%i</fileNamePattern>
+      <maxFileSize>%s</maxFileSize>
+      <maxHistory>%d</maxHistory>
+      <totalSizeCap>%s</totalSizeCap>
+    </rollingPolicy>
+  </appender>
+`, escapeXML(opts.FileOutputPath), pattern, escapeXML(opts.FileOutputPath), maxFileSize, maxHistory, totalSizeCap)
+	}
+
+	sb.WriteString("\n  <root level=\"INFO\">\n    <appender-ref ref=\"STDOUT\" />\n")
+	if hasFile {
+		sb.WriteString("    <appender-ref ref=\"FILE\" />\n")
+	}
+	sb.WriteString("  </root>\n")
 
 	if len(configs) == 0 {
 		sb.WriteString("</configuration>\n")
