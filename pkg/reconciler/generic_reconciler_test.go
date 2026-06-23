@@ -575,7 +575,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 
 			// Verify ConfigMap was created
 			cm := &corev1.ConfigMap{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName + "-default"}, cm)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "test-role", "default")}, cm)).To(Succeed())
 		})
 
 		It("should create Service during reconciliation", func() {
@@ -586,7 +586,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 
 			// Verify Service was created
 			svc := &corev1.Service{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName + "-default"}, svc)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "test-role", "default")}, svc)).To(Succeed())
 		})
 
 		It("should create StatefulSet during reconciliation", func() {
@@ -597,7 +597,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 
 			// Verify StatefulSet was created
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName + "-default"}, sts)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "test-role", "default")}, sts)).To(Succeed())
 		})
 
 		It("should track role group in status", func() {
@@ -790,7 +790,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 
 			// Verify only one StatefulSet exists (by direct name lookup)
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName + "-default"}, sts)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "test-role", "default")}, sts)).To(Succeed())
 		})
 	})
 
@@ -837,7 +837,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 
 			// Verify custom image was used
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName + "-default"}, sts)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "test-role", "default")}, sts)).To(Succeed())
 			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("custom-image:v1"))
 			Expect(sts.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
 		})
@@ -897,7 +897,7 @@ var _ = Describe("GenericReconciler scaleToZero", func() {
 		replicas := int32(3)
 		sts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      crName + "-default",
+				Name:      reconciler.RoleGroupResourceName(crName, "test-role", "default"),
 				Namespace: namespace,
 			},
 			Spec: appsv1.StatefulSetSpec{
@@ -1150,5 +1150,20 @@ var _ = Describe("GenericReconciler cleanupRoleGroup errors", func() {
 
 		// Cleanup - may or may not error depending on timing
 		_ = cleaner.Cleanup(canceledCtx, namespace, "cleanup-error", spec, status, "", nil)
+	})
+})
+
+var _ = Describe("RoleGroupResourceName", func() {
+	It("joins cluster, role and group", func() {
+		Expect(reconciler.RoleGroupResourceName("zk", "server", "default")).To(Equal("zk-server-default"))
+	})
+
+	It("truncates with a deterministic hash suffix within the 63-char DNS limit (incl -headless)", func() {
+		longCluster := "this-is-a-very-long-zookeeper-cluster-name-that-overflows"
+		name := reconciler.RoleGroupResourceName(longCluster, "server", "default")
+		Expect(len(name)).To(BeNumerically("<=", 54))
+		Expect(len(name + "-headless")).To(BeNumerically("<=", 63))
+		// Deterministic: same inputs yield the same truncated name.
+		Expect(reconciler.RoleGroupResourceName(longCluster, "server", "default")).To(Equal(name))
 	})
 })

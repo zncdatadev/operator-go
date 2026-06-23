@@ -86,7 +86,7 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 
 	for roleName, roleSpec := range spec.Roles {
 		for groupName, groupSpec := range roleSpec.RoleGroups {
-			resourceName := fmt.Sprintf("%s-%s", clusterName, groupName)
+			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
 			healthy, available, isProgressing, err := h.checkRoleGroupHealth(ctx, namespace, resourceName, groupSpec.GetReplicas())
 			if err != nil {
 				logger.Error(err, "Failed to check role group health", "role", roleName, "group", groupName)

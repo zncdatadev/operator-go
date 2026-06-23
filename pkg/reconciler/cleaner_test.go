@@ -157,7 +157,7 @@ var _ = Describe("RoleGroupCleaner", func() {
 
 		It("should cleanup orphaned role group resources", func() {
 			// Create resources for an orphaned role group
-			resourceName := "cleanup-test-orphaned"
+			resourceName := reconciler.RoleGroupResourceName("cleanup-test", "test-role", "orphaned")
 
 			// Create ConfigMap
 			cm := &corev1.ConfigMap{
@@ -831,13 +831,13 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		namespace = cleanerTestNamespace
 	})
 
-	// The cleaner constructs resource names as: clusterName + "-" + groupName
+	// The cleaner constructs resource names as: reconciler.RoleGroupResourceName(clusterName, "role", groupName)
 	// Tests must create resources using that naming convention.
 
 	It("should skip deletion when StatefulSet is not owned by the cluster", func() {
 		clusterName := "ownerref-skip"
 		groupName := "grp1"
-		resourceName := clusterName + "-" + groupName // "ownerref-skip-grp1"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName) // "ownerref-skip-grp1"
 
 		sts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
@@ -877,7 +877,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 	It("should delete StatefulSet when ownerUID matches", func() {
 		clusterName := "ownerref-del"
 		groupName := "grp2"
-		resourceName := clusterName + "-" + groupName // "ownerref-del-grp2"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName) // "ownerref-del-grp2"
 		ownerUID := types.UID("test-cluster-uid-456")
 
 		sts := &appsv1.StatefulSet{
@@ -926,7 +926,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 	It("should skip deletion when ConfigMap is not owned by the cluster", func() {
 		clusterName := "ownerref-cm-skip"
 		groupName := "grp3"
-		resourceName := clusterName + "-" + groupName // "ownerref-cm-skip-grp3"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName) // "ownerref-cm-skip-grp3"
 
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
@@ -958,7 +958,7 @@ var _ = Describe("RoleGroupCleaner ownerReference validation", func() {
 		// When no ownerUID is set, all resources are treated as owned and deleted
 		clusterName := "ownerref-nouid"
 		groupName := "grp4"
-		resourceName := clusterName + "-" + groupName // "ownerref-nouid-grp4"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName) // "ownerref-nouid-grp4"
 
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace},
@@ -993,7 +993,7 @@ var _ = Describe("RoleGroupCleaner gray deletion", func() {
 	It("should annotate resource on first detection and defer deletion", func() {
 		clusterName := "gray-defer"
 		groupName := "grp1"
-		resourceName := clusterName + "-" + groupName
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
 
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
@@ -1024,7 +1024,7 @@ var _ = Describe("RoleGroupCleaner gray deletion", func() {
 	It("should delete resource after grace period has elapsed", func() {
 		clusterName := "gray-elapsed"
 		groupName := "grp2"
-		resourceName := clusterName + "-" + groupName
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
 
 		// Create ConfigMap pre-annotated with a past timestamp
 		past := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
@@ -1058,7 +1058,7 @@ var _ = Describe("RoleGroupCleaner gray deletion", func() {
 	It("should delete immediately when GrayDeleteGracePeriod is 0", func() {
 		clusterName := "gray-immediate"
 		groupName := "grp3"
-		resourceName := clusterName + "-" + groupName
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
 
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},

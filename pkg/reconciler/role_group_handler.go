@@ -84,9 +84,11 @@ type RoleGroupBuildContext struct {
 	// ResourceName is the derived resource name: {cluster}-{group}.
 	ResourceName string
 
-	// SidecarManager is the auto-created sidecar manager based on CRD configuration.
-	// Set by GenericReconciler when sidecar-related config (e.g., EnableVectorAgent) is detected.
-	// Nil if no sidecars are configured.
+	// SidecarManager is the sidecar manager for this role group, always set (non-nil) by
+	// GenericReconciler. Built-in sidecars (e.g. Vector when EnableVectorAgent is set) are
+	// pre-registered; products register their own containers (e.g. init containers via
+	// sidecar.StaticContainerProvider) and call InjectAll so all pod container injection
+	// flows through the manager. May be empty if nothing is configured.
 	SidecarManager *sidecar.SidecarManager
 }
 

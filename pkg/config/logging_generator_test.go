@@ -442,3 +442,25 @@ var _ = Describe("LoggerConfig", func() {
 		Expect(loggerConfig.Level).To(Equal(config.LogLevelDebug))
 	})
 })
+
+var _ = Describe("GenerateLogbackWithOptions", func() {
+	It("emits only a console appender when no file output is requested (matches GenerateLogback)", func() {
+		withOpts, err := config.GenerateLogbackWithOptions(nil, config.LogbackOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		plain, err := config.GenerateLogback(nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(withOpts).To(Equal(plain))
+		Expect(withOpts).NotTo(ContainSubstring("RollingFileAppender"))
+	})
+
+	It("adds a bounded rolling file appender matching the consumer glob", func() {
+		out, err := config.GenerateLogbackWithOptions(nil, config.LogbackOptions{
+			FileOutputPath: "/kubedoop/log/zookeeper.stdout.log",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring(`class="ch.qos.logback.core.rolling.RollingFileAppender"`))
+		Expect(out).To(ContainSubstring("<file>/kubedoop/log/zookeeper.stdout.log</file>"))
+		Expect(out).To(ContainSubstring("<totalSizeCap>8MB</totalSizeCap>"))
+		Expect(out).To(ContainSubstring(`<appender-ref ref="FILE" />`))
+	})
+})

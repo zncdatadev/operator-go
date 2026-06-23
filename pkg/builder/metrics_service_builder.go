@@ -40,6 +40,7 @@ type MetricsServiceBuilder struct {
 	port         int32
 	portName     string
 	labels       map[string]string
+	selector     map[string]string
 	scheme       string
 	path         string
 }
@@ -78,6 +79,13 @@ func (b *MetricsServiceBuilder) WithPortName(name string) *MetricsServiceBuilder
 	return b
 }
 
+// WithSelector sets a dedicated pod selector (default: the labels). Use this to decouple the
+// selector from the descriptive labels.
+func (b *MetricsServiceBuilder) WithSelector(selector map[string]string) *MetricsServiceBuilder {
+	b.selector = selector
+	return b
+}
+
 // Build creates the metrics Service.
 func (b *MetricsServiceBuilder) Build() *corev1.Service {
 	serviceLabels := maps.Clone(b.labels)
@@ -95,7 +103,11 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 		annotations["prometheus.io/path"] = b.path
 	}
 
-	selector := maps.Clone(b.labels)
+	selectorSource := b.selector
+	if selectorSource == nil {
+		selectorSource = b.labels
+	}
+	selector := maps.Clone(selectorSource)
 	if selector == nil {
 		selector = map[string]string{}
 	}

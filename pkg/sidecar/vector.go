@@ -139,8 +139,11 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarC
 		AddVolumeMounts(container, config.VolumeMounts)
 	}
 
-	// Add container to pod (idempotent — replace if exists)
-	AddOrReplaceContainer(podSpec, container)
+	// Vector is a long-running sidecar: inject it as a native sidecar (init container with
+	// restartPolicy: Always) so the kubelet keeps it running until the main container exits,
+	// guaranteeing logs are shipped through shutdown.
+	container.RestartPolicy = SidecarRestartPolicy()
+	addOrReplaceInitContainer(podSpec, container)
 
 	// Add required volumes if not present
 	volumes := []corev1.Volume{

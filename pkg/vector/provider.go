@@ -108,7 +108,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 		Image:           image,
 		ImagePullPolicy: pullPolicy,
 		Command: []string{
-			"vector",
+			VectorSidecarName,
 			"--config",
 			VectorConfigMountPath + "/" + VectorConfigFileName,
 		},

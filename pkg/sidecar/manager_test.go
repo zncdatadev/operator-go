@@ -685,3 +685,53 @@ func (p *mockSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.Si
 func (p *mockSidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
 	return nil
 }
+
+var _ = Describe("Native-sidecar container injection", func() {
+	var podSpec *corev1.PodSpec
+
+	BeforeEach(func() {
+		podSpec = &corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "main"}},
+		}
+	})
+
+	Describe("SidecarRestartPolicy", func() {
+		It("returns the Always restart policy that marks a native sidecar", func() {
+			Expect(*sidecar.SidecarRestartPolicy()).To(Equal(corev1.ContainerRestartPolicyAlways))
+		})
+	})
+
+	// Container placement is only reachable through the manager/providers — products cannot
+	// mutate the pod directly — so it is exercised via StaticContainerProvider.
+	Describe("StaticContainerProvider", func() {
+		It("injects a one-shot init container (nil RestartPolicy) into InitContainers", func() {
+			provider := sidecar.NewStaticContainerProvider(corev1.Container{Name: "prepare", Image: "img:1"})
+			Expect(provider.Name()).To(Equal("prepare"))
+			Expect(provider.Inject(podSpec, &sidecar.SidecarConfig{Enabled: true})).To(Succeed())
+			Expect(podSpec.InitContainers).To(HaveLen(1))
+			Expect(podSpec.InitContainers[0].Name).To(Equal("prepare"))
+			Expect(podSpec.InitContainers[0].RestartPolicy).To(BeNil())
+			// Never placed as a regular container under the native-sidecar model.
+			Expect(podSpec.Containers).To(HaveLen(1))
+		})
+
+		It("injects a sidecar (RestartPolicy Always) into InitContainers", func() {
+			provider := sidecar.NewStaticContainerProvider(corev1.Container{
+				Name:          "aux",
+				RestartPolicy: sidecar.SidecarRestartPolicy(),
+			})
+			Expect(provider.Inject(podSpec, &sidecar.SidecarConfig{Enabled: true})).To(Succeed())
+			Expect(podSpec.InitContainers).To(HaveLen(1))
+			Expect(*podSpec.InitContainers[0].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
+		})
+
+		It("deduplicates by container name on repeated injection", func() {
+			p1 := sidecar.NewStaticContainerProvider(corev1.Container{Name: "prepare", Image: "v1"})
+			p2 := sidecar.NewStaticContainerProvider(corev1.Container{Name: "prepare", Image: "v2"})
+			Expect(p1.Inject(podSpec, &sidecar.SidecarConfig{Enabled: true})).To(Succeed())
+			Expect(p2.Inject(podSpec, &sidecar.SidecarConfig{Enabled: true})).To(Succeed())
+			Expect(podSpec.InitContainers).To(HaveLen(1))
+			Expect(podSpec.InitContainers[0].Image).To(Equal("v2"))
+		})
+	})
+})

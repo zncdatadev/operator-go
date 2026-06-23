@@ -165,8 +165,10 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 		AddVolumeMounts(container, config.VolumeMounts)
 	}
 
-	// Add container to pod (idempotent — replace if exists)
-	AddOrReplaceContainer(podSpec, container)
+	// JMX Exporter is a long-running sidecar: inject it as a native sidecar (init container
+	// with restartPolicy: Always).
+	container.RestartPolicy = SidecarRestartPolicy()
+	addOrReplaceInitContainer(podSpec, container)
 
 	// Add required volumes if not present
 	volumes := []corev1.Volume{

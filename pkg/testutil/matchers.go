@@ -89,7 +89,7 @@ func (m *haveOwnerReferenceMatcher) Match(actual interface{}) (bool, error) {
 				}
 			}()
 			val := reflect.ValueOf(obj)
-			if val.Kind() == reflect.Ptr {
+			if val.Kind() == reflect.Pointer {
 				val = val.Elem()
 			}
 
@@ -216,7 +216,7 @@ type haveReplicasMatcher struct {
 
 func (m *haveReplicasMatcher) Match(actual interface{}) (bool, error) {
 	val := reflect.ValueOf(actual)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 

@@ -28,9 +28,14 @@ import (
 
 // StatefulSetBuilder constructs StatefulSet resources.
 type StatefulSetBuilder struct {
-	Name            string
-	Namespace       string
-	Labels          map[string]string
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	// SelectorLabels, when set, is used for the StatefulSet's immutable .spec.selector
+	// (and must be a subset of Labels, which are applied to the pod template). When empty,
+	// Labels is used for the selector. Decoupling the selector from the full descriptive
+	// labels keeps the immutable selector stable and free of user-mutable labels.
+	SelectorLabels  map[string]string
 	Annotations     map[string]string
 	Replicas        int32
 	Image           string
@@ -42,6 +47,10 @@ type StatefulSetBuilder struct {
 	EnvVars         []corev1.EnvVar
 	Command         []string
 	Args            []string
+
+	// InitContainers are run before the main container starts. Products use these for
+	// one-shot preparation steps (e.g. generating node ids, fetching secrets).
+	InitContainers []corev1.Container
 
 	// Resource requirements
 	Resources *corev1.ResourceRequirements
@@ -107,6 +116,28 @@ func (b *StatefulSetBuilder) WithLabels(labels map[string]string) *StatefulSetBu
 		b.Labels[k] = v
 	}
 	return b
+}
+
+// WithSelectorLabels sets the labels used for the StatefulSet's immutable .spec.selector.
+// The labels are cloned (to avoid external mutation) and also merged into the pod template
+// labels, enforcing the invariant that the selector is a subset of the template labels —
+// otherwise the API server would reject the StatefulSet.
+func (b *StatefulSetBuilder) WithSelectorLabels(labels map[string]string) *StatefulSetBuilder {
+	b.SelectorLabels = make(map[string]string, len(labels))
+	for k, v := range labels {
+		b.SelectorLabels[k] = v
+		b.Labels[k] = v
+	}
+	return b
+}
+
+// selectorMatchLabels returns the labels for .spec.selector, falling back to the full
+// labels when no dedicated selector labels are set.
+func (b *StatefulSetBuilder) selectorMatchLabels() map[string]string {
+	if len(b.SelectorLabels) > 0 {
+		return b.SelectorLabels
+	}
+	return b.Labels
 }
 
 // WithAnnotations sets the annotations.
@@ -203,6 +234,30 @@ func (b *StatefulSetBuilder) AddEnvVar(name, value string) *StatefulSetBuilder {
 		Name:  name,
 		Value: value,
 	})
+	return b
+}
+
+// WithCommand sets the main container entrypoint command.
+func (b *StatefulSetBuilder) WithCommand(command []string) *StatefulSetBuilder {
+	b.Command = command
+	return b
+}
+
+// WithArgs sets the main container args.
+func (b *StatefulSetBuilder) WithArgs(args []string) *StatefulSetBuilder {
+	b.Args = args
+	return b
+}
+
+// AddInitContainer appends an init container that runs before the main container.
+func (b *StatefulSetBuilder) AddInitContainer(container corev1.Container) *StatefulSetBuilder {
+	b.InitContainers = append(b.InitContainers, container)
+	return b
+}
+
+// WithInitContainers replaces the init containers.
+func (b *StatefulSetBuilder) WithInitContainers(containers []corev1.Container) *StatefulSetBuilder {
+	b.InitContainers = containers
 	return b
 }
 
@@ -378,7 +433,7 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 			ServiceName:         b.Name + "-headless",
 			PodManagementPolicy: appsv1.ParallelPodManagement,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: b.Labels,
+				MatchLabels: b.selectorMatchLabels(),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -411,6 +466,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 		SecurityContext:               b.PodSecurityContext,
 		Affinity:                      b.Affinity,
 		Volumes:                       b.Volumes,
+		InitContainers:                b.InitContainers,
 		Containers: []corev1.Container{
 			b.buildContainer(),
 		},

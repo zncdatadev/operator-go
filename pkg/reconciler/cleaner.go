@@ -91,9 +91,9 @@ func (c *RoleGroupCleaner) Cleanup(
 	// that are no longer orphaned (re-added to spec). This ensures the grace period is
 	// respected correctly on any future re-orphaning.
 	if c.grayDeleteGracePeriod > 0 {
-		for _, roleSpec := range spec.Roles {
+		for roleName, roleSpec := range spec.Roles {
 			for groupName := range roleSpec.RoleGroups {
-				resourceName := fmt.Sprintf("%s-%s", clusterName, groupName)
+				resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
 				if err := c.clearGrayDeleteAnnotation(ctx, namespace, resourceName, ownerUID); err != nil {
 					logger.V(1).Info("Failed to clear gray-delete annotation from active resource",
 						"resource", resourceName, "error", err)
@@ -110,7 +110,7 @@ func (c *RoleGroupCleaner) Cleanup(
 
 	for roleName, groups := range orphanedGroups {
 		for _, groupName := range groups {
-			resourceName := fmt.Sprintf("%s-%s", clusterName, groupName)
+			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
 
 			if err := c.cleanupRoleGroup(ctx, namespace, resourceName, ownerUID, deletePVCs); err != nil {
 				return fmt.Errorf("failed to cleanup role group %s/%s: %w", roleName, groupName, err)
