@@ -119,9 +119,15 @@ func (b *StatefulSetBuilder) WithLabels(labels map[string]string) *StatefulSetBu
 }
 
 // WithSelectorLabels sets the labels used for the StatefulSet's immutable .spec.selector.
-// They must be a subset of the pod template labels (WithLabels).
+// The labels are cloned (to avoid external mutation) and also merged into the pod template
+// labels, enforcing the invariant that the selector is a subset of the template labels —
+// otherwise the API server would reject the StatefulSet.
 func (b *StatefulSetBuilder) WithSelectorLabels(labels map[string]string) *StatefulSetBuilder {
-	b.SelectorLabels = labels
+	b.SelectorLabels = make(map[string]string, len(labels))
+	for k, v := range labels {
+		b.SelectorLabels[k] = v
+		b.Labels[k] = v
+	}
 	return b
 }
 

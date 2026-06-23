@@ -175,6 +175,9 @@ func GenerateLogbackWithOptions(configs map[string]LoggerConfig, opts LogbackOpt
 	if pattern == "" {
 		pattern = "%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n"
 	}
+	// Escape the (possibly caller-supplied) pattern so reserved XML characters cannot
+	// produce invalid logback XML.
+	pattern = escapeXML(pattern)
 
 	var sb strings.Builder
 	sb.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n")

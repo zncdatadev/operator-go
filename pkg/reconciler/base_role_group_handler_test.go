@@ -767,7 +767,7 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 			RoleGroupName:    "default",
 			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(3)), Config: cfg},
 			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-default",
+			ResourceName:     reconciler.RoleGroupResourceName("test-cluster", "server", "default"),
 		}
 	}
 
