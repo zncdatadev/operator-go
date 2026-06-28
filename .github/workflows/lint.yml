@@ -19,10 +19,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Single source of truth: derive the golangci-lint version from the Makefile
+      # (GOLANGCI_LINT_VERSION) so CI and `make lint` can never drift.
+      - name: Resolve golangci-lint version from Makefile
+        id: golangci
+        run: |
+          version="$(grep -oP 'GOLANGCI_LINT_VERSION\s*\?=\s*\K\S+' Makefile)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Run linter
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: ${{ steps.golangci.outputs.version }}
 
   md-lint:
     name: Markdown Lint
