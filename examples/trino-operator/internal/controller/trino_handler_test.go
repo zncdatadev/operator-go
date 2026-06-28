@@ -162,11 +162,13 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 			Expect(cp).To(ContainSubstring("discovery-server.enabled=true"))
 		})
 
-		It("does not clobber a user-provided jvm.config (CRD wins over the product default)", func() {
-			cr := newTrinoCR()
+		It("does not clobber a user-provided catalog file (setIfAbsent; CRD wins)", func() {
+			// Catalog files are .properties, so configOverrides expresses them cleanly — a good
+			// test of the handler's setIfAbsent guard against overwriting pipeline-produced keys.
+			cr := newTrinoCR() // declares catalog "tpch" of type tpch
 			crdOverrides := &commonsv1alpha1.OverridesSpec{
 				ConfigOverrides: map[string]map[string]string{
-					"jvm.config": {"-Xmx16G": ""},
+					"catalog/tpch.properties": {"connector.name": "blackhole"},
 				},
 			}
 			buildCtx := buildCtxFor(cr, product.RoleCoordinators, crdOverrides)
@@ -174,9 +176,10 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 			res, err := handler.BuildResources(ctx, k8sClient, cr, buildCtx)
 			Expect(err).NotTo(HaveOccurred())
 
-			// The user-provided jvm.config survives; the product default heap is not applied.
-			Expect(res.ConfigMap.Data["jvm.config"]).To(ContainSubstring("-Xmx16G"))
-			Expect(res.ConfigMap.Data["jvm.config"]).NotTo(ContainSubstring("-Xmx" + constants.DefaultCoordinatorMaxMemory))
+			// The user-provided catalog wins; the product-generated tpch connector is not applied.
+			cat := res.ConfigMap.Data["catalog/tpch.properties"]
+			Expect(cat).To(ContainSubstring("connector.name=blackhole"))
+			Expect(cat).NotTo(ContainSubstring("connector.name=tpch"))
 		})
 	})
 })

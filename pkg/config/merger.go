@@ -184,17 +184,16 @@ func (m *ConfigMerger) mergeSlices(base, override []string) []string {
 //   - both set              -> strategic merge patch of override onto base
 //
 // On any marshal/patch error it falls back to the override, so the higher-precedence layer
-// still wins. A malformed override is treated as empty so it neither wins nor corrupts the
-// accumulated base.
+// still wins. A malformed override (invalid JSON) is treated as absent — it must neither win
+// precedence nor surface downstream as a non-nil empty PodTemplateSpec.
 func (m *ConfigMerger) mergePodOverrideInto(base *corev1.PodTemplateSpec, override *k8sruntime.RawExtension) *corev1.PodTemplateSpec {
-	// Parse the override layer.
+	// Parse the override layer. An unmarshal failure leaves overridePod nil (layer absent).
 	var overridePod *corev1.PodTemplateSpec
 	if override != nil && override.Raw != nil {
 		var parsed corev1.PodTemplateSpec
-		if err := json.Unmarshal(override.Raw, &parsed); err != nil {
-			parsed = corev1.PodTemplateSpec{}
+		if err := json.Unmarshal(override.Raw, &parsed); err == nil {
+			overridePod = &parsed
 		}
-		overridePod = &parsed
 	}
 
 	switch {

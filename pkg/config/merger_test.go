@@ -289,6 +289,25 @@ var _ = Describe("ConfigMerger", func() {
 			Expect(result.PodOverrides.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
 			Expect(*result.PodOverrides.Spec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
 		})
+
+		It("should treat a malformed pod override as absent (neither wins nor surfaces)", func() {
+			malformed := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{Raw: []byte(`{not valid json`)},
+			}
+
+			// Malformed as the only layer -> no PodOverrides surface downstream.
+			Expect(merger.Merge(malformed).PodOverrides).To(BeNil())
+
+			// Malformed higher layer must not override a valid lower layer.
+			valid := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{
+					Raw: []byte(`{"spec":{"serviceAccountName":"valid-sa"}}`),
+				},
+			}
+			result := merger.Merge(valid, malformed)
+			Expect(result.PodOverrides).NotTo(BeNil())
+			Expect(result.PodOverrides.Spec.ServiceAccountName).To(Equal("valid-sa"))
+		})
 	})
 })
 

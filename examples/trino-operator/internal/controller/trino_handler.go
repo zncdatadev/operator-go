@@ -113,10 +113,11 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 			resources.ConfigMap.Data = make(map[string]string)
 		}
 
-		// jvm.config is a flag list, not key=value, so it cannot flow through the merge
-		// pipeline; generate it here with role-specific heap sizing. This is product config, so
-		// a user-provided value (via configOverrides) takes precedence — never clobber a key the
-		// merge pipeline already produced.
+		// jvm.config is a flag list, not key=value, so it is generated here as a whole file
+		// (like the logging file) rather than flowing through the merge pipeline. setIfAbsent
+		// only avoids clobbering a jvm.config the pipeline already placed under this key; note
+		// that configOverrides renders as key=value, so it is NOT a suitable channel for tuning
+		// JVM flags — a product needing user-tunable JVM options would expose a typed field/env.
 		setIfAbsent(resources.ConfigMap.Data, "jvm.config", func() string { return jvmConfig(buildCtx.RoleName) })
 
 		// Catalog connector files live only on the coordinator.
