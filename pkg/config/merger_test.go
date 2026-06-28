@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 )
 
 var _ = Describe("ConfigMerger", func() {
@@ -186,6 +187,107 @@ var _ = Describe("ConfigMerger", func() {
 			result := merger.Merge(roleOverrides, groupOverrides)
 
 			Expect(result.ConfigFiles["config.yaml"]).To(HaveKeyWithValue("key", "group_value"))
+		})
+	})
+
+	Describe("Merge with layered overrides (variadic)", func() {
+		It("should apply layers in increasing precedence (product < role < group)", func() {
+			productDefaults := &v1alpha1.OverridesSpec{
+				ConfigOverrides: map[string]map[string]string{
+					"config.properties": {
+						"shared":       "from-product",
+						"product-only": "p",
+					},
+				},
+			}
+			roleOverrides := &v1alpha1.OverridesSpec{
+				ConfigOverrides: map[string]map[string]string{
+					"config.properties": {
+						"shared":    "from-role",
+						"role-only": "r",
+					},
+				},
+			}
+			groupOverrides := &v1alpha1.OverridesSpec{
+				ConfigOverrides: map[string]map[string]string{
+					"config.properties": {
+						"shared": "from-group",
+					},
+				},
+			}
+
+			result := merger.Merge(productDefaults, roleOverrides, groupOverrides)
+
+			cfg := result.ConfigFiles["config.properties"]
+			// Highest layer that sets the key wins.
+			Expect(cfg).To(HaveKeyWithValue("shared", "from-group"))
+			// Lower-layer keys not touched by higher layers survive.
+			Expect(cfg).To(HaveKeyWithValue("product-only", "p"))
+			Expect(cfg).To(HaveKeyWithValue("role-only", "r"))
+		})
+
+		It("should let a CRD override win over a product default for the same key", func() {
+			productDefaults := &v1alpha1.OverridesSpec{
+				ConfigOverrides: map[string]map[string]string{
+					"config.properties": {"coordinator": "true"},
+				},
+				EnvOverrides: map[string]string{"HEAP": "1G"},
+			}
+			groupOverrides := &v1alpha1.OverridesSpec{
+				ConfigOverrides: map[string]map[string]string{
+					"config.properties": {"coordinator": "false"},
+				},
+				EnvOverrides: map[string]string{"HEAP": "8G"},
+			}
+
+			result := merger.Merge(productDefaults, nil, groupOverrides)
+
+			Expect(result.ConfigFiles["config.properties"]).To(HaveKeyWithValue("coordinator", "false"))
+			Expect(result.EnvVars).To(HaveKeyWithValue("HEAP", "8G"))
+		})
+
+		It("should skip nil layers and tolerate an empty argument list", func() {
+			Expect(merger.Merge().ConfigFiles).To(BeEmpty())
+			Expect(merger.Merge(nil, nil, nil)).NotTo(BeNil())
+
+			productDefaults := &v1alpha1.OverridesSpec{
+				EnvOverrides: map[string]string{"ONLY": "product"},
+			}
+			result := merger.Merge(nil, productDefaults, nil)
+			Expect(result.EnvVars).To(HaveKeyWithValue("ONLY", "product"))
+		})
+
+		It("should append CLI args across three layers with Append strategy", func() {
+			merger.SliceMergeStrategy = config.MergeStrategyAppend
+			productDefaults := &v1alpha1.OverridesSpec{CliOverrides: []string{"--product"}}
+			roleOverrides := &v1alpha1.OverridesSpec{CliOverrides: []string{"--role"}}
+			groupOverrides := &v1alpha1.OverridesSpec{CliOverrides: []string{"--group"}}
+
+			result := merger.Merge(productDefaults, roleOverrides, groupOverrides)
+
+			Expect(result.CliArgs).To(Equal([]string{"--product", "--role", "--group"}))
+		})
+
+		It("should strategically merge pod overrides across layers", func() {
+			productDefaults := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{
+					Raw: []byte(`{"spec":{"serviceAccountName":"product-sa","terminationGracePeriodSeconds":30}}`),
+				},
+			}
+			groupOverrides := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{
+					Raw: []byte(`{"spec":{"serviceAccountName":"group-sa"}}`),
+				},
+			}
+
+			result := merger.Merge(productDefaults, nil, groupOverrides)
+
+			Expect(result.PodOverrides).NotTo(BeNil())
+			// Group layer overrides the product value for the same field.
+			Expect(result.PodOverrides.Spec.ServiceAccountName).To(Equal("group-sa"))
+			// Product-only field is preserved through the strategic merge.
+			Expect(result.PodOverrides.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
+			Expect(*result.PodOverrides.Spec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
 		})
 	})
 })

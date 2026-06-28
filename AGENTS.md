@@ -224,14 +224,35 @@ type ServiceHealthCheck interface {
 ### 9. Logging Configuration
 `LoggingFramework`-aware logging config generation (Log4j2, Logback, Python) via `pkg/config/logging_generator.go`.
 
+### 10. Product Default Config (`ProductDefaults`)
+Products inject their intrinsic/derived configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductDefaults` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):
+
+```go
+reconcilerCfg := &reconciler.GenericReconcilerConfig[*v1alpha1.TrinoCluster]{
+    // ...
+    ProductDefaults: func(cr *v1alpha1.TrinoCluster, roleName, roleGroupName string) *commonsv1alpha1.OverridesSpec {
+        overrides := map[string]map[string]string{
+            "config.properties": {"http-server.http.port": "8080"},
+        }
+        if roleName == "coordinator" {
+            overrides["config.properties"]["coordinator"] = "true"
+        }
+        return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}
+    },
+}
+```
+
+Precedence (low → high): **product defaults < role overrides < role group overrides**. Any value a user sets in the CRD always wins over a product default. `ConfigMerger.Merge` is variadic (`Merge(...*OverridesSpec)`) and folds layers in order; the previous two-argument call (`Merge(role, group)`) is still valid. Use `ProductDefaults` for product-intrinsic defaults and derived values (e.g. JVM heap from resources, role-specific keys) so the product no longer needs to hand-build ConfigMaps/StatefulSets.
+
 ## Building a New Operator
 
 1. **Define CRD** - Create API types implementing `ClusterInterface` (embed `ClusterObject` for defaults)
 2. **Create RoleGroupHandler** - Embed `BaseRoleGroupHandler` for default resource building, or implement `RoleGroupHandler` directly
-3. **Register Extensions** (optional) - Add custom hooks via extension registry
-4. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
-5. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
-6. **Create main.go** - Use `GenericReconciler` with your handler
+3. **Provide Product Config** (optional) - Set `ProductDefaults` on `GenericReconcilerConfig` to contribute product-intrinsic/derived config as the lowest merge layer
+4. **Register Extensions** (optional) - Add custom hooks via extension registry
+5. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
+6. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
+7. **Create main.go** - Use `GenericReconciler` with your handler
 
 See `examples/trino-operator/` for a complete example.
 

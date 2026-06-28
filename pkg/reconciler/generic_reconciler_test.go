@@ -1167,3 +1167,112 @@ var _ = Describe("RoleGroupResourceName", func() {
 		Expect(reconciler.RoleGroupResourceName(longCluster, "server", "default")).To(Equal(name))
 	})
 })
+
+var _ = Describe("GenericReconciler ProductDefaults", func() {
+	var (
+		namespace string
+		crName    string
+		mockCR    *testutil.MockCluster
+	)
+
+	BeforeEach(func() {
+		namespace = testNamespace
+		crName = fmt.Sprintf("product-defaults-cr-%d", time.Now().UnixNano())
+
+		mockCR = testutil.NewMockCluster(crName, namespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"coordinator": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						// The user overrides one product-default key via the CRD.
+						"default": {
+							Replicas: ptr.To(int32(1)),
+							ConfigOverrides: map[string]map[string]string{
+								"config.properties": {"shared": "from-crd"},
+							},
+						},
+					},
+				},
+			})
+		Expect(k8sClient.Create(ctx, mockCR)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		_ = k8sClient.Delete(ctx, mockCR)
+	})
+
+	// capturingHandler records the MergedConfig the reconciler hands to the product.
+	newCapturingHandler := func(into **config.MergedConfig) reconciler.RoleGroupHandler[*testutil.ClusterWrapper] {
+		return &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				*into = buildCtx.MergedConfig
+				return &reconciler.RoleGroupResources{}, nil
+			},
+		}
+	}
+
+	It("merges product defaults beneath CRD overrides and applies role-specific logic", func() {
+		var captured *config.MergedConfig
+
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: newCapturingHandler(&captured),
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace)),
+			ProductDefaults: func(_ *testutil.ClusterWrapper, roleName, _ string) *v1alpha1.OverridesSpec {
+				overrides := map[string]map[string]string{
+					"config.properties": {
+						"shared":       "from-product",
+						"product-only": "p",
+					},
+				}
+				// Role-specific product knowledge (neither framework nor user).
+				if roleName == "coordinator" {
+					overrides["config.properties"]["coordinator"] = "true"
+				}
+				return &v1alpha1.OverridesSpec{ConfigOverrides: overrides}
+			},
+		}
+
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(captured).NotTo(BeNil())
+		props := captured.ConfigFiles["config.properties"]
+		// CRD override wins over the product default for the shared key.
+		Expect(props).To(HaveKeyWithValue("shared", "from-crd"))
+		// Product-only defaults survive untouched.
+		Expect(props).To(HaveKeyWithValue("product-only", "p"))
+		// Role-specific product logic applied.
+		Expect(props).To(HaveKeyWithValue("coordinator", "true"))
+	})
+
+	It("uses CRD-only config when ProductDefaults is unset", func() {
+		var captured *config.MergedConfig
+
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: newCapturingHandler(&captured),
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace)),
+			// ProductDefaults intentionally left nil.
+		}
+
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(captured).NotTo(BeNil())
+		props := captured.ConfigFiles["config.properties"]
+		Expect(props).To(HaveKeyWithValue("shared", "from-crd"))
+		Expect(props).NotTo(HaveKey("product-only"))
+	})
+})
