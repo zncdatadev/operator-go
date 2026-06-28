@@ -85,6 +85,13 @@ type RoleGroupBuildContext struct {
 	// ResourceName is the derived resource name: {cluster}-{group}.
 	ResourceName string
 
+	// ServiceAccountName is the name of the ServiceAccount the workload pods should run as.
+	// It is populated by GenericReconciler from its configured ServiceAccountName (the SA the
+	// reconciler auto-creates). When non-empty, the base StatefulSet builder binds it to the
+	// pod template via WithServiceAccount, so the created SA is actually used. Empty means no
+	// binding — pods fall back to the namespace default SA (backward compatible).
+	ServiceAccountName string
+
 	// SidecarManager is the sidecar manager for this role group, always set (non-nil) by
 	// GenericReconciler. Built-in sidecars (e.g. Vector when EnableVectorAgent is set) are
 	// pre-registered; products register their own containers (e.g. init containers via
