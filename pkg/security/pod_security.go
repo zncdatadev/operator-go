@@ -194,6 +194,47 @@ func (b *PodSecurityBuilder) BuildDefaultPodSecurityContext() *corev1.PodSecurit
 	}
 }
 
+// HardenedContainerSecurityContext returns a product-agnostic, security-hardened container
+// security context. Unlike BuildDefaultSecurityContext, it deliberately does NOT set
+// RunAsUser/RunAsGroup, because the uid/gid a workload runs as is product-specific (it depends
+// on the image) and must be supplied by the product itself (e.g. via pod overrides). The
+// baseline only applies settings that are safe for any workload:
+//   - RunAsNonRoot: true            — refuse to start as root
+//   - AllowPrivilegeEscalation: false
+//   - Capabilities: drop ALL
+//   - SeccompProfile: RuntimeDefault
+//
+// This is the baseline the framework applies by default in the base role-group handler; it can
+// be overridden per role group through MergedConfig.PodOverrides.
+func HardenedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+// HardenedPodSecurityContext returns a product-agnostic, security-hardened pod security context.
+// Like HardenedContainerSecurityContext, it deliberately does NOT set RunAsUser/RunAsGroup/FSGroup
+// (those are product-specific). It only applies the universally-safe baseline:
+//   - RunAsNonRoot: true
+//   - SeccompProfile: RuntimeDefault
+//
+// It can be overridden per role group through MergedConfig.PodOverrides.
+func HardenedPodSecurityContext() *corev1.PodSecurityContext {
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
 // DefaultPodSecurityBuilder returns a builder with secure defaults.
 func DefaultPodSecurityBuilder() *PodSecurityBuilder {
 	return NewPodSecurityBuilder().

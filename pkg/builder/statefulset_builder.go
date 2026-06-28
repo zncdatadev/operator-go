@@ -646,6 +646,40 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	if b.PodOverrides.Spec.PriorityClassName != "" {
 		sts.Spec.Template.Spec.PriorityClassName = b.PodOverrides.Spec.PriorityClassName
 	}
+
+	// Override pod-level security context. This lets a product replace the framework's
+	// hardened default pod security context (e.g. to add a product-specific RunAsUser/FSGroup)
+	// via PodOverrides, with the override taking precedence over the default.
+	if b.PodOverrides.Spec.SecurityContext != nil {
+		sts.Spec.Template.Spec.SecurityContext = b.PodOverrides.Spec.SecurityContext
+	}
+
+	// Override the main container's security context. PodOverrides addresses the main container
+	// by name (it shares the StatefulSet's name); when an override container with a security
+	// context is supplied, it replaces the framework's hardened default container context.
+	b.applyContainerSecurityContextOverride(sts)
+}
+
+// applyContainerSecurityContextOverride replaces the main container's security context with the
+// one supplied in PodOverrides, if any. The main container is matched by name (b.Name); an
+// unnamed override container is also accepted so callers don't have to know the container name.
+func (b *StatefulSetBuilder) applyContainerSecurityContextOverride(sts *appsv1.StatefulSet) {
+	containers := sts.Spec.Template.Spec.Containers
+	if len(containers) == 0 {
+		return
+	}
+	for i := range b.PodOverrides.Spec.Containers {
+		oc := &b.PodOverrides.Spec.Containers[i]
+		if oc.SecurityContext == nil {
+			continue
+		}
+		if oc.Name != "" && oc.Name != b.Name {
+			continue
+		}
+		// Apply to the main container (index 0 is the container built by this builder).
+		containers[0].SecurityContext = oc.SecurityContext
+		return
+	}
 }
 
 // NamespacedName returns the NamespacedName for the StatefulSet.

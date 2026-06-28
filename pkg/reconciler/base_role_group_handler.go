@@ -24,6 +24,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
+	"github.com/zncdatadev/operator-go/pkg/security"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -123,6 +124,22 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// SidecarManager manages sidecar injection into pods.
 	// Optional - if nil, no sidecars are injected.
 	sidecarManager *sidecar.SidecarManager
+
+	// securityContextConfigured tracks whether the security context fields below were set
+	// explicitly (including to nil to disable the default). When false, the framework applies
+	// its hardened, product-agnostic default security context.
+	securityContextConfigured bool
+
+	// containerSecurityContext is the container-level security context applied to the main
+	// container. When the framework default is in effect, this is
+	// security.HardenedContainerSecurityContext(). Products override it via
+	// WithSecurityContext (or disable it via WithoutDefaultSecurityContext). Per-role-group
+	// customization should instead go through MergedConfig.PodOverrides, which merges on top.
+	containerSecurityContext *corev1.SecurityContext
+
+	// podSecurityContext is the pod-level security context applied to the pod spec. See
+	// containerSecurityContext for override semantics.
+	podSecurityContext *corev1.PodSecurityContext
 }
 
 // NewBaseRoleGroupHandler creates a new BaseRoleGroupHandler with defaults.
@@ -143,6 +160,38 @@ func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *r
 func (h *BaseRoleGroupHandler[CR]) WithSidecarManager(m *sidecar.SidecarManager) *BaseRoleGroupHandler[CR] {
 	h.sidecarManager = m
 	return h
+}
+
+// WithSecurityContext overrides the framework's default pod/container security context for the
+// role group's StatefulSet. Passing nil for either argument removes that level's security
+// context entirely (the framework default is no longer applied). For per-role-group tweaks that
+// should merge on top of the default, prefer MergedConfig.PodOverrides instead of this handler-
+// wide override.
+func (h *BaseRoleGroupHandler[CR]) WithSecurityContext(
+	containerCtx *corev1.SecurityContext,
+	podCtx *corev1.PodSecurityContext,
+) *BaseRoleGroupHandler[CR] {
+	h.containerSecurityContext = containerCtx
+	h.podSecurityContext = podCtx
+	h.securityContextConfigured = true
+	return h
+}
+
+// WithoutDefaultSecurityContext disables the framework's hardened default security context, so
+// the StatefulSet is built with no pod/container security context unless one is supplied via
+// MergedConfig.PodOverrides.
+func (h *BaseRoleGroupHandler[CR]) WithoutDefaultSecurityContext() *BaseRoleGroupHandler[CR] {
+	return h.WithSecurityContext(nil, nil)
+}
+
+// resolveSecurityContext returns the container- and pod-level security contexts to apply. When
+// the product has not configured them, the framework's product-agnostic hardened defaults are
+// used (see pkg/security.HardenedContainerSecurityContext / HardenedPodSecurityContext).
+func (h *BaseRoleGroupHandler[CR]) resolveSecurityContext() (*corev1.SecurityContext, *corev1.PodSecurityContext) {
+	if h.securityContextConfigured {
+		return h.containerSecurityContext, h.podSecurityContext
+	}
+	return security.HardenedContainerSecurityContext(), security.HardenedPodSecurityContext()
 }
 
 // BuildResources builds the default Kubernetes resources for a role group.
@@ -439,6 +488,12 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 			stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
 		}
 	}
+
+	// Apply the security context (framework hardened default unless the product overrode it).
+	// This is set before pod overrides are applied so that any security context supplied via
+	// MergedConfig.PodOverrides takes precedence over the default.
+	containerSecurityCtx, podSecurityCtx := h.resolveSecurityContext()
+	stsBuilder.WithSecurityContext(containerSecurityCtx, podSecurityCtx)
 
 	// Set pod overrides if present
 	if buildCtx.MergedConfig.PodOverrides != nil {

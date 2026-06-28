@@ -185,4 +185,39 @@ var _ = Describe("PodSecurityBuilder", func() {
 			Expect(*ctx.RunAsUser).To(Equal(security.DefaultRunAsUser))
 		})
 	})
+
+	Describe("HardenedContainerSecurityContext", func() {
+		It("should harden the container without product-specific uid/gid", func() {
+			ctx := security.HardenedContainerSecurityContext()
+			Expect(ctx).NotTo(BeNil())
+			Expect(ctx.RunAsNonRoot).NotTo(BeNil())
+			Expect(*ctx.RunAsNonRoot).To(BeTrue())
+			Expect(ctx.AllowPrivilegeEscalation).NotTo(BeNil())
+			Expect(*ctx.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(ctx.Capabilities).NotTo(BeNil())
+			Expect(ctx.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+			Expect(ctx.SeccompProfile).NotTo(BeNil())
+			Expect(ctx.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			// Must NOT pin a product-specific identity.
+			Expect(ctx.RunAsUser).To(BeNil())
+			Expect(ctx.RunAsGroup).To(BeNil())
+		})
+	})
+
+	Describe("HardenedPodSecurityContext", func() {
+		It("should harden the pod without product-specific uid/gid/fsGroup", func() {
+			ctx := security.HardenedPodSecurityContext()
+			Expect(ctx).NotTo(BeNil())
+			Expect(ctx.RunAsNonRoot).NotTo(BeNil())
+			Expect(*ctx.RunAsNonRoot).To(BeTrue())
+			Expect(ctx.SeccompProfile).NotTo(BeNil())
+			Expect(ctx.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			// Must NOT pin a product-specific identity.
+			Expect(ctx.RunAsUser).To(BeNil())
+			Expect(ctx.RunAsGroup).To(BeNil())
+			Expect(ctx.FSGroup).To(BeNil())
+		})
+	})
 })
