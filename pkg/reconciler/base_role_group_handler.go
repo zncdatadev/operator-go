@@ -321,10 +321,15 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 	}
 
 	// Generate declared per-container logging config files from the merged logging spec.
+	// Fail fast on a key collision rather than silently overwriting a file the product
+	// already produced (e.g. via MergedConfig.ConfigFiles / ConfigGenerator).
 	for _, lc := range h.LoggingContainers {
 		filename, content, err := RenderContainerLogging(buildCtx, lc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to render logging config for container %q: %w", lc.Container, err)
+		}
+		if _, exists := data[filename]; exists {
+			return nil, fmt.Errorf("logging config file %q for container %q collides with an existing ConfigMap key", filename, lc.Container)
 		}
 		data[filename] = content
 	}

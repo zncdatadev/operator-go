@@ -234,10 +234,12 @@ func mergeContainerLogging(role, group v1alpha1.LoggingConfigSpec) v1alpha1.Logg
 		Console: role.Console,
 		File:    role.File,
 	}
-	if group.Console != nil {
+	// Only override when the group actually sets a level, so a role group supplying an empty
+	// console/file (e.g. `console: {}`) does not silently wipe the role-level threshold.
+	if group.Console != nil && group.Console.Level != "" {
 		merged.Console = group.Console
 	}
-	if group.File != nil {
+	if group.File != nil && group.File.Level != "" {
 		merged.File = group.File
 	}
 	if role.Loggers != nil || group.Loggers != nil {

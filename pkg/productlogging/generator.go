@@ -19,8 +19,45 @@ package productlogging
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+// boundedFileDefaults applies sensible defaults to the rolling-file bounds so a generated
+// file appender can never grow without limit. Takes raw fields (rather than an options
+// struct) so both RenderOptions and LogbackOptions callers can share it.
+func boundedFileDefaults(maxFileSize string, maxHistory int, totalSizeCap string) (string, int, string) {
+	if maxFileSize == "" {
+		maxFileSize = "5MB"
+	}
+	if maxHistory <= 0 {
+		maxHistory = 1
+	}
+	if totalSizeCap == "" {
+		totalSizeCap = "8MB"
+	}
+	return maxFileSize, maxHistory, totalSizeCap
+}
+
+// parseSizeBytes converts a size string like "5MB" / "512KB" / "1024" into bytes, returning
+// fallback when it cannot be parsed. Used where a numeric byte count is required (Python).
+func parseSizeBytes(s string, fallback int64) int64 {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "KB"):
+		mult, s = 1024, strings.TrimSuffix(s, "KB")
+	case strings.HasSuffix(s, "MB"):
+		mult, s = 1024*1024, strings.TrimSuffix(s, "MB")
+	case strings.HasSuffix(s, "GB"):
+		mult, s = 1024*1024*1024, strings.TrimSuffix(s, "GB")
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n * mult
+}
 
 // escapeXML escapes the five XML special characters so caller-supplied strings (logger
 // names, patterns, file paths) cannot produce invalid logback XML.
@@ -172,18 +209,7 @@ func GenerateLogbackWithOptions(configs map[string]LoggerConfig, opts LogbackOpt
 
 	hasFile := opts.FileOutputPath != ""
 	if hasFile {
-		maxFileSize := opts.MaxFileSize
-		if maxFileSize == "" {
-			maxFileSize = "5MB"
-		}
-		totalSizeCap := opts.TotalSizeCap
-		if totalSizeCap == "" {
-			totalSizeCap = "8MB"
-		}
-		maxHistory := opts.MaxHistory
-		if maxHistory <= 0 {
-			maxHistory = 1
-		}
+		maxFileSize, maxHistory, totalSizeCap := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
 		fmt.Fprintf(&sb, `
   <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
     <file>%s</file>
@@ -358,6 +384,7 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 	}
 	sb.WriteString("\n")
 	if hasFile {
+		maxFileSize, maxHistory, _ := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
 		sb.WriteString("appender.file.type=RollingFile\n")
 		sb.WriteString("appender.file.name=FILE\n")
 		fmt.Fprintf(&sb, "appender.file.fileName=%s\n", opts.FileOutputPath)
@@ -368,6 +395,12 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 			sb.WriteString("appender.file.filter.threshold.type=ThresholdFilter\n")
 			fmt.Fprintf(&sb, "appender.file.filter.threshold.level=%s\n", cfg.FileLevel)
 		}
+		// Bounded rollover so the file cannot grow without limit.
+		sb.WriteString("appender.file.policies.type=Policies\n")
+		sb.WriteString("appender.file.policies.size.type=SizeBasedTriggeringPolicy\n")
+		fmt.Fprintf(&sb, "appender.file.policies.size.size=%s\n", maxFileSize)
+		sb.WriteString("appender.file.strategy.type=DefaultRolloverStrategy\n")
+		fmt.Fprintf(&sb, "appender.file.strategy.max=%d\n", maxHistory)
 		sb.WriteString("\n")
 	}
 
@@ -418,10 +451,15 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 		if cfg.FileLevel != "" {
 			fileLevel = toPythonLogLevel(cfg.FileLevel)
 		}
+		maxFileSize, maxHistory, _ := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
+		maxBytes := parseSizeBytes(maxFileSize, 5*1024*1024)
 		sb.WriteString("        'file': {\n")
 		fmt.Fprintf(&sb, "            'level': '%s',\n", fileLevel)
 		sb.WriteString("            'class': 'logging.handlers.RotatingFileHandler',\n")
 		fmt.Fprintf(&sb, "            'filename': '%s',\n", opts.FileOutputPath)
+		// Bound the file so rotation is actually enabled (maxBytes=0 would disable it).
+		fmt.Fprintf(&sb, "            'maxBytes': %d,\n", maxBytes)
+		fmt.Fprintf(&sb, "            'backupCount': %d,\n", maxHistory)
 		sb.WriteString("            'formatter': 'standard',\n")
 		sb.WriteString("        },\n")
 	}

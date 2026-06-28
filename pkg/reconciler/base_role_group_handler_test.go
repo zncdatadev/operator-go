@@ -908,4 +908,32 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.ConfigMap.Data["logback.xml"]).To(ContainSubstring(`<root level="INFO">`))
 	})
+
+	It("fails fast when a declared logging file collides with an existing ConfigMap key", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback, // default file name logback.xml
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			MergedConfig: &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"logback.xml": {"foo": "bar"},
+				},
+			},
+		}
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("collides"))
+	})
 })

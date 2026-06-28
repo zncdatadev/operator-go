@@ -114,6 +114,29 @@ var _ = Describe("MergeLoggingSpec", func() {
 		Expect(c.Loggers["x.y.z"].Level).To(Equal("ERROR")) // group addition
 		Expect(c.Console.Level).To(Equal("INFO"))           // role survives (group did not set)
 	})
+
+	It("does not let an empty group console/file wipe the role-level threshold", func() {
+		role := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {
+					Console: &v1alpha1.LogLevelSpec{Level: "INFO"},
+					File:    &v1alpha1.LogLevelSpec{Level: "ERROR"},
+				},
+			},
+		}
+		// Group supplies console/file with no level (e.g. `console: {}`).
+		group := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {
+					Console: &v1alpha1.LogLevelSpec{},
+					File:    &v1alpha1.LogLevelSpec{},
+				},
+			},
+		}
+		c := productlogging.MergeLoggingSpec(role, group).Containers["main"]
+		Expect(c.Console.Level).To(Equal("INFO")) // role threshold preserved
+		Expect(c.File.Level).To(Equal("ERROR"))   // role threshold preserved
+	})
 })
 
 var _ = Describe("Render with appender thresholds", func() {
@@ -145,6 +168,10 @@ var _ = Describe("Render with appender thresholds", func() {
 		Expect(out).To(ContainSubstring("appender.console.filter.threshold.level=INFO"))
 		Expect(out).To(ContainSubstring("appender.file.filter.threshold.level=ERROR"))
 		Expect(out).To(ContainSubstring("logger.org_apache_zookeeper.level=DEBUG"))
+		// File appender must be bounded (rollover policy + strategy), not unbounded.
+		Expect(out).To(ContainSubstring("SizeBasedTriggeringPolicy"))
+		Expect(out).To(ContainSubstring("appender.file.policies.size.size=5MB"))
+		Expect(out).To(ContainSubstring("appender.file.strategy.max=1"))
 	})
 
 	It("renders python root, loggers and a file handler", func() {
@@ -154,5 +181,8 @@ var _ = Describe("Render with appender thresholds", func() {
 		Expect(out).To(ContainSubstring("'level': 'WARNING'")) // root WARN -> WARNING
 		Expect(out).To(ContainSubstring("'org.apache.zookeeper'"))
 		Expect(out).To(ContainSubstring("RotatingFileHandler"))
+		// RotatingFileHandler must set maxBytes/backupCount, else rotation is disabled.
+		Expect(out).To(ContainSubstring("'maxBytes': 5242880"))
+		Expect(out).To(ContainSubstring("'backupCount': 1"))
 	})
 })
