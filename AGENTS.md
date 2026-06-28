@@ -234,7 +234,7 @@ reconcilerCfg := &reconciler.GenericReconcilerConfig[*v1alpha1.TrinoCluster]{
         overrides := map[string]map[string]string{
             "config.properties": {"http-server.http.port": "8080"},
         }
-        if roleName == "coordinator" {
+        if roleName == "coordinators" {
             overrides["config.properties"]["coordinator"] = "true"
         }
         return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}

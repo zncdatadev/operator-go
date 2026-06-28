@@ -20,6 +20,7 @@ package product
 
 import (
 	"fmt"
+	"slices"
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
@@ -74,15 +75,20 @@ func CoordinatorPort(cr *trinov1alpha1.TrinoCluster) int32 {
 }
 
 // coordinatorServiceName returns the client-facing coordinator Service name. The SDK names
-// role group resources as {cluster}-{role}-{group}, so we derive the name from the first
-// coordinator role group, matching the Service the framework actually creates.
+// role group resources as {cluster}-{role}-{group}, so we derive the name from a coordinator
+// role group, matching the Service the framework actually creates. Group names are sorted so
+// the choice is deterministic across reconciles (map iteration order is randomized) — without
+// this, the discovery URI could change between reconciles and churn the config in a deployment
+// with multiple coordinator role groups.
 func coordinatorServiceName(cr *trinov1alpha1.TrinoCluster) string {
 	groupName := constants.DefaultRoleGroupName
-	if cr.Spec.Coordinators != nil {
+	if cr.Spec.Coordinators != nil && len(cr.Spec.Coordinators.RoleGroups) > 0 {
+		names := make([]string, 0, len(cr.Spec.Coordinators.RoleGroups))
 		for g := range cr.Spec.Coordinators.RoleGroups {
-			groupName = g
-			break
+			names = append(names, g)
 		}
+		slices.Sort(names)
+		groupName = names[0]
 	}
 	return reconciler.RoleGroupResourceName(cr.Name, RoleCoordinators, groupName)
 }

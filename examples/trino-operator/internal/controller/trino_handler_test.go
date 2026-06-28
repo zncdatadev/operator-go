@@ -33,7 +33,8 @@ import (
 // buildCtxFor assembles a RoleGroupBuildContext the way the GenericReconciler would: it merges
 // the product defaults (lowest layer) with the given CRD overrides (highest layer) through the
 // SDK ConfigMerger, so the handler sees exactly what it would at runtime.
-func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role, group string, crdOverrides *commonsv1alpha1.OverridesSpec) *reconciler.RoleGroupBuildContext {
+func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role string, crdOverrides *commonsv1alpha1.OverridesSpec) *reconciler.RoleGroupBuildContext {
+	const group = "default"
 	merger := config.NewConfigMerger()
 	merged := merger.Merge(product.ConfigDefaults(cr, role, group), crdOverrides)
 
@@ -89,7 +90,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 	Describe("BuildResources (framework owns orchestration)", func() {
 		It("builds the coordinator role group from the merged config", func() {
 			cr := newTrinoCR()
-			buildCtx := buildCtxFor(cr, product.RoleCoordinators, "default", nil)
+			buildCtx := buildCtxFor(cr, product.RoleCoordinators, nil)
 
 			res, err := handler.BuildResources(ctx, k8sClient, cr, buildCtx)
 			Expect(err).NotTo(HaveOccurred())
@@ -129,7 +130,7 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 
 		It("builds the worker role group without catalog files", func() {
 			cr := newTrinoCR()
-			buildCtx := buildCtxFor(cr, product.RoleWorkers, "default", nil)
+			buildCtx := buildCtxFor(cr, product.RoleWorkers, nil)
 
 			res, err := handler.BuildResources(ctx, k8sClient, cr, buildCtx)
 			Expect(err).NotTo(HaveOccurred())
@@ -139,22 +140,43 @@ var _ = Describe("TrinoRoleGroupHandler", func() {
 			Expect(res.ConfigMap.Data).NotTo(HaveKey("catalog/tpch.properties"))
 		})
 
-		It("lets a CRD configOverride win over the product default", func() {
+		It("lets a CRD configOverride win over a product default for the same key", func() {
 			cr := newTrinoCR()
 			crdOverrides := &commonsv1alpha1.OverridesSpec{
 				ConfigOverrides: map[string]map[string]string{
-					"config.properties": {"query.max-memory": "8GB"},
+					// Override a key the product default sets (coordinator=true) and add a new one.
+					"config.properties": {"coordinator": "false", "query.max-memory": "8GB"},
 				},
 			}
-			buildCtx := buildCtxFor(cr, product.RoleCoordinators, "default", crdOverrides)
+			buildCtx := buildCtxFor(cr, product.RoleCoordinators, crdOverrides)
 
 			res, err := handler.BuildResources(ctx, k8sClient, cr, buildCtx)
 			Expect(err).NotTo(HaveOccurred())
 
 			cp := res.ConfigMap.Data["config.properties"]
-			// User override is present alongside the product defaults.
+			// CRD override wins over the product default.
+			Expect(cp).To(MatchRegexp(`(?m)^coordinator=false$`))
+			Expect(cp).NotTo(MatchRegexp(`(?m)^coordinator=true$`))
+			// New user key coexists with product defaults.
 			Expect(cp).To(ContainSubstring("query.max-memory=8GB"))
-			Expect(cp).To(ContainSubstring("coordinator=true"))
+			Expect(cp).To(ContainSubstring("discovery-server.enabled=true"))
+		})
+
+		It("does not clobber a user-provided jvm.config (CRD wins over the product default)", func() {
+			cr := newTrinoCR()
+			crdOverrides := &commonsv1alpha1.OverridesSpec{
+				ConfigOverrides: map[string]map[string]string{
+					"jvm.config": {"-Xmx16G": ""},
+				},
+			}
+			buildCtx := buildCtxFor(cr, product.RoleCoordinators, crdOverrides)
+
+			res, err := handler.BuildResources(ctx, k8sClient, cr, buildCtx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The user-provided jvm.config survives; the product default heap is not applied.
+			Expect(res.ConfigMap.Data["jvm.config"]).To(ContainSubstring("-Xmx16G"))
+			Expect(res.ConfigMap.Data["jvm.config"]).NotTo(ContainSubstring("-Xmx" + constants.DefaultCoordinatorMaxMemory))
 		})
 	})
 })

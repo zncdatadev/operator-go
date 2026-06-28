@@ -95,12 +95,16 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 
 	// The image is declared in the CR spec (defaulted by the webhook) and resolved with the
 	// product name. The framework built the container with the operator's default image; set
-	// the CR-driven image on the primary container.
+	// the CR-driven image on the primary container, looked up by name (it is renamed via
+	// base.MainContainerName) rather than by index so a future prepended sidecar can't shift it.
 	if cr.Spec.Image != nil && resources.StatefulSet != nil {
 		containers := resources.StatefulSet.Spec.Template.Spec.Containers
-		if len(containers) > 0 {
-			containers[0].Image = cr.Spec.Image.GetImage(constants.ProductName)
-			containers[0].ImagePullPolicy = cr.Spec.Image.GetPullPolicy()
+		for i := range containers {
+			if containers[i].Name == constants.MainContainerName {
+				containers[i].Image = cr.Spec.Image.GetImage(constants.ProductName)
+				containers[i].ImagePullPolicy = cr.Spec.Image.GetPullPolicy()
+				break
+			}
 		}
 	}
 
@@ -110,19 +114,30 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 		}
 
 		// jvm.config is a flag list, not key=value, so it cannot flow through the merge
-		// pipeline; generate it here with role-specific heap sizing.
-		resources.ConfigMap.Data["jvm.config"] = jvmConfig(buildCtx.RoleName)
+		// pipeline; generate it here with role-specific heap sizing. These are product
+		// defaults, so a user-provided value (via configOverrides) takes precedence — never
+		// clobber a key the merge pipeline already produced.
+		setIfAbsent(resources.ConfigMap.Data, "jvm.config", func() string { return jvmConfig(buildCtx.RoleName) })
 
 		// Catalog connector files live only on the coordinator.
 		if buildCtx.RoleName == product.RoleCoordinators {
 			catalogs := trinoconfig.NewCatalogConfigBuilder().WithCatalogs(cr.Spec.Catalogs).Build()
 			for name, content := range catalogs {
-				resources.ConfigMap.Data[fmt.Sprintf("catalog/%s.properties", name)] = content
+				key := fmt.Sprintf("catalog/%s.properties", name)
+				setIfAbsent(resources.ConfigMap.Data, key, func() string { return content })
 			}
 		}
 	}
 
 	return resources, nil
+}
+
+// setIfAbsent writes value() into data[key] only when the key is not already present, so
+// product defaults never overwrite config the merge pipeline produced (CRD always wins).
+func setIfAbsent(data map[string]string, key string, value func() string) {
+	if _, exists := data[key]; !exists {
+		data[key] = value()
+	}
 }
 
 // jvmConfig renders the role-specific JVM options.
