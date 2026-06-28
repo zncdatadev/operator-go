@@ -23,6 +23,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -100,6 +101,13 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// immutable StatefulSet selector stable and free of user-mutable labels.
 	// When empty, selectors fall back to the descriptive labels (backward compatible).
 	LabelDomain string
+
+	// LoggingContainers declares, per container, how its logging config file is generated
+	// from the deep-merged CRD logging spec and injected into the role group ConfigMap.
+	// The framework owns the whole pipeline (merge -> convert -> render -> ConfigMap key);
+	// products only declare the product-specific bits (framework, pattern, output file).
+	// Empty means the product handles logging itself (or has none).
+	LoggingContainers []productlogging.ContainerLogging
 
 	// SidecarManager manages sidecar injection into pods.
 	// Optional - if nil, no sidecars are injected.
@@ -310,6 +318,15 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 		for filename, content := range generatedData {
 			data[filename] = content
 		}
+	}
+
+	// Generate declared per-container logging config files from the merged logging spec.
+	for _, lc := range h.LoggingContainers {
+		filename, content, err := RenderContainerLogging(buildCtx, lc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to render logging config for container %q: %w", lc.Container, err)
+		}
+		data[filename] = content
 	}
 
 	return &corev1.ConfigMap{

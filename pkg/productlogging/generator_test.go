@@ -14,42 +14,42 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package config_test
+package productlogging_test
 
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 )
 
 var _ = Describe("LoggingGenerator", func() {
 	Describe("NewLoggingGenerator", func() {
 		It("should create a LoggingGenerator with log4j2 framework", func() {
-			generator := config.NewLoggingGenerator(config.LoggingFrameworkLog4j2)
+			generator := productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLog4j2)
 			Expect(generator).NotTo(BeNil())
 		})
 
 		It("should create a LoggingGenerator with logback framework", func() {
-			generator := config.NewLoggingGenerator(config.LoggingFrameworkLogback)
+			generator := productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLogback)
 			Expect(generator).NotTo(BeNil())
 		})
 
 		It("should create a LoggingGenerator with python framework", func() {
-			generator := config.NewLoggingGenerator(config.LoggingFrameworkPython)
+			generator := productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkPython)
 			Expect(generator).NotTo(BeNil())
 		})
 	})
 
 	Describe("Generate", func() {
 		Context("with Log4j2 framework", func() {
-			var generator *config.LoggingGenerator
+			var generator *productlogging.LoggingGenerator
 
 			BeforeEach(func() {
-				generator = config.NewLoggingGenerator(config.LoggingFrameworkLog4j2)
+				generator = productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLog4j2)
 			})
 
 			It("should generate log4j2 configuration with empty configs", func() {
-				content, err := generator.Generate(map[string]config.LoggerConfig{})
+				content, err := generator.Generate(map[string]productlogging.LoggerConfig{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(content).To(ContainSubstring("# Log4j2 Configuration"))
 				Expect(content).To(ContainSubstring("rootLogger.level=INFO"))
@@ -57,8 +57,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should generate log4j2 configuration with single logger", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example": {Name: "com.example", Level: config.LogLevelDebug},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example": {Name: "com.example", Level: productlogging.LogLevelDebug},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -68,9 +68,9 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should generate log4j2 configuration with multiple loggers", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example":      {Name: "com.example", Level: config.LogLevelDebug},
-					"org.apache.kafka": {Name: "org.apache.kafka", Level: config.LogLevelWarn},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example":      {Name: "com.example", Level: productlogging.LogLevelDebug},
+					"org.apache.kafka": {Name: "org.apache.kafka", Level: productlogging.LogLevelWarn},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -80,8 +80,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should escape special characters in logger names", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example-module": {Name: "com.example-module", Level: config.LogLevelInfo},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example-module": {Name: "com.example-module", Level: productlogging.LogLevelInfo},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -89,16 +89,16 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should handle all log levels", func() {
-				levels := []config.LogLevel{
-					config.LogLevelTrace,
-					config.LogLevelDebug,
-					config.LogLevelInfo,
-					config.LogLevelWarn,
-					config.LogLevelError,
-					config.LogLevelFatal,
+				levels := []productlogging.LogLevel{
+					productlogging.LogLevelTrace,
+					productlogging.LogLevelDebug,
+					productlogging.LogLevelInfo,
+					productlogging.LogLevelWarn,
+					productlogging.LogLevelError,
+					productlogging.LogLevelFatal,
 				}
 				for _, level := range levels {
-					configs := map[string]config.LoggerConfig{
+					configs := map[string]productlogging.LoggerConfig{
 						"test": {Name: "test", Level: level},
 					}
 					content, err := generator.Generate(configs)
@@ -109,14 +109,14 @@ var _ = Describe("LoggingGenerator", func() {
 		})
 
 		Context("with Logback framework", func() {
-			var generator *config.LoggingGenerator
+			var generator *productlogging.LoggingGenerator
 
 			BeforeEach(func() {
-				generator = config.NewLoggingGenerator(config.LoggingFrameworkLogback)
+				generator = productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLogback)
 			})
 
 			It("should generate logback configuration with empty configs", func() {
-				content, err := generator.Generate(map[string]config.LoggerConfig{})
+				content, err := generator.Generate(map[string]productlogging.LoggerConfig{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(content).To(ContainSubstring("<?xml version=\"1.0\""))
 				Expect(content).To(ContainSubstring("<configuration>"))
@@ -125,8 +125,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should generate logback configuration with single logger", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example": {Name: "com.example", Level: config.LogLevelDebug},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example": {Name: "com.example", Level: productlogging.LogLevelDebug},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -134,9 +134,9 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should generate logback configuration with multiple loggers", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example":      {Name: "com.example", Level: config.LogLevelDebug},
-					"org.apache.kafka": {Name: "org.apache.kafka", Level: config.LogLevelWarn},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example":      {Name: "com.example", Level: productlogging.LogLevelDebug},
+					"org.apache.kafka": {Name: "org.apache.kafka", Level: productlogging.LogLevelWarn},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -145,8 +145,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should escape XML special characters in logger names", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example<test>": {Name: "com.example<test>", Level: config.LogLevelInfo},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example<test>": {Name: "com.example<test>", Level: productlogging.LogLevelInfo},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -155,8 +155,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should escape ampersand in logger names", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example&test": {Name: "com.example&test", Level: config.LogLevelInfo},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example&test": {Name: "com.example&test", Level: productlogging.LogLevelInfo},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -165,14 +165,14 @@ var _ = Describe("LoggingGenerator", func() {
 		})
 
 		Context("with Python framework", func() {
-			var generator *config.LoggingGenerator
+			var generator *productlogging.LoggingGenerator
 
 			BeforeEach(func() {
-				generator = config.NewLoggingGenerator(config.LoggingFrameworkPython)
+				generator = productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkPython)
 			})
 
 			It("should generate python logging configuration with empty configs", func() {
-				content, err := generator.Generate(map[string]config.LoggerConfig{})
+				content, err := generator.Generate(map[string]productlogging.LoggerConfig{})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(content).To(ContainSubstring("# Python Logging Configuration"))
 				Expect(content).To(ContainSubstring("LOGGING = {"))
@@ -181,8 +181,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should generate python logging configuration with single logger", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example": {Name: "com.example", Level: config.LogLevelDebug},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example": {Name: "com.example", Level: productlogging.LogLevelDebug},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -191,9 +191,9 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should generate python logging configuration with multiple loggers", func() {
-				configs := map[string]config.LoggerConfig{
-					"com.example":      {Name: "com.example", Level: config.LogLevelDebug},
-					"org.apache.kafka": {Name: "org.apache.kafka", Level: config.LogLevelWarn},
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example":      {Name: "com.example", Level: productlogging.LogLevelDebug},
+					"org.apache.kafka": {Name: "org.apache.kafka", Level: productlogging.LogLevelWarn},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -202,8 +202,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should map TRACE to DEBUG for Python", func() {
-				configs := map[string]config.LoggerConfig{
-					"test": {Name: "test", Level: config.LogLevelTrace},
+				configs := map[string]productlogging.LoggerConfig{
+					"test": {Name: "test", Level: productlogging.LogLevelTrace},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -211,8 +211,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should map WARN to WARNING for Python", func() {
-				configs := map[string]config.LoggerConfig{
-					"test": {Name: "test", Level: config.LogLevelWarn},
+				configs := map[string]productlogging.LoggerConfig{
+					"test": {Name: "test", Level: productlogging.LogLevelWarn},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -220,8 +220,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should map FATAL to CRITICAL for Python", func() {
-				configs := map[string]config.LoggerConfig{
-					"test": {Name: "test", Level: config.LogLevelFatal},
+				configs := map[string]productlogging.LoggerConfig{
+					"test": {Name: "test", Level: productlogging.LogLevelFatal},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -229,8 +229,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should map ERROR to ERROR for Python", func() {
-				configs := map[string]config.LoggerConfig{
-					"test": {Name: "test", Level: config.LogLevelError},
+				configs := map[string]productlogging.LoggerConfig{
+					"test": {Name: "test", Level: productlogging.LogLevelError},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -238,8 +238,8 @@ var _ = Describe("LoggingGenerator", func() {
 			})
 
 			It("should map INFO to INFO for Python", func() {
-				configs := map[string]config.LoggerConfig{
-					"test": {Name: "test", Level: config.LogLevelInfo},
+				configs := map[string]productlogging.LoggerConfig{
+					"test": {Name: "test", Level: productlogging.LogLevelInfo},
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
@@ -249,8 +249,8 @@ var _ = Describe("LoggingGenerator", func() {
 
 		Context("with unsupported framework", func() {
 			It("should return error for unsupported framework", func() {
-				generator := config.NewLoggingGenerator(config.LoggingFramework("unsupported"))
-				content, err := generator.Generate(map[string]config.LoggerConfig{})
+				generator := productlogging.NewLoggingGenerator(productlogging.LoggingFramework("unsupported"))
+				content, err := generator.Generate(map[string]productlogging.LoggerConfig{})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("unsupported logging framework"))
 				Expect(content).To(BeEmpty())
@@ -261,10 +261,10 @@ var _ = Describe("LoggingGenerator", func() {
 
 var _ = Describe("GenerateLog4j2", func() {
 	It("should generate valid log4j2 properties format", func() {
-		configs := map[string]config.LoggerConfig{
-			"com.example.app": {Name: "com.example.app", Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			"com.example.app": {Name: "com.example.app", Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GenerateLog4j2(configs)
+		content, err := productlogging.GenerateLog4j2(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("# Log4j2 Configuration"))
 		Expect(content).To(ContainSubstring("rootLogger.level=INFO"))
@@ -278,21 +278,21 @@ var _ = Describe("GenerateLog4j2", func() {
 	})
 
 	It("should handle logger names with dollar sign", func() {
-		configs := map[string]config.LoggerConfig{
-			"com$example": {Name: "com$example", Level: config.LogLevelDebug},
+		configs := map[string]productlogging.LoggerConfig{
+			"com$example": {Name: "com$example", Level: productlogging.LogLevelDebug},
 		}
-		content, err := config.GenerateLog4j2(configs)
+		content, err := productlogging.GenerateLog4j2(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("logger.com_example.name=com$example"))
 	})
 
 	It("should sort logger names alphabetically", func() {
-		configs := map[string]config.LoggerConfig{
-			"zebra":  {Name: "zebra", Level: config.LogLevelInfo},
-			"alpha":  {Name: "alpha", Level: config.LogLevelInfo},
-			"middle": {Name: "middle", Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			"zebra":  {Name: "zebra", Level: productlogging.LogLevelInfo},
+			"alpha":  {Name: "alpha", Level: productlogging.LogLevelInfo},
+			"middle": {Name: "middle", Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GenerateLog4j2(configs)
+		content, err := productlogging.GenerateLog4j2(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("loggers=alpha,middle,zebra"))
 	})
@@ -300,10 +300,10 @@ var _ = Describe("GenerateLog4j2", func() {
 
 var _ = Describe("GenerateLogback", func() {
 	It("should generate valid logback XML format", func() {
-		configs := map[string]config.LoggerConfig{
-			"com.example.app": {Name: "com.example.app", Level: config.LogLevelDebug},
+		configs := map[string]productlogging.LoggerConfig{
+			"com.example.app": {Name: "com.example.app", Level: productlogging.LogLevelDebug},
 		}
-		content, err := config.GenerateLogback(configs)
+		content, err := productlogging.GenerateLogback(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("<?xml version=\"1.0\""))
 		Expect(content).To(ContainSubstring("<configuration>"))
@@ -314,30 +314,30 @@ var _ = Describe("GenerateLogback", func() {
 	})
 
 	It("should escape double quotes in logger names", func() {
-		configs := map[string]config.LoggerConfig{
-			`com.example"test`: {Name: `com.example"test`, Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			`com.example"test`: {Name: `com.example"test`, Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GenerateLogback(configs)
+		content, err := productlogging.GenerateLogback(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("&quot;"))
 	})
 
 	It("should escape single quotes in logger names", func() {
-		configs := map[string]config.LoggerConfig{
-			"com.example'test": {Name: "com.example'test", Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			"com.example'test": {Name: "com.example'test", Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GenerateLogback(configs)
+		content, err := productlogging.GenerateLogback(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("&apos;"))
 	})
 
 	It("should sort logger names alphabetically", func() {
-		configs := map[string]config.LoggerConfig{
-			"zebra":  {Name: "zebra", Level: config.LogLevelInfo},
-			"alpha":  {Name: "alpha", Level: config.LogLevelInfo},
-			"middle": {Name: "middle", Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			"zebra":  {Name: "zebra", Level: productlogging.LogLevelInfo},
+			"alpha":  {Name: "alpha", Level: productlogging.LogLevelInfo},
+			"middle": {Name: "middle", Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GenerateLogback(configs)
+		content, err := productlogging.GenerateLogback(configs)
 		Expect(err).ToNot(HaveOccurred())
 		// Check that alpha appears before middle which appears before zebra
 		Expect(content).To(ContainSubstring(`<logger name="alpha"`))
@@ -348,10 +348,10 @@ var _ = Describe("GenerateLogback", func() {
 
 var _ = Describe("GeneratePythonLogging", func() {
 	It("should generate valid Python logging format", func() {
-		configs := map[string]config.LoggerConfig{
-			"com.example.app": {Name: "com.example.app", Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			"com.example.app": {Name: "com.example.app", Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GeneratePythonLogging(configs)
+		content, err := productlogging.GeneratePythonLogging(configs)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("# Python Logging Configuration"))
 		Expect(content).To(ContainSubstring("LOGGING = {"))
@@ -364,26 +364,26 @@ var _ = Describe("GeneratePythonLogging", func() {
 	})
 
 	It("should include console handler configuration", func() {
-		content, err := config.GeneratePythonLogging(map[string]config.LoggerConfig{})
+		content, err := productlogging.GeneratePythonLogging(map[string]productlogging.LoggerConfig{})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("'console'"))
 		Expect(content).To(ContainSubstring("'class': 'logging.StreamHandler'"))
 	})
 
 	It("should include standard formatter configuration", func() {
-		content, err := config.GeneratePythonLogging(map[string]config.LoggerConfig{})
+		content, err := productlogging.GeneratePythonLogging(map[string]productlogging.LoggerConfig{})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(content).To(ContainSubstring("'standard'"))
 		Expect(content).To(ContainSubstring("'format'"))
 	})
 
 	It("should sort logger names alphabetically", func() {
-		configs := map[string]config.LoggerConfig{
-			"zebra":  {Name: "zebra", Level: config.LogLevelInfo},
-			"alpha":  {Name: "alpha", Level: config.LogLevelInfo},
-			"middle": {Name: "middle", Level: config.LogLevelInfo},
+		configs := map[string]productlogging.LoggerConfig{
+			"zebra":  {Name: "zebra", Level: productlogging.LogLevelInfo},
+			"alpha":  {Name: "alpha", Level: productlogging.LogLevelInfo},
+			"middle": {Name: "middle", Level: productlogging.LogLevelInfo},
 		}
-		content, err := config.GeneratePythonLogging(configs)
+		content, err := productlogging.GeneratePythonLogging(configs)
 		Expect(err).ToNot(HaveOccurred())
 		// Verify all loggers are present
 		Expect(content).To(ContainSubstring("'alpha'"))
@@ -394,67 +394,67 @@ var _ = Describe("GeneratePythonLogging", func() {
 
 var _ = Describe("LogLevel constants", func() {
 	It("should have correct LogLevelTrace value", func() {
-		Expect(string(config.LogLevelTrace)).To(Equal("TRACE"))
+		Expect(string(productlogging.LogLevelTrace)).To(Equal("TRACE"))
 	})
 
 	It("should have correct LogLevelDebug value", func() {
-		Expect(string(config.LogLevelDebug)).To(Equal("DEBUG"))
+		Expect(string(productlogging.LogLevelDebug)).To(Equal("DEBUG"))
 	})
 
 	It("should have correct LogLevelInfo value", func() {
-		Expect(string(config.LogLevelInfo)).To(Equal("INFO"))
+		Expect(string(productlogging.LogLevelInfo)).To(Equal("INFO"))
 	})
 
 	It("should have correct LogLevelWarn value", func() {
-		Expect(string(config.LogLevelWarn)).To(Equal("WARN"))
+		Expect(string(productlogging.LogLevelWarn)).To(Equal("WARN"))
 	})
 
 	It("should have correct LogLevelError value", func() {
-		Expect(string(config.LogLevelError)).To(Equal("ERROR"))
+		Expect(string(productlogging.LogLevelError)).To(Equal("ERROR"))
 	})
 
 	It("should have correct LogLevelFatal value", func() {
-		Expect(string(config.LogLevelFatal)).To(Equal("FATAL"))
+		Expect(string(productlogging.LogLevelFatal)).To(Equal("FATAL"))
 	})
 })
 
 var _ = Describe("LoggingFramework constants", func() {
 	It("should have correct LoggingFrameworkLog4j2 value", func() {
-		Expect(string(config.LoggingFrameworkLog4j2)).To(Equal("log4j2"))
+		Expect(string(productlogging.LoggingFrameworkLog4j2)).To(Equal("log4j2"))
 	})
 
 	It("should have correct LoggingFrameworkLogback value", func() {
-		Expect(string(config.LoggingFrameworkLogback)).To(Equal("logback"))
+		Expect(string(productlogging.LoggingFrameworkLogback)).To(Equal("logback"))
 	})
 
 	It("should have correct LoggingFrameworkPython value", func() {
-		Expect(string(config.LoggingFrameworkPython)).To(Equal("python"))
+		Expect(string(productlogging.LoggingFrameworkPython)).To(Equal("python"))
 	})
 })
 
 var _ = Describe("LoggerConfig", func() {
 	It("should create LoggerConfig with name and level", func() {
-		loggerConfig := config.LoggerConfig{
+		loggerConfig := productlogging.LoggerConfig{
 			Name:  "com.example",
-			Level: config.LogLevelDebug,
+			Level: productlogging.LogLevelDebug,
 		}
 		Expect(loggerConfig.Name).To(Equal("com.example"))
-		Expect(loggerConfig.Level).To(Equal(config.LogLevelDebug))
+		Expect(loggerConfig.Level).To(Equal(productlogging.LogLevelDebug))
 	})
 })
 
 var _ = Describe("GenerateLogbackWithOptions", func() {
 	It("emits only a console appender when no file output is requested (matches GenerateLogback)", func() {
-		withOpts, err := config.GenerateLogbackWithOptions(nil, config.LogbackOptions{})
+		withOpts, err := productlogging.GenerateLogbackWithOptions(nil, productlogging.LogbackOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		plain, err := config.GenerateLogback(nil)
+		plain, err := productlogging.GenerateLogback(nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(withOpts).To(Equal(plain))
 		Expect(withOpts).NotTo(ContainSubstring("RollingFileAppender"))
 	})
 
 	It("adds a bounded rolling file appender matching the consumer glob", func() {
-		out, err := config.GenerateLogbackWithOptions(nil, config.LogbackOptions{
+		out, err := productlogging.GenerateLogbackWithOptions(nil, productlogging.LogbackOptions{
 			FileOutputPath: "/kubedoop/log/zookeeper.stdout.log",
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -462,5 +462,23 @@ var _ = Describe("GenerateLogbackWithOptions", func() {
 		Expect(out).To(ContainSubstring("<file>/kubedoop/log/zookeeper.stdout.log</file>"))
 		Expect(out).To(ContainSubstring("<totalSizeCap>8MB</totalSizeCap>"))
 		Expect(out).To(ContainSubstring(`<appender-ref ref="FILE" />`))
+	})
+
+	It("defaults the root logger level to INFO when RootLevel is empty", func() {
+		out, err := productlogging.GenerateLogbackWithOptions(nil, productlogging.LogbackOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring(`<root level="INFO">`))
+	})
+
+	It("honors a RootLevel override on the root logger", func() {
+		out, err := productlogging.GenerateLogbackWithOptions(
+			map[string]productlogging.LoggerConfig{
+				"org.apache.zookeeper": {Name: "org.apache.zookeeper", Level: productlogging.LogLevelDebug},
+			},
+			productlogging.LogbackOptions{RootLevel: productlogging.LogLevelWarn},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring(`<root level="WARN">`))
+		Expect(out).To(ContainSubstring(`<logger name="org.apache.zookeeper" level="DEBUG" />`))
 	})
 })

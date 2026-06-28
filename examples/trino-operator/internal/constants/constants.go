@@ -26,6 +26,9 @@ const (
 	DefaultImageKubedoopVersion = "0.0.0-dev"
 	// ProductName is the product name used for image resolution
 	ProductName = "trino"
+	// MainContainerName is the name of the main Trino container. It is also the key used to
+	// look up per-container logging config (logging.containers.<name>).
+	MainContainerName = "trino"
 )
 
 // RoleGroup constants

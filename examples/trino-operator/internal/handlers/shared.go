@@ -23,6 +23,7 @@ import (
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -111,7 +112,28 @@ func BuildStatefulSet(
 			MountPath: "/etc/trino",
 		})
 
-	return stsBuilder.Build()
+	sts := stsBuilder.Build()
+	// Name the main container so it matches the logging container key (logging.containers.trino).
+	if sts != nil && len(sts.Spec.Template.Spec.Containers) > 0 {
+		sts.Spec.Template.Spec.Containers[0].Name = constants.MainContainerName
+	}
+	return sts
+}
+
+// AddLogging renders the Trino container's logging config file from the deep-merged CRD
+// logging spec and adds it to the ConfigMap data. It demonstrates how a handler that builds
+// its own ConfigMap (rather than embedding BaseRoleGroupHandler) reuses the framework's
+// merge -> convert -> render logging pipeline via reconciler.RenderContainerLogging.
+func AddLogging(buildCtx *reconciler.RoleGroupBuildContext, data map[string]string) error {
+	fileName, content, err := reconciler.RenderContainerLogging(buildCtx, productlogging.ContainerLogging{
+		Container: constants.MainContainerName,
+		Framework: productlogging.LoggingFrameworkLog4j2,
+	})
+	if err != nil {
+		return err
+	}
+	data[fileName] = content
+	return nil
 }
 
 // BuildPDB builds a PodDisruptionBudget using SDK builder

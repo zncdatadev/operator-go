@@ -24,6 +24,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 	corev1 "k8s.io/api/core/v1"
@@ -837,5 +838,74 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "server"))
+	})
+})
+
+var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
+	It("renders a declared logback container into the role group ConfigMap", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container:  "main",
+			Framework:  productlogging.LoggingFrameworkLogback,
+			Pattern:    "%d [myid:%X{myid}] %m%n",
+			OutputFile: "main.stdout.log",
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					Containers: map[string]v1alpha1.LoggingConfigSpec{
+						"main": {
+							Loggers: map[string]*v1alpha1.LogLevelSpec{
+								"ROOT":  {Level: "WARN"},
+								"org.x": {Level: "DEBUG"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.ConfigMap).NotTo(BeNil())
+
+		logback := resources.ConfigMap.Data["logback.xml"]
+		Expect(logback).NotTo(BeEmpty())
+		Expect(logback).To(ContainSubstring(`<root level="WARN">`))
+		Expect(logback).To(ContainSubstring(`<logger name="org.x" level="DEBUG" />`))
+		Expect(logback).To(ContainSubstring("<file>/kubedoop/log/main.stdout.log</file>"))
+	})
+
+	It("falls back to defaults when no logging is configured for the container", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			MergedConfig:     &config.MergedConfig{},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.ConfigMap.Data["logback.xml"]).To(ContainSubstring(`<root level="INFO">`))
 	})
 })
