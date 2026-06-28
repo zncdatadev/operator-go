@@ -49,7 +49,10 @@ func (h *WorkersHandler) BuildResources(
 	workerPort := GetWorkerPort(cr)
 
 	// Build ConfigMap with Trino configuration
-	configMap := h.buildConfigMap(cr, buildCtx, coordinatorPort)
+	configMap, err := h.buildConfigMap(cr, buildCtx, coordinatorPort)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build Headless Service for StatefulSet
 	headlessService := BuildHeadlessService(buildCtx, workerPort)
@@ -85,7 +88,7 @@ func (h *WorkersHandler) buildConfigMap(
 	cr *trinov1alpha1.TrinoCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 	coordinatorPort int32,
-) *corev1.ConfigMap {
+) (*corev1.ConfigMap, error) {
 	// Generate Trino configuration for Worker
 	trinoConfig := config.NewTrinoConfigBuilder().
 		ForWorker(cr, buildCtx, coordinatorPort).
@@ -102,8 +105,13 @@ func (h *WorkersHandler) buildConfigMap(
 		"jvm.config":        jvmConfig,
 	}
 
+	// Add the generated logging config file from the merged CRD logging spec.
+	if err := AddLogging(buildCtx, data); err != nil {
+		return nil, err
+	}
+
 	// Use SDK builder to create ConfigMap
-	return BuildConfigMap(buildCtx, data)
+	return BuildConfigMap(buildCtx, data), nil
 }
 
 // getWorkerRoleConfigPDB extracts PDB spec from WorkersSpec

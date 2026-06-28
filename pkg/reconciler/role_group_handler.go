@@ -22,6 +22,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -90,6 +91,28 @@ type RoleGroupBuildContext struct {
 	// sidecar.StaticContainerProvider) and call InjectAll so all pod container injection
 	// flows through the manager. May be empty if nothing is configured.
 	SidecarManager *sidecar.SidecarManager
+}
+
+// ContainerLogging returns the deep-merged logging config for a container (keyed by
+// container name), or nil when the product CRD configured no logging for it. The declaration
+// type and rendering live in pkg/productlogging; this accessor must live here because it is a
+// method on the reconciler's RoleGroupBuildContext.
+func (c *RoleGroupBuildContext) ContainerLogging(container string) *v1alpha1.LoggingConfigSpec {
+	if c.MergedConfig == nil || c.MergedConfig.Logging == nil {
+		return nil
+	}
+	if cfg, ok := c.MergedConfig.Logging.Containers[container]; ok {
+		return &cfg
+	}
+	return nil
+}
+
+// RenderContainerLogging is a build-context convenience over productlogging.RenderConfigFile:
+// it resolves the container's merged logging spec from the build context and renders the
+// config file. Handlers embedding BaseRoleGroupHandler get this wired automatically via
+// LoggingContainers; handlers that build their own ConfigMap can call it directly.
+func RenderContainerLogging(buildCtx *RoleGroupBuildContext, decl productlogging.ContainerLogging) (string, string, error) {
+	return productlogging.RenderConfigFile(buildCtx.ContainerLogging(decl.Container), decl)
 }
 
 // RoleGroupHandler is the interface that product operators must implement

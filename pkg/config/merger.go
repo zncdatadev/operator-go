@@ -52,6 +52,12 @@ type MergedConfig struct {
 
 	// PodOverrides contains pod template overrides.
 	PodOverrides *corev1.PodTemplateSpec
+
+	// Logging is the per-container logging configuration, deep-merged from the Role and
+	// RoleGroup levels (RoleGroup values win at the leaf). It drives both Vector sidecar
+	// enablement and per-container logging config file generation. Nil when the product
+	// CRD configured no logging.
+	Logging *v1alpha1.LoggingSpec
 }
 
 // NewMergedConfig creates a new MergedConfig with initialized maps.
