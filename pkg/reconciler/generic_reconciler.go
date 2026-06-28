@@ -98,17 +98,21 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// +optional
 	ServiceAccountName string
 
-	// ProductDefaults, when set, supplies product-owned default configuration for a role
-	// group as an *v1alpha1.OverridesSpec — the same shape users write in the CRD. The
-	// GenericReconciler merges it as the LOWEST-precedence layer, beneath the role and role
-	// group overrides, so any value set in the CRD always wins over a product default.
+	// ProductConfig, when set, computes the product's configuration contribution for a role
+	// group at reconcile time, returned as an *v1alpha1.OverridesSpec (the same shape users
+	// write in the CRD). The GenericReconciler merges it as the LOWEST-precedence layer,
+	// beneath the role and role group overrides, so a user's configOverrides always win.
 	//
-	// Use it for product-intrinsic defaults and derived values (e.g. JVM heap computed from
-	// the role group's resources, or role-specific config keys such as coordinator vs worker).
-	// It is a pure function of the CR and the role/role group identity; returning nil
-	// contributes no defaults for that role group.
+	// This is config generation, not defaulting: unlike the webhook ProductDefaulter (which
+	// fills static fallbacks into typed spec fields at admission), ProductConfig is recomputed
+	// every reconcile and may derive from live cluster state — e.g. a ZooKeeper connection
+	// string built from the actual resources, a quorum peer list from pod ordinals, or a JVM
+	// heap sized from the role group's resources. Computing here, rather than freezing values
+	// into the spec at admission, means operator upgrades propagate config changes to existing
+	// clusters. It is a pure function of the CR and the role/role group identity; returning nil
+	// contributes nothing for that role group.
 	// +optional
-	ProductDefaults func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
+	ProductConfig func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
 
 	// Prototype is a zero-value instance of the CR type used for controller setup.
 	// This is required because Go generics don't allow creating new instances.
@@ -156,7 +160,7 @@ type GenericReconciler[CR common.ClusterInterface] struct {
 	prototype           CR
 	rateLimitRetryAfter time.Duration
 	serviceAccountName  string
-	productDefaults     func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
+	productConfig       func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -215,7 +219,7 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 		prototype:           cfg.Prototype,
 		rateLimitRetryAfter: rateLimitRetryAfter,
 		serviceAccountName:  cfg.ServiceAccountName,
-		productDefaults:     cfg.ProductDefaults,
+		productConfig:       cfg.ProductConfig,
 	}, nil
 }
 
@@ -469,14 +473,14 @@ func RoleGroupResourceName(clusterName, roleName, groupName string) string {
 
 // buildRoleGroupContext creates the build context for a role group.
 func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec) *RoleGroupBuildContext {
-	// Merge configurations in increasing precedence: product defaults (lowest) < role < role
-	// group (highest). Product defaults flow through the same merge pipeline as CRD overrides,
-	// so a value set anywhere in the CRD always wins over a product default.
-	var productDefaults *v1alpha1.OverridesSpec
-	if r.productDefaults != nil {
-		productDefaults = r.productDefaults(cr, roleName, groupName)
+	// Merge configurations in increasing precedence: product config (lowest) < role < role
+	// group (highest). The product's computed config flows through the same merge pipeline as
+	// CRD overrides, so a value set anywhere in the CRD always wins over it.
+	var productConfig *v1alpha1.OverridesSpec
+	if r.productConfig != nil {
+		productConfig = r.productConfig(cr, roleName, groupName)
 	}
-	mergedConfig := r.configMerger.Merge(productDefaults, roleSpec.GetOverrides(), groupSpec.GetOverrides())
+	mergedConfig := r.configMerger.Merge(productConfig, roleSpec.GetOverrides(), groupSpec.GetOverrides())
 	// Deep-merge logging (role + role group) once, so both Vector enablement and per-container
 	// logging config file generation read from a single merged source.
 	mergedConfig.Logging = productlogging.MergeLoggingSpec(roleSpec.GetConfig().Logging, groupSpec.GetConfig().Logging)

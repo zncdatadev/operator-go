@@ -34,8 +34,8 @@ import (
 
 // TrinoRoleGroupHandler builds Trino role group resources. It embeds the SDK's
 // BaseRoleGroupHandler so the framework owns the bulk of resource orchestration — ConfigMap
-// (rendered from the merged config, including the product defaults contributed via
-// product.ConfigDefaults), Services, the StatefulSet (with sidecars and podOverrides applied
+// (rendered from the merged config, including the product config computed by
+// product.ComputeConfig), Services, the StatefulSet (with sidecars and podOverrides applied
 // by the framework), and the PDB. The override below only adds the product-specific bits the
 // merge pipeline cannot model declaratively.
 type TrinoRoleGroupHandler struct {
@@ -46,7 +46,7 @@ type TrinoRoleGroupHandler struct {
 func NewTrinoRoleGroupHandler(scheme *runtime.Scheme) *TrinoRoleGroupHandler {
 	base := reconciler.NewBaseRoleGroupHandler[*trinov1alpha1.TrinoCluster](defaultImage(), scheme)
 
-	// config.properties (provided as a map via ProductDefaults / CRD overrides) is rendered
+	// config.properties (provided as a map via ProductConfig / CRD overrides) is rendered
 	// with the properties format adapter.
 	base.ConfigGenerator = config.NewMultiFormatConfigGenerator()
 	base.ConfigGenerator.RegisterDefaultFormats()
@@ -114,9 +114,9 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 		}
 
 		// jvm.config is a flag list, not key=value, so it cannot flow through the merge
-		// pipeline; generate it here with role-specific heap sizing. These are product
-		// defaults, so a user-provided value (via configOverrides) takes precedence — never
-		// clobber a key the merge pipeline already produced.
+		// pipeline; generate it here with role-specific heap sizing. This is product config, so
+		// a user-provided value (via configOverrides) takes precedence — never clobber a key the
+		// merge pipeline already produced.
 		setIfAbsent(resources.ConfigMap.Data, "jvm.config", func() string { return jvmConfig(buildCtx.RoleName) })
 
 		// Catalog connector files live only on the coordinator.
@@ -133,7 +133,7 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 }
 
 // setIfAbsent writes value() into data[key] only when the key is not already present, so
-// product defaults never overwrite config the merge pipeline produced (CRD always wins).
+// product config never overwrites config the merge pipeline produced (CRD always wins).
 func setIfAbsent(data map[string]string, key string, value func() string) {
 	if _, exists := data[key]; !exists {
 		data[key] = value()

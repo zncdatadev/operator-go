@@ -1168,7 +1168,7 @@ var _ = Describe("RoleGroupResourceName", func() {
 	})
 })
 
-var _ = Describe("GenericReconciler ProductDefaults", func() {
+var _ = Describe("GenericReconciler ProductConfig", func() {
 	var (
 		namespace string
 		crName    string
@@ -1177,13 +1177,13 @@ var _ = Describe("GenericReconciler ProductDefaults", func() {
 
 	BeforeEach(func() {
 		namespace = testNamespace
-		crName = fmt.Sprintf("product-defaults-cr-%d", time.Now().UnixNano())
+		crName = fmt.Sprintf("product-config-cr-%d", time.Now().UnixNano())
 
 		mockCR = testutil.NewMockCluster(crName, namespace).
 			WithRoles(map[string]v1alpha1.RoleSpec{
 				"coordinator": {
 					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
-						// The user overrides one product-default key via the CRD.
+						// The user overrides one product-computed key via the CRD.
 						"default": {
 							Replicas: ptr.To(int32(1)),
 							ConfigOverrides: map[string]map[string]string{
@@ -1210,7 +1210,7 @@ var _ = Describe("GenericReconciler ProductDefaults", func() {
 		}
 	}
 
-	It("merges product defaults beneath CRD overrides and applies role-specific logic", func() {
+	It("merges product config beneath CRD overrides and applies role-specific logic", func() {
 		var captured *config.MergedConfig
 
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
@@ -1219,7 +1219,7 @@ var _ = Describe("GenericReconciler ProductDefaults", func() {
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace)),
-			ProductDefaults: func(_ *testutil.ClusterWrapper, roleName, _ string) *v1alpha1.OverridesSpec {
+			ProductConfig: func(_ *testutil.ClusterWrapper, roleName, _ string) *v1alpha1.OverridesSpec {
 				overrides := map[string]map[string]string{
 					"config.properties": {
 						"shared":       "from-product",
@@ -1243,15 +1243,15 @@ var _ = Describe("GenericReconciler ProductDefaults", func() {
 
 		Expect(captured).NotTo(BeNil())
 		props := captured.ConfigFiles["config.properties"]
-		// CRD override wins over the product default for the shared key.
+		// CRD override wins over the product-computed value for the shared key.
 		Expect(props).To(HaveKeyWithValue("shared", "from-crd"))
-		// Product-only defaults survive untouched.
+		// Product-only computed keys survive untouched.
 		Expect(props).To(HaveKeyWithValue("product-only", "p"))
 		// Role-specific product logic applied.
 		Expect(props).To(HaveKeyWithValue("coordinator", "true"))
 	})
 
-	It("uses CRD-only config when ProductDefaults is unset", func() {
+	It("uses CRD-only config when ProductConfig is unset", func() {
 		var captured *config.MergedConfig
 
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
@@ -1260,7 +1260,7 @@ var _ = Describe("GenericReconciler ProductDefaults", func() {
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace)),
-			// ProductDefaults intentionally left nil.
+			// ProductConfig intentionally left nil.
 		}
 
 		r, err := reconciler.NewGenericReconciler(cfg)

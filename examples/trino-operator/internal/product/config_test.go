@@ -38,14 +38,14 @@ func testCR() *trinov1alpha1.TrinoCluster {
 
 func configProps(t *testing.T, cr *trinov1alpha1.TrinoCluster, role string) map[string]string {
 	t.Helper()
-	ov := product.ConfigDefaults(cr, role, "default")
+	ov := product.ComputeConfig(cr, role, "default")
 	if ov == nil || ov.ConfigOverrides["config.properties"] == nil {
-		t.Fatalf("ConfigDefaults returned no config.properties for role %q", role)
+		t.Fatalf("ComputeConfig returned no config.properties for role %q", role)
 	}
 	return ov.ConfigOverrides["config.properties"]
 }
 
-func TestConfigDefaultsCoordinator(t *testing.T) {
+func TestComputeConfigCoordinator(t *testing.T) {
 	props := configProps(t, testCR(), product.RoleCoordinators)
 
 	if got := props["coordinator"]; got != "true" {
@@ -61,7 +61,7 @@ func TestConfigDefaultsCoordinator(t *testing.T) {
 	}
 }
 
-func TestConfigDefaultsWorker(t *testing.T) {
+func TestComputeConfigWorker(t *testing.T) {
 	props := configProps(t, testCR(), product.RoleWorkers)
 
 	if got := props["coordinator"]; got != "false" {

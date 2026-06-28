@@ -36,7 +36,7 @@ import (
 func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role string, crdOverrides *commonsv1alpha1.OverridesSpec) *reconciler.RoleGroupBuildContext {
 	const group = "default"
 	merger := config.NewConfigMerger()
-	merged := merger.Merge(product.ConfigDefaults(cr, role, group), crdOverrides)
+	merged := merger.Merge(product.ComputeConfig(cr, role, group), crdOverrides)
 
 	return &reconciler.RoleGroupBuildContext{
 		ClusterName:      cr.Name,

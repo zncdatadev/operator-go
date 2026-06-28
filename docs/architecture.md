@@ -36,7 +36,7 @@ This document systematically expounds the design philosophy, architectural layer
   - An object managed by `secret-operator`, enabling the injection of sensitive data (Certificates, Kerberos Keytabs, Passwords) into Pods via the Kubernetes CSI (Container Storage Interface). Workloads reference a `SecretClass` to mount volumes that are dynamically populated by specific security backends.
 
 - **Overrides**
-  - A hierarchical configuration mechanism allowing precise customization of generated resources. It supports overriding Configuration Files (e.g., XML/Properties), Environment Variables, CLI arguments, and Pod attributes (via PodTemplateSpec). **Important**: Override fields (`configOverrides`, `envOverrides`, `cliOverrides`, `podOverrides`) are **flattened** directly at Role/RoleGroup level, NOT nested under an `overrides` field. RoleGroup overrides inherit from and take precedence over Role overrides.
+  - A hierarchical configuration mechanism allowing precise customization of generated resources. It supports overriding Configuration Files (e.g., XML/Properties), Environment Variables, CLI arguments, and Pod attributes (via PodTemplateSpec). **Important**: Override fields (`configOverrides`, `envOverrides`, `cliOverrides`, `podOverrides`) are **flattened** directly at Role/RoleGroup level, NOT nested under an `overrides` field. RoleGroup overrides inherit from and take precedence over Role overrides, and both take precedence over the product's computed config layer (see §2.5–§2.6): the full precedence is **Product Config < Role < RoleGroup**.
 
 - **Webhook**
   - Kubernetes admission webhooks integrated into the SDK for defaulting and validation. MutatingWebhook runs first to populate missing fields with safe defaults before persistence, while ValidatingWebhook runs next to enforce invariants and business rules (e.g., invalid replica counts, missing dependencies). Failed validation rejects the request so only valid specs enter reconciliation.
@@ -70,13 +70,41 @@ Go Generics are introduced to eliminate the risk of type assertions and ensure c
 
 ## 2.5 Strict Merge Strategy
 
-To resolve conflicts between Role and RoleGroup configurations, the SDK defines strict merge strategies:
+Configuration is assembled by folding an **ordered stack of layers**, each layer overriding the ones below it. The `ConfigMerger.Merge` operation is variadic and applies the layers in increasing precedence (lowest first):
 
-- **Map Types (Config/Env)**: Uses **Deep Merge**. Keys present in RoleGroup override those in Role; new keys are appended.
-- **Slice Types (CLI/JVM/Volumes)**: Supports **Replace** (default) and **Append** modes.
-  - **Replace**: If RoleGroup defines a slice, it completely replaces the Role's slice.
-  - **Append**: If configured (e.g., via specific flags or conventions), RoleGroup items are appended to the Role's slice.
-- **PodTemplate**: Follows the Kubernetes **Strategic Merge Patch** standard, allowing fine-grained overrides of Pod fields (e.g., changing container image while keeping volume mounts).
+```
+Product Config (lowest)  <  Role overrides  <  RoleGroup overrides (highest)
+```
+
+- **Product Config** is the product's *computed* configuration (see §2.6), contributed at reconcile time as the lowest layer.
+- **Role / RoleGroup overrides** are the user's CRD `configOverrides`/`envOverrides`/`cliOverrides`/`podOverrides`.
+
+Because the user's CRD overrides sit above the product layer, **a value a user sets in the CRD always wins** over the product's computed value.
+
+Each field type folds with a defined strategy:
+
+- **Map Types (Config files / Env)**: **Deep Merge**. A higher layer's keys override the same keys in a lower layer; new keys are appended.
+- **Slice Types (CLI args)**: **Replace** (default) or **Append**.
+  - **Replace**: a higher layer's slice completely replaces the lower layer's slice.
+  - **Append**: the higher layer's items are appended to the lower layer's slice.
+- **PodTemplate (`podOverrides`)**: Kubernetes **Strategic Merge Patch**, applied layer over layer, allowing fine-grained overrides of Pod fields (e.g., changing container image while keeping volume mounts).
+
+> The two-layer Role↔RoleGroup merge is the special case of this fold with no product layer; existing callers that pass only those two layers are unaffected.
+
+## 2.6 Product Config vs. Defaulting (Separation of Layers)
+
+The SDK distinguishes **two different mechanisms** by which a product supplies values that are not typed by the user, and they must not be conflated:
+
+| | **`ProductDefaulter`** (Webhook) | **`ProductConfig`** (merge layer) |
+|---|---|---|
+| **Targets** | Typed **Spec fields** (image, ports, replicas) | **Config-file content** (e.g. `config.properties`, connection strings) |
+| **When** | Admission (Mutating Webhook), **persisted into the Spec** | Every reconcile, **never persisted** |
+| **Semantics** | Static fallback **defaulting** ("fill if absent") | **Config computation** (may derive from live cluster state) |
+| **Upgrade propagation** | No — frozen into the Spec at admission time | **Yes** — recomputed with the current operator each reconcile |
+| **Derived-from-live-state** | Freezes / goes stale | **Recomputed every reconcile** |
+
+- **`ProductDefaulter`** is the right place for stable, user-facing **typed Spec defaults** (see §4.3). The value becomes part of the user's persisted Spec and is visible via `kubectl get`.
+- **`ProductConfig`** is the right place for **product-intrinsic and derived config-file content** — e.g. a ZooKeeper connection string built from the actual resources, a quorum peer list from pod ordinals, or a JVM heap sized from the role group's resources. It is *config generation, not defaulting*: computing it at reconcile time (rather than freezing it into the Spec at admission) ensures operator upgrades propagate config changes to existing clusters, and that values derived from mutable state stay fresh. It is injected as the lowest merge layer (§2.5), so user overrides still win.
 
 # 3. Layered Architecture Design
 
@@ -156,7 +184,7 @@ Implements common business logic based on abstract interfaces. It depends on the
 
 - **Core Components**:
     - `ClusterReconciler` (implemented as `GenericReconciler` in the SDK): Cluster reconciler, the entry point for the core reconciliation process, including role traversal, extension point execution, and orphaned resource cleanup.
-    - `ConfigMerger`: Configuration merger, implementing the merging and differentiated override of role and role group configurations.
+    - `ConfigMerger`: Configuration merger. Folds the ordered configuration layer stack (Product Config < Role < RoleGroup, see §2.5) via a variadic `Merge(...)`, applying per-type strategies (deep merge / replace-append / strategic merge patch).
     - `ConfigGenerator`: Configuration generator, transforming merged configuration maps into specific file formats (XML, Properties, YAML, etc.).
     - `SidecarManager`: Sidecar container manager, handling the injection of auxiliary containers (e.g., Log collection, Monitoring) into the Pod Spec.
     - `StatefulSetBuilder`: Resource builder, generating K8s resources such as StatefulSet and Service corresponding to role groups.
@@ -254,7 +282,8 @@ Based on Kubebuilder annotation-driven practices, integrating MutatingWebhook an
 
 - **MutatingWebhook**:
     - **Common Logic**: Populate resource defaults (CPU/Memory), ZK configuration defaults (Port 2181), log path defaults.
-    - **Specific Logic**: Product side implements the `ProductDefaulter` interface to populate product-specific default values (e.g., HDFS Namenode heap size).
+    - **Specific Logic**: Product side implements the `ProductDefaulter` interface to populate product-specific default values for **typed Spec fields** (e.g., HDFS Namenode heap size, default ports). These are *defaults* — static fallbacks persisted into the Spec at admission.
+    - **Scope boundary**: `ProductDefaulter` defaults typed Spec fields only. Product **config-file content** (and any value derived from live cluster state) is *computed* at reconcile time via `ProductConfig`, not defaulted here — see §2.6 for the distinction.
 - **ValidatingWebhook**:
     - **Common Logic**: Required field validation, resource format validation (CPU/Memory format), replica count legitimacy validation.
     - **Specific Logic**: Product side implements the `ProductValidator` interface to execute business rule validation (e.g., HDFS HA mode configuration validation).

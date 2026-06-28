@@ -24,7 +24,7 @@ import (
 )
 
 // JVMConfigBuilder builds Trino's jvm.config. Unlike config.properties (which is key=value and
-// flows through the SDK merge pipeline via product.ConfigDefaults), jvm.config is a
+// flows through the SDK merge pipeline via product.ComputeConfig), jvm.config is a
 // newline-delimited list of JVM flags, so it is generated here and appended to the ConfigMap
 // by the handler.
 type JVMConfigBuilder struct {

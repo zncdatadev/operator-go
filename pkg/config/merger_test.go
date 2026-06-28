@@ -192,7 +192,7 @@ var _ = Describe("ConfigMerger", func() {
 
 	Describe("Merge with layered overrides (variadic)", func() {
 		It("should apply layers in increasing precedence (product < role < group)", func() {
-			productDefaults := &v1alpha1.OverridesSpec{
+			productConfig := &v1alpha1.OverridesSpec{
 				ConfigOverrides: map[string]map[string]string{
 					"config.properties": {
 						"shared":       "from-product",
@@ -216,7 +216,7 @@ var _ = Describe("ConfigMerger", func() {
 				},
 			}
 
-			result := merger.Merge(productDefaults, roleOverrides, groupOverrides)
+			result := merger.Merge(productConfig, roleOverrides, groupOverrides)
 
 			cfg := result.ConfigFiles["config.properties"]
 			// Highest layer that sets the key wins.
@@ -226,8 +226,8 @@ var _ = Describe("ConfigMerger", func() {
 			Expect(cfg).To(HaveKeyWithValue("role-only", "r"))
 		})
 
-		It("should let a CRD override win over a product default for the same key", func() {
-			productDefaults := &v1alpha1.OverridesSpec{
+		It("should let a CRD override win over the product config layer for the same key", func() {
+			productConfig := &v1alpha1.OverridesSpec{
 				ConfigOverrides: map[string]map[string]string{
 					"config.properties": {"coordinator": "true"},
 				},
@@ -240,7 +240,7 @@ var _ = Describe("ConfigMerger", func() {
 				EnvOverrides: map[string]string{"HEAP": "8G"},
 			}
 
-			result := merger.Merge(productDefaults, nil, groupOverrides)
+			result := merger.Merge(productConfig, nil, groupOverrides)
 
 			Expect(result.ConfigFiles["config.properties"]).To(HaveKeyWithValue("coordinator", "false"))
 			Expect(result.EnvVars).To(HaveKeyWithValue("HEAP", "8G"))
@@ -250,26 +250,26 @@ var _ = Describe("ConfigMerger", func() {
 			Expect(merger.Merge().ConfigFiles).To(BeEmpty())
 			Expect(merger.Merge(nil, nil, nil)).NotTo(BeNil())
 
-			productDefaults := &v1alpha1.OverridesSpec{
+			productConfig := &v1alpha1.OverridesSpec{
 				EnvOverrides: map[string]string{"ONLY": "product"},
 			}
-			result := merger.Merge(nil, productDefaults, nil)
+			result := merger.Merge(nil, productConfig, nil)
 			Expect(result.EnvVars).To(HaveKeyWithValue("ONLY", "product"))
 		})
 
 		It("should append CLI args across three layers with Append strategy", func() {
 			merger.SliceMergeStrategy = config.MergeStrategyAppend
-			productDefaults := &v1alpha1.OverridesSpec{CliOverrides: []string{"--product"}}
+			productConfig := &v1alpha1.OverridesSpec{CliOverrides: []string{"--product"}}
 			roleOverrides := &v1alpha1.OverridesSpec{CliOverrides: []string{"--role"}}
 			groupOverrides := &v1alpha1.OverridesSpec{CliOverrides: []string{"--group"}}
 
-			result := merger.Merge(productDefaults, roleOverrides, groupOverrides)
+			result := merger.Merge(productConfig, roleOverrides, groupOverrides)
 
 			Expect(result.CliArgs).To(Equal([]string{"--product", "--role", "--group"}))
 		})
 
 		It("should strategically merge pod overrides across layers", func() {
-			productDefaults := &v1alpha1.OverridesSpec{
+			productConfig := &v1alpha1.OverridesSpec{
 				PodOverrides: &k8sruntime.RawExtension{
 					Raw: []byte(`{"spec":{"serviceAccountName":"product-sa","terminationGracePeriodSeconds":30}}`),
 				},
@@ -280,7 +280,7 @@ var _ = Describe("ConfigMerger", func() {
 				},
 			}
 
-			result := merger.Merge(productDefaults, nil, groupOverrides)
+			result := merger.Merge(productConfig, nil, groupOverrides)
 
 			Expect(result.PodOverrides).NotTo(BeNil())
 			// Group layer overrides the product value for the same field.

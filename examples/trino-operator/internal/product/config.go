@@ -34,15 +34,16 @@ const (
 	RoleWorkers      = "workers"
 )
 
-// ConfigDefaults is the Trino ProductDefaults hook. It returns the product's intrinsic
-// config.properties for a given role group as an *OverridesSpec — the same shape users write
-// in the CRD. The SDK merges it as the LOWEST layer (product < role < role group), so any
-// value a user sets via configOverrides always wins.
+// ComputeConfig is the Trino ProductConfig hook. It computes the product's config.properties
+// for a given role group and returns it as an *OverridesSpec — the same shape users write in
+// the CRD. The SDK merges it as the LOWEST layer (product < role < role group), so any value
+// a user sets via configOverrides always wins.
 //
-// This is where role-specific product knowledge lives (coordinator vs worker) and where
-// values are derived from the CR (the discovery URI points at the coordinator Service the
+// This is config generation, not defaulting: it runs every reconcile and is where
+// role-specific product knowledge lives (coordinator vs worker) and where values are derived
+// from live cluster state (the discovery URI is built from the coordinator Service the
 // framework will create). It contains no imperative resource construction — purely data.
-func ConfigDefaults(cr *trinov1alpha1.TrinoCluster, roleName, _ string) *commonsv1alpha1.OverridesSpec {
+func ComputeConfig(cr *trinov1alpha1.TrinoCluster, roleName, _ string) *commonsv1alpha1.OverridesSpec {
 	port := CoordinatorPort(cr)
 
 	props := map[string]string{

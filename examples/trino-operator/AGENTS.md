@@ -10,19 +10,19 @@ Complete Trino operator implementation demonstrating the operator-go framework w
 | Directory | Purpose |
 |-----------|---------|
 | `api/` | Trino CRD definitions |
-| `cmd/` | Operator entrypoint (wires the handler + `ProductDefaults` into `GenericReconciler`) |
+| `cmd/` | Operator entrypoint (wires the handler + `ProductConfig` into `GenericReconciler`) |
 | `config/` | Kubernetes manifests and kustomize configs |
 | `internal/controller/` | `TrinoRoleGroupHandler` — embeds the SDK `BaseRoleGroupHandler`; the framework owns resource orchestration |
-| `internal/product/` | `ProductDefaults` hook: Trino's intrinsic `config.properties` (role-branched, derived) returned as data |
+| `internal/product/` | `ProductConfig` hook (`product.ComputeConfig`): Trino's `config.properties` (role-branched, derived) computed and returned as data |
 | `internal/config/` | `JVMConfigBuilder` (non-key-value `jvm.config`) and `CatalogConfigBuilder` |
 | `internal/extensions/` | Catalog validation + health (ClusterExtension / RoleExtension) |
 
-## Architecture (ProductDefaults pattern)
+## Architecture (ProductConfig pattern)
 
 This example demonstrates the SDK's preferred division of labour:
 
 - **Framework owns the 90%.** `TrinoRoleGroupHandler` embeds `reconciler.BaseRoleGroupHandler`, so the ConfigMap, Services, StatefulSet (with sidecars + `podOverrides` applied), and PDB are built by the SDK. The handler sets `ConfigMountPath` (`/etc/trino`), `MainContainerName` (`trino`), `LoggingContainers` (declarative Log4j2), and per-role ports.
-- **Product config flows as data through the merge pipeline.** `product.ConfigDefaults` returns `config.properties` as an `*OverridesSpec` and is wired via `GenericReconcilerConfig.ProductDefaults` — the lowest merge layer, so any user `configOverrides` in the CRD always win.
+- **Product config flows as data through the merge pipeline.** `product.ComputeConfig` computes `config.properties` and returns it as an `*OverridesSpec`, wired via `GenericReconcilerConfig.ProductConfig` — the lowest merge layer, so any user `configOverrides` in the CRD always win. This is config generation (recomputed every reconcile), not webhook defaulting.
 - **Escape hatch for what the pipeline can't model.** `BuildResources` calls the base, then appends the CR-driven image, the non-key-value `jvm.config`, and coordinator-only catalog files. There is no hand-built `StatefulSet`.
 
 ## Working Instructions
