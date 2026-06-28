@@ -41,6 +41,7 @@ import (
 	// Import Trino Operator internal implementation
 	trinocontroller "github.com/zncdatadev/operator-go/examples/trino-operator/internal/controller"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/extensions"
+	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/product"
 	webhookv1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/internal/webhook/v1alpha1"
 )
 
@@ -96,16 +97,20 @@ func main() {
 	// ==================== Create GenericReconciler ====================
 	// Use operator-go SDK's GenericReconciler instead of traditional Controller
 
-	// Create RoleGroupHandler
-	roleGroupHandler := trinocontroller.NewTrinoRoleGroupHandler()
+	// Create RoleGroupHandler (embeds the SDK BaseRoleGroupHandler; the framework owns
+	// resource orchestration).
+	roleGroupHandler := trinocontroller.NewTrinoRoleGroupHandler(mgr.GetScheme())
 
 	// Create GenericReconciler config
 	reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		//nolint:staticcheck // TODO: migrate to GetEventRecorder when SDK supports new events API
-		Recorder:            mgr.GetEventRecorderFor("trino-cluster-controller"),
-		RoleGroupHandler:    roleGroupHandler,
+		Recorder:         mgr.GetEventRecorderFor("trino-cluster-controller"),
+		RoleGroupHandler: roleGroupHandler,
+		// The product's computed config flows through the SDK merge pipeline as the lowest
+		// layer; any CRD configOverrides always win over it.
+		ProductConfig:       product.ComputeConfig,
 		HealthCheckInterval: 120 * time.Second,
 		HealthCheckTimeout:  300 * time.Second,
 		Prototype:           &trinov1alpha1.TrinoCluster{},

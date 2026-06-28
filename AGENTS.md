@@ -224,14 +224,46 @@ type ServiceHealthCheck interface {
 ### 9. Logging Configuration
 `LoggingFramework`-aware logging config generation (Log4j2, Logback, Python) via `pkg/config/logging_generator.go`.
 
+### 10. Product Config (`ProductConfig`)
+Products contribute their computed configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductConfig` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):
+
+```go
+reconcilerCfg := &reconciler.GenericReconcilerConfig[*v1alpha1.TrinoCluster]{
+    // ...
+    ProductConfig: func(cr *v1alpha1.TrinoCluster, roleName, roleGroupName string) *commonsv1alpha1.OverridesSpec {
+        overrides := map[string]map[string]string{
+            "config.properties": {"http-server.http.port": "8080"},
+        }
+        if roleName == "coordinators" {
+            overrides["config.properties"]["coordinator"] = "true"
+        }
+        return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}
+    },
+}
+```
+
+Precedence (low → high): **product config < role overrides < role group overrides**. Any value a user sets in the CRD always wins. `ConfigMerger.Merge` is variadic (`Merge(...*OverridesSpec)`) and folds layers in order; the previous two-argument call (`Merge(role, group)`) is still valid.
+
+**This is config generation, not defaulting** — do not confuse it with the webhook `ProductDefaulter`:
+
+| | `ProductDefaulter` (webhook) | `ProductConfig` (this) |
+|---|---|---|
+| Targets | typed **spec fields** (image, ports, replicas) | **config-file content** (config.properties, etc.) |
+| When | admission, **persisted into spec** | every reconcile, **not persisted** |
+| Upgrade propagation | no (frozen at admission) | **yes** (recomputed with current operator) |
+| Derived-from-live-state | freezes/stales | **recomputed each reconcile** |
+
+Use `ProductConfig` for product-intrinsic and derived config (e.g. a ZooKeeper connection string built from the actual resources, a JVM heap sized from resources, role-specific keys) so the product no longer hand-builds ConfigMaps/StatefulSets. Use `ProductDefaulter` for stable, user-facing typed spec defaults.
+
 ## Building a New Operator
 
 1. **Define CRD** - Create API types implementing `ClusterInterface` (embed `ClusterObject` for defaults)
 2. **Create RoleGroupHandler** - Embed `BaseRoleGroupHandler` for default resource building, or implement `RoleGroupHandler` directly
-3. **Register Extensions** (optional) - Add custom hooks via extension registry
-4. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
-5. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
-6. **Create main.go** - Use `GenericReconciler` with your handler
+3. **Provide Product Config** (optional) - Set `ProductConfig` on `GenericReconcilerConfig` to contribute product-intrinsic/derived config as the lowest merge layer
+4. **Register Extensions** (optional) - Add custom hooks via extension registry
+5. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
+6. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
+7. **Create main.go** - Use `GenericReconciler` with your handler
 
 See `examples/trino-operator/` for a complete example.
 

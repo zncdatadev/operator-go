@@ -89,6 +89,17 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// backward compatibility (no data PVC unless a product opts in).
 	StorageMountPath string
 
+	// ConfigMountPath is where the generated config ConfigMap is mounted in the primary
+	// container. Products whose application reads config from a specific directory (e.g.
+	// "/etc/trino") set this. Defaults to "/etc/config" when empty.
+	ConfigMountPath string
+
+	// MainContainerName, when set, renames the primary (first) container of the StatefulSet.
+	// Products use this when the container name is significant — e.g. it must match the
+	// per-container logging key (logging.containers.<name>) declared in LoggingContainers.
+	// Defaults to the resource name (set by the StatefulSet builder) when empty.
+	MainContainerName string
+
 	// PublishNotReadyAddresses, when true, sets the same flag on the headless Service so
 	// peers can resolve each other's DNS before readiness (required by quorum systems).
 	PublishNotReadyAddresses bool
@@ -298,6 +309,15 @@ func (h *BaseRoleGroupHandler[CR]) buildAnnotations(_ *RoleGroupBuildContext) ma
 	return annotations
 }
 
+// configMountPath returns the directory where the config ConfigMap is mounted, defaulting
+// to "/etc/config" when the product did not set ConfigMountPath.
+func (h *BaseRoleGroupHandler[CR]) configMountPath() string {
+	if h.ConfigMountPath != "" {
+		return h.ConfigMountPath
+	}
+	return "/etc/config"
+}
+
 // buildConfigMap creates the ConfigMap for the role group.
 func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContext, labels map[string]string) (*corev1.ConfigMap, error) {
 	// Build config data
@@ -439,13 +459,19 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		})
 		stsBuilder.AddVolumeMount(corev1.VolumeMount{
 			Name:      "config",
-			MountPath: "/etc/config",
+			MountPath: h.configMountPath(),
 			ReadOnly:  true,
 		})
 	}
 
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
+
+	// Rename the primary container when the product needs a significant name (e.g. to match
+	// its per-container logging key). The builder makes the primary container index 0.
+	if h.MainContainerName != "" && len(sts.Spec.Template.Spec.Containers) > 0 {
+		sts.Spec.Template.Spec.Containers[0].Name = h.MainContainerName
+	}
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager
