@@ -18,6 +18,7 @@ package vector
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
@@ -196,6 +197,50 @@ func TestProvider_Inject_CustomImage(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
+	if c := vectorInitContainer(podSpec); c == nil || c.Image != "custom/vector:latest" {
+		t.Errorf("Image = %v, want %q", c, "custom/vector:latest")
+	}
+}
+
+func TestProvider_Inject_EmptyImage_ReturnsError(t *testing.T) {
+	// Provider built with an empty product image and no SidecarConfig.Image override: the resolved
+	// image is empty, which must fail loudly instead of producing an invalid (empty-image) container.
+	p := NewVectorSidecarProvider("")
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{Enabled: true}
+
+	err := p.Inject(podSpec, config)
+	if err == nil {
+		t.Fatalf("Inject() with empty resolved image: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no image configured") {
+		t.Errorf("Inject() error = %q, want it to mention %q", err.Error(), "no image configured")
+	}
+	if c := vectorInitContainer(podSpec); c != nil {
+		t.Errorf("expected no Vector container to be injected on error, got %v", c)
+	}
+}
+
+func TestProvider_Inject_EmptyProductImage_OverrideSucceeds(t *testing.T) {
+	// Empty product image but a SidecarConfig.Image override resolves to a non-empty image: happy path.
+	p := NewVectorSidecarProvider("")
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{
+		Enabled: true,
+		Image:   "custom/vector:latest",
+	}
+
+	if err := p.Inject(podSpec, config); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
 	if c := vectorInitContainer(podSpec); c == nil || c.Image != "custom/vector:latest" {
 		t.Errorf("Image = %v, want %q", c, "custom/vector:latest")
 	}

@@ -251,16 +251,23 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 //
 // Single ownership (producer creates the volume + the product-container RW mount; the Vector
 // provider only RO-mounts it) removes the previous double-mount hazard.
-func (h *BaseRoleGroupHandler[CR]) injectSharedLogVolume(buildCtx *RoleGroupBuildContext, podSpec *corev1.PodSpec) {
+func (h *BaseRoleGroupHandler[CR]) injectSharedLogVolume(buildCtx *RoleGroupBuildContext, podSpec *corev1.PodSpec) error {
 	if !vectorEnabledFor(buildCtx) || len(h.LoggingContainers) == 0 {
-		return
+		return nil
 	}
 
+	// Only the operator-supplied override can be malformed; the empty case falls back to the
+	// vetted vector.DefaultLogVolumeSize constant. Parse with ParseQuantity (not MustParse) so a
+	// bad value (e.g. "33mb") fails loudly with an actionable error instead of panicking in the
+	// reconcile path.
 	sizeStr := h.LogVolumeSize
 	if sizeStr == "" {
 		sizeStr = vector.DefaultLogVolumeSize
 	}
-	sizeLimit := resource.MustParse(sizeStr)
+	sizeLimit, err := resource.ParseQuantity(sizeStr)
+	if err != nil {
+		return fmt.Errorf("invalid LogVolumeSize %q: %w", sizeStr, err)
+	}
 
 	sidecar.AddVolumes(podSpec, []corev1.Volume{
 		{
@@ -287,6 +294,7 @@ func (h *BaseRoleGroupHandler[CR]) injectSharedLogVolume(buildCtx *RoleGroupBuil
 			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{mount})
 		}
 	}
+	return nil
 }
 
 // containerImage returns the container image for a role.
@@ -573,7 +581,9 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// size-limited log volume and RW-mount it on each declared logging container. This runs
 	// before sidecar injection so the volume exists when the Vector consumer RO-mounts it.
 	// It runs after the container rename so the LoggingContainers names match.
-	h.injectSharedLogVolume(buildCtx, &sts.Spec.Template.Spec)
+	if err := h.injectSharedLogVolume(buildCtx, &sts.Spec.Template.Spec); err != nil {
+		return nil, fmt.Errorf("failed to inject shared log volume: %w", err)
+	}
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager

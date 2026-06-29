@@ -95,6 +95,11 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	if image == "" {
 		image = p.image
 	}
+	// Fail loudly at build time: an empty image would produce an invalid PodSpec (empty container
+	// image) that the API server rejects opaquely.
+	if image == "" {
+		return fmt.Errorf("vector: no image configured; set it via SidecarConfig.Image or SetProductImage")
+	}
 
 	// Get pull policy
 	pullPolicy := corev1.PullIfNotPresent

@@ -288,6 +288,48 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 	})
 
+	Describe("LogVolumeSize (shared log volume producer)", func() {
+		BeforeEach(func() {
+			// Enable the Vector producer path: agent on + at least one declared logging container.
+			buildCtx.MergedConfig.Logging = &v1alpha1.LoggingSpec{
+				EnableVectorAgent: ptr.To(true),
+			}
+			handler.LoggingContainers = []productlogging.ContainerLogging{
+				{Container: "test-image", Framework: productlogging.LoggingFrameworkLogback},
+			}
+		})
+
+		It("should return an error (no panic) when LogVolumeSize is an invalid quantity", func() {
+			handler.LogVolumeSize = "33mb"
+			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`invalid LogVolumeSize "33mb"`))
+			Expect(resources).To(BeNil())
+		})
+
+		It("should build the size-limited shared log volume when LogVolumeSize is a valid override", func() {
+			handler.LogVolumeSize = "100Mi"
+			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resources.StatefulSet).NotTo(BeNil())
+
+			var logVol *corev1.Volume
+			for i := range resources.StatefulSet.Spec.Template.Spec.Volumes {
+				v := &resources.StatefulSet.Spec.Template.Spec.Volumes[i]
+				if v.Name == vector.VectorLogVolumeName {
+					logVol = v
+					break
+				}
+			}
+			Expect(logVol).NotTo(BeNil())
+			Expect(logVol.EmptyDir).NotTo(BeNil())
+			Expect(logVol.EmptyDir.SizeLimit).NotTo(BeNil())
+			Expect(logVol.EmptyDir.SizeLimit.String()).To(Equal("100Mi"))
+		})
+	})
+
 	Describe("FetchConfigMap", func() {
 		It("should return error when ConfigMap does not exist", func() {
 			_, err := handler.FetchConfigMap(ctx, k8sClient, "default", "non-existent")
