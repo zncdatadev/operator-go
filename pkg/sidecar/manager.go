@@ -319,19 +319,19 @@ func FindInitContainerIndex(podSpec *corev1.PodSpec, name string) int {
 	return -1
 }
 
-// addOrReplaceInitContainer finds an existing init container by name or appends a new one.
+// AddOrReplaceInitContainer finds an existing init container by name or appends a new one.
 //
-// It is intentionally unexported: under the native-sidecar model the SidecarManager is the
-// single owner of pod container injection. Providers (Vector, JMX, StaticContainerProvider)
-// use this from their Inject methods; products must NOT mutate the pod directly — they
-// register a provider and let InjectAll place containers, so the Enabled gating, ordering
-// and deduplication of the manager always apply.
+// Under the native-sidecar model the SidecarManager is the single owner of pod container
+// injection. Providers (Vector, JMX, StaticContainerProvider) use this from their Inject
+// methods; products must NOT mutate the pod directly — they register a provider and let
+// InjectAll place containers, so the Enabled gating, ordering and deduplication of the
+// manager always apply.
 //
 // All managed containers go into podSpec.InitContainers: a long-running sidecar is simply
 // an init container whose RestartPolicy is Always (see SidecarRestartPolicy); a one-shot
 // init (e.g. node-id generation) has a nil RestartPolicy. This relies on the kubelet's
 // native sidecar semantics (Kubernetes 1.28+) for startup and shutdown ordering.
-func addOrReplaceInitContainer(podSpec *corev1.PodSpec, container *corev1.Container) {
+func AddOrReplaceInitContainer(podSpec *corev1.PodSpec, container *corev1.Container) {
 	if idx := FindInitContainerIndex(podSpec, container.Name); idx >= 0 {
 		podSpec.InitContainers[idx] = *container
 		return
@@ -370,7 +370,7 @@ func (p *StaticContainerProvider) Name() string { return p.container.Name }
 
 // Inject adds a copy of the static container to InitContainers.
 func (p *StaticContainerProvider) Inject(podSpec *corev1.PodSpec, _ *SidecarConfig) error {
-	addOrReplaceInitContainer(podSpec, p.container.DeepCopy())
+	AddOrReplaceInitContainer(podSpec, p.container.DeepCopy())
 	return nil
 }
 

@@ -24,9 +24,12 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
+	"github.com/zncdatadev/operator-go/pkg/vector"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -842,7 +845,7 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 })
 
 var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
-	It("renders a declared logback container into the role group ConfigMap", func() {
+	It("renders a declared logback container into the role group ConfigMap (Vector enabled emits file appender)", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
 			Container:  "main",
@@ -862,6 +865,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			ResourceName:     "test-cluster-default",
 			MergedConfig: &config.MergedConfig{
 				Logging: &v1alpha1.LoggingSpec{
+					EnableVectorAgent: ptr.To(true),
 					Containers: map[string]v1alpha1.LoggingConfigSpec{
 						"main": {
 							Loggers: map[string]*v1alpha1.LogLevelSpec{
@@ -883,6 +887,172 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(logback).To(ContainSubstring(`<root level="WARN">`))
 		Expect(logback).To(ContainSubstring(`<logger name="org.x" level="DEBUG" />`))
 		Expect(logback).To(ContainSubstring("<file>/kubedoop/log/main.stdout.log</file>"))
+	})
+
+	It("Option A: omits the file appender (console-only) when Vector is disabled", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container:  "main",
+			Framework:  productlogging.LoggingFrameworkLogback,
+			OutputFile: "main.stdout.log",
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			// No EnableVectorAgent -> Vector disabled.
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					Containers: map[string]v1alpha1.LoggingConfigSpec{
+						"main": {},
+					},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		logback := resources.ConfigMap.Data["logback.xml"]
+		Expect(logback).NotTo(BeEmpty())
+		// Even though OutputFile was declared, no rolling file appender is emitted.
+		Expect(logback).NotTo(ContainSubstring("main.stdout.log"))
+		Expect(logback).NotTo(ContainSubstring("RollingFileAppender"))
+
+		// And no shared log volume is created on the pod.
+		for _, v := range resources.StatefulSet.Spec.Template.Spec.Volumes {
+			Expect(v.Name).NotTo(Equal("log"))
+		}
+	})
+
+	It("producer: creates exactly one size-limited shared log volume with RW mounts on logging containers when Vector is enabled", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		// The base StatefulSet main container is named after the resource name; declare it as
+		// the logging container so the producer RW-mounts the shared volume on it.
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container:  "test-cluster-default",
+			Framework:  productlogging.LoggingFrameworkLogback,
+			OutputFile: "main.stdout.log",
+		}}
+
+		// Wire the canonical Vector consumer through a SidecarManager (the GenericReconciler does
+		// this automatically in production; here we set it explicitly to exercise the full
+		// producer + consumer split end to end).
+		sidecarMgr := sidecar.NewSidecarManager()
+		sidecarMgr.Register(
+			vector.NewVectorSidecarProvider("test-image:latest", vector.WithConfigMapName("test-cluster-default")),
+			&sidecar.SidecarConfig{Enabled: true},
+		)
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			SidecarManager:   sidecarMgr,
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					EnableVectorAgent: ptr.To(true),
+					Containers: map[string]v1alpha1.LoggingConfigSpec{
+						"test-cluster-default": {},
+					},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		podSpec := resources.StatefulSet.Spec.Template.Spec
+
+		// Exactly one "log" volume, a size-limited node-disk emptyDir.
+		var logVol *corev1.Volume
+		count := 0
+		for i := range podSpec.Volumes {
+			if podSpec.Volumes[i].Name == "log" {
+				logVol = &podSpec.Volumes[i]
+				count++
+			}
+		}
+		Expect(count).To(Equal(1))
+		Expect(logVol.EmptyDir).NotTo(BeNil())
+		Expect(logVol.EmptyDir.SizeLimit).NotTo(BeNil())
+		Expect(logVol.EmptyDir.SizeLimit.String()).To(Equal(vector.DefaultLogVolumeSize))
+		// Node-disk medium, never Memory.
+		Expect(string(logVol.EmptyDir.Medium)).To(Equal(""))
+
+		// The logging container has an RW mount at the canonical log dir.
+		main := podSpec.Containers[0]
+		var foundRW bool
+		for _, m := range main.VolumeMounts {
+			if m.Name == "log" {
+				foundRW = true
+				Expect(m.ReadOnly).To(BeFalse())
+				Expect(m.MountPath).To(Equal(constant.KubedoopLogDir))
+			}
+		}
+		Expect(foundRW).To(BeTrue())
+
+		// The Vector consumer RO-mounts the same volume on its own init container.
+		vectorIdx := -1
+		for i := range podSpec.InitContainers {
+			if podSpec.InitContainers[i].Name == "vector" {
+				vectorIdx = i
+			}
+		}
+		Expect(vectorIdx).To(BeNumerically(">=", 0))
+		var vectorRO bool
+		for _, m := range podSpec.InitContainers[vectorIdx].VolumeMounts {
+			if m.Name == "log" {
+				vectorRO = true
+				Expect(m.ReadOnly).To(BeTrue())
+				Expect(m.MountPath).To(Equal(constant.KubedoopLogDir))
+			}
+		}
+		Expect(vectorRO).To(BeTrue())
+	})
+
+	It("producer: honors a custom LogVolumeSize override", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LogVolumeSize = "128Mi"
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "test-cluster-default",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					EnableVectorAgent: ptr.To(true),
+					Containers:        map[string]v1alpha1.LoggingConfigSpec{"test-cluster-default": {}},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		for _, v := range resources.StatefulSet.Spec.Template.Spec.Volumes {
+			if v.Name == "log" {
+				Expect(v.EmptyDir.SizeLimit.String()).To(Equal("128Mi"))
+			}
+		}
 	})
 
 	It("falls back to defaults when no logging is configured for the container", func() {

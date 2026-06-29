@@ -23,11 +23,14 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
+	"github.com/zncdatadev/operator-go/pkg/vector"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -118,7 +121,18 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// The framework owns the whole pipeline (merge -> convert -> render -> ConfigMap key);
 	// products only declare the product-specific bits (framework, pattern, output file).
 	// Empty means the product handles logging itself (or has none).
+	//
+	// LoggingContainers also drives the producer side of the Vector log pipeline: when the
+	// role group enables the Vector agent, the base handler creates exactly one shared,
+	// size-limited log emptyDir and RW-mounts it at constant.KubedoopLogDir on each container
+	// named here. The Vector sidecar (the consumer) RO-mounts the same volume. When Vector is
+	// disabled, no shared volume is created and no file appender is emitted (console-only).
 	LoggingContainers []productlogging.ContainerLogging
+
+	// LogVolumeSize overrides the SizeLimit of the shared log emptyDir created by the producer
+	// when the Vector agent is enabled. Empty uses vector.DefaultLogVolumeSize. The volume is
+	// always a node-disk emptyDir (never medium=Memory, never a PVC).
+	LogVolumeSize string
 
 	// SidecarManager manages sidecar injection into pods.
 	// Optional - if nil, no sidecars are injected.
@@ -201,6 +215,63 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		"resourceName", buildCtx.ResourceName)
 
 	return resources, nil
+}
+
+// vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on
+// the deep-merged logging spec. It is the single source of truth for both the producer (shared
+// log volume + RW mounts) and Option A (file-appender gating).
+func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
+	if buildCtx == nil || buildCtx.MergedConfig == nil {
+		return false
+	}
+	logging := buildCtx.MergedConfig.Logging
+	return logging != nil && logging.EnableVectorAgent != nil && *logging.EnableVectorAgent
+}
+
+// injectSharedLogVolume implements the producer side of the Vector log pipeline. When the
+// Vector agent is enabled for the role group, it creates exactly one shared, size-limited
+// log emptyDir (node-disk medium, never Memory, never a PVC) and RW-mounts it at
+// constant.KubedoopLogDir on every container named in LoggingContainers (searching both
+// regular and init/sidecar containers). The Vector sidecar later RO-mounts the same volume.
+//
+// Single ownership (producer creates the volume + the product-container RW mount; the Vector
+// provider only RO-mounts it) removes the previous double-mount hazard.
+func (h *BaseRoleGroupHandler[CR]) injectSharedLogVolume(buildCtx *RoleGroupBuildContext, podSpec *corev1.PodSpec) {
+	if !vectorEnabledFor(buildCtx) || len(h.LoggingContainers) == 0 {
+		return
+	}
+
+	sizeStr := h.LogVolumeSize
+	if sizeStr == "" {
+		sizeStr = vector.DefaultLogVolumeSize
+	}
+	sizeLimit := resource.MustParse(sizeStr)
+
+	sidecar.AddVolumes(podSpec, []corev1.Volume{
+		{
+			Name: vector.VectorLogVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				// Node-disk emptyDir (default medium), bounded by SizeLimit. Explicitly NOT
+				// medium=Memory and NOT a PVC.
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					SizeLimit: &sizeLimit,
+				},
+			},
+		},
+	})
+
+	mount := corev1.VolumeMount{
+		Name:      vector.VectorLogVolumeName,
+		MountPath: constant.KubedoopLogDir,
+	}
+	for _, lc := range h.LoggingContainers {
+		if c := sidecar.FindContainer(podSpec, lc.Container); c != nil {
+			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{mount})
+		}
+		if c := sidecar.FindInitContainer(podSpec, lc.Container); c != nil {
+			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{mount})
+		}
+	}
 }
 
 // containerImage returns the container image for a role.
@@ -343,7 +414,17 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 	// Generate declared per-container logging config files from the merged logging spec.
 	// Fail fast on a key collision rather than silently overwriting a file the product
 	// already produced (e.g. via MergedConfig.ConfigFiles / ConfigGenerator).
+	//
+	// Option A — couple file logging to Vector: only emit the rolling file appender (i.e. only
+	// honor lc.OutputFile -> FileOutputPath) when the Vector agent is enabled for this role
+	// group. When Vector is disabled there is no log consumer and no shared log volume, so we
+	// render console-only by clearing OutputFile at the call site (keeping RenderConfigFile /
+	// RenderContainerLogging intact).
+	vectorEnabled := vectorEnabledFor(buildCtx)
 	for _, lc := range h.LoggingContainers {
+		if !vectorEnabled {
+			lc.OutputFile = ""
+		}
 		filename, content, err := RenderContainerLogging(buildCtx, lc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to render logging config for container %q: %w", lc.Container, err)
@@ -472,6 +553,12 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	if h.MainContainerName != "" && len(sts.Spec.Template.Spec.Containers) > 0 {
 		sts.Spec.Template.Spec.Containers[0].Name = h.MainContainerName
 	}
+
+	// Producer side of the Vector log pipeline: when Vector is enabled, create the shared
+	// size-limited log volume and RW-mount it on each declared logging container. This runs
+	// before sidecar injection so the volume exists when the Vector consumer RO-mounts it.
+	// It runs after the container rename so the LoggingContainers names match.
+	h.injectSharedLogVolume(buildCtx, &sts.Spec.Template.Spec)
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager

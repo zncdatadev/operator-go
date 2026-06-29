@@ -16,6 +16,8 @@ limitations under the License.
 
 package vector
 
+import "github.com/zncdatadev/operator-go/pkg/constant"
+
 const (
 	// VectorSidecarName is the name of the Vector sidecar container.
 	VectorSidecarName = "vector"
@@ -35,11 +37,24 @@ const (
 	// VectorDataVolumeSize is the default size for the Vector data volume.
 	VectorDataVolumeSize = "50Mi"
 
-	// VectorLogVolumeName is the name of the shared log volume.
-	VectorLogVolumeName = "log-volume"
+	// VectorLogVolumeName is the canonical name of the shared log volume. The producer side
+	// (the role-group base handler) creates this emptyDir and RW-mounts it on each product
+	// container; the Vector sidecar (the consumer) RO-mounts the same volume by this name.
+	VectorLogVolumeName = "log"
 
-	// VectorLogMountPath is the mount path for logs.
-	VectorLogMountPath = "/var/log/app"
+	// VectorLogMountPath is the mount path for the shared log volume on the Vector container.
+	// It is the framework-canonical log directory so the consumer reads exactly where the
+	// producer (and product file appenders) write. Kept as a package-local alias of
+	// constant.KubedoopLogDir to avoid an import cycle-free indirection at call sites.
+	VectorLogMountPath = constant.KubedoopLogDir
+
+	// DefaultLogVolumeSize is the default SizeLimit for the shared log emptyDir created by
+	// the producer (the role-group base handler). It bounds on-node disk usage for rolling
+	// log files that the Vector sidecar consumes. The bound also protects the node from a
+	// runaway log producer filling the ephemeral filesystem. It is overridable per role
+	// group (see BaseRoleGroupHandler.LogVolumeSize). 33Mi mirrors the rolling-appender
+	// budget zk historically used (a few small rolled files) and stays comfortably small.
+	DefaultLogVolumeSize = "33Mi"
 
 	// VectorDefaultConfigMapName is the default ConfigMap name for Vector config.
 	VectorDefaultConfigMapName = "vector-config"

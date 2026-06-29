@@ -31,6 +31,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/util"
+	"github.com/zncdatadev/operator-go/pkg/vector"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -515,10 +516,15 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 	// Logging was deep-merged once in buildRoleGroupContext.
 	logging := buildCtx.MergedConfig.Logging
 
-	// Register Vector sidecar if enabled
+	// Register the canonical Vector sidecar provider (pkg/vector) if enabled.
+	//
+	// The role-group ConfigMap name (buildCtx.ResourceName) is passed at construction so the
+	// Vector container mounts the right config without products having to cast the provider and
+	// set it after the fact. The image is propagated later via SidecarManager.SetProductImage
+	// (Vector ships inside the product image), so an empty image here is intentional.
 	if logging != nil && logging.EnableVectorAgent != nil && *logging.EnableVectorAgent {
 		mgr.Register(
-			sidecar.NewVectorSidecarProvider(),
+			vector.NewVectorSidecarProvider("", vector.WithConfigMapName(buildCtx.ResourceName)),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 	}
