@@ -428,6 +428,13 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		WithConfig(buildCtx.MergedConfig).
 		WithPorts(h.containerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))
 
+	// Bind the reconciler-managed ServiceAccount to the pod template when configured, so the
+	// created SA is actually used. Empty leaves ServiceAccountName unset (pods use the namespace
+	// default SA), preserving backward compatibility.
+	if buildCtx.ServiceAccountName != "" {
+		stsBuilder.WithServiceAccount(buildCtx.ServiceAccountName)
+	}
+
 	// Set resources if configured
 	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
 	if roleGroupConfig != nil && roleGroupConfig.Resources != nil {

@@ -459,6 +459,22 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(containers[0].Image).To(Equal("test-image:latest"))
 	})
 
+	It("should bind the ServiceAccount to the pod template when configured", func() {
+		buildCtx.ServiceAccountName = "test-cluster-sa"
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.ServiceAccountName).To(Equal("test-cluster-sa"))
+	})
+
+	It("should leave ServiceAccountName unset when not configured", func() {
+		// buildCtx.ServiceAccountName defaults to "" — backward compatible: pods use the
+		// namespace default SA, the pod template ServiceAccountName must stay empty.
+		Expect(buildCtx.ServiceAccountName).To(BeEmpty())
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.ServiceAccountName).To(BeEmpty())
+	})
+
 	It("should add config volume when config files present", func() {
 		buildCtx.MergedConfig = &config.MergedConfig{
 			ConfigFiles: map[string]map[string]string{

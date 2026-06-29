@@ -498,6 +498,9 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 		RoleGroupSpec:    *groupSpec,
 		MergedConfig:     mergedConfig,
 		ResourceName:     resourceName,
+		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
+		// the SA the reconciler creates. Empty when no SA is configured (backward compatible).
+		ServiceAccountName: r.serviceAccountName,
 	}
 }
 
