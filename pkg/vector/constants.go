@@ -16,7 +16,19 @@ limitations under the License.
 
 package vector
 
-import "github.com/zncdatadev/operator-go/pkg/constant"
+import (
+	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/constant"
+)
+
+// IsAgentEnabled reports whether the Vector agent is enabled for the given (already
+// deep-merged) logging spec. It is the single, nil-safe source of truth shared by the
+// producer side (the role-group base handler that creates the shared log volume and gates
+// the file appender) and the consumer side (the sidecar-manager registration in the generic
+// reconciler). Keeping one predicate guarantees the two sides can never drift.
+func IsAgentEnabled(logging *v1alpha1.LoggingSpec) bool {
+	return logging != nil && logging.EnableVectorAgent != nil && *logging.EnableVectorAgent
+}
 
 const (
 	// VectorSidecarName is the name of the Vector sidecar container.

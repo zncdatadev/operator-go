@@ -1106,4 +1106,60 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("collides"))
 	})
+
+	// Stopgap validation (PR #501 finding 1, deeper fix tracked in #502): Vector enabled with no
+	// LoggingContainers must fail loudly instead of producing an invalid pod (a Vector consumer
+	// mounting a shared log volume the producer never created).
+	It("fails loudly when Vector is enabled but no logging containers are declared", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		// No LoggingContainers declared.
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)},
+			},
+		}
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("vector agent is enabled"))
+		Expect(err.Error()).To(ContainSubstring("no logging containers are declared"))
+	})
+
+	// The valid mirror case: Vector enabled WITH a logging container must NOT trip the validation.
+	It("does not trip the validation when Vector is enabled and a logging container is declared", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					EnableVectorAgent: ptr.To(true),
+					Containers:        map[string]v1alpha1.LoggingConfigSpec{"main": {}},
+				},
+			},
+		}
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

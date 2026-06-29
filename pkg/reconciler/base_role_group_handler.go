@@ -174,6 +174,20 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 ) (*RoleGroupResources, error) {
 	logger := log.FromContext(ctx)
 
+	// Stopgap validation (see issue #502): the consumer (Vector sidecar) is injected on
+	// EnableVectorAgent alone (generic_reconciler.buildSidecarManager), while the producer here
+	// creates the shared log volume only when Vector is enabled AND LoggingContainers is
+	// non-empty. So "Vector enabled + no LoggingContainers" would yield a Vector container
+	// mounting a volume that was never created — an invalid StatefulSet. Until the deeper fix in
+	// #502 unifies the Vector-enablement decision with logging-container knowledge, fail loudly
+	// and actionably here instead of producing an invalid pod.
+	if vectorEnabledFor(buildCtx) && len(h.LoggingContainers) == 0 {
+		return nil, fmt.Errorf(
+			"vector agent is enabled (logging.enableVectorAgent) but no logging containers are declared; "+
+				"declare LoggingContainers or disable the vector agent (role %q, group %q)",
+			buildCtx.RoleName, buildCtx.RoleGroupName)
+	}
+
 	resources := &RoleGroupResources{}
 
 	// Build labels
@@ -224,8 +238,9 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 	if buildCtx == nil || buildCtx.MergedConfig == nil {
 		return false
 	}
-	logging := buildCtx.MergedConfig.Logging
-	return logging != nil && logging.EnableVectorAgent != nil && *logging.EnableVectorAgent
+	// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and
+	// the consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
+	return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
 }
 
 // injectSharedLogVolume implements the producer side of the Vector log pipeline. When the

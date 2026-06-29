@@ -522,7 +522,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 	// Vector container mounts the right config without products having to cast the provider and
 	// set it after the fact. The image is propagated later via SidecarManager.SetProductImage
 	// (Vector ships inside the product image), so an empty image here is intentional.
-	if logging != nil && logging.EnableVectorAgent != nil && *logging.EnableVectorAgent {
+	if vector.IsAgentEnabled(logging) {
 		mgr.Register(
 			vector.NewVectorSidecarProvider("", vector.WithConfigMapName(buildCtx.ResourceName)),
 			&sidecar.SidecarConfig{Enabled: true},

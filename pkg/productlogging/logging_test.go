@@ -72,6 +72,27 @@ var _ = Describe("GeneratorFor", func() {
 	})
 })
 
+var _ = Describe("RenderConfigFile file path", func() {
+	// constant.KubedoopLogDir carries a trailing slash; the rendered file path must collapse to
+	// a single slash (no "/kubedoop/log//main.stdout.log"). See PR #501 review finding 4.
+	It("renders the file appender path with a single slash", func() {
+		for _, fw := range []productlogging.LoggingFramework{
+			productlogging.LoggingFrameworkLogback,
+			productlogging.LoggingFrameworkLog4j2,
+			productlogging.LoggingFrameworkPython,
+		} {
+			_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+				Framework:  fw,
+				OutputFile: "main.stdout.log",
+			})
+			Expect(err).NotTo(HaveOccurred(), "framework %s", fw)
+			Expect(content).To(ContainSubstring("/kubedoop/log/main.stdout.log"), "framework %s", fw)
+			Expect(content).NotTo(ContainSubstring("/kubedoop/log//main.stdout.log"), "framework %s", fw)
+			Expect(content).NotTo(ContainSubstring("//main.stdout.log"), "framework %s", fw)
+		}
+	})
+})
+
 var _ = Describe("MergeLoggingSpec", func() {
 	It("returns the other side when one is nil", func() {
 		g := &v1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)}
