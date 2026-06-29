@@ -127,14 +127,16 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
 	// securityContextConfigured tracks whether the security context fields below were set
 	// explicitly (including to nil to disable the default). When false, the framework applies
-	// its hardened, product-agnostic default security context.
+	// its canonical default security context (the kubedoop org-standard 1001 identity plus
+	// hardening — see pkg/security.BuildDefault*SecurityContext).
 	securityContextConfigured bool
 
 	// containerSecurityContext is the container-level security context applied to the main
 	// container. When the framework default is in effect, this is
-	// security.HardenedContainerSecurityContext(). Products override it via
+	// security.NewPodSecurityBuilder().BuildDefaultSecurityContext(). Products override it via
 	// WithSecurityContext (or disable it via WithoutDefaultSecurityContext). Per-role-group
-	// customization should instead go through MergedConfig.PodOverrides, which merges on top.
+	// customization goes through MergedConfig.PodOverrides, which REPLACES the security context
+	// (no deep merge — a product overriding must restate any fields it wants to keep).
 	containerSecurityContext *corev1.SecurityContext
 
 	// podSecurityContext is the pod-level security context applied to the pod spec. See
@@ -164,9 +166,10 @@ func (h *BaseRoleGroupHandler[CR]) WithSidecarManager(m *sidecar.SidecarManager)
 
 // WithSecurityContext overrides the framework's default pod/container security context for the
 // role group's StatefulSet. Passing nil for either argument removes that level's security
-// context entirely (the framework default is no longer applied). For per-role-group tweaks that
-// should merge on top of the default, prefer MergedConfig.PodOverrides instead of this handler-
-// wide override.
+// context entirely (the framework default is no longer applied). For per-role-group overrides,
+// prefer MergedConfig.PodOverrides instead of this handler-wide override; note that PodOverrides
+// REPLACES the security context (no deep merge), so an override must restate any fields it wants
+// to keep.
 func (h *BaseRoleGroupHandler[CR]) WithSecurityContext(
 	containerCtx *corev1.SecurityContext,
 	podCtx *corev1.PodSecurityContext,
@@ -177,21 +180,23 @@ func (h *BaseRoleGroupHandler[CR]) WithSecurityContext(
 	return h
 }
 
-// WithoutDefaultSecurityContext disables the framework's hardened default security context, so
-// the StatefulSet is built with no pod/container security context unless one is supplied via
+// WithoutDefaultSecurityContext disables the framework's default security context, so the
+// StatefulSet is built with no pod/container security context unless one is supplied via
 // MergedConfig.PodOverrides.
 func (h *BaseRoleGroupHandler[CR]) WithoutDefaultSecurityContext() *BaseRoleGroupHandler[CR] {
 	return h.WithSecurityContext(nil, nil)
 }
 
 // resolveSecurityContext returns the container- and pod-level security contexts to apply. When
-// the product has not configured them, the framework's product-agnostic hardened defaults are
-// used (see pkg/security.HardenedContainerSecurityContext / HardenedPodSecurityContext).
+// the product has not configured them, the framework's canonical default is used: the kubedoop
+// org-standard 1001 identity plus hardening (see pkg/security.BuildDefaultSecurityContext /
+// BuildDefaultPodSecurityContext).
 func (h *BaseRoleGroupHandler[CR]) resolveSecurityContext() (*corev1.SecurityContext, *corev1.PodSecurityContext) {
 	if h.securityContextConfigured {
 		return h.containerSecurityContext, h.podSecurityContext
 	}
-	return security.HardenedContainerSecurityContext(), security.HardenedPodSecurityContext()
+	builder := security.NewPodSecurityBuilder()
+	return builder.BuildDefaultSecurityContext(), builder.BuildDefaultPodSecurityContext()
 }
 
 // BuildResources builds the default Kubernetes resources for a role group.
@@ -489,9 +494,9 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		}
 	}
 
-	// Apply the security context (framework hardened default unless the product overrode it).
+	// Apply the security context (framework canonical default unless the product overrode it).
 	// This is set before pod overrides are applied so that any security context supplied via
-	// MergedConfig.PodOverrides takes precedence over the default.
+	// MergedConfig.PodOverrides takes precedence over (replaces) the default.
 	containerSecurityCtx, podSecurityCtx := h.resolveSecurityContext()
 	stsBuilder.WithSecurityContext(containerSecurityCtx, podSecurityCtx)
 

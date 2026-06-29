@@ -86,14 +86,46 @@ Workloads often need to interact with the Kubernetes API (e.g., Flink JobManager
 
 ## 3.3 Pod Security Guidelines
 
-The SDK generates `PodSpecs` that adhere to modern container security best practices.
+The SDK generates `PodSpecs` that adhere to modern container security best practices. The base
+role-group handler applies a **single, canonical default** pod/container `SecurityContext`
+unconditionally (no opt-in). This default hardcodes the kubedoop org-standard identity, because
+all kubedoop product images run as uid `1001`.
 
-- **Non-Root Execution**:
-  - By default, the SDK configures `securityContext.runAsUser` and `runAsGroup` to non-zero values (typically 1001), ensuring processes do not run as root.
-- **Volume Ownership (fsGroup)**:
-  - To ensure that the non-root process can write to Persistent Volumes, the SDK automatically sets `securityContext.fsGroup`. This instructs Kubernetes to change the ownership of mounted volumes to the correct group ID at startup.
-- **Capability Dropping**:
-  - Where possible, the SDK encourages dropping unnecessary Linux capabilities (e.g., `ALL`) and only adding required ones (e.g., `NET_BIND_SERVICE`).
+### 3.3.1 Default SecurityContext
+
+**Pod-level (`spec.securityContext`):**
+
+| Field | Value | Rationale |
+| --- | --- | --- |
+| `runAsUser` | `1001` | kubedoop images run as uid 1001 |
+| `runAsGroup` | `0` | OpenShift-compatible: OpenShift assigns an arbitrary uid but keeps gid 0, and kubedoop images are group-0 readable/writable |
+| `fsGroup` | `1001` | mounted volumes are chowned so the non-root process can write to them |
+| `runAsNonRoot` | `true` | refuse to start as root |
+| `seccompProfile.type` | `RuntimeDefault` | apply the runtime's default seccomp profile |
+
+**Container-level (`container.securityContext`):**
+
+| Field | Value | Rationale |
+| --- | --- | --- |
+| `runAsUser` | `1001` | kubedoop images run as uid 1001 |
+| `runAsGroup` | `0` | OpenShift-compatible group 0 |
+| `runAsNonRoot` | `true` | refuse to start as root |
+| `allowPrivilegeEscalation` | `false` | block privilege escalation |
+| `capabilities.drop` | `[ALL]` | drop all Linux capabilities |
+| `seccompProfile.type` | `RuntimeDefault` | apply the runtime's default seccomp profile |
+
+### 3.3.2 Overriding via PodOverrides (REPLACE semantics)
+
+Products customize the security context through `MergedConfig.PodOverrides`. **The override
+REPLACES the whole `SecurityContext` object — there is NO deep merge.** A pod/container
+`SecurityContext` supplied via `PodOverrides` takes precedence over the framework default and
+wipes it; any default fields the product still wants (e.g. the hardening fields) must be
+**restated** in the override.
+
+This replace behavior is intentional: special images that cannot use uid 1001 override the
+**whole** SecurityContext via `PodOverrides`, restating the full set of fields appropriate for
+that image. The handler-wide `WithoutDefaultSecurityContext()` escape hatch disables the default
+entirely (the StatefulSet is then built with no SecurityContext unless `PodOverrides` supplies one).
 
 ## 3.4 Security Benefits Summary
 

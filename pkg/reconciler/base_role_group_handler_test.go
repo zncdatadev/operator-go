@@ -555,25 +555,34 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(containers[0].Ports).To(HaveLen(2))
 	})
 
-	It("should apply the hardened default security context when nothing is configured", func() {
+	It("should apply the canonical default security context (1001 identity + hardening) when nothing is configured", func() {
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 
 		podSpec := resources.StatefulSet.Spec.Template.Spec
 
-		// Pod-level default: RunAsNonRoot + RuntimeDefault seccomp, no product-specific uid/gid.
+		// Pod-level default: kubedoop org-standard identity (uid 1001, gid 0, fsGroup 1001) +
+		// RunAsNonRoot + RuntimeDefault seccomp.
 		Expect(podSpec.SecurityContext).NotTo(BeNil())
+		Expect(podSpec.SecurityContext.RunAsUser).NotTo(BeNil())
+		Expect(*podSpec.SecurityContext.RunAsUser).To(Equal(int64(1001)))
+		Expect(podSpec.SecurityContext.RunAsGroup).NotTo(BeNil())
+		Expect(*podSpec.SecurityContext.RunAsGroup).To(Equal(int64(0)))
+		Expect(podSpec.SecurityContext.FSGroup).NotTo(BeNil())
+		Expect(*podSpec.SecurityContext.FSGroup).To(Equal(int64(1001)))
 		Expect(podSpec.SecurityContext.RunAsNonRoot).NotTo(BeNil())
 		Expect(*podSpec.SecurityContext.RunAsNonRoot).To(BeTrue())
 		Expect(podSpec.SecurityContext.SeccompProfile).NotTo(BeNil())
 		Expect(podSpec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
-		Expect(podSpec.SecurityContext.RunAsUser).To(BeNil())
-		Expect(podSpec.SecurityContext.FSGroup).To(BeNil())
 
-		// Container-level default: hardened, drop ALL caps, no privilege escalation.
+		// Container-level default: uid 1001, gid 0, hardened (drop ALL caps, no privilege escalation).
 		Expect(podSpec.Containers).NotTo(BeEmpty())
 		csc := podSpec.Containers[0].SecurityContext
 		Expect(csc).NotTo(BeNil())
+		Expect(csc.RunAsUser).NotTo(BeNil())
+		Expect(*csc.RunAsUser).To(Equal(int64(1001)))
+		Expect(csc.RunAsGroup).NotTo(BeNil())
+		Expect(*csc.RunAsGroup).To(Equal(int64(0)))
 		Expect(csc.RunAsNonRoot).NotTo(BeNil())
 		Expect(*csc.RunAsNonRoot).To(BeTrue())
 		Expect(csc.AllowPrivilegeEscalation).NotTo(BeNil())
@@ -582,16 +591,16 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(csc.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
 		Expect(csc.SeccompProfile).NotTo(BeNil())
 		Expect(csc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
-		Expect(csc.RunAsUser).To(BeNil())
 	})
 
-	It("should let PodOverrides override the default pod security context", func() {
+	It("should let PodOverrides REPLACE the default pod security context (no deep merge)", func() {
+		// The override sets only RunAsUser. Replace semantics mean the rest of the default
+		// (RunAsGroup, FSGroup, RunAsNonRoot, SeccompProfile) is wiped, not merged on top.
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsUser: ptr.To(int64(1234)),
-						FSGroup:   ptr.To(int64(5678)),
 					},
 				},
 			},
@@ -604,11 +613,14 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(podSC).NotTo(BeNil())
 		Expect(podSC.RunAsUser).NotTo(BeNil())
 		Expect(*podSC.RunAsUser).To(Equal(int64(1234)))
-		Expect(podSC.FSGroup).NotTo(BeNil())
-		Expect(*podSC.FSGroup).To(Equal(int64(5678)))
+		// Negative assertions documenting REPLACE (not merge): default hardening fields are gone.
+		Expect(podSC.FSGroup).To(BeNil())
+		Expect(podSC.RunAsGroup).To(BeNil())
+		Expect(podSC.RunAsNonRoot).To(BeNil())
+		Expect(podSC.SeccompProfile).To(BeNil())
 	})
 
-	It("should let PodOverrides override the default container security context", func() {
+	It("should let PodOverrides REPLACE the default container security context (no deep merge)", func() {
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -633,6 +645,11 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(csc).NotTo(BeNil())
 		Expect(csc.RunAsUser).NotTo(BeNil())
 		Expect(*csc.RunAsUser).To(Equal(int64(4321)))
+		// Negative assertions documenting REPLACE (not merge): default hardening fields are gone.
+		Expect(csc.AllowPrivilegeEscalation).To(BeNil())
+		Expect(csc.Capabilities).To(BeNil())
+		Expect(csc.RunAsNonRoot).To(BeNil())
+		Expect(csc.SeccompProfile).To(BeNil())
 	})
 
 	It("should allow disabling the default security context", func() {
