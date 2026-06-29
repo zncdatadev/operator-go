@@ -4,6 +4,26 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-06-29]
+
+### Security Documentation (`security.md`)
+
+#### Changed
+- Rewrote Section 3.3 (Pod Security Guidelines) to document the framework's single, canonical
+  default pod/container `SecurityContext` applied unconditionally by the base role-group handler:
+  - Pod-level: `runAsUser=1001`, `runAsGroup=0` (OpenShift-compatible), `fsGroup=1001`,
+    `runAsNonRoot=true`, `seccompProfile.type=RuntimeDefault`
+  - Container-level: `runAsUser=1001`, `runAsGroup=0`, `runAsNonRoot=true`,
+    `allowPrivilegeEscalation=false`, `capabilities.drop=[ALL]`, `seccompProfile.type=RuntimeDefault`
+
+#### Added
+- Documented that `MergedConfig.PodOverrides` **REPLACES** the whole `SecurityContext` (no deep
+  merge): a product overriding it must restate any hardening fields it wants to keep, and special
+  images override the full SecurityContext this way. Noted the `WithoutDefaultSecurityContext()`
+  escape hatch that disables the default entirely.
+
+---
+
 ## [2026-06-28]
 
 ### Architecture Documentation (`architecture.md`, `architecture_zh.md`)

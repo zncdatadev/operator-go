@@ -22,11 +22,16 @@ import (
 )
 
 const (
-	// DefaultRunAsUser is the default non-root user ID.
+	// DefaultRunAsUser is the kubedoop org-standard non-root user ID. All kubedoop product
+	// images run as uid 1001, so the framework default security context hardcodes this identity.
 	DefaultRunAsUser int64 = 1001
-	// DefaultRunAsGroup is the default non-root group ID.
-	DefaultRunAsGroup int64 = 1001
-	// DefaultFSGroup is the default filesystem group ID.
+	// DefaultRunAsGroup is the kubedoop org-standard primary group ID. It is intentionally 0
+	// (the root group) for OpenShift compatibility: OpenShift assigns an arbitrary uid but keeps
+	// gid 0, and kubedoop images make their files group-0 readable/writable, so running with
+	// group 0 works under both standard Kubernetes and OpenShift's restricted SCC.
+	DefaultRunAsGroup int64 = 0
+	// DefaultFSGroup is the default filesystem group ID applied to mounted volumes so the
+	// non-root process (uid 1001) can write to them.
 	DefaultFSGroup int64 = 1001
 )
 
@@ -165,7 +170,18 @@ func (b *PodSecurityBuilder) BuildPodSecurityContext() *corev1.PodSecurityContex
 	return ctx
 }
 
-// BuildDefaultSecurityContext creates a container security context with secure defaults.
+// BuildDefaultSecurityContext returns the framework's canonical default container security
+// context. It carries BOTH the kubedoop org-standard identity AND the security-hardening fields:
+//   - RunAsUser: 1001              — kubedoop images run as uid 1001
+//   - RunAsGroup: 0                — group 0, OpenShift-compatible (arbitrary uid + gid 0)
+//   - RunAsNonRoot: true           — refuse to start as root
+//   - AllowPrivilegeEscalation: false
+//   - Capabilities: drop ALL
+//   - SeccompProfile: RuntimeDefault
+//
+// This is the single default the framework applies by default in the base role-group handler.
+// A product that needs different settings replaces the whole security context (no deep merge)
+// via MergedConfig.PodOverrides — see the base handler's WithSecurityContext docs.
 func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		RunAsUser:                ptr.To(DefaultRunAsUser),
@@ -181,7 +197,17 @@ func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityConte
 	}
 }
 
-// BuildDefaultPodSecurityContext creates a pod security context with secure defaults.
+// BuildDefaultPodSecurityContext returns the framework's canonical default pod security context.
+// It carries BOTH the kubedoop org-standard identity AND hardening:
+//   - RunAsUser: 1001
+//   - RunAsGroup: 0                — OpenShift-compatible group 0
+//   - FSGroup: 1001               — so mounted volumes are writable by uid 1001
+//   - RunAsNonRoot: true
+//   - SeccompProfile: RuntimeDefault
+//
+// This is the single default the framework applies by default in the base role-group handler.
+// A product that needs a different identity replaces the whole pod security context (no deep
+// merge) via MergedConfig.PodOverrides.
 func (b *PodSecurityBuilder) BuildDefaultPodSecurityContext() *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
 		RunAsUser:    ptr.To(DefaultRunAsUser),

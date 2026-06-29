@@ -148,30 +148,43 @@ var _ = Describe("PodSecurityBuilder", func() {
 	})
 
 	Describe("BuildDefaultSecurityContext", func() {
-		It("should build a default container security context", func() {
+		It("should build the canonical default container security context (1001 identity + hardening)", func() {
 			ctx := builder.BuildDefaultSecurityContext()
 			Expect(ctx).NotTo(BeNil())
 			Expect(ctx.RunAsUser).NotTo(BeNil())
+			Expect(*ctx.RunAsUser).To(Equal(int64(1001)))
 			Expect(*ctx.RunAsUser).To(Equal(security.DefaultRunAsUser))
+			Expect(ctx.RunAsGroup).NotTo(BeNil())
+			Expect(*ctx.RunAsGroup).To(Equal(int64(0)))
+			Expect(*ctx.RunAsGroup).To(Equal(security.DefaultRunAsGroup))
 			Expect(ctx.RunAsNonRoot).NotTo(BeNil())
 			Expect(*ctx.RunAsNonRoot).To(BeTrue())
 			Expect(ctx.AllowPrivilegeEscalation).NotTo(BeNil())
 			Expect(*ctx.AllowPrivilegeEscalation).To(BeFalse())
 			Expect(ctx.Capabilities).NotTo(BeNil())
 			Expect(ctx.Capabilities.Drop).To(ContainElements(corev1.Capability("ALL")))
+			Expect(ctx.SeccompProfile).NotTo(BeNil())
+			Expect(ctx.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 		})
 	})
 
 	Describe("BuildDefaultPodSecurityContext", func() {
-		It("should build a default pod security context", func() {
+		It("should build the canonical default pod security context (1001 identity + hardening)", func() {
 			ctx := builder.BuildDefaultPodSecurityContext()
 			Expect(ctx).NotTo(BeNil())
 			Expect(ctx.RunAsUser).NotTo(BeNil())
+			Expect(*ctx.RunAsUser).To(Equal(int64(1001)))
 			Expect(*ctx.RunAsUser).To(Equal(security.DefaultRunAsUser))
+			Expect(ctx.RunAsGroup).NotTo(BeNil())
+			Expect(*ctx.RunAsGroup).To(Equal(int64(0)))
+			Expect(*ctx.RunAsGroup).To(Equal(security.DefaultRunAsGroup))
 			Expect(ctx.FSGroup).NotTo(BeNil())
+			Expect(*ctx.FSGroup).To(Equal(int64(1001)))
 			Expect(*ctx.FSGroup).To(Equal(security.DefaultFSGroup))
 			Expect(ctx.RunAsNonRoot).NotTo(BeNil())
 			Expect(*ctx.RunAsNonRoot).To(BeTrue())
+			Expect(ctx.SeccompProfile).NotTo(BeNil())
+			Expect(ctx.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 		})
 	})
 
