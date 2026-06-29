@@ -18,6 +18,7 @@ package vector
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
@@ -45,6 +46,16 @@ func TestNewVectorSidecarProvider_Defaults(t *testing.T) {
 	}
 }
 
+// vectorInitContainer returns the injected Vector native sidecar (an init container with
+// restartPolicy Always), or nil if it was not injected.
+func vectorInitContainer(podSpec *corev1.PodSpec) *corev1.Container {
+	idx := sidecar.FindInitContainerIndex(podSpec, VectorSidecarName)
+	if idx < 0 {
+		return nil
+	}
+	return &podSpec.InitContainers[idx]
+}
+
 func TestNewVectorSidecarProvider_ConstructorImage(t *testing.T) {
 	p := NewVectorSidecarProvider("my-product:v2.0")
 	if p.image != "my-product:v2.0" {
@@ -59,8 +70,12 @@ func TestNewVectorSidecarProvider_ConstructorImage(t *testing.T) {
 	if err := p.Inject(podSpec, config); err != nil {
 		t.Fatalf("Inject() error = %v", err)
 	}
-	if podSpec.Containers[1].Image != "my-product:v2.0" {
-		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, "my-product:v2.0")
+	c := vectorInitContainer(podSpec)
+	if c == nil {
+		t.Fatal("vector init container not found")
+	}
+	if c.Image != "my-product:v2.0" {
+		t.Errorf("Image = %q, want %q", c.Image, "my-product:v2.0")
 	}
 }
 
@@ -131,11 +146,20 @@ func TestProvider_Inject_ContainerInjection(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if len(podSpec.Containers) != 2 {
-		t.Fatalf("expected 2 containers, got %d", len(podSpec.Containers))
+	// Vector is injected as a native sidecar (init container, restartPolicy Always),
+	// never as a regular container.
+	if len(podSpec.Containers) != 1 {
+		t.Fatalf("expected 1 regular container, got %d", len(podSpec.Containers))
 	}
-	if podSpec.Containers[1].Name != VectorSidecarName {
-		t.Errorf("container name = %q, want %q", podSpec.Containers[1].Name, VectorSidecarName)
+	c := vectorInitContainer(podSpec)
+	if c == nil {
+		t.Fatal("vector init container not found")
+	}
+	if c.RestartPolicy == nil || *c.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Error("vector init container should have restartPolicy Always (native sidecar)")
+	}
+	if sidecar.FindContainer(podSpec, VectorSidecarName) != nil {
+		t.Error("vector should never be a regular container")
 	}
 }
 
@@ -152,8 +176,8 @@ func TestProvider_Inject_DefaultImage(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if podSpec.Containers[1].Image != "test-product:latest" {
-		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, "test-product:latest")
+	if c := vectorInitContainer(podSpec); c == nil || c.Image != "test-product:latest" {
+		t.Errorf("Image = %v, want %q", c, "test-product:latest")
 	}
 }
 
@@ -173,8 +197,52 @@ func TestProvider_Inject_CustomImage(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if podSpec.Containers[1].Image != "custom/vector:latest" {
-		t.Errorf("Image = %q, want %q", podSpec.Containers[1].Image, "custom/vector:latest")
+	if c := vectorInitContainer(podSpec); c == nil || c.Image != "custom/vector:latest" {
+		t.Errorf("Image = %v, want %q", c, "custom/vector:latest")
+	}
+}
+
+func TestProvider_Inject_EmptyImage_ReturnsError(t *testing.T) {
+	// Provider built with an empty product image and no SidecarConfig.Image override: the resolved
+	// image is empty, which must fail loudly instead of producing an invalid (empty-image) container.
+	p := NewVectorSidecarProvider("")
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{Enabled: true}
+
+	err := p.Inject(podSpec, config)
+	if err == nil {
+		t.Fatalf("Inject() with empty resolved image: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no image configured") {
+		t.Errorf("Inject() error = %q, want it to mention %q", err.Error(), "no image configured")
+	}
+	if c := vectorInitContainer(podSpec); c != nil {
+		t.Errorf("expected no Vector container to be injected on error, got %v", c)
+	}
+}
+
+func TestProvider_Inject_EmptyProductImage_OverrideSucceeds(t *testing.T) {
+	// Empty product image but a SidecarConfig.Image override resolves to a non-empty image: happy path.
+	p := NewVectorSidecarProvider("")
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{
+		Enabled: true,
+		Image:   "custom/vector:latest",
+	}
+
+	if err := p.Inject(podSpec, config); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if c := vectorInitContainer(podSpec); c == nil || c.Image != "custom/vector:latest" {
+		t.Errorf("Image = %v, want %q", c, "custom/vector:latest")
 	}
 }
 
@@ -191,8 +259,8 @@ func TestProvider_Inject_DefaultPullPolicy(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if podSpec.Containers[1].ImagePullPolicy != corev1.PullIfNotPresent {
-		t.Errorf("PullPolicy = %q, want %q", podSpec.Containers[1].ImagePullPolicy, corev1.PullIfNotPresent)
+	if c := vectorInitContainer(podSpec); c == nil || c.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Errorf("PullPolicy = %v, want %q", c, corev1.PullIfNotPresent)
 	}
 }
 
@@ -212,8 +280,8 @@ func TestProvider_Inject_CustomPullPolicy(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if podSpec.Containers[1].ImagePullPolicy != corev1.PullAlways {
-		t.Errorf("PullPolicy = %q, want %q", podSpec.Containers[1].ImagePullPolicy, corev1.PullAlways)
+	if c := vectorInitContainer(podSpec); c == nil || c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("PullPolicy = %v, want %q", c, corev1.PullAlways)
 	}
 }
 
@@ -230,7 +298,7 @@ func TestProvider_Inject_Command(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	cmd := podSpec.Containers[1].Command
+	cmd := vectorInitContainer(podSpec).Command
 	expectedCmd := []string{"vector", "--config", VectorConfigMountPath + "/" + VectorConfigFileName}
 	if len(cmd) != len(expectedCmd) {
 		t.Fatalf("Command length = %d, want %d", len(cmd), len(expectedCmd))
@@ -255,7 +323,7 @@ func TestProvider_Inject_VolumeMounts(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	volumeMounts := podSpec.Containers[1].VolumeMounts
+	volumeMounts := vectorInitContainer(podSpec).VolumeMounts
 	if len(volumeMounts) != 3 {
 		t.Fatalf("expected 3 volume mounts, got %d", len(volumeMounts))
 	}
@@ -270,16 +338,17 @@ func TestProvider_Inject_VolumeMounts(t *testing.T) {
 		}
 	}
 
-	// Config mount should be read-only
+	// Config and shared-log mounts must be read-only on the Vector (consumer) container.
 	for _, m := range volumeMounts {
-		if m.Name == VectorConfigVolumeName {
-			if !m.ReadOnly {
-				t.Error("config volume mount should be read-only")
-			}
+		if m.Name == VectorConfigVolumeName && !m.ReadOnly {
+			t.Error("config volume mount should be read-only")
 		}
 		if m.Name == VectorLogVolumeName {
 			if !m.ReadOnly {
 				t.Error("log volume mount should be read-only")
+			}
+			if m.MountPath != VectorLogMountPath {
+				t.Errorf("log mount path = %q, want %q", m.MountPath, VectorLogMountPath)
 			}
 		}
 	}
@@ -298,18 +367,23 @@ func TestProvider_Inject_Volumes(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if len(podSpec.Volumes) != 3 {
-		t.Fatalf("expected 3 volumes, got %d", len(podSpec.Volumes))
+	// The provider creates only its own volumes (config + data). The shared log volume is
+	// owned by the producer (role-group base handler), so the consumer must NOT create it.
+	if len(podSpec.Volumes) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(podSpec.Volumes))
 	}
 
 	volNames := make(map[string]bool)
 	for _, v := range podSpec.Volumes {
 		volNames[v.Name] = true
 	}
-	for _, name := range []string{VectorConfigVolumeName, VectorDataVolumeName, VectorLogVolumeName} {
+	for _, name := range []string{VectorConfigVolumeName, VectorDataVolumeName} {
 		if !volNames[name] {
 			t.Errorf("missing volume %q", name)
 		}
+	}
+	if volNames[VectorLogVolumeName] {
+		t.Errorf("provider must NOT create the shared log volume %q (producer owns it)", VectorLogVolumeName)
 	}
 }
 
@@ -345,7 +419,11 @@ func TestProvider_Inject_ConfigMapVolume(t *testing.T) {
 	}
 }
 
-func TestProvider_Inject_LogVolumeOnMainContainer(t *testing.T) {
+// TestProvider_Inject_DoesNotMountLogOnMainContainer asserts the consumer/producer split:
+// the Vector provider is a pure consumer and must NOT mount the shared log volume on the
+// main/product container. That RW mount is owned by the producer (the role-group base
+// handler), preventing the previous double-mount hazard.
+func TestProvider_Inject_DoesNotMountLogOnMainContainer(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -358,58 +436,46 @@ func TestProvider_Inject_LogVolumeOnMainContainer(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	mainContainer := podSpec.Containers[0]
-	var foundLogMount bool
-	for _, m := range mainContainer.VolumeMounts {
+	for _, m := range podSpec.Containers[0].VolumeMounts {
 		if m.Name == VectorLogVolumeName {
-			foundLogMount = true
-			if m.MountPath != VectorLogMountPath {
-				t.Errorf("log mount path = %q, want %q", m.MountPath, VectorLogMountPath)
-			}
-			break
+			t.Error("provider must NOT mount the shared log volume on the main container (producer owns it)")
 		}
-	}
-	if !foundLogMount {
-		t.Error("main container should have log volume mount")
 	}
 }
 
-func TestProvider_Inject_LogVolumeOnNamedMainContainer(t *testing.T) {
+// TestProvider_Inject_LogMountOnVectorContainer asserts the consumer side: the shared log
+// volume is RO-mounted on the Vector container at the framework-canonical log dir.
+func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
-			{Name: "other", Image: "other-image"},
-			{Name: "app", Image: "app-image"},
+			{Name: "main", Image: "main-image"},
 		},
 	}
-	config := &sidecar.SidecarConfig{
-		Enabled:           true,
-		MainContainerName: "app",
-	}
+	config := &sidecar.SidecarConfig{Enabled: true}
 
 	if err := p.Inject(podSpec, config); err != nil {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	// The "app" container (index 1) should have the log mount
-	appContainer := podSpec.Containers[1]
-	var foundLogMount bool
-	for _, m := range appContainer.VolumeMounts {
+	c := vectorInitContainer(podSpec)
+	if c == nil {
+		t.Fatal("vector init container not found")
+	}
+	var found bool
+	for _, m := range c.VolumeMounts {
 		if m.Name == VectorLogVolumeName {
-			foundLogMount = true
-			break
+			found = true
+			if !m.ReadOnly {
+				t.Error("vector log mount should be read-only")
+			}
+			if m.MountPath != VectorLogMountPath {
+				t.Errorf("log mount path = %q, want %q", m.MountPath, VectorLogMountPath)
+			}
 		}
 	}
-	if !foundLogMount {
-		t.Error("app container should have log volume mount")
-	}
-
-	// The "other" container (index 0) should NOT have the log mount
-	otherContainer := podSpec.Containers[0]
-	for _, m := range otherContainer.VolumeMounts {
-		if m.Name == VectorLogVolumeName {
-			t.Error("other container should not have log volume mount")
-		}
+	if !found {
+		t.Error("vector container should RO-mount the shared log volume")
 	}
 }
 
@@ -426,7 +492,7 @@ func TestProvider_Inject_ReadinessProbe(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	probe := podSpec.Containers[1].ReadinessProbe
+	probe := vectorInitContainer(podSpec).ReadinessProbe
 	if probe == nil {
 		t.Fatal("readiness probe should not be nil")
 		return
@@ -457,8 +523,8 @@ func TestProvider_Inject_Idempotency(t *testing.T) {
 	if err := p.Inject(podSpec, config); err != nil {
 		t.Fatalf("Inject() error = %v", err)
 	}
-	if len(podSpec.Containers) != 2 {
-		t.Fatalf("expected 2 containers after first inject, got %d", len(podSpec.Containers))
+	if len(podSpec.InitContainers) != 1 {
+		t.Fatalf("expected 1 init container after first inject, got %d", len(podSpec.InitContainers))
 	}
 
 	// Inject again
@@ -466,20 +532,19 @@ func TestProvider_Inject_Idempotency(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	// Should still have 2 containers (main + vector), not 3
-	if len(podSpec.Containers) != 2 {
-		t.Errorf("expected 2 containers after second inject, got %d", len(podSpec.Containers))
+	// Should still have 1 main container and 1 vector init container, not duplicated.
+	if len(podSpec.Containers) != 1 {
+		t.Errorf("expected 1 regular container after second inject, got %d", len(podSpec.Containers))
 	}
 
-	// Count vector containers
 	vectorCount := 0
-	for _, c := range podSpec.Containers {
+	for _, c := range podSpec.InitContainers {
 		if c.Name == VectorSidecarName {
 			vectorCount++
 		}
 	}
 	if vectorCount != 1 {
-		t.Errorf("expected 1 vector container, got %d", vectorCount)
+		t.Errorf("expected 1 vector init container, got %d", vectorCount)
 	}
 }
 
@@ -494,8 +559,11 @@ func TestProvider_Inject_NilConfig(t *testing.T) {
 	if err := p.Inject(podSpec, nil); err != nil {
 		t.Fatalf("Inject() error = %v", err)
 	}
-	if len(podSpec.Containers) != 2 {
-		t.Errorf("expected 2 containers, got %d", len(podSpec.Containers))
+	if len(podSpec.Containers) != 1 {
+		t.Errorf("expected 1 regular container, got %d", len(podSpec.Containers))
+	}
+	if vectorInitContainer(podSpec) == nil {
+		t.Error("expected vector init container to be injected with nil config")
 	}
 }
 
@@ -521,7 +589,7 @@ func TestProvider_Inject_Resources(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if _, ok := podSpec.Containers[1].Resources.Limits[corev1.ResourceCPU]; !ok {
+	if _, ok := vectorInitContainer(podSpec).Resources.Limits[corev1.ResourceCPU]; !ok {
 		t.Error("expected CPU resource limit")
 	}
 }
@@ -544,7 +612,7 @@ func TestProvider_Inject_EnvVars(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if len(podSpec.Containers[1].Env) == 0 {
+	if len(vectorInitContainer(podSpec).Env) == 0 {
 		t.Error("expected env vars to be set")
 	}
 }
@@ -569,10 +637,11 @@ func TestProvider_Inject_SecurityContext(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	if podSpec.Containers[1].SecurityContext == nil {
+	c := vectorInitContainer(podSpec)
+	if c.SecurityContext == nil {
 		t.Fatal("expected security context to be set")
 	}
-	if !*podSpec.Containers[1].SecurityContext.RunAsNonRoot {
+	if !*c.SecurityContext.RunAsNonRoot {
 		t.Error("expected RunAsNonRoot to be true")
 	}
 }
@@ -597,7 +666,7 @@ func TestProvider_Inject_CustomVolumeMounts(t *testing.T) {
 	}
 
 	var found bool
-	for _, m := range podSpec.Containers[1].VolumeMounts {
+	for _, m := range vectorInitContainer(podSpec).VolumeMounts {
 		if m.Name == "custom-data" {
 			found = true
 			break
@@ -649,13 +718,7 @@ func TestProvider_Inject_DefaultSecurityContext(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	var vectorContainer *corev1.Container
-	for i := range podSpec.Containers {
-		if podSpec.Containers[i].Name == VectorSidecarName {
-			vectorContainer = &podSpec.Containers[i]
-			break
-		}
-	}
+	vectorContainer := vectorInitContainer(podSpec)
 	if vectorContainer == nil {
 		t.Fatal("vector container not found")
 		return

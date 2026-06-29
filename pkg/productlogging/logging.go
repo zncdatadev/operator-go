@@ -23,6 +23,7 @@ package productlogging
 
 import (
 	"fmt"
+	"path"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/constant"
@@ -63,7 +64,10 @@ func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging) (
 	}
 	opts := RenderOptions{Pattern: decl.Pattern}
 	if decl.OutputFile != "" {
-		opts.FileOutputPath = constant.KubedoopLogDir + decl.OutputFile
+		// constant.KubedoopLogDir carries a trailing slash ("/kubedoop/log/"); use path.Join so
+		// the rendered file path collapses to a single slash ("/kubedoop/log/<app>.stdout.log")
+		// regardless of whether the dir or the OutputFile carry stray slashes.
+		opts.FileOutputPath = path.Join(constant.KubedoopLogDir, decl.OutputFile)
 	}
 	content, err := gen.Render(LogConfigFromSpec(spec), opts)
 	if err != nil {

@@ -95,6 +95,11 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	if image == "" {
 		image = p.image
 	}
+	// Fail loudly at build time: an empty image would produce an invalid PodSpec (empty container
+	// image) that the API server rejects opaquely.
+	if image == "" {
+		return fmt.Errorf("vector: no image configured; set it via SidecarConfig.Image or SetProductImage")
+	}
 
 	// Get pull policy
 	pullPolicy := corev1.PullIfNotPresent
@@ -151,11 +156,21 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 		sidecar.AddVolumeMounts(container, config.VolumeMounts)
 	}
 
-	// Add container to pod (idempotent -- replace if exists)
-	sidecar.AddOrReplaceContainer(podSpec, container)
+	// Vector is a long-running sidecar: inject it as a native sidecar (init container with
+	// restartPolicy: Always) so the kubelet starts it before the main container and keeps it
+	// running until the main container exits, guaranteeing logs are shipped through shutdown.
+	// Idempotent -- replace if already present.
+	container.RestartPolicy = sidecar.SidecarRestartPolicy()
+	sidecar.AddOrReplaceInitContainer(podSpec, container)
 
-	// Add required volumes if not present
-	// Resolve data volume size: use custom if set, otherwise default
+	// Add Vector-owned volumes (config + data). Resolve data volume size: custom if set,
+	// otherwise the default.
+	//
+	// The shared log volume is intentionally NOT created here. Under the producer/consumer
+	// ownership split, the role-group base handler owns the shared log emptyDir (sized,
+	// medium=node) and RW-mounts it on each product container; the Vector provider is a pure
+	// consumer that only RO-mounts that volume on its own container (above). This removes the
+	// previous double-mount hazard and keeps a single owner for the volume lifecycle.
 	dataVolumeSizeLimit := resource.MustParse(VectorDataVolumeSize)
 	if p.dataVolumeSize != nil {
 		dataVolumeSizeLimit = *p.dataVolumeSize
@@ -179,26 +194,9 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 				},
 			},
 		},
-		{
-			Name: VectorLogVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		},
 	}
 
 	sidecar.AddVolumes(podSpec, volumes)
-
-	// Mount log volume to the main container for shared logging
-	mainContainer := sidecar.FindMainContainer(podSpec, config.MainContainerName)
-	if mainContainer != nil {
-		sidecar.AddVolumeMounts(mainContainer, []corev1.VolumeMount{
-			{
-				Name:      VectorLogVolumeName,
-				MountPath: VectorLogMountPath,
-			},
-		})
-	}
 
 	return nil
 }
