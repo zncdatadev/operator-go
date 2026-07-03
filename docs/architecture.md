@@ -365,10 +365,11 @@ Big data components often require configuration files in various formats (e.g., 
   - `PropertiesAdapter`: Converts key-value pairs into standard Java `.properties` format.
   - `YAMLAdapter`: Converts structured data into YAML format.
   - `EnvAdapter`: Formats as shell environment variable exports or .env file content.
-- **LoggingGenerator**: A specialized component for handling structured logging abstraction.
-  - **Input**: Generic YAML logger configuration (e.g., `containers.coordinator.loggers.ROOT.level: DEBUG`).
-  - **Transformation**: Maps generic levels (DEBUG, INFO) to framework-specific formats (Log4j2 XML, Logback XML, Python Logging).
-  - **Output**: Generates the final logging configuration file (e.g., `log4j2.properties`) injected into the ConfigMap.
+- **Product Logging Engine** (`pkg/productlogging`): A dedicated, product-agnostic logging engine (separate from the config-format adapters above).
+  - **Input**: The deep-merged CRD logging spec (e.g., `containers.coordinator.loggers.ROOT.level: DEBUG`), converted once into a framework-neutral `LogConfig`.
+  - **Generators**: A registry of `LogFileGenerator`s renders framework-specific files (Logback XML, Log4j2 properties, Python logging) from the neutral model — including console/file appender thresholds and a bounded rolling file appender.
+  - **Declaration**: Products declare per-container logging via `ContainerLogging` (container, framework, pattern). The framework owns the log file-name convention (`<container>.stdout.log`) that the Vector source globs, so producers and the consumer cannot drift.
+  - **Vector coupling**: The rolling file appender is emitted only when the Vector agent is enabled — without a consumer there is no shared log volume to write to (see the Sidecar Injection module).
 - **Integration**: The `StatefulSetBuilder` utilizes the `ConfigGenerator` to process the merged configuration map (from `ConfigMerger`) into the final string data stored in ConfigMaps.
 
 ### 4.5.3 Core Value
@@ -389,9 +390,9 @@ Operations such as log collection (Vector), metric monitoring (JMX Exporter), an
   - `Inject(podSpec *corev1.PodSpec, config SidecarConfig) error`
 - **Provider Placement**: Providers with config generation or external service discovery are placed in their own domain package. Trivial providers remain in `pkg/sidecar/`.
 - **Standard Implementations**:
-  - `VectorSidecarProvider` (in `pkg/vector/`): Injects Vector agent container, mounts log volumes, validates ConfigMap existence. Config generation (`RenderVectorConfig`) and aggregator discovery (`DiscoverAggregatorAddress`) are separate pure functions in the same package.
+  - `VectorSidecarProvider` (in `pkg/vector/`): The **single owner of the shared log pipeline**. It creates the size-limited shared log `emptyDir`, RW-mounts it on the declared producer containers (so the product writes its log files there), RO-mounts it on the Vector agent container, and injects the agent. Config generation (`RenderVectorConfig`) and aggregator discovery (`DiscoverAggregatorAddress`) are separate pure functions in the same package.
   - `JmxExporterSidecarProvider` (in `pkg/sidecar/`): Injects Prometheus JMX Exporter agent and exposes metric ports.
-- **Workflow**: The `BaseRoleGroupHandler` invokes the `SidecarManager` after StatefulSet construction. The manager iterates through enabled providers and injects Containers, Volumes, and VolumeMounts. Product operators are responsible for config generation and ConfigMap creation before registering the provider.
+- **Workflow**: The `GenericReconciler` registers the Vector provider — configured with the producer container names (from the handler's `LoggingProducers`) and the shared log volume size — only when the agent is enabled **and** at least one producer is declared (otherwise it warns and skips, so an agent that has nothing to collect can never yield an invalid Pod). The `BaseRoleGroupHandler` then invokes the `SidecarManager` after StatefulSet construction, and the manager injects Containers, Volumes, and VolumeMounts. For CRs that expose the aggregator ConfigMap (via `VectorAggregatorProvider`), the framework also generates `vector.yaml` into the role group ConfigMap — keeping producer, consumer, and config in lockstep in one place rather than spread across product operators.
 
 ### 4.6.3 Core Value
 
