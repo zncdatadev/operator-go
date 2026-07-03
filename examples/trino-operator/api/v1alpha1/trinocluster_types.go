@@ -162,8 +162,9 @@ func (t *TrinoCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
 }
 
 // VectorAggregatorConfigMapName implements reconciler.VectorAggregatorProvider, letting the
-// framework own vector.yaml generation. It returns "" when unset — the framework then leaves
-// vector.yaml to the product (or Vector is disabled).
+// framework own vector.yaml generation. It returns "" when unset; when the Vector agent is active
+// for a role group (enabled with a declared producer) that is a misconfiguration and the
+// reconciler fails loudly, otherwise it is not consulted.
 func (t *TrinoCluster) VectorAggregatorConfigMapName() string {
 	if t.Spec.ClusterConfig == nil || t.Spec.ClusterConfig.VectorAggregatorConfigMapName == nil {
 		return ""

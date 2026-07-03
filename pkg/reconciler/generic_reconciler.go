@@ -580,15 +580,26 @@ func producerContainerNames(producers []productlogging.ContainerLogging) []strin
 	return names
 }
 
+// loggingProducers returns the handler's declared log-producer containers when it implements
+// LoggingProducerProvider (nil otherwise). Both Vector sidecar registration and aggregator-address
+// resolution gate on "≥1 producer" so they stay consistent: the framework only wires Vector — and
+// only resolves/generates its config — when there is actually something to collect.
+func (r *GenericReconciler[CR]) loggingProducers() []productlogging.ContainerLogging {
+	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
+		return lp.LoggingProducers()
+	}
+	return nil
+}
+
 // resolveVectorAggregatorAddress resolves the Vector aggregator discovery address for a role group
 // and stores it on buildCtx, enabling framework-owned vector.yaml generation
-// (RenderLoggingConfigMapData). It is a no-op when the Vector agent is disabled or when the CR does
-// not implement VectorAggregatorProvider (the product then owns vector.yaml). When the agent is
-// enabled and the CR exposes an aggregator ConfigMap name, that name must be non-empty and
-// resolvable — an unset name or a discovery failure is returned as an error, failing loudly rather
-// than shipping a Vector sidecar with no aggregator.
+// (RenderLoggingConfigMapData). It is a no-op unless Vector will actually be injected — the agent
+// is enabled AND at least one producer is declared (mirroring buildSidecarManager's gating) — and
+// the CR implements VectorAggregatorProvider. In that active case the aggregator ConfigMap name
+// must be non-empty and resolvable; an unset name or a discovery failure is returned as an error,
+// failing loudly rather than shipping a Vector sidecar with no aggregator.
 func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) error {
-	if !vectorEnabledFor(buildCtx) {
+	if !vectorEnabledFor(buildCtx) || len(r.loggingProducers()) == 0 {
 		return nil
 	}
 	provider, ok := any(cr).(VectorAggregatorProvider)

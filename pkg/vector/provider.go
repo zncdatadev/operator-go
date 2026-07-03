@@ -50,7 +50,8 @@ func WithDataVolumeSize(quantity resource.Quantity) ProviderOption {
 // Vector collects; typically the product's main container.
 func WithProducers(containers []string) ProviderOption {
 	return func(p *VectorSidecarProvider) {
-		p.producers = containers
+		// Copy so a later caller mutation of the slice can't change the provider's configuration.
+		p.producers = append([]string(nil), containers...)
 	}
 }
 

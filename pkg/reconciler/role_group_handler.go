@@ -114,8 +114,12 @@ type RoleGroupBuildContext struct {
 // VectorAggregatorProvider is optionally implemented by a product CR to expose the name of the
 // ConfigMap carrying the Vector aggregator discovery address (typically
 // spec.clusterConfig.vectorAggregatorConfigMapName). When the CR implements it and the Vector
-// agent is enabled, GenericReconciler resolves the aggregator address and lets the framework
-// generate vector.yaml into the role group ConfigMap. Returning "" means "not configured".
+// agent is active for a role group (enabled AND at least one declared producer), GenericReconciler
+// resolves the aggregator address and generates vector.yaml into the role group ConfigMap.
+//
+// Returning "" means no aggregator ConfigMap is configured. When the Vector agent is active this is
+// a misconfiguration and the reconciler fails loudly (there would otherwise be a Vector sidecar
+// with no aggregator to ship to); when the agent is not active the method is not consulted.
 type VectorAggregatorProvider interface {
 	VectorAggregatorConfigMapName() string
 }
