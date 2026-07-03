@@ -44,16 +44,30 @@ type ContainerLogging struct {
 	// Pattern overrides the encoder/layout pattern (product-specific, e.g. ZooKeeper's
 	// "[myid:%X{myid}]" MDC). Empty uses the framework default.
 	Pattern string
-	// OutputFile, when set, adds a rolling file appender writing to
-	// "<KubedoopLogDir><OutputFile>" so the Vector sidecar (globbing *.stdout.log) can
-	// collect logs. Convention: "<container>.stdout.log".
-	OutputFile string
+}
+
+// LogFileSuffix is appended to a producer container's name to form its rolling log-file name.
+// Every generator emits plain-text logs, so the file matches the Vector "files_stdout" source
+// (globs "<LogDir>/*.stdout.log"); the producer file name is therefore framework-independent.
+const LogFileSuffix = ".stdout.log"
+
+// ContainerLogFileName returns the conventional rolling log-file name for a producer container
+// ("<container>.stdout.log"). It is the single source of the convention so the file appender
+// (this package) and the shared-volume producer mount (pkg/vector) cannot drift.
+func ContainerLogFileName(container string) string {
+	return container + LogFileSuffix
 }
 
 // RenderConfigFile generates the logging config file for a container declaration from its
 // already-resolved (merged) logging spec, returning (fileName, content). The spec may be nil
 // (no user config), in which case the generator falls back to its defaults.
-func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging) (string, string, error) {
+//
+// withFileAppender controls the rolling file appender: when true the config also writes to
+// "<KubedoopLogDir>/<container>.stdout.log" so the Vector sidecar can collect it; when false the
+// config is console-only. File logging is coupled to Vector — without a Vector consumer there is
+// no shared log volume, so callers pass false to avoid an appender that writes to an unmounted
+// path. The path convention is framework-owned (ContainerLogFileName), not product-supplied.
+func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, withFileAppender bool) (string, string, error) {
 	gen, err := GeneratorFor(decl.Framework)
 	if err != nil {
 		return "", "", err
@@ -63,11 +77,10 @@ func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging) (
 		fileName = gen.DefaultFileName()
 	}
 	opts := RenderOptions{Pattern: decl.Pattern}
-	if decl.OutputFile != "" {
+	if withFileAppender {
 		// constant.KubedoopLogDir carries a trailing slash ("/kubedoop/log/"); use path.Join so
-		// the rendered file path collapses to a single slash ("/kubedoop/log/<app>.stdout.log")
-		// regardless of whether the dir or the OutputFile carry stray slashes.
-		opts.FileOutputPath = path.Join(constant.KubedoopLogDir, decl.OutputFile)
+		// the rendered file path collapses to a single slash ("/kubedoop/log/<app>.stdout.log").
+		opts.FileOutputPath = path.Join(constant.KubedoopLogDir, ContainerLogFileName(decl.Container))
 	}
 	content, err := gen.Render(LogConfigFromSpec(spec), opts)
 	if err != nil {

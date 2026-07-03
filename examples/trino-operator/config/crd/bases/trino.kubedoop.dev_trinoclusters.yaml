@@ -75,6 +75,18 @@ spec:
                   - type
                   type: object
                 type: array
+              clusterConfig:
+                description: ClusterConfig holds cluster-wide configuration shared
+                  by all roles.
+                properties:
+                  vectorAggregatorConfigMapName:
+                    description: |-
+                      VectorAggregatorConfigMapName is the name of a ConfigMap carrying the Vector aggregator
+                      discovery address. When set and a role group enables the Vector agent, the operator-go
+                      framework resolves the address and generates vector.yaml into the role group ConfigMap
+                      (via the reconciler.VectorAggregatorProvider seam that TrinoCluster implements below).
+                    type: string
+                type: object
               clusterOperation:
                 description: |-
                   ClusterOperation controls operator behavior at runtime.

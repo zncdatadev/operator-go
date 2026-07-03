@@ -18,12 +18,15 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
+	"github.com/zncdatadev/operator-go/pkg/vector"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -98,6 +101,40 @@ type RoleGroupBuildContext struct {
 	// sidecar.StaticContainerProvider) and call InjectAll so all pod container injection
 	// flows through the manager. May be empty if nothing is configured.
 	SidecarManager *sidecar.SidecarManager
+
+	// VectorAggregatorAddress is the resolved Vector aggregator discovery address, populated by
+	// GenericReconciler when the Vector agent is enabled and the CR implements
+	// VectorAggregatorProvider (the reconciler reads its ConfigMap name and resolves the address
+	// via discovery). When set, RenderLoggingConfigMapData generates vector.yaml; empty means the
+	// framework does not own vector.yaml for this role group (the product builds it, or Vector is
+	// off).
+	VectorAggregatorAddress string
+}
+
+// VectorAggregatorProvider is optionally implemented by a product CR to expose the name of the
+// ConfigMap carrying the Vector aggregator discovery address (typically
+// spec.clusterConfig.vectorAggregatorConfigMapName). When the CR implements it and the Vector
+// agent is active for a role group (enabled AND at least one declared producer), GenericReconciler
+// resolves the aggregator address and generates vector.yaml into the role group ConfigMap.
+//
+// Returning "" means no aggregator ConfigMap is configured. When the Vector agent is active this is
+// a misconfiguration and the reconciler fails loudly (there would otherwise be a Vector sidecar
+// with no aggregator to ship to); when the agent is not active the method is not consulted.
+type VectorAggregatorProvider interface {
+	VectorAggregatorConfigMapName() string
+}
+
+// LoggingProducerProvider is implemented by handlers (e.g. BaseRoleGroupHandler) that declare
+// log-producer containers. GenericReconciler type-asserts its handler against this interface to
+// configure the Vector sidecar (the single owner of the shared log volume) without depending on a
+// concrete handler type.
+type LoggingProducerProvider interface {
+	// LoggingProducers returns the declared log-producer containers (the containers whose log
+	// files Vector collects; the provider RW-mounts the shared log volume on each).
+	LoggingProducers() []productlogging.ContainerLogging
+	// LogVolumeSizeLimit returns the shared log volume SizeLimit override; "" uses the framework
+	// default (vector.DefaultLogVolumeSize).
+	LogVolumeSizeLimit() string
 }
 
 // ContainerLogging returns the deep-merged logging config for a container (keyed by
@@ -119,7 +156,60 @@ func (c *RoleGroupBuildContext) ContainerLogging(container string) *v1alpha1.Log
 // config file. Handlers embedding BaseRoleGroupHandler get this wired automatically via
 // LoggingContainers; handlers that build their own ConfigMap can call it directly.
 func RenderContainerLogging(buildCtx *RoleGroupBuildContext, decl productlogging.ContainerLogging) (string, string, error) {
-	return productlogging.RenderConfigFile(buildCtx.ContainerLogging(decl.Container), decl)
+	// Emit the rolling file appender only when the Vector agent is enabled: file logging is
+	// coupled to Vector (without a consumer there is no shared log volume to write to). Gating
+	// here means products building their own ConfigMap inherit the behavior for free.
+	return productlogging.RenderConfigFile(
+		buildCtx.ContainerLogging(decl.Container), decl, vectorEnabledFor(buildCtx))
+}
+
+// RenderLoggingConfigMapData renders the logging-related entries for a role group ConfigMap:
+//   - one logging config file per declared producer (level config, plus the rolling file appender
+//     when Vector is enabled), keyed by the generator file name (e.g. "logback.xml"), and
+//   - the Vector agent config ("vector.yaml") when the Vector agent is enabled AND the aggregator
+//     address has been resolved (buildCtx.VectorAggregatorAddress, populated by GenericReconciler
+//     from the CR's VectorAggregatorProvider).
+//
+// The Vector sidecar reads its config from the role group ConfigMap (the provider mounts it and
+// runs "vector --config <mount>/vector.yaml"), so the framework owns vector.yaml generation from
+// the shared log-dir convention — products implementing VectorAggregatorProvider no longer
+// hand-write it and cannot drift from the source glob. Products that build their own ConfigMap
+// compose this map into theirs (checking for collisions against their own keys); handlers
+// embedding BaseRoleGroupHandler get it automatically. Returns an empty map when there are no
+// producers and Vector is disabled.
+func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []productlogging.ContainerLogging) (map[string]string, error) {
+	data := make(map[string]string)
+	for _, lc := range producers {
+		filename, content, err := RenderContainerLogging(buildCtx, lc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to render logging config for container %q: %w", lc.Container, err)
+		}
+		if _, exists := data[filename]; exists {
+			return nil, fmt.Errorf("logging config file %q for container %q collides with another logging entry", filename, lc.Container)
+		}
+		data[filename] = content
+	}
+	// Generate vector.yaml only when the aggregator address is known. If Vector is enabled but the
+	// CR does not expose an aggregator ConfigMap (VectorAggregatorProvider), the address is empty
+	// and the framework leaves vector.yaml to the product.
+	if vectorEnabledFor(buildCtx) && buildCtx.VectorAggregatorAddress != "" {
+		vectorConfig, err := vector.RenderVectorConfig(vector.VectorConfigData{
+			LogDir:            constant.KubedoopLogDir,
+			AggregatorAddress: buildCtx.VectorAggregatorAddress,
+			Namespace:         buildCtx.ClusterNamespace,
+			ClusterName:       buildCtx.ClusterName,
+			RoleName:          buildCtx.RoleName,
+			RoleGroupName:     buildCtx.RoleGroupName,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to render vector config: %w", err)
+		}
+		if _, exists := data[vector.VectorConfigFileName]; exists {
+			return nil, fmt.Errorf("vector config file %q collides with a logging config file", vector.VectorConfigFileName)
+		}
+		data[vector.VectorConfigFileName] = vectorConfig
+	}
+	return data, nil
 }
 
 // RoleGroupHandler is the interface that product operators must implement

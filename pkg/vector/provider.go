@@ -44,6 +44,25 @@ func WithDataVolumeSize(quantity resource.Quantity) ProviderOption {
 	}
 }
 
+// WithProducers sets the names of the log-producer containers. The provider creates the shared
+// log volume and RW-mounts it on each of these containers (if present in the PodSpec), in
+// addition to RO-mounting it on the Vector container. These are the containers whose log files
+// Vector collects; typically the product's main container.
+func WithProducers(containers []string) ProviderOption {
+	return func(p *VectorSidecarProvider) {
+		// Copy so a later caller mutation of the slice can't change the provider's configuration.
+		p.producers = append([]string(nil), containers...)
+	}
+}
+
+// WithLogVolumeSize sets a custom SizeLimit for the shared log emptyDir. Empty falls back to
+// DefaultLogVolumeSize.
+func WithLogVolumeSize(quantity resource.Quantity) ProviderOption {
+	return func(p *VectorSidecarProvider) {
+		p.logVolumeSize = &quantity
+	}
+}
+
 // Compile-time interface assertion.
 var _ sidecar.SidecarProvider = (*VectorSidecarProvider)(nil)
 
@@ -54,6 +73,8 @@ type VectorSidecarProvider struct {
 	image          string
 	configMapName  string
 	dataVolumeSize *resource.Quantity
+	logVolumeSize  *resource.Quantity
+	producers      []string
 }
 
 // NewVectorSidecarProvider creates a new VectorSidecarProvider with the given product image and options.
@@ -163,14 +184,18 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	container.RestartPolicy = sidecar.SidecarRestartPolicy()
 	sidecar.AddOrReplaceInitContainer(podSpec, container)
 
-	// Add Vector-owned volumes (config + data). Resolve data volume size: custom if set,
-	// otherwise the default.
-	//
-	// The shared log volume is intentionally NOT created here. Under the producer/consumer
-	// ownership split, the role-group base handler owns the shared log emptyDir (sized,
-	// medium=node) and RW-mounts it on each product container; the Vector provider is a pure
-	// consumer that only RO-mounts that volume on its own container (above). This removes the
-	// previous double-mount hazard and keeps a single owner for the volume lifecycle.
+	// The Vector provider is the single owner of the shared log pipeline: it creates the shared
+	// log emptyDir, RW-mounts it on each declared producer container (so the product writes its
+	// log files there), and RO-mounts it on the Vector container (above). Creating and mounting
+	// the volume in one place removes the previous double-owner split (base handler produced,
+	// provider consumed) and makes a double-mount impossible.
+	logVolumeSizeLimit := resource.MustParse(DefaultLogVolumeSize)
+	if p.logVolumeSize != nil {
+		logVolumeSizeLimit = *p.logVolumeSize
+	}
+
+	// Add Vector-owned volumes (config + data) plus the shared log volume. Resolve the data
+	// volume size: custom if set, otherwise the default.
 	dataVolumeSizeLimit := resource.MustParse(VectorDataVolumeSize)
 	if p.dataVolumeSize != nil {
 		dataVolumeSizeLimit = *p.dataVolumeSize
@@ -194,9 +219,36 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 				},
 			},
 		},
+		{
+			Name: VectorLogVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				// Node-disk emptyDir (default medium), bounded by SizeLimit. Explicitly NOT
+				// medium=Memory and NOT a PVC.
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					SizeLimit: &logVolumeSizeLimit,
+				},
+			},
+		},
 	}
 
 	sidecar.AddVolumes(podSpec, volumes)
+
+	// RW-mount the shared log volume on each producer container present in the PodSpec (the
+	// Vector container mounts it read-only). Producers are expected to exist by now — the main
+	// container always does; a SidecarManager-injected init-container producer must be injected
+	// before Vector (InjectAll ordering).
+	producerMount := corev1.VolumeMount{
+		Name:      VectorLogVolumeName,
+		MountPath: VectorLogMountPath,
+	}
+	for _, name := range p.producers {
+		if c := sidecar.FindContainer(podSpec, name); c != nil {
+			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{producerMount})
+		}
+		if c := sidecar.FindInitContainer(podSpec, name); c != nil {
+			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{producerMount})
+		}
+	}
 
 	return nil
 }

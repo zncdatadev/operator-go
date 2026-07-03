@@ -32,6 +32,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// Compile-time proof that TrinoCluster wires framework-owned vector.yaml generation: when a role
+// group enables the Vector agent, the GenericReconciler reads this ConfigMap name, resolves the
+// aggregator address, and generates vector.yaml into the role group ConfigMap.
+var _ reconciler.VectorAggregatorProvider = (*trinov1alpha1.TrinoCluster)(nil)
+
 // TrinoRoleGroupHandler builds Trino role group resources. It embeds the SDK's
 // BaseRoleGroupHandler so the framework owns the bulk of resource orchestration — ConfigMap
 // (rendered from the merged config, including the product config computed by

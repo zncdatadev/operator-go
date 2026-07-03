@@ -41,6 +41,10 @@ type TrinoClusterSpec struct {
 	// +kubebuilder:validation:Optional
 	Image *commonsv1alpha1.ImageSpec `json:"image,omitempty"`
 
+	// ClusterConfig holds cluster-wide configuration shared by all roles.
+	// +kubebuilder:validation:Optional
+	ClusterConfig *ClusterConfigSpec `json:"clusterConfig,omitempty"`
+
 	// Coordinators defines the Coordinators role configuration (plural naming)
 	// Coordinator is responsible for query coordination, metadata management, and client request handling
 	Coordinators *CoordinatorsSpec `json:"coordinators,omitempty"`
@@ -52,6 +56,16 @@ type TrinoClusterSpec struct {
 	// Catalogs defines the data source Catalog configuration list
 	// Supports Hive, Iceberg, Kafka, MySQL, PostgreSQL, Delta, etc.
 	Catalogs []CatalogSpec `json:"catalogs,omitempty"`
+}
+
+// ClusterConfigSpec holds cluster-wide configuration shared by all roles.
+type ClusterConfigSpec struct {
+	// VectorAggregatorConfigMapName is the name of a ConfigMap carrying the Vector aggregator
+	// discovery address. When set and a role group enables the Vector agent, the operator-go
+	// framework resolves the address and generates vector.yaml into the role group ConfigMap
+	// (via the reconciler.VectorAggregatorProvider seam that TrinoCluster implements below).
+	// +kubebuilder:validation:Optional
+	VectorAggregatorConfigMapName *string `json:"vectorAggregatorConfigMapName,omitempty"`
 }
 
 // CoordinatorsSpec defines the Coordinators role configuration
@@ -145,6 +159,17 @@ func (t *TrinoCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
 		ClusterOperation: t.Spec.ClusterOperation,
 		Roles:            roles,
 	}
+}
+
+// VectorAggregatorConfigMapName implements reconciler.VectorAggregatorProvider, letting the
+// framework own vector.yaml generation. It returns "" when unset; when the Vector agent is active
+// for a role group (enabled with a declared producer) that is a misconfiguration and the
+// reconciler fails loudly, otherwise it is not consulted.
+func (t *TrinoCluster) VectorAggregatorConfigMapName() string {
+	if t.Spec.ClusterConfig == nil || t.Spec.ClusterConfig.VectorAggregatorConfigMapName == nil {
+		return ""
+	}
+	return *t.Spec.ClusterConfig.VectorAggregatorConfigMapName
 }
 
 // GetStatus returns the generic cluster status
