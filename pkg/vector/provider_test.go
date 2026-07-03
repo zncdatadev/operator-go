@@ -367,23 +367,58 @@ func TestProvider_Inject_Volumes(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	// The provider creates only its own volumes (config + data). The shared log volume is
-	// owned by the producer (role-group base handler), so the consumer must NOT create it.
-	if len(podSpec.Volumes) != 2 {
-		t.Fatalf("expected 2 volumes, got %d", len(podSpec.Volumes))
+	// The provider is the single owner of the shared log pipeline: it creates its own config +
+	// data volumes AND the shared log volume.
+	if len(podSpec.Volumes) != 3 {
+		t.Fatalf("expected 3 volumes, got %d", len(podSpec.Volumes))
 	}
 
 	volNames := make(map[string]bool)
 	for _, v := range podSpec.Volumes {
 		volNames[v.Name] = true
 	}
-	for _, name := range []string{VectorConfigVolumeName, VectorDataVolumeName} {
+	for _, name := range []string{VectorConfigVolumeName, VectorDataVolumeName, VectorLogVolumeName} {
 		if !volNames[name] {
 			t.Errorf("missing volume %q", name)
 		}
 	}
-	if volNames[VectorLogVolumeName] {
-		t.Errorf("provider must NOT create the shared log volume %q (producer owns it)", VectorLogVolumeName)
+	// The shared log volume must be a bounded node-disk emptyDir.
+	for _, v := range podSpec.Volumes {
+		if v.Name == VectorLogVolumeName {
+			if v.EmptyDir == nil {
+				t.Fatalf("log volume %q must be an emptyDir", VectorLogVolumeName)
+			}
+			if v.EmptyDir.SizeLimit == nil {
+				t.Errorf("log volume %q must have a SizeLimit", VectorLogVolumeName)
+			}
+		}
+	}
+}
+
+// TestProvider_Inject_LogVolumeSizeOverride asserts WithLogVolumeSize sets the shared log
+// volume's SizeLimit.
+func TestProvider_Inject_LogVolumeSizeOverride(t *testing.T) {
+	p := NewVectorSidecarProvider("test-product:latest", WithLogVolumeSize(resource.MustParse("128Mi")))
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "main", Image: "main-image"}},
+	}
+	if err := p.Inject(podSpec, &sidecar.SidecarConfig{Enabled: true}); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	var found bool
+	for _, v := range podSpec.Volumes {
+		if v.Name == VectorLogVolumeName {
+			found = true
+			if v.EmptyDir == nil || v.EmptyDir.SizeLimit == nil {
+				t.Fatalf("log volume must be a sized emptyDir")
+			}
+			if got := v.EmptyDir.SizeLimit.String(); got != "128Mi" {
+				t.Errorf("log volume SizeLimit = %q, want %q", got, "128Mi")
+			}
+		}
+	}
+	if !found {
+		t.Error("shared log volume not created")
 	}
 }
 
@@ -419,11 +454,10 @@ func TestProvider_Inject_ConfigMapVolume(t *testing.T) {
 	}
 }
 
-// TestProvider_Inject_DoesNotMountLogOnMainContainer asserts the consumer/producer split:
-// the Vector provider is a pure consumer and must NOT mount the shared log volume on the
-// main/product container. That RW mount is owned by the producer (the role-group base
-// handler), preventing the previous double-mount hazard.
-func TestProvider_Inject_DoesNotMountLogOnMainContainer(t *testing.T) {
+// TestProvider_Inject_NoProducers_NoProducerMount asserts that with no configured producers the
+// provider does not RW-mount the shared log volume on any product container (it still creates the
+// volume and RO-mounts it on the Vector container).
+func TestProvider_Inject_NoProducers_NoProducerMount(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -438,8 +472,40 @@ func TestProvider_Inject_DoesNotMountLogOnMainContainer(t *testing.T) {
 
 	for _, m := range podSpec.Containers[0].VolumeMounts {
 		if m.Name == VectorLogVolumeName {
-			t.Error("provider must NOT mount the shared log volume on the main container (producer owns it)")
+			t.Error("provider must not mount the shared log volume on a container that is not a configured producer")
 		}
+	}
+}
+
+// TestProvider_Inject_ProducerGetsRWLogMount asserts the provider RW-mounts the shared log volume
+// on each configured producer container at the canonical log dir.
+func TestProvider_Inject_ProducerGetsRWLogMount(t *testing.T) {
+	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]string{"main"}))
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "main", Image: "main-image"},
+		},
+	}
+	config := &sidecar.SidecarConfig{Enabled: true}
+
+	if err := p.Inject(podSpec, config); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	var found bool
+	for _, m := range podSpec.Containers[0].VolumeMounts {
+		if m.Name == VectorLogVolumeName {
+			found = true
+			if m.ReadOnly {
+				t.Error("producer log mount must be read-write (not read-only)")
+			}
+			if m.MountPath != VectorLogMountPath {
+				t.Errorf("producer log mount path = %q, want %q", m.MountPath, VectorLogMountPath)
+			}
+		}
+	}
+	if !found {
+		t.Error("producer container must have the shared log volume RW-mounted")
 	}
 }
 

@@ -36,6 +36,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -414,6 +415,12 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	// Build context
 	buildCtx := r.buildRoleGroupContext(cr, roleName, roleSpec, groupName, groupSpec)
 
+	// Resolve the Vector aggregator address (if the CR exposes it) so the framework can own
+	// vector.yaml generation. Must run before building resources / the ConfigMap.
+	if err := r.resolveVectorAggregatorAddress(ctx, cr, buildCtx); err != nil {
+		return NewResourceBuildError("resources", roleName, groupName, "failed to resolve vector aggregator address", err)
+	}
+
 	// Auto-create SidecarManager based on CRD configuration
 	buildCtx.SidecarManager = r.buildSidecarManager(ctx, buildCtx)
 
@@ -518,21 +525,87 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 
 	// Logging was deep-merged once in buildRoleGroupContext.
 	logging := buildCtx.MergedConfig.Logging
-
-	// Register the canonical Vector sidecar provider (pkg/vector) if enabled.
-	//
-	// The role-group ConfigMap name (buildCtx.ResourceName) is passed at construction so the
-	// Vector container mounts the right config without products having to cast the provider and
-	// set it after the fact. The image is propagated later via SidecarManager.SetProductImage
-	// (Vector ships inside the product image), so an empty image here is intentional.
-	if vector.IsAgentEnabled(logging) {
-		mgr.Register(
-			vector.NewVectorSidecarProvider("", vector.WithConfigMapName(buildCtx.ResourceName)),
-			&sidecar.SidecarConfig{Enabled: true},
-		)
+	if !vector.IsAgentEnabled(logging) {
+		return mgr
 	}
 
+	// The handler declares which containers produce logs and the shared log volume size. The
+	// Vector provider is the single owner of the shared log pipeline: it creates the volume,
+	// RW-mounts it on the producer containers, RO-mounts it on itself, and adds the sidecar.
+	var producers []productlogging.ContainerLogging
+	var logVolumeSize string
+	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
+		producers = lp.LoggingProducers()
+		logVolumeSize = lp.LogVolumeSizeLimit()
+	}
+
+	// Only register Vector when there is at least one producer to collect from. A role group that
+	// enables the Vector agent but declares no producers has nothing to ship, so skip (and warn)
+	// rather than add a sidecar mounting an empty pipeline. This keeps the enablement decision and
+	// the producer declaration consistent in one place.
+	if len(producers) == 0 {
+		log.FromContext(ctx).Info(
+			"vector agent is enabled but no logging producers are declared; skipping vector sidecar",
+			"role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
+		return mgr
+	}
+
+	// The role-group ConfigMap name (buildCtx.ResourceName) is passed at construction so the
+	// Vector container mounts the right config. The image is propagated later via
+	// SidecarManager.SetProductImage (Vector ships inside the product image), so an empty image
+	// here is intentional.
+	opts := []vector.ProviderOption{
+		vector.WithConfigMapName(buildCtx.ResourceName),
+		vector.WithProducers(producerContainerNames(producers)),
+	}
+	if logVolumeSize != "" {
+		if q, err := resource.ParseQuantity(logVolumeSize); err != nil {
+			log.FromContext(ctx).Error(err, "invalid LogVolumeSize; using vector default",
+				"logVolumeSize", logVolumeSize, "role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
+		} else {
+			opts = append(opts, vector.WithLogVolumeSize(q))
+		}
+	}
+	mgr.Register(vector.NewVectorSidecarProvider("", opts...), &sidecar.SidecarConfig{Enabled: true})
+
 	return mgr
+}
+
+// producerContainerNames extracts the container names from a log-producer declaration list.
+func producerContainerNames(producers []productlogging.ContainerLogging) []string {
+	names := make([]string, 0, len(producers))
+	for _, p := range producers {
+		names = append(names, p.Container)
+	}
+	return names
+}
+
+// resolveVectorAggregatorAddress resolves the Vector aggregator discovery address for a role group
+// and stores it on buildCtx, enabling framework-owned vector.yaml generation
+// (RenderLoggingConfigMapData). It is a no-op when the Vector agent is disabled or when the CR does
+// not implement VectorAggregatorProvider (the product then owns vector.yaml). When the agent is
+// enabled and the CR exposes an aggregator ConfigMap name, that name must be non-empty and
+// resolvable — an unset name or a discovery failure is returned as an error, failing loudly rather
+// than shipping a Vector sidecar with no aggregator.
+func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) error {
+	if !vectorEnabledFor(buildCtx) {
+		return nil
+	}
+	provider, ok := any(cr).(VectorAggregatorProvider)
+	if !ok {
+		return nil
+	}
+	name := provider.VectorAggregatorConfigMapName()
+	if name == "" {
+		return fmt.Errorf("vector agent is enabled but vectorAggregatorConfigMapName is not configured (role %q, group %q)",
+			buildCtx.RoleName, buildCtx.RoleGroupName)
+	}
+	address, err := vector.DiscoverAggregatorAddress(ctx, r.client, buildCtx.ClusterNamespace, name)
+	if err != nil {
+		return fmt.Errorf("failed to discover vector aggregator address from ConfigMap %q: %w", name, err)
+	}
+	buildCtx.VectorAggregatorAddress = address
+	return nil
 }
 
 // applyResources applies all resources in the correct dependency order.

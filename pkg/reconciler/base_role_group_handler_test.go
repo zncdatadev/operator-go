@@ -288,47 +288,10 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 	})
 
-	Describe("LogVolumeSize (shared log volume producer)", func() {
-		BeforeEach(func() {
-			// Enable the Vector producer path: agent on + at least one declared logging container.
-			buildCtx.MergedConfig.Logging = &v1alpha1.LoggingSpec{
-				EnableVectorAgent: ptr.To(true),
-			}
-			handler.LoggingContainers = []productlogging.ContainerLogging{
-				{Container: "test-image", Framework: productlogging.LoggingFrameworkLogback},
-			}
-		})
-
-		It("should return an error (no panic) when LogVolumeSize is an invalid quantity", func() {
-			handler.LogVolumeSize = "33mb"
-			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
-
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring(`invalid LogVolumeSize "33mb"`))
-			Expect(resources).To(BeNil())
-		})
-
-		It("should build the size-limited shared log volume when LogVolumeSize is a valid override", func() {
-			handler.LogVolumeSize = "100Mi"
-			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(resources.StatefulSet).NotTo(BeNil())
-
-			var logVol *corev1.Volume
-			for i := range resources.StatefulSet.Spec.Template.Spec.Volumes {
-				v := &resources.StatefulSet.Spec.Template.Spec.Volumes[i]
-				if v.Name == vector.VectorLogVolumeName {
-					logVol = v
-					break
-				}
-			}
-			Expect(logVol).NotTo(BeNil())
-			Expect(logVol.EmptyDir).NotTo(BeNil())
-			Expect(logVol.EmptyDir.SizeLimit).NotTo(BeNil())
-			Expect(logVol.EmptyDir.SizeLimit.String()).To(Equal("100Mi"))
-		})
-	})
+	// The shared log volume (creation + sizing) is now owned by the Vector provider; its behavior
+	// is covered by pkg/vector provider tests and the "end-to-end" specs in the declarative
+	// logging block below. An invalid LogVolumeSize override is handled by the GenericReconciler's
+	// buildSidecarManager (logs and falls back to the default; never panics).
 
 	Describe("FetchConfigMap", func() {
 		It("should return error when ConfigMap does not exist", func() {
@@ -1015,10 +978,9 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	It("renders a declared logback container into the role group ConfigMap (Vector enabled emits file appender)", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container:  "main",
-			Framework:  productlogging.LoggingFrameworkLogback,
-			Pattern:    "%d [myid:%X{myid}] %m%n",
-			OutputFile: "main.stdout.log",
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+			Pattern:   "%d [myid:%X{myid}] %m%n",
 		}}
 
 		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
@@ -1054,14 +1016,49 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(logback).To(ContainSubstring(`<root level="WARN">`))
 		Expect(logback).To(ContainSubstring(`<logger name="org.x" level="DEBUG" />`))
 		Expect(logback).To(ContainSubstring("<file>/kubedoop/log/main.stdout.log</file>"))
+		// The aggregator address was not resolved (buildCtx.VectorAggregatorAddress empty), so the
+		// framework leaves vector.yaml to the product.
+		Expect(resources.ConfigMap.Data).NotTo(HaveKey("vector.yaml"))
+	})
+
+	It("generates vector.yaml when Vector is enabled and the aggregator address is resolved", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			// The GenericReconciler resolves this from the CR's VectorAggregatorProvider; set it
+			// directly here to exercise framework-owned vector.yaml generation.
+			VectorAggregatorAddress: "vector-aggregator.default.svc:6123",
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					EnableVectorAgent: ptr.To(true),
+					Containers:        map[string]v1alpha1.LoggingConfigSpec{"main": {}},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.ConfigMap.Data).To(HaveKey("vector.yaml"))
+		Expect(resources.ConfigMap.Data["vector.yaml"]).To(ContainSubstring("vector-aggregator.default.svc:6123"))
 	})
 
 	It("Option A: omits the file appender (console-only) when Vector is disabled", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container:  "main",
-			Framework:  productlogging.LoggingFrameworkLogback,
-			OutputFile: "main.stdout.log",
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
 		}}
 
 		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
@@ -1087,32 +1084,36 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(err).NotTo(HaveOccurred())
 		logback := resources.ConfigMap.Data["logback.xml"]
 		Expect(logback).NotTo(BeEmpty())
-		// Even though OutputFile was declared, no rolling file appender is emitted.
+		// No file appender is emitted when Vector is disabled (file logging is coupled to Vector).
 		Expect(logback).NotTo(ContainSubstring("main.stdout.log"))
 		Expect(logback).NotTo(ContainSubstring("RollingFileAppender"))
 
-		// And no shared log volume is created on the pod.
+		// And no shared log volume is created on the pod (the Vector provider owns it and is not
+		// wired when the agent is disabled).
 		for _, v := range resources.StatefulSet.Spec.Template.Spec.Volumes {
 			Expect(v.Name).NotTo(Equal("log"))
 		}
 	})
 
-	It("producer: creates exactly one size-limited shared log volume with RW mounts on logging containers when Vector is enabled", func() {
+	It("end-to-end: the Vector provider creates the shared log volume, RW-mounts producers, RO-mounts itself", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		// The base StatefulSet main container is named after the resource name; declare it as
-		// the logging container so the producer RW-mounts the shared volume on it.
+		// the logging container so the Vector provider RW-mounts the shared volume on it.
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container:  "test-cluster-default",
-			Framework:  productlogging.LoggingFrameworkLogback,
-			OutputFile: "main.stdout.log",
+			Container: "test-cluster-default",
+			Framework: productlogging.LoggingFrameworkLogback,
 		}}
 
-		// Wire the canonical Vector consumer through a SidecarManager (the GenericReconciler does
-		// this automatically in production; here we set it explicitly to exercise the full
-		// producer + consumer split end to end).
+		// Wire the Vector provider through a SidecarManager configured with the producer container
+		// (the GenericReconciler does this automatically via buildSidecarManager in production; here
+		// we set it explicitly to exercise the full assembly — BuildResources -> InjectAll -> the
+		// provider owning the volume + all mounts).
 		sidecarMgr := sidecar.NewSidecarManager()
 		sidecarMgr.Register(
-			vector.NewVectorSidecarProvider("test-image:latest", vector.WithConfigMapName("test-cluster-default")),
+			vector.NewVectorSidecarProvider("test-image:latest",
+				vector.WithConfigMapName("test-cluster-default"),
+				vector.WithProducers([]string{"test-cluster-default"}),
+			),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
@@ -1188,13 +1189,24 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(vectorRO).To(BeTrue())
 	})
 
-	It("producer: honors a custom LogVolumeSize override", func() {
+	It("end-to-end: honors a custom shared log volume size via the Vector provider", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LogVolumeSize = "128Mi"
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
 			Container: "test-cluster-default",
 			Framework: productlogging.LoggingFrameworkLogback,
 		}}
+
+		// In production the GenericReconciler forwards handler.LogVolumeSize to the provider via
+		// WithLogVolumeSize; here we configure the provider directly to exercise the assembly.
+		sidecarMgr := sidecar.NewSidecarManager()
+		sidecarMgr.Register(
+			vector.NewVectorSidecarProvider("test-image:latest",
+				vector.WithConfigMapName("test-cluster-default"),
+				vector.WithProducers([]string{"test-cluster-default"}),
+				vector.WithLogVolumeSize(resource.MustParse("128Mi")),
+			),
+			&sidecar.SidecarConfig{Enabled: true},
+		)
 
 		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
 		buildCtx := &reconciler.RoleGroupBuildContext{
@@ -1205,6 +1217,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			RoleGroupName:    "default",
 			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
 			ResourceName:     "test-cluster-default",
+			SidecarManager:   sidecarMgr,
 			MergedConfig: &config.MergedConfig{
 				Logging: &v1alpha1.LoggingSpec{
 					EnableVectorAgent: ptr.To(true),
@@ -1215,11 +1228,14 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
+		var found bool
 		for _, v := range resources.StatefulSet.Spec.Template.Spec.Volumes {
 			if v.Name == "log" {
+				found = true
 				Expect(v.EmptyDir.SizeLimit.String()).To(Equal("128Mi"))
 			}
 		}
+		Expect(found).To(BeTrue())
 	})
 
 	It("falls back to defaults when no logging is configured for the container", func() {
@@ -1274,10 +1290,12 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(err.Error()).To(ContainSubstring("collides"))
 	})
 
-	// Stopgap validation (PR #501 finding 1, deeper fix tracked in #502): Vector enabled with no
-	// LoggingContainers must fail loudly instead of producing an invalid pod (a Vector consumer
-	// mounting a shared log volume the producer never created).
-	It("fails loudly when Vector is enabled but no logging containers are declared", func() {
+	// #502 fixed structurally: Vector enabled with no producers no longer yields an invalid pod.
+	// The base handler builds successfully and creates no shared log volume (the Vector provider,
+	// the single owner of the volume, is only wired by the GenericReconciler when there is at
+	// least one producer — otherwise it warns and skips). Here no SidecarManager is set, mirroring
+	// "no vector wired".
+	It("builds successfully (no error, no log volume) when Vector is enabled but no producers are declared", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		// No LoggingContainers declared.
 
@@ -1295,14 +1313,15 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			},
 		}
 
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("vector agent is enabled"))
-		Expect(err.Error()).To(ContainSubstring("no logging containers are declared"))
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		for _, v := range resources.StatefulSet.Spec.Template.Spec.Volumes {
+			Expect(v.Name).NotTo(Equal("log"))
+		}
 	})
 
-	// The valid mirror case: Vector enabled WITH a logging container must NOT trip the validation.
-	It("does not trip the validation when Vector is enabled and a logging container is declared", func() {
+	// The mirror case: Vector enabled WITH a logging container also builds cleanly.
+	It("builds cleanly when Vector is enabled and a logging container is declared", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
 			Container: "main",

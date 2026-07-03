@@ -73,23 +73,33 @@ var _ = Describe("GeneratorFor", func() {
 })
 
 var _ = Describe("RenderConfigFile file path", func() {
-	// constant.KubedoopLogDir carries a trailing slash; the rendered file path must collapse to
-	// a single slash (no "/kubedoop/log//main.stdout.log"). See PR #501 review finding 4.
-	It("renders the file appender path with a single slash", func() {
+	// constant.KubedoopLogDir carries a trailing slash; the framework-derived file path
+	// (<container>.stdout.log) must collapse to a single slash (no "/kubedoop/log//main.stdout.log").
+	It("renders the framework-derived file appender path with a single slash", func() {
 		for _, fw := range []productlogging.LoggingFramework{
 			productlogging.LoggingFrameworkLogback,
 			productlogging.LoggingFrameworkLog4j2,
 			productlogging.LoggingFrameworkPython,
 		} {
 			_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
-				Framework:  fw,
-				OutputFile: "main.stdout.log",
-			})
+				Framework: fw,
+				Container: "main",
+			}, true)
 			Expect(err).NotTo(HaveOccurred(), "framework %s", fw)
 			Expect(content).To(ContainSubstring("/kubedoop/log/main.stdout.log"), "framework %s", fw)
 			Expect(content).NotTo(ContainSubstring("/kubedoop/log//main.stdout.log"), "framework %s", fw)
 			Expect(content).NotTo(ContainSubstring("//main.stdout.log"), "framework %s", fw)
 		}
+	})
+
+	It("omits the file appender when withFileAppender is false (console-only)", func() {
+		_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework: productlogging.LoggingFrameworkLogback,
+			Container: "main",
+		}, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(content).NotTo(ContainSubstring("main.stdout.log"))
+		Expect(content).NotTo(ContainSubstring("RollingFileAppender"))
 	})
 })
 
