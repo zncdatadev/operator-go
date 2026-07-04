@@ -546,6 +546,14 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	containerSecurityCtx, podSecurityCtx := h.resolveSecurityContext()
 	stsBuilder.WithSecurityContext(containerSecurityCtx, podSecurityCtx)
 
+	// Default enableServiceLinks to false — the kubedoop standard. Products use DNS + config and
+	// never the <SVC>_SERVICE_HOST/PORT env vars kubelet injects for every Service in the
+	// namespace, which only bloat env and slow startup. This is set before pod overrides are
+	// applied, so a value supplied via MergedConfig.PodOverrides takes precedence. The builder's
+	// WithEnableServiceLinks itself serves as the escape hatch (e.g. a product embedding this
+	// handler could reconfigure the builder), so no separate handler field is needed.
+	stsBuilder.WithEnableServiceLinks(false)
+
 	// Set pod overrides if present
 	if buildCtx.MergedConfig.PodOverrides != nil {
 		stsBuilder.WithPodOverrides(buildCtx.MergedConfig.PodOverrides)

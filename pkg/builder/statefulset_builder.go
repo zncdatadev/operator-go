@@ -59,6 +59,12 @@ type StatefulSetBuilder struct {
 	SecurityContext    *corev1.SecurityContext
 	PodSecurityContext *corev1.PodSecurityContext
 
+	// EnableServiceLinks controls the pod's .spec.enableServiceLinks. When nil, the field is left
+	// unset (backward compatible — direct builder users are unaffected and k8s applies its own
+	// default of true). Callers set it via WithEnableServiceLinks; per-role-group PodOverrides can
+	// still override it (see applyPodOverrides).
+	EnableServiceLinks *bool
+
 	// Affinity
 	Affinity *corev1.Affinity
 
@@ -280,6 +286,16 @@ func (b *StatefulSetBuilder) WithSecurityContext(containerCtx *corev1.SecurityCo
 	return b
 }
 
+// WithEnableServiceLinks sets the pod's .spec.enableServiceLinks. The kubedoop framework defaults
+// this to false (kubedoop products use DNS + config, never the injected <SVC>_SERVICE_HOST/PORT
+// env vars), but the value is fully overridable via per-role-group PodOverrides. When this option
+// is never called, the field stays nil and k8s applies its own default (true), keeping direct
+// builder users backward compatible.
+func (b *StatefulSetBuilder) WithEnableServiceLinks(enable bool) *StatefulSetBuilder {
+	b.EnableServiceLinks = &enable
+	return b
+}
+
 // WithPodOverrides sets the pod template overrides.
 func (b *StatefulSetBuilder) WithPodOverrides(overrides *corev1.PodTemplateSpec) *StatefulSetBuilder {
 	b.PodOverrides = overrides
@@ -472,6 +488,12 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 		},
 	}
 
+	// Only set EnableServiceLinks when explicitly configured, so direct builder users that never
+	// call WithEnableServiceLinks are unaffected (k8s applies its own default of true).
+	if b.EnableServiceLinks != nil {
+		spec.EnableServiceLinks = b.EnableServiceLinks
+	}
+
 	return spec
 }
 
@@ -645,6 +667,12 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	// Override priority class name
 	if b.PodOverrides.Spec.PriorityClassName != "" {
 		sts.Spec.Template.Spec.PriorityClassName = b.PodOverrides.Spec.PriorityClassName
+	}
+
+	// Override enableServiceLinks. This runs at the end of Build(), so a user PodOverride wins over
+	// the framework default set via WithEnableServiceLinks before the build.
+	if b.PodOverrides.Spec.EnableServiceLinks != nil {
+		sts.Spec.Template.Spec.EnableServiceLinks = b.PodOverrides.Spec.EnableServiceLinks
 	}
 
 	// Override pod-level security context. PodOverrides REPLACES the whole pod security context
