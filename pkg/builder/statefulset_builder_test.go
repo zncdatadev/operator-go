@@ -732,6 +732,66 @@ var _ = Describe("StatefulSetBuilder", func() {
 		})
 	})
 
+	Describe("WithEnableServiceLinks", func() {
+		It("should leave EnableServiceLinks unset by default (backward compatible)", func() {
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.EnableServiceLinks).To(BeNil())
+		})
+
+		It("should set the field on the builder", func() {
+			result := stsBuilder.WithEnableServiceLinks(false)
+
+			Expect(result).To(Equal(stsBuilder))
+			Expect(stsBuilder.EnableServiceLinks).NotTo(BeNil())
+			Expect(*stsBuilder.EnableServiceLinks).To(BeFalse())
+		})
+
+		It("should build a StatefulSet with EnableServiceLinks=false when configured", func() {
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithEnableServiceLinks(false).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.EnableServiceLinks).NotTo(BeNil())
+			Expect(*sts.Spec.Template.Spec.EnableServiceLinks).To(BeFalse())
+		})
+
+		It("should let a PodOverride override the default to true", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					EnableServiceLinks: boolPtr(true),
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithEnableServiceLinks(false).
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.EnableServiceLinks).NotTo(BeNil())
+			Expect(*sts.Spec.Template.Spec.EnableServiceLinks).To(BeTrue())
+		})
+
+		It("should keep the builder default when PodOverrides does not set EnableServiceLinks", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					PriorityClassName: "high-priority",
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithEnableServiceLinks(false).
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.EnableServiceLinks).NotTo(BeNil())
+			Expect(*sts.Spec.Template.Spec.EnableServiceLinks).To(BeFalse())
+		})
+	})
+
 	Describe("WithStorage", func() {
 		It("should set storage configuration", func() {
 			capacity := resource.MustParse("10Gi")

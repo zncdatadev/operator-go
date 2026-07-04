@@ -566,6 +566,32 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(resources.StatefulSet.Spec.Template.Spec.PriorityClassName).To(Equal("high-priority"))
 	})
 
+	It("should default EnableServiceLinks to false (kubedoop standard)", func() {
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		esl := resources.StatefulSet.Spec.Template.Spec.EnableServiceLinks
+		Expect(esl).NotTo(BeNil())
+		Expect(*esl).To(BeFalse())
+	})
+
+	It("should let PodOverrides override EnableServiceLinks to true", func() {
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					EnableServiceLinks: ptr.To(true),
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		esl := resources.StatefulSet.Spec.Template.Spec.EnableServiceLinks
+		Expect(esl).NotTo(BeNil())
+		Expect(*esl).To(BeTrue())
+	})
+
 	It("should set container ports when configured", func() {
 		handler.SetRoleContainerPorts("test-role", []corev1.ContainerPort{
 			{Name: "http", ContainerPort: 8080},
