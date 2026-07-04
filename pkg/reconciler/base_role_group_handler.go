@@ -23,6 +23,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/security"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
@@ -93,7 +94,8 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
 	// ConfigMountPath is where the generated config ConfigMap is mounted in the primary
 	// container. Products whose application reads config from a specific directory (e.g.
-	// "/etc/trino") set this. Defaults to "/etc/config" when empty.
+	// "/etc/trino") set this. Defaults to the kubedoop-canonical config mount path
+	// (constant.KubedoopConfigDirMount) when empty.
 	ConfigMountPath string
 
 	// MainContainerName, when set, renames the primary (first) container of the StatefulSet.
@@ -402,12 +404,13 @@ func (h *BaseRoleGroupHandler[CR]) buildAnnotations(_ *RoleGroupBuildContext) ma
 }
 
 // configMountPath returns the directory where the config ConfigMap is mounted, defaulting
-// to "/etc/config" when the product did not set ConfigMountPath.
+// to the kubedoop-canonical config mount path (constant.KubedoopConfigDirMount) when the
+// product did not set ConfigMountPath.
 func (h *BaseRoleGroupHandler[CR]) configMountPath() string {
 	if h.ConfigMountPath != "" {
 		return h.ConfigMountPath
 	}
-	return "/etc/config"
+	return constant.KubedoopConfigDirMount
 }
 
 // buildConfigMap creates the ConfigMap for the role group.
