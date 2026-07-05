@@ -66,32 +66,26 @@ var _ = Describe("DependencyResolver", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("should return ReconciliationPaused error when reconciliation is paused", func() {
+		// ClusterOperation pause/stop is no longer handled by Validate; those flags are evaluated at
+		// the top of the reconcile loop (before any mutation). Validate must NOT raise on them.
+		It("should return nil when reconciliation is paused (handled in reconcile loop, not here)", func() {
 			spec := &commonsv1alpha1.GenericClusterSpec{
 				ClusterOperation: &commonsv1alpha1.ClusterOperationSpec{
 					ReconciliationPaused: true,
 				},
 			}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).To(HaveOccurred())
-
-			var depErr *reconciler.DependencyError
-			Expect(errors.As(err, &depErr)).To(BeTrue())
-			Expect(depErr.Type).To(Equal("ReconciliationPaused"))
+			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("should return Stopped error when cluster is stopped", func() {
+		It("should return nil when cluster is stopped (handled in reconcile loop, not here)", func() {
 			spec := &commonsv1alpha1.GenericClusterSpec{
 				ClusterOperation: &commonsv1alpha1.ClusterOperationSpec{
 					Stopped: true,
 				},
 			}
 			err := resolver.Validate(context.Background(), spec)
-			Expect(err).To(HaveOccurred())
-
-			var depErr *reconciler.DependencyError
-			Expect(errors.As(err, &depErr)).To(BeTrue())
-			Expect(depErr.Type).To(Equal("Stopped"))
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should return nil when cluster operation is normal", func() {

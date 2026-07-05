@@ -129,11 +129,12 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //  1. Fetch CR
 //  2. Panic recovery wrapper
 //  3. Execute reconcile():
-//     a. PreReconcile Extensions (Hook)
-//     b. Validate Dependencies
+//     a. ClusterOperation gate (evaluated first, before any mutation)
 //     - Handle ReconciliationPaused -> return early
 //     - Handle Stopped -> scale to 0
-//     c. For Each Role:
+//     b. PreReconcile Extensions (Hook)
+//     c. Validate Dependencies
+//     d. For Each Role:
 //     - Role PreReconcile Extensions
 //     - For Each RoleGroup:
 //     - RoleGroup PreReconcile Extensions
@@ -143,10 +144,10 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //     - Track in Status
 //     - RoleGroup PostReconcile Extensions
 //     - Role PostReconcile Extensions
-//     d. Cleanup Orphaned Resources
-//     e. Update Health Status
-//     f. PostReconcile Extensions
-//     g. Final Status Update
+//     e. Cleanup Orphaned Resources
+//     f. Update Health Status
+//     g. PostReconcile Extensions
+//     h. Final Status Update
 //  4. Error handling: OnReconcileError hooks, set Degraded condition
 type GenericReconciler[CR common.ClusterInterface] struct {
 	client              client.Client
@@ -306,6 +307,23 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 	spec := cr.GetSpec()
 	status := cr.GetStatus()
 
+	// ClusterOperation gate — evaluated FIRST, before any resource mutation (ServiceAccount
+	// provisioning, PreReconcile extensions, role reconciliation). reconciliationPaused must fully
+	// freeze reconciliation per the documented contract (docs/architecture.md), and stopped scales
+	// workloads to zero; neither should be preceded by mutating steps.
+	if op := spec.ClusterOperation; op != nil {
+		if op.ReconciliationPaused {
+			logger.Info("Reconciliation is paused")
+			status.SetDegraded(true, v1alpha1.ReasonReconciliationPaused, "Reconciliation is paused")
+			_ = r.updateStatus(ctx, cr) //nolint:errcheck
+			return ctrl.Result{}, nil
+		}
+		if op.Stopped {
+			logger.Info("Cluster is stopped, scaling to zero")
+			return r.handleStoppedCluster(ctx, cr)
+		}
+	}
+
 	// 0. Auto-create ServiceAccount if configured
 	if r.serviceAccountName != "" {
 		if err := r.ensureServiceAccount(ctx, cr); err != nil {
@@ -320,19 +338,6 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 
 	// 2. Validate dependencies
 	if err := r.dependencyResolver.Validate(ctx, spec); err != nil {
-		// Handle special dependency errors
-		if depErr, ok := err.(*DependencyError); ok {
-			switch depErr.Type {
-			case "ReconciliationPaused":
-				logger.Info("Reconciliation is paused")
-				status.SetDegraded(true, v1alpha1.ReasonReconciliationPaused, "Reconciliation is paused")
-				_ = r.updateStatus(ctx, cr) // nolint:errcheck
-				return ctrl.Result{}, nil
-			case "Stopped":
-				logger.Info("Cluster is stopped, scaling to zero")
-				return r.handleStoppedCluster(ctx, cr)
-			}
-		}
 		return ctrl.Result{}, NewReconcileError("DependencyValidation", "dependency validation failed", err)
 	}
 

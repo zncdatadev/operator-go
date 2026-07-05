@@ -31,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -840,6 +841,201 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "test-role", "default")}, sts)).To(Succeed())
 			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("custom-image:v1"))
 			Expect(sts.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
+		})
+	})
+})
+
+// Regression coverage for issue #511: the ClusterOperation pause/stop gate must be evaluated at
+// the very top of reconcile(), BEFORE any resource mutation. Previously the gate lived in
+// dependency validation (step 2), so a paused cluster still provisioned its ServiceAccount and ran
+// PreReconcile extensions before returning early. These tests wire a real GenericReconciler with a
+// configured ServiceAccountName and assert the SA is never created while paused (and still is when
+// the cluster proceeds normally).
+var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)", func() {
+	var (
+		mockHandler *testutil.MockRoleGroupHandler
+		namespace   string
+		saName      string
+	)
+
+	newReconciler := func(prototype *testutil.ClusterWrapper) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:             k8sClient,
+			Scheme:             testScheme,
+			Recorder:           recorder,
+			RoleGroupHandler:   &handlerAdapter{handler: mockHandler},
+			Prototype:          prototype,
+			ServiceAccountName: saName,
+		}
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r).NotTo(BeNil())
+		return r
+	}
+
+	saLookup := func() error {
+		return k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: saName}, &corev1.ServiceAccount{})
+	}
+
+	BeforeEach(func() {
+		namespace = testNamespace
+		mockHandler = testutil.NewMockRoleGroupHandler()
+		// Unique SA name per spec run so parallel/ordered specs don't observe each other's SAs.
+		saName = fmt.Sprintf("gate-sa-%d", time.Now().UnixNano())
+	})
+
+	Context("when reconciliation is paused", func() {
+		var pausedCR *testutil.MockCluster
+		var crName string
+
+		BeforeEach(func() {
+			crName = fmt.Sprintf("gate-paused-%d", time.Now().UnixNano())
+			pausedCR = testutil.NewMockCluster(crName, namespace).
+				WithClusterOperation(&v1alpha1.ClusterOperationSpec{ReconciliationPaused: true}).
+				WithRoles(map[string]v1alpha1.RoleSpec{
+					"test-role": {
+						RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+							"default": {Replicas: ptr.To(int32(1))},
+						},
+					},
+				})
+			Expect(k8sClient.Create(ctx, pausedCR)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, pausedCR)).To(Succeed())
+			// Best-effort cleanup in case a regression re-created the SA.
+			_ = k8sClient.Delete(ctx, &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: namespace},
+			})
+		})
+
+		It("must NOT create the ServiceAccount (the pre-gate mutation the bug caused)", func() {
+			// Guard: SA must not pre-exist.
+			Expect(saLookup()).NotTo(Succeed())
+
+			r := newReconciler(testutil.WrapMockCluster(pausedCR))
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+
+			result, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			// The pause gate runs before ensureServiceAccount, so the SA must still be absent.
+			err = saLookup()
+			Expect(err).To(HaveOccurred())
+			Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "ServiceAccount should not have been created while paused")
+
+			// And no StatefulSet was built either.
+			sts := &appsv1.StatefulSet{}
+			stsErr := k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: namespace,
+				Name:      reconciler.RoleGroupResourceName(crName, "test-role", "default"),
+			}, sts)
+			Expect(k8serrors.IsNotFound(stsErr)).To(BeTrue())
+		})
+	})
+
+	Context("when the cluster is not paused", func() {
+		var runningCR *testutil.MockCluster
+		var crName string
+
+		BeforeEach(func() {
+			crName = fmt.Sprintf("gate-running-%d", time.Now().UnixNano())
+			runningCR = testutil.NewMockCluster(crName, namespace).
+				WithRoles(map[string]v1alpha1.RoleSpec{
+					"test-role": {
+						RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+							"default": {Replicas: ptr.To(int32(1))},
+						},
+					},
+				})
+			Expect(k8sClient.Create(ctx, runningCR)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, runningCR)).To(Succeed())
+			_ = k8sClient.Delete(ctx, &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: namespace},
+			})
+		})
+
+		It("proceeds normally and DOES create the ServiceAccount", func() {
+			r := newReconciler(testutil.WrapMockCluster(runningCR))
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+
+			result, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			Expect(saLookup()).To(Succeed(), "ServiceAccount should be created for an un-paused cluster")
+		})
+	})
+
+	Context("when the cluster is stopped", func() {
+		var stoppedCR *testutil.MockCluster
+		var crName string
+
+		BeforeEach(func() {
+			crName = fmt.Sprintf("gate-stopped-%d", time.Now().UnixNano())
+			stoppedCR = testutil.NewMockCluster(crName, namespace).
+				WithClusterOperation(&v1alpha1.ClusterOperationSpec{Stopped: true}).
+				WithRoles(map[string]v1alpha1.RoleSpec{
+					"test-role": {
+						RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+							"default": {Replicas: ptr.To(int32(1))},
+						},
+					},
+				})
+			Expect(k8sClient.Create(ctx, stoppedCR)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, stoppedCR)).To(Succeed())
+			_ = k8sClient.Delete(ctx, &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: namespace},
+			})
+			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      reconciler.RoleGroupResourceName(crName, "test-role", "default"),
+					Namespace: namespace,
+				},
+			})
+		})
+
+		It("scales an existing StatefulSet to zero without provisioning the ServiceAccount first", func() {
+			// Pre-create a StatefulSet with replicas > 0 that the stopped path should scale down.
+			replicas := int32(3)
+			stsName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: namespace},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": crName}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": crName}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "test", Image: "test-image"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+			r := newReconciler(testutil.WrapMockCluster(stoppedCR))
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+
+			result, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			// StatefulSet scaled to zero.
+			fetched := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, fetched)).To(Succeed())
+			Expect(*fetched.Spec.Replicas).To(Equal(int32(0)))
+
+			// Stopped path handled by the gate before ensureServiceAccount, so no SA was provisioned.
+			Expect(k8serrors.IsNotFound(saLookup())).To(BeTrue(), "ServiceAccount should not be created for a stopped cluster")
 		})
 	})
 })

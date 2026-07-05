@@ -499,7 +499,7 @@ Day-2 operations (maintenance, debugging, emergency stop) require safe and predi
 ### 4.11.2 Core Capabilities
 
 - **Reconciliation Pause (`reconciliationPaused: true`)**:
-  - **Mechanism**: The Reconciler checks this flag at the very beginning of the loop (`PreReconcile`). If true, it skips all subsequent logic and status updates.
+  - **Mechanism**: The Reconciler checks this flag at the very beginning of the loop, before any resource mutation (ServiceAccount provisioning, PreReconcile extensions, role reconciliation). If true, it surfaces a `ReconciliationPaused` (Degraded) status condition so the pause stays observable, then skips all resource reconciliation for that loop, leaving managed resources untouched.
   - **Use Case**: Allows admins to manually modify underlying K8s resources (e.g., patching a StatefulSet for debugging) without the Operator reverting changes immediately.
 - **Graceful Stop (`stopped: true`)**:
   - **Mechanism**: The Reconciler scales all RoleGroup StatefulSets to 0 replicas.
