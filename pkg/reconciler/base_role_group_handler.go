@@ -140,6 +140,11 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// Optional - if nil, no sidecars are injected.
 	sidecarManager *sidecar.SidecarManager
 
+	// volumeProvisioners contribute pod volumes and their container mounts to the StatefulSet
+	// (e.g. the security SecretProvisioner and the listener ListenerProvisioner). Each is injected
+	// at build time via the shared builder.VolumeProvisioner path. Optional.
+	volumeProvisioners []builder.VolumeProvisioner
+
 	// securityContextConfigured tracks whether the security context fields below were set
 	// explicitly (including to nil to disable the default). When false, the framework applies
 	// its canonical default security context (the kubedoop org-standard 1001 identity plus
@@ -176,6 +181,16 @@ func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *r
 // WithSidecarManager sets the SidecarManager for sidecar injection.
 func (h *BaseRoleGroupHandler[CR]) WithSidecarManager(m *sidecar.SidecarManager) *BaseRoleGroupHandler[CR] {
 	h.sidecarManager = m
+	return h
+}
+
+// WithVolumeProvisioners registers volume provisioners whose volumes and container mounts are
+// injected into the role group's StatefulSet at build time. Both the security SecretProvisioner
+// and the listener ListenerProvisioner satisfy builder.VolumeProvisioner, so a product wires
+// SecretClass/TLS/Kerberos volumes and listener volumes through this single hook. Repeated calls
+// append; provisioners are injected in registration order.
+func (h *BaseRoleGroupHandler[CR]) WithVolumeProvisioners(provisioners ...builder.VolumeProvisioner) *BaseRoleGroupHandler[CR] {
+	h.volumeProvisioners = append(h.volumeProvisioners, provisioners...)
 	return h
 }
 
@@ -587,6 +602,11 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		MountPath: h.configMountPath(),
 		ReadOnly:  true,
 	})
+
+	// Inject volume provisioners (secret, listener, ...) uniformly before the build.
+	for _, p := range h.volumeProvisioners {
+		stsBuilder.AddVolumeProvisioner(p)
+	}
 
 	// Build the StatefulSet
 	sts := stsBuilder.Build()

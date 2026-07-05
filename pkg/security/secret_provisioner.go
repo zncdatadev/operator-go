@@ -361,12 +361,7 @@ func (p *SecretProvisioner) MustPath(volumeName string) string {
 // This is a CONVENIENCE method for operators that use StatefulSetBuilder.
 // Operators constructing StatefulSet directly should use Volumes() and VolumeMounts().
 func (p *SecretProvisioner) AutoInject(stsBuilder *builder.StatefulSetBuilder) {
-	for _, vol := range p.Volumes() {
-		stsBuilder.AddVolume(vol)
-	}
-	for _, mount := range p.VolumeMounts() {
-		stsBuilder.AddVolumeMount(mount)
-	}
+	stsBuilder.AddVolumeProvisioner(p)
 }
 
 // mountPath returns the full mount path for a volume name (no trailing slash).

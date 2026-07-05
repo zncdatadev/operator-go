@@ -140,12 +140,7 @@ func (p *ListenerProvisioner) VolumeMounts() []corev1.VolumeMount {
 // This is a convenience method for operators that use StatefulSetBuilder.
 // Services are NOT injected -- they are separate K8s resources applied by the reconciler.
 func (p *ListenerProvisioner) AutoInject(stsBuilder *builder.StatefulSetBuilder) {
-	for _, vol := range p.Volumes() {
-		stsBuilder.AddVolume(vol)
-	}
-	for _, mount := range p.VolumeMounts() {
-		stsBuilder.AddVolumeMount(mount)
-	}
+	stsBuilder.AddVolumeProvisioner(p)
 }
 
 // Path returns the mount path for a registered volume (no trailing slash).
