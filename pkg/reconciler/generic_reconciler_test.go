@@ -1168,6 +1168,198 @@ var _ = Describe("RoleGroupResourceName", func() {
 	})
 })
 
+// createRecordingClient wraps a client.Client and records the order of successful Create
+// calls (as "<go-type>/<name>"), so tests can assert apply ordering — e.g. that extra
+// resources are created before the StatefulSet. All other operations pass through.
+type createRecordingClient struct {
+	client.Client
+	created []string
+}
+
+func (c *createRecordingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if err := c.Client.Create(ctx, obj, opts...); err != nil {
+		return err
+	}
+	c.created = append(c.created, fmt.Sprintf("%T/%s", obj, obj.GetName()))
+	return nil
+}
+
+// indexOf returns the position of the given "<go-type>/<name>" entry in the recorded create
+// order, or -1 if it was never created.
+func (c *createRecordingClient) indexOf(entry string) int {
+	for i, e := range c.created {
+		if e == entry {
+			return i
+		}
+	}
+	return -1
+}
+
+var _ = Describe("GenericReconciler ExtraResources", func() {
+	var (
+		namespace string
+		crName    string
+		mockCR    *testutil.MockCluster
+		recClient *createRecordingClient
+	)
+
+	BeforeEach(func() {
+		namespace = testNamespace
+		crName = fmt.Sprintf("extra-res-cr-%d", time.Now().UnixNano())
+		mockCR = testutil.NewMockCluster(crName, namespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"broker": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(1))},
+					},
+				},
+			})
+		Expect(k8sClient.Create(ctx, mockCR)).To(Succeed())
+		recClient = &createRecordingClient{Client: k8sClient}
+	})
+
+	AfterEach(func() {
+		_ = k8sClient.Delete(ctx, mockCR)
+	})
+
+	newReconciler := func(handler reconciler.RoleGroupHandler[*testutil.ClusterWrapper]) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           recClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace)),
+		}
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		return r
+	}
+
+	It("applies extras with a controller owner reference, after the ConfigMap and before the StatefulSet", func() {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				// A Secret stands in for an arbitrary product resource (e.g. a Listener CR)
+				// that must exist before the workload pods are scheduled.
+				extra := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      buildCtx.ResourceName + "-bootstrap",
+						Namespace: buildCtx.ClusterNamespace,
+					},
+					StringData: map[string]string{"listener": "bootstrap"},
+				}
+				return &reconciler.RoleGroupResources{
+					ConfigMap:      testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
+					ExtraResources: []client.Object{extra},
+					StatefulSet:    testutil.NewTestStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).WithImage("test-image:latest", corev1.PullIfNotPresent).Build(),
+				}, nil
+			},
+		}
+		r := newReconciler(handler)
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		resourceName := reconciler.RoleGroupResourceName(crName, "broker", "default")
+
+		// The extra is applied with a controller owner reference to the cluster CR, so it is
+		// garbage-collected with the CR.
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName + "-bootstrap"}, secret)).To(Succeed())
+		fetchedCR := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName}, fetchedCR)).To(Succeed())
+		controllerRef := metav1.GetControllerOf(secret)
+		Expect(controllerRef).NotTo(BeNil())
+		Expect(controllerRef.UID).To(Equal(fetchedCR.UID))
+
+		// Apply order: ConfigMap -> extra -> StatefulSet. Extras must precede the StatefulSet
+		// because they are pod-scheduling prerequisites (e.g. Listener CRs mounted via CSI).
+		cmIdx := recClient.indexOf("*v1.ConfigMap/" + resourceName)
+		extraIdx := recClient.indexOf("*v1.Secret/" + resourceName + "-bootstrap")
+		stsIdx := recClient.indexOf("*v1.StatefulSet/" + resourceName)
+		Expect(cmIdx).To(BeNumerically(">=", 0))
+		Expect(extraIdx).To(BeNumerically(">=", 0))
+		Expect(stsIdx).To(BeNumerically(">=", 0))
+		Expect(cmIdx).To(BeNumerically("<", extraIdx))
+		Expect(extraIdx).To(BeNumerically("<", stsIdx))
+	})
+
+	It("is idempotent for extras across repeated reconciles", func() {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				return &reconciler.RoleGroupResources{
+					ExtraResources: []client.Object{
+						&corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      buildCtx.ResourceName + "-extra",
+								Namespace: buildCtx.ClusterNamespace,
+							},
+						},
+					},
+				}, nil
+			},
+		}
+		r := newReconciler(handler)
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		resourceName := reconciler.RoleGroupResourceName(crName, "broker", "default")
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName + "-extra"}, secret)).To(Succeed())
+		// Created exactly once — the second reconcile updated instead of re-creating.
+		Expect(recClient.indexOf("*v1.Secret/" + resourceName + "-extra")).To(BeNumerically(">=", 0))
+		count := 0
+		for _, e := range recClient.created {
+			if e == "*v1.Secret/"+resourceName+"-extra" {
+				count++
+			}
+		}
+		Expect(count).To(Equal(1))
+	})
+
+	It("behaves exactly as before when ExtraResources is nil, and skips nil entries", func() {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				return &reconciler.RoleGroupResources{
+					ConfigMap:   testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
+					StatefulSet: testutil.NewTestStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).WithImage("test-image:latest", corev1.PullIfNotPresent).Build(),
+					// ExtraResources intentionally nil (backward compatible), covering the
+					// pre-existing contract.
+				}, nil
+			},
+		}
+		r := newReconciler(handler)
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		resourceName := reconciler.RoleGroupResourceName(crName, "broker", "default")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, &corev1.ConfigMap{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, &appsv1.StatefulSet{})).To(Succeed())
+		// Only the ConfigMap and StatefulSet were created.
+		Expect(recClient.created).To(ConsistOf(
+			"*v1.ConfigMap/"+resourceName,
+			"*v1.StatefulSet/"+resourceName,
+		))
+
+		// A slice holding only nil entries is equally a no-op.
+		handler.BuildResourcesFunc = func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+			return &reconciler.RoleGroupResources{
+				ExtraResources: []client.Object{nil},
+			}, nil
+		}
+		recClient.created = nil
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recClient.created).To(BeEmpty())
+	})
+})
+
 var _ = Describe("GenericReconciler ProductConfig", func() {
 	var (
 		namespace string
