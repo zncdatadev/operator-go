@@ -562,24 +562,31 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		stsBuilder.WithPodOverrides(buildCtx.MergedConfig.PodOverrides)
 	}
 
-	// Add config volume if ConfigMap exists
-	if buildCtx.MergedConfig != nil && len(buildCtx.MergedConfig.ConfigFiles) > 0 {
-		stsBuilder.AddVolume(corev1.Volume{
-			Name: "config",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: buildCtx.ResourceName,
-					},
+	// Mount the role group ConfigMap as the "config" volume at configMountPath().
+	//
+	// This is intentionally NOT gated on MergedConfig.ConfigFiles. ConfigFiles is populated
+	// only from role/role-group configOverrides, but the role group ConfigMap
+	// (buildCtx.ResourceName) is ALWAYS produced by buildConfigMap — a product can populate its
+	// real config (e.g. zoo.cfg, security.properties, logback.xml) directly into ConfigMap.Data
+	// with no overrides at all. Gating the mount on ConfigFiles would starve those products of
+	// their config in the common no-overrides case, forcing them to hand-create a config volume
+	// and strip the framework's. The mount references buildCtx.ResourceName, which the same
+	// handler's buildConfigMap always creates, so the referenced ConfigMap always exists.
+	stsBuilder.AddVolume(corev1.Volume{
+		Name: "config",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: buildCtx.ResourceName,
 				},
 			},
-		})
-		stsBuilder.AddVolumeMount(corev1.VolumeMount{
-			Name:      "config",
-			MountPath: h.configMountPath(),
-			ReadOnly:  true,
-		})
-	}
+		},
+	})
+	stsBuilder.AddVolumeMount(corev1.VolumeMount{
+		Name:      "config",
+		MountPath: h.configMountPath(),
+		ReadOnly:  true,
+	})
 
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
