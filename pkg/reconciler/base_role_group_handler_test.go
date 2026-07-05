@@ -526,7 +526,34 @@ var _ = Describe("StatefulSet building", func() {
 			}
 		}
 		Expect(configMount).NotTo(BeNil())
-		Expect(configMount.MountPath).To(Equal("/etc/config"))
+		// With no ConfigMountPath set, the config volume mounts at the kubedoop-canonical
+		// config mount path, not the old foreign "/etc/config".
+		Expect(configMount.MountPath).To(Equal(constant.KubedoopConfigDirMount))
+		Expect(configMount.ReadOnly).To(BeTrue())
+	})
+
+	It("should honor ConfigMountPath override for the config volume mount", func() {
+		handler.ConfigMountPath = "/etc/trino"
+		buildCtx.MergedConfig = &config.MergedConfig{
+			ConfigFiles: map[string]map[string]string{
+				"config.properties": {"key": "value"},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		containers := resources.StatefulSet.Spec.Template.Spec.Containers
+		Expect(containers).NotTo(BeEmpty())
+		var configMount *corev1.VolumeMount
+		for i := range containers[0].VolumeMounts {
+			if containers[0].VolumeMounts[i].Name == "config" {
+				configMount = &containers[0].VolumeMounts[i]
+				break
+			}
+		}
+		Expect(configMount).NotTo(BeNil())
+		Expect(configMount.MountPath).To(Equal("/etc/trino"))
 		Expect(configMount.ReadOnly).To(BeTrue())
 	})
 
