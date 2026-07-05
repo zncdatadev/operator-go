@@ -8,7 +8,7 @@
 - **Extension System**: Hook-based customization at cluster/role/role-group levels
 - **Resource Builders**: Fluent builders for StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount
 - **Config Generation**: Multi-format config file generation (XML, YAML, Properties, Env, INI)
-- **Logging Config**: Framework-aware logging configuration generation (Log4j2, Logback, Python)
+- **Logging Config**: Framework-aware logging configuration generation (Log4j, Log4j2, Logback, Python)
 - **Health Checks**: Business-level health check interface with composite checks
 - **Sidecar Management**: Pluggable sidecar injection framework with domain-specific providers
 - **CRD APIs**: Common types for authentication, database, listeners, S3
@@ -222,7 +222,7 @@ type ServiceHealthCheck interface {
 `CompositeHealthCheck` combines multiple checks (all must pass). `AlwaysHealthy` and `AlwaysUnhealthy` are provided as convenience constants.
 
 ### 9. Logging Configuration
-`LoggingFramework`-aware logging config generation (Log4j2, Logback, Python) via `pkg/config/logging_generator.go`.
+`LoggingFramework`-aware logging config generation (Log4j, Log4j2, Logback, Python) via `pkg/config/logging_generator.go`.
 
 ### 10. Product Config (`ProductConfig`)
 Products contribute their computed configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductConfig` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):

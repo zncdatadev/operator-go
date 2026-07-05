@@ -56,6 +56,7 @@ var _ = Describe("GeneratorFor", func() {
 	It("returns a generator for each supported framework", func() {
 		for _, fw := range []productlogging.LoggingFramework{
 			productlogging.LoggingFrameworkLogback,
+			productlogging.LoggingFrameworkLog4j,
 			productlogging.LoggingFrameworkLog4j2,
 			productlogging.LoggingFrameworkPython,
 		} {
@@ -78,6 +79,7 @@ var _ = Describe("RenderConfigFile file path", func() {
 	It("renders the framework-derived file appender path with a single slash", func() {
 		for _, fw := range []productlogging.LoggingFramework{
 			productlogging.LoggingFrameworkLogback,
+			productlogging.LoggingFrameworkLog4j,
 			productlogging.LoggingFrameworkLog4j2,
 			productlogging.LoggingFrameworkPython,
 		} {
@@ -100,6 +102,44 @@ var _ = Describe("RenderConfigFile file path", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(content).NotTo(ContainSubstring("main.stdout.log"))
 		Expect(content).NotTo(ContainSubstring("RollingFileAppender"))
+	})
+
+	It("omits the log4j FILE appender when withFileAppender is false (console-only)", func() {
+		fileName, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework: productlogging.LoggingFrameworkLog4j,
+			Container: "kafka",
+		}, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fileName).To(Equal("log4j.properties"))
+		Expect(content).To(ContainSubstring("log4j.rootLogger=INFO, CONSOLE\n"))
+		Expect(content).NotTo(ContainSubstring("FILE"))
+		Expect(content).NotTo(ContainSubstring("kafka.stdout.log"))
+	})
+
+	It("wires the log4j FILE appender to the framework-derived path when withFileAppender is true", func() {
+		fileName, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework: productlogging.LoggingFrameworkLog4j,
+			Container: "kafka",
+		}, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fileName).To(Equal("log4j.properties"))
+		Expect(content).To(ContainSubstring("log4j.rootLogger=INFO, CONSOLE, FILE"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE=org.apache.log4j.RollingFileAppender"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.File=/kubedoop/log/kafka.stdout.log"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.MaxFileSize=5MB"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.MaxBackupIndex=1"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.layout=org.apache.log4j.PatternLayout"))
+	})
+
+	It("renders a product-supplied log4j conversion pattern verbatim (Kafka style)", func() {
+		_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework: productlogging.LoggingFrameworkLog4j,
+			Container: "kafka",
+			Pattern:   "[%d] %p %m (%c)%n",
+		}, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(content).To(ContainSubstring("log4j.appender.CONSOLE.layout.ConversionPattern=[%d] %p %m (%c)%n"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.layout.ConversionPattern=[%d] %p %m (%c)%n"))
 	})
 })
 
@@ -188,6 +228,19 @@ var _ = Describe("Render with appender thresholds", func() {
 		Expect(out).To(ContainSubstring("<level>INFO</level>"))  // console threshold
 		Expect(out).To(ContainSubstring("<level>ERROR</level>")) // file threshold
 		Expect(out).To(ContainSubstring("RollingFileAppender"))
+	})
+
+	It("renders log4j root, loggers and appender Thresholds", func() {
+		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkLog4j)
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk.stdout.log"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring("log4j.rootLogger=WARN, CONSOLE, FILE"))
+		Expect(out).To(ContainSubstring("log4j.appender.CONSOLE.Threshold=INFO"))
+		Expect(out).To(ContainSubstring("log4j.appender.FILE.Threshold=ERROR"))
+		Expect(out).To(ContainSubstring("log4j.logger.org.apache.zookeeper=DEBUG"))
+		// File appender must be bounded (MaxFileSize + MaxBackupIndex), not unbounded.
+		Expect(out).To(ContainSubstring("log4j.appender.FILE.MaxFileSize=5MB"))
+		Expect(out).To(ContainSubstring("log4j.appender.FILE.MaxBackupIndex=1"))
 	})
 
 	It("renders log4j2 root, loggers and threshold filters", func() {

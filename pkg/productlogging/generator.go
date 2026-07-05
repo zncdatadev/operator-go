@@ -74,6 +74,7 @@ func escapeXML(s string) string {
 type LoggingFramework string
 
 const (
+	LoggingFrameworkLog4j   LoggingFramework = "log4j"
 	LoggingFrameworkLog4j2  LoggingFramework = "log4j2"
 	LoggingFrameworkLogback LoggingFramework = "logback"
 	LoggingFrameworkPython  LoggingFramework = "python"
@@ -112,6 +113,8 @@ func NewLoggingGenerator(framework LoggingFramework) *LoggingGenerator {
 // Generate generates the logging configuration content based on the configured framework.
 func (g *LoggingGenerator) Generate(configs map[string]LoggerConfig) (string, error) {
 	switch g.framework {
+	case LoggingFrameworkLog4j:
+		return GenerateLog4j(configs)
 	case LoggingFrameworkLog4j2:
 		return GenerateLog4j2(configs)
 	case LoggingFrameworkLogback:
@@ -121,6 +124,17 @@ func (g *LoggingGenerator) Generate(configs map[string]LoggerConfig) (string, er
 	default:
 		return "", fmt.Errorf("unsupported logging framework: %s", g.framework)
 	}
+}
+
+// GenerateLog4j generates Log4j 1.x properties format (as consumed by log4j 1.2 / reload4j).
+// The output format is:
+// log4j.rootLogger=INFO, CONSOLE
+// log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender
+// log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout
+// log4j.appender.CONSOLE.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
+// log4j.logger.com.example=DEBUG
+func GenerateLog4j(configs map[string]LoggerConfig) (string, error) {
+	return renderLog4j(LogConfig{Loggers: loggerConfigsToLevels(configs)}, RenderOptions{})
 }
 
 // GenerateLog4j2 generates Log4j2 properties format.
@@ -344,6 +358,63 @@ func renderLogback(cfg LogConfig, opts RenderOptions) (string, error) {
 		MaxHistory:     opts.MaxHistory,
 		TotalSizeCap:   opts.TotalSizeCap,
 	})
+}
+
+// renderLog4j renders log4j 1.x properties (log4j 1.2 / reload4j) from the framework-neutral
+// model. When opts.FileOutputPath is set it adds a bounded RollingFileAppender wired to the
+// root logger. Both appenders use a plain-text PatternLayout so the file output matches the
+// Vector "files_stdout" consumer (see LogFileSuffix). Patterns are emitted verbatim: '%' has
+// no special meaning in log4j properties values, so conversion patterns like
+// "[%d] %p %m (%c)%n" need no escaping.
+func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
+	pattern := opts.Pattern
+	if pattern == "" {
+		pattern = "%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"
+	}
+	rootLevel := cfg.RootLevel
+	if rootLevel == "" {
+		rootLevel = LogLevelInfo
+	}
+	hasFile := opts.FileOutputPath != ""
+
+	var sb strings.Builder
+	sb.WriteString("# Log4j Configuration\n")
+	if hasFile {
+		fmt.Fprintf(&sb, "log4j.rootLogger=%s, CONSOLE, FILE\n\n", rootLevel)
+	} else {
+		fmt.Fprintf(&sb, "log4j.rootLogger=%s, CONSOLE\n\n", rootLevel)
+	}
+
+	sb.WriteString("# Appenders\n")
+	sb.WriteString("log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender\n")
+	if cfg.ConsoleLevel != "" {
+		fmt.Fprintf(&sb, "log4j.appender.CONSOLE.Threshold=%s\n", cfg.ConsoleLevel)
+	}
+	sb.WriteString("log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout\n")
+	fmt.Fprintf(&sb, "log4j.appender.CONSOLE.layout.ConversionPattern=%s\n", pattern)
+
+	if hasFile {
+		// Bounded rollover (MaxFileSize + MaxBackupIndex) so the file cannot grow without limit.
+		maxFileSize, maxHistory, _ := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
+		sb.WriteString("\nlog4j.appender.FILE=org.apache.log4j.RollingFileAppender\n")
+		if cfg.FileLevel != "" {
+			fmt.Fprintf(&sb, "log4j.appender.FILE.Threshold=%s\n", cfg.FileLevel)
+		}
+		fmt.Fprintf(&sb, "log4j.appender.FILE.File=%s\n", opts.FileOutputPath)
+		fmt.Fprintf(&sb, "log4j.appender.FILE.MaxFileSize=%s\n", maxFileSize)
+		fmt.Fprintf(&sb, "log4j.appender.FILE.MaxBackupIndex=%d\n", maxHistory)
+		sb.WriteString("log4j.appender.FILE.layout=org.apache.log4j.PatternLayout\n")
+		fmt.Fprintf(&sb, "log4j.appender.FILE.layout.ConversionPattern=%s\n", pattern)
+	}
+
+	if len(cfg.Loggers) == 0 {
+		return sb.String(), nil
+	}
+	sb.WriteString("\n# Loggers\n")
+	for _, name := range sortedLoggerNames(cfg.Loggers) {
+		fmt.Fprintf(&sb, "log4j.logger.%s=%s\n", name, cfg.Loggers[name])
+	}
+	return sb.String(), nil
 }
 
 // renderLog4j2 renders log4j2 properties from the framework-neutral model. When

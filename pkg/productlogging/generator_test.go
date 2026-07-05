@@ -17,6 +17,8 @@ limitations under the License.
 package productlogging_test
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
@@ -24,6 +26,11 @@ import (
 
 var _ = Describe("LoggingGenerator", func() {
 	Describe("NewLoggingGenerator", func() {
+		It("should create a LoggingGenerator with log4j framework", func() {
+			generator := productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLog4j)
+			Expect(generator).NotTo(BeNil())
+		})
+
 		It("should create a LoggingGenerator with log4j2 framework", func() {
 			generator := productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLog4j2)
 			Expect(generator).NotTo(BeNil())
@@ -41,6 +48,61 @@ var _ = Describe("LoggingGenerator", func() {
 	})
 
 	Describe("Generate", func() {
+		Context("with Log4j framework", func() {
+			var generator *productlogging.LoggingGenerator
+
+			BeforeEach(func() {
+				generator = productlogging.NewLoggingGenerator(productlogging.LoggingFrameworkLog4j)
+			})
+
+			It("should generate log4j configuration with empty configs", func() {
+				content, err := generator.Generate(map[string]productlogging.LoggerConfig{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(content).To(ContainSubstring("# Log4j Configuration"))
+				Expect(content).To(ContainSubstring("log4j.rootLogger=INFO, CONSOLE"))
+				Expect(content).To(ContainSubstring("log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender"))
+			})
+
+			It("should generate log4j configuration with single logger", func() {
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example": {Name: "com.example", Level: productlogging.LogLevelDebug},
+				}
+				content, err := generator.Generate(configs)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(content).To(ContainSubstring("log4j.logger.com.example=DEBUG"))
+			})
+
+			It("should generate log4j configuration with multiple loggers", func() {
+				configs := map[string]productlogging.LoggerConfig{
+					"com.example":      {Name: "com.example", Level: productlogging.LogLevelDebug},
+					"org.apache.kafka": {Name: "org.apache.kafka", Level: productlogging.LogLevelWarn},
+				}
+				content, err := generator.Generate(configs)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(content).To(ContainSubstring("log4j.logger.com.example=DEBUG"))
+				Expect(content).To(ContainSubstring("log4j.logger.org.apache.kafka=WARN"))
+			})
+
+			It("should handle all log levels", func() {
+				levels := []productlogging.LogLevel{
+					productlogging.LogLevelTrace,
+					productlogging.LogLevelDebug,
+					productlogging.LogLevelInfo,
+					productlogging.LogLevelWarn,
+					productlogging.LogLevelError,
+					productlogging.LogLevelFatal,
+				}
+				for _, level := range levels {
+					configs := map[string]productlogging.LoggerConfig{
+						"test": {Name: "test", Level: level},
+					}
+					content, err := generator.Generate(configs)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(content).To(ContainSubstring("log4j.logger.test=" + string(level)))
+				}
+			})
+		})
+
 		Context("with Log4j2 framework", func() {
 			var generator *productlogging.LoggingGenerator
 
@@ -259,6 +321,59 @@ var _ = Describe("LoggingGenerator", func() {
 	})
 })
 
+var _ = Describe("GenerateLog4j", func() {
+	It("should generate valid log4j 1.x properties format", func() {
+		configs := map[string]productlogging.LoggerConfig{
+			"com.example.app": {Name: "com.example.app", Level: productlogging.LogLevelInfo},
+		}
+		content, err := productlogging.GenerateLog4j(configs)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(content).To(ContainSubstring("# Log4j Configuration"))
+		Expect(content).To(ContainSubstring("log4j.rootLogger=INFO, CONSOLE"))
+		Expect(content).To(ContainSubstring("log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender"))
+		Expect(content).To(ContainSubstring("log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout"))
+		Expect(content).To(ContainSubstring("log4j.appender.CONSOLE.layout.ConversionPattern="))
+		Expect(content).To(ContainSubstring("log4j.logger.com.example.app=INFO"))
+	})
+
+	It("should be console-only without a file output path", func() {
+		content, err := productlogging.GenerateLog4j(nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(content).NotTo(ContainSubstring("FILE"))
+		Expect(content).NotTo(ContainSubstring("RollingFileAppender"))
+	})
+
+	It("should sort logger names alphabetically", func() {
+		configs := map[string]productlogging.LoggerConfig{
+			"zebra":  {Name: "zebra", Level: productlogging.LogLevelInfo},
+			"alpha":  {Name: "alpha", Level: productlogging.LogLevelInfo},
+			"middle": {Name: "middle", Level: productlogging.LogLevelInfo},
+		}
+		content, err := productlogging.GenerateLog4j(configs)
+		Expect(err).ToNot(HaveOccurred())
+		alpha := strings.Index(content, "log4j.logger.alpha=INFO")
+		middle := strings.Index(content, "log4j.logger.middle=INFO")
+		zebra := strings.Index(content, "log4j.logger.zebra=INFO")
+		Expect(alpha).To(BeNumerically(">=", 0))
+		Expect(alpha).To(BeNumerically("<", middle))
+		Expect(middle).To(BeNumerically("<", zebra))
+	})
+
+	It("should emit valid properties format (every non-comment line is key=value)", func() {
+		configs := map[string]productlogging.LoggerConfig{
+			"org.apache.kafka": {Name: "org.apache.kafka", Level: productlogging.LogLevelWarn},
+		}
+		content, err := productlogging.GenerateLog4j(configs)
+		Expect(err).ToNot(HaveOccurred())
+		for _, line := range strings.Split(content, "\n") {
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			Expect(line).To(ContainSubstring("="), "line %q must be a key=value property", line)
+		}
+	})
+})
+
 var _ = Describe("GenerateLog4j2", func() {
 	It("should generate valid log4j2 properties format", func() {
 		configs := map[string]productlogging.LoggerConfig{
@@ -419,6 +534,10 @@ var _ = Describe("LogLevel constants", func() {
 })
 
 var _ = Describe("LoggingFramework constants", func() {
+	It("should have correct LoggingFrameworkLog4j value", func() {
+		Expect(string(productlogging.LoggingFrameworkLog4j)).To(Equal("log4j"))
+	})
+
 	It("should have correct LoggingFrameworkLog4j2 value", func() {
 		Expect(string(productlogging.LoggingFrameworkLog4j2)).To(Equal("log4j2"))
 	})
