@@ -25,11 +25,14 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constant"
+	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	"github.com/zncdatadev/operator-go/pkg/security"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 	"github.com/zncdatadev/operator-go/pkg/vector"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1436,5 +1439,158 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 
 		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// fakeVolumeProvider is a minimal VolumeProvider returning one known volume + mount, used to
+// lock the injection + ordering contract exercised by the "VolumeProvider injection" specs.
+type fakeVolumeProvider struct {
+	volume corev1.Volume
+	mount  corev1.VolumeMount
+}
+
+func (f *fakeVolumeProvider) Volumes() []corev1.Volume { return []corev1.Volume{f.volume} }
+func (f *fakeVolumeProvider) VolumeMounts() []corev1.VolumeMount {
+	return []corev1.VolumeMount{f.mount}
+}
+
+var _ reconciler.VolumeProvider = &fakeVolumeProvider{}
+
+// Compile-time assertions that the framework's CSI provisioners satisfy VolumeProvider. Kept in
+// a test file so the core reconciler package needs no production dependency on pkg/security or
+// pkg/listener for the contract check.
+var (
+	_ reconciler.VolumeProvider = (*security.SecretProvisioner)(nil)
+	_ reconciler.VolumeProvider = (*listener.ListenerProvisioner)(nil)
+)
+
+var _ = Describe("VolumeProvider injection", func() {
+	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
+	var buildCtx *reconciler.RoleGroupBuildContext
+	var provider *fakeVolumeProvider
+
+	// hasVolume reports whether a pod-spec volume with the given name is present.
+	hasVolume := func(sts *appsv1.StatefulSet, name string) bool {
+		for _, v := range sts.Spec.Template.Spec.Volumes {
+			if v.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	// primaryMountNames returns the mount names on the primary container (container[0]).
+	primaryMountNames := func(sts *appsv1.StatefulSet) []string {
+		Expect(sts.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+		names := make([]string, 0, len(sts.Spec.Template.Spec.Containers[0].VolumeMounts))
+		for _, m := range sts.Spec.Template.Spec.Containers[0].VolumeMounts {
+			names = append(names, m.Name)
+		}
+		return names
+	}
+
+	BeforeEach(func() {
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		provider = &fakeVolumeProvider{
+			volume: corev1.Volume{
+				Name: "tls-cert",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+			mount: corev1.VolumeMount{
+				Name:      "tls-cert",
+				MountPath: "/kubedoop/tls",
+				ReadOnly:  true,
+			},
+		}
+		buildCtx = &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			ClusterLabels:    map[string]string{},
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-default",
+		}
+	})
+
+	It("injects the provider volume onto the pod spec and its mount onto the primary container", func() {
+		buildCtx.VolumeProviders = []reconciler.VolumeProvider{provider}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(hasVolume(resources.StatefulSet, "tls-cert")).To(BeTrue())
+		Expect(primaryMountNames(resources.StatefulSet)).To(ContainElement("tls-cert"))
+	})
+
+	It("keeps the provider mount on container[0] after MainContainerName rename and sidecar injection", func() {
+		// A renamed primary container plus an injected sidecar (init container) is the exact
+		// scenario the ordering contract must survive: the provider mount must still be on
+		// container[0] under its FINAL renamed name, not lost or moved to the sidecar.
+		handler.MainContainerName = "zookeeper"
+
+		sidecarMgr := sidecar.NewSidecarManager()
+		sidecarMgr.Register(
+			sidecar.NewStaticContainerProvider(corev1.Container{
+				Name:  "init-config",
+				Image: "busybox:latest",
+			}),
+			&sidecar.SidecarConfig{Enabled: true},
+		)
+		buildCtx.SidecarManager = sidecarMgr
+		buildCtx.VolumeProviders = []reconciler.VolumeProvider{provider}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := resources.StatefulSet
+		// The primary container carries the renamed value AND still has the provider mount.
+		Expect(sts.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+		Expect(sts.Spec.Template.Spec.Containers[0].Name).To(Equal("zookeeper"))
+		Expect(primaryMountNames(sts)).To(ContainElement("tls-cert"))
+		// The volume is on the pod spec, and the sidecar landed as an init container (not merged
+		// into the primary container).
+		Expect(hasVolume(sts, "tls-cert")).To(BeTrue())
+		Expect(sts.Spec.Template.Spec.InitContainers).To(ContainElement(HaveField("Name", "init-config")))
+	})
+
+	It("supports multiple providers, injecting every volume + mount", func() {
+		second := &fakeVolumeProvider{
+			volume: corev1.Volume{
+				Name:         "listener-addr",
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			},
+			mount: corev1.VolumeMount{Name: "listener-addr", MountPath: "/kubedoop/listener"},
+		}
+		buildCtx.VolumeProviders = []reconciler.VolumeProvider{provider, second}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(hasVolume(resources.StatefulSet, "tls-cert")).To(BeTrue())
+		Expect(hasVolume(resources.StatefulSet, "listener-addr")).To(BeTrue())
+		mounts := primaryMountNames(resources.StatefulSet)
+		Expect(mounts).To(ContainElement("tls-cert"))
+		Expect(mounts).To(ContainElement("listener-addr"))
+	})
+
+	It("adds no extra volumes/mounts beyond the baseline when no providers are registered", func() {
+		// Backward compatibility: with no VolumeProviders the only pod volume/mount is the
+		// framework "config" volume (StorageMountPath unset, so no "data" PVC).
+		Expect(buildCtx.VolumeProviders).To(BeEmpty())
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		volumeNames := make([]string, 0, len(resources.StatefulSet.Spec.Template.Spec.Volumes))
+		for _, v := range resources.StatefulSet.Spec.Template.Spec.Volumes {
+			volumeNames = append(volumeNames, v.Name)
+		}
+		Expect(volumeNames).To(ConsistOf("config"))
+		Expect(primaryMountNames(resources.StatefulSet)).To(ConsistOf("config"))
 	})
 })

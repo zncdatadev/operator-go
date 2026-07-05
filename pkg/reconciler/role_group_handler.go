@@ -55,6 +55,22 @@ type RoleGroupResources struct {
 	MetricsService *corev1.Service
 }
 
+// VolumeProvider supplies extra pod volumes and their container mounts (typically CSI
+// volumes such as secret/TLS certificates or listener address volumes). Products register
+// providers on the RoleGroupBuildContext before the base handler builds the StatefulSet;
+// the base handler injects each provider's Volumes() and VolumeMounts() through the same
+// builder path as the config volume. Both pkg/security.SecretProvisioner and
+// pkg/listener.ListenerProvisioner satisfy this interface.
+//
+// Reserved names: the framework already uses the pod volume/mount names "config" (the config
+// ConfigMap volume, always present) and "data" (the data PVC, when StorageMountPath is set); a
+// provider must not reuse either name, because duplicate volume names make the Kubernetes API
+// server reject the pod — a hard reconcile failure.
+type VolumeProvider interface {
+	Volumes() []corev1.Volume
+	VolumeMounts() []corev1.VolumeMount
+}
+
 // RoleGroupBuildContext provides context for building role group resources.
 // It contains all the information needed to construct Kubernetes resources.
 type RoleGroupBuildContext struct {
@@ -101,6 +117,13 @@ type RoleGroupBuildContext struct {
 	// sidecar.StaticContainerProvider) and call InjectAll so all pod container injection
 	// flows through the manager. May be empty if nothing is configured.
 	SidecarManager *sidecar.SidecarManager
+
+	// VolumeProviders supply extra pod volumes + mounts (CSI secret/listener volumes) that the
+	// base handler injects into the StatefulSet. This is per-build-context (rebuilt every
+	// reconcile), so registrations never accumulate across reconciles or leak across CRs. A
+	// product appends its provisioners here (e.g. buildCtx.VolumeProviders = append(...)) before
+	// calling BaseRoleGroupHandler.BuildResources. Empty means no extra volumes (backward compatible).
+	VolumeProviders []VolumeProvider
 
 	// VectorAggregatorAddress is the resolved Vector aggregator discovery address, populated by
 	// GenericReconciler when the Vector agent is enabled and the CR implements
