@@ -22,7 +22,6 @@ import (
 	"net/url"
 	"strings"
 
-	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	databasev1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/database/v1alpha1"
 	s3v1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/s3/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -41,25 +40,17 @@ func NewDependencyResolver(client client.Client) *DependencyResolver {
 	return &DependencyResolver{Client: client}
 }
 
-// Validate checks if all dependencies are available.
-func (d *DependencyResolver) Validate(ctx context.Context, spec interface{}) error {
-	if genericSpec, ok := spec.(*commonsv1alpha1.GenericClusterSpec); ok && genericSpec != nil {
-		if genericSpec.ClusterOperation != nil {
-			if genericSpec.ClusterOperation.ReconciliationPaused {
-				return &DependencyError{
-					Type:    "ReconciliationPaused",
-					Message: "Reconciliation is paused",
-				}
-			}
-			if genericSpec.ClusterOperation.Stopped {
-				return &DependencyError{
-					Type:    "Stopped",
-					Message: "Cluster is stopped",
-				}
-			}
-		}
-	}
-
+// Validate is intentionally a no-op for the generic cluster spec: it performs no checks and
+// always returns nil. It is kept as a stable hook in the reconcile flow.
+//
+// Two things it does NOT do, by design:
+//   - ClusterOperation pause/stop: those flags are evaluated at the very top of the reconcile loop
+//     (GenericReconciler.reconcile), before any resource mutation, so a paused or stopped cluster
+//     never runs ServiceAccount provisioning or PreReconcile extensions.
+//   - Real external-dependency checks: callers invoke the specific ValidateConfigMap /
+//     ValidateSecret / ValidateS3Connection / ValidateDatabaseConnection helpers explicitly as
+//     needed; this method does not traverse them.
+func (d *DependencyResolver) Validate(_ context.Context, _ interface{}) error {
 	return nil
 }
 
