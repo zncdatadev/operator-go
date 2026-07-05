@@ -626,7 +626,7 @@ This ensures changing the organization domain requires updating only one constan
 - `ListenerAPIGroup`, `ListenerStorageClass`, `CSIDriverName`
 - Annotations: `ListenerClassAnnotation`, `ListenerScopeAnnotation`, `AnnotationListenerName`
 - Types: `ListenerClass` (cluster-internal, external-stable, external-unstable)
-- Provisioner: `ListenerProvisioner` (declarative CSI listener volume and service registration with `RegisterService()`, `RegisterVolume()`, `AutoInject()`)
+- Provisioner: `ListenerProvisioner` (declarative CSI listener volume registration with `RegisterVolume()`, `Volumes()`/`VolumeMounts()`, `AutoInject()`; the `listener-operator` creates the Service, not the SDK)
 
 **`pkg/security/`** — Secret operator constants:
 - `SecretAPIGroup`, `SecretStorageClass`, `CSIDriverName`

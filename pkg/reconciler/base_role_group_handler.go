@@ -588,6 +588,22 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		ReadOnly:  true,
 	})
 
+	// Inject product-registered CSI volumes (secret/TLS certificates, listener address
+	// volumes). These flow through the same builder path as the config volume (volumes on the
+	// pod, mounts on the primary container), before the container rename and sidecar injection.
+	// buildCtx.VolumeProviders is per-build-context, so nothing accumulates across reconciles.
+	for _, vp := range buildCtx.VolumeProviders {
+		if vp == nil {
+			continue
+		}
+		for _, v := range vp.Volumes() {
+			stsBuilder.AddVolume(v)
+		}
+		for _, m := range vp.VolumeMounts() {
+			stsBuilder.AddVolumeMount(m)
+		}
+	}
+
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
 

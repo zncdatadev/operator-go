@@ -32,135 +32,6 @@ var _ = Describe("ListenerProvisioner", func() {
 		provisioner = listener.NewProvisioner()
 	})
 
-	Describe("ServiceRegistration", func() {
-		var testPort corev1.ServicePort
-
-		BeforeEach(func() {
-			testPort = corev1.ServicePort{
-				Name:     "http",
-				Port:     8080,
-				Protocol: corev1.ProtocolTCP,
-			}
-		})
-
-		It("should create ClusterIP service for cluster-internal class", func() {
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClassClusterInternal).
-					WithPorts(testPort),
-			)
-			services := provisioner.Services("default")
-			Expect(services).To(HaveLen(1))
-			Expect(services[0].Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
-			Expect(services[0].Name).To(Equal("test-svc"))
-			Expect(services[0].Namespace).To(Equal("default"))
-		})
-
-		It("should create LoadBalancer service for external-stable class", func() {
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClassExternalStable).
-					WithPorts(testPort),
-			)
-			services := provisioner.Services("default")
-			Expect(services).To(HaveLen(1))
-			Expect(services[0].Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
-		})
-
-		It("should create LoadBalancer service for external-unstable class", func() {
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClassExternalUnstable).
-					WithPorts(testPort),
-			)
-			services := provisioner.Services("default")
-			Expect(services).To(HaveLen(1))
-			Expect(services[0].Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
-		})
-
-		It("should default to ClusterIP for unknown class", func() {
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClass("unknown")).
-					WithPorts(testPort),
-			)
-			services := provisioner.Services("default")
-			Expect(services).To(HaveLen(1))
-			Expect(services[0].Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
-		})
-
-		It("should set listener class annotation on service", func() {
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClassClusterInternal),
-			)
-			services := provisioner.Services("default")
-			Expect(services[0].Annotations).To(HaveKeyWithValue(
-				listener.ListenerClassAnnotation,
-				"cluster-internal",
-			))
-		})
-
-		It("should propagate ports to service", func() {
-			ports := []corev1.ServicePort{
-				{Name: "http", Port: 8080},
-				{Name: "https", Port: 8443},
-			}
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClassClusterInternal).
-					WithPorts(ports...),
-			)
-			services := provisioner.Services("default")
-			Expect(services[0].Spec.Ports).To(HaveLen(2))
-			Expect(services[0].Spec.Ports[0].Name).To(Equal("http"))
-			Expect(services[0].Spec.Ports[1].Name).To(Equal("https"))
-		})
-
-		It("should produce service without ports when none set", func() {
-			provisioner.RegisterService(
-				listener.NewService("test-svc", listener.ListenerClassClusterInternal),
-			)
-			services := provisioner.Services("default")
-			Expect(services[0].Spec.Ports).To(BeEmpty())
-		})
-	})
-
-	Describe("ServiceRegistration headless", func() {
-		It("should produce two services when headless is enabled", func() {
-			provisioner.RegisterService(
-				listener.NewService("zk", listener.ListenerClassClusterInternal).
-					WithHeadless(true),
-			)
-			services := provisioner.Services("default")
-			Expect(services).To(HaveLen(2))
-		})
-
-		It("should produce headless service with ClusterIP None", func() {
-			provisioner.RegisterService(
-				listener.NewService("zk", listener.ListenerClassClusterInternal).
-					WithHeadless(true),
-			)
-			services := provisioner.Services("default")
-			headlessSvc := services[1]
-			Expect(headlessSvc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
-			Expect(headlessSvc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
-		})
-
-		It("should name headless service with -headless suffix", func() {
-			provisioner.RegisterService(
-				listener.NewService("zk", listener.ListenerClassClusterInternal).
-					WithHeadless(true),
-			)
-			services := provisioner.Services("default")
-			Expect(services[1].Name).To(Equal("zk-headless"))
-		})
-
-		It("should not set ListenerClassAnnotation on headless service", func() {
-			provisioner.RegisterService(
-				listener.NewService("zk", listener.ListenerClassClusterInternal).
-					WithHeadless(true),
-			)
-			services := provisioner.Services("default")
-			headlessSvc := services[1]
-			Expect(headlessSvc.Annotations).NotTo(HaveKey(listener.ListenerClassAnnotation))
-		})
-	})
-
 	Describe("VolumeRegistration", func() {
 		It("should create volume with listener class annotation", func() {
 			provisioner.RegisterVolume(
@@ -239,15 +110,6 @@ var _ = Describe("ListenerProvisioner", func() {
 	})
 
 	Describe("Provisioner registration", func() {
-		It("should register and return multiple services", func() {
-			provisioner.RegisterService(
-				listener.NewService("svc1", listener.ListenerClassClusterInternal),
-				listener.NewService("svc2", listener.ListenerClassExternalStable),
-			)
-			services := provisioner.Services("default")
-			Expect(services).To(HaveLen(2))
-		})
-
 		It("should register and return multiple volumes", func() {
 			provisioner.RegisterVolume(
 				listener.NewVolume("vol1", listener.ListenerClassClusterInternal),
@@ -255,56 +117,6 @@ var _ = Describe("ListenerProvisioner", func() {
 			)
 			volumes := provisioner.Volumes()
 			Expect(volumes).To(HaveLen(2))
-		})
-
-		It("should panic on duplicate service name", func() {
-			Expect(func() {
-				provisioner.RegisterService(
-					listener.NewService("svc", listener.ListenerClassClusterInternal),
-				)
-				provisioner.RegisterService(
-					listener.NewService("svc", listener.ListenerClassExternalStable),
-				)
-			}).To(Panic())
-		})
-
-		It("should panic when service name collides with headless name", func() {
-			Expect(func() {
-				provisioner.RegisterService(
-					listener.NewService("zk", listener.ListenerClassClusterInternal),
-				)
-				provisioner.RegisterService(
-					listener.NewService("zk", listener.ListenerClassClusterInternal).
-						WithHeadless(true),
-				)
-			}).To(Panic())
-		})
-
-		It("should allow non-headless service with headless-suffix name after headless registration", func() {
-			provisioner.RegisterService(
-				listener.NewService("zk", listener.ListenerClassClusterInternal).
-					WithHeadless(true),
-			)
-			// Registering "zk-headless" as a regular service should panic
-			Expect(func() {
-				provisioner.RegisterService(
-					listener.NewService("zk-headless", listener.ListenerClassClusterInternal),
-				)
-			}).To(Panic())
-		})
-
-		It("should allow registering non-headless service when headless-suffix name is taken", func() {
-			// Register "zk-headless" first as a regular service
-			provisioner.RegisterService(
-				listener.NewService("zk-headless", listener.ListenerClassClusterInternal),
-			)
-			// Then registering "zk" with headless=true should panic (headless name collision)
-			Expect(func() {
-				provisioner.RegisterService(
-					listener.NewService("zk", listener.ListenerClassClusterInternal).
-						WithHeadless(true),
-				)
-			}).To(Panic())
 		})
 
 		It("should panic on duplicate volume name", func() {
@@ -318,27 +130,8 @@ var _ = Describe("ListenerProvisioner", func() {
 			}).To(Panic())
 		})
 
-		It("should return empty services when none registered", func() {
-			Expect(provisioner.Services("default")).To(BeEmpty())
-		})
-
 		It("should return empty volumes when none registered", func() {
 			Expect(provisioner.Volumes()).To(BeEmpty())
-		})
-
-		It("should panic when Services called with empty namespace", func() {
-			provisioner.RegisterService(
-				listener.NewService("svc", listener.ListenerClassClusterInternal),
-			)
-			Expect(func() {
-				provisioner.Services("")
-			}).To(Panic())
-		})
-
-		It("should panic when Services called with empty namespace even with no registrations", func() {
-			Expect(func() {
-				provisioner.Services("")
-			}).To(Panic())
 		})
 	})
 
@@ -399,18 +192,6 @@ var _ = Describe("ListenerProvisioner", func() {
 
 			sts := stsBuilder.Build()
 			Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts).NotTo(BeEmpty())
-		})
-
-		It("should not inject services into StatefulSetBuilder", func() {
-			provisioner.RegisterService(
-				listener.NewService("svc", listener.ListenerClassClusterInternal),
-			)
-
-			stsBuilder := builder.NewStatefulSetBuilder("test", "default")
-			provisioner.AutoInject(stsBuilder)
-
-			sts := stsBuilder.Build()
-			Expect(sts.Spec.Template.Spec.Volumes).To(BeEmpty())
 		})
 	})
 
