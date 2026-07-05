@@ -557,6 +557,42 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(configMount.ReadOnly).To(BeTrue())
 	})
 
+	It("should add config volume and mount even when no config-file overrides are present", func() {
+		// The role group ConfigMap is always produced by buildConfigMap (a product may populate
+		// its real config directly into ConfigMap.Data with no overrides). MergedConfig.ConfigFiles
+		// is empty here, yet the config volume + mount must still be present so the product can read
+		// its config. The mount must NOT be gated on ConfigFiles.
+		buildCtx.MergedConfig = &config.MergedConfig{}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		volumes := resources.StatefulSet.Spec.Template.Spec.Volumes
+		var configVolume *corev1.Volume
+		for i := range volumes {
+			if volumes[i].Name == "config" {
+				configVolume = &volumes[i]
+				break
+			}
+		}
+		Expect(configVolume).NotTo(BeNil())
+		Expect(configVolume.ConfigMap).NotTo(BeNil())
+		Expect(configVolume.ConfigMap.Name).To(Equal("test-cluster-default"))
+
+		containers := resources.StatefulSet.Spec.Template.Spec.Containers
+		Expect(containers).NotTo(BeEmpty())
+		var configMount *corev1.VolumeMount
+		for i := range containers[0].VolumeMounts {
+			if containers[0].VolumeMounts[i].Name == "config" {
+				configMount = &containers[0].VolumeMounts[i]
+				break
+			}
+		}
+		Expect(configMount).NotTo(BeNil())
+		Expect(configMount.MountPath).To(Equal(constant.KubedoopConfigDirMount))
+		Expect(configMount.ReadOnly).To(BeTrue())
+	})
+
 	It("should use role-specific image when set", func() {
 		handler.SetRoleImage("test-role", "custom-role-image:v2")
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
