@@ -101,7 +101,9 @@ type RoleGroupBuildContext struct {
 	// MergedConfig is the merged configuration from role and role group overrides.
 	MergedConfig *config.MergedConfig
 
-	// ResourceName is the derived resource name: {cluster}-{group}.
+	// ResourceName is the derived resource name for the role group: "{cluster}-{role}-{group}"
+	// (see RoleGroupResourceName, which also truncates over-long names with a hash suffix). The
+	// role segment prevents collisions between same-named groups of different roles.
 	ResourceName string
 
 	// ServiceAccountName is the name of the ServiceAccount the workload pods should run as.
