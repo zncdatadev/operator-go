@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package productlogging provides a product-agnostic logging engine: it converts a CRD
-// LoggingConfigSpec into framework-specific logging config files (logback / log4j2 / python),
+// LoggingConfigSpec into framework-specific logging config files (logback / log4j / log4j2 / python),
 // deep-merges role/role-group logging, and exposes a generator registry. It depends only on
 // the commons API types, so both pkg/config and pkg/reconciler (and product operators) can
 // build on it without import cycles.
@@ -36,7 +36,7 @@ type ContainerLogging struct {
 	// Container is the container name; its merged logging spec (CRD logging.containers.<name>)
 	// drives the generated file.
 	Container string
-	// Framework selects the output format (logback / log4j2 / python).
+	// Framework selects the output format (logback / log4j / log4j2 / python).
 	Framework LoggingFramework
 	// FileName overrides the ConfigMap key / file name. Empty uses the framework default
 	// (e.g. "logback.xml").
@@ -180,6 +180,8 @@ func GeneratorFor(framework LoggingFramework) (LogFileGenerator, error) {
 	switch framework {
 	case LoggingFrameworkLogback:
 		return logbackGenerator{}, nil
+	case LoggingFrameworkLog4j:
+		return log4jGenerator{}, nil
 	case LoggingFrameworkLog4j2:
 		return log4j2Generator{}, nil
 	case LoggingFrameworkPython:
@@ -194,6 +196,13 @@ type logbackGenerator struct{}
 func (logbackGenerator) DefaultFileName() string { return "logback.xml" }
 func (logbackGenerator) Render(cfg LogConfig, opts RenderOptions) (string, error) {
 	return renderLogback(cfg, opts)
+}
+
+type log4jGenerator struct{}
+
+func (log4jGenerator) DefaultFileName() string { return "log4j.properties" }
+func (log4jGenerator) Render(cfg LogConfig, opts RenderOptions) (string, error) {
+	return renderLog4j(cfg, opts)
 }
 
 type log4j2Generator struct{}
