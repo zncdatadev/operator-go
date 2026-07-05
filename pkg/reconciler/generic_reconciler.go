@@ -140,7 +140,7 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //     - RoleGroup PreReconcile Extensions
 //     - Build RoleGroupBuildContext
 //     - Delegate to RoleGroupHandler.BuildResources()
-//     - Apply Resources (CM -> HeadlessSvc -> Service -> STS -> PDB -> MetricsSvc)
+//     - Apply Resources (CM -> HeadlessSvc -> Service -> Extras -> STS -> PDB -> MetricsSvc)
 //     - Track in Status
 //     - RoleGroup PostReconcile Extensions
 //     - Role PostReconcile Extensions
@@ -625,7 +625,9 @@ func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Conte
 }
 
 // applyResources applies all resources in the correct dependency order.
-// Order: ConfigMap -> Headless Service -> Service -> StatefulSet -> PDB -> MetricsService
+// Order: ConfigMap -> Headless Service -> Service -> ExtraResources -> StatefulSet -> PDB -> MetricsService
+// ExtraResources are applied before the StatefulSet because they are typically prerequisites
+// for pod scheduling (e.g. a Listener CR referenced by an ephemeral CSI volume).
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
 	owner := r.getAsClientObject(cr)
 
@@ -650,21 +652,35 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 		}
 	}
 
-	// 4. Apply StatefulSet
+	// 4. Apply extra product resources BEFORE the StatefulSet: extras are typically
+	// prerequisites for pod scheduling (e.g. a Listener CR that pods reference through an
+	// ephemeral CSI volume — without it the pods hang in ContainerCreating). They go through
+	// the same applyResource path as the fixed fields, so they get the same controller owner
+	// reference and are GC'd with the CR. Nil entries are skipped (see RoleGroupResources).
+	for _, extra := range resources.ExtraResources {
+		if extra == nil {
+			continue
+		}
+		if err := r.applyResource(ctx, owner, extra); err != nil {
+			return NewResourceApplyError(r.resourceKind(extra), extra.GetNamespace(), extra.GetName(), "failed to apply extra resource", err)
+		}
+	}
+
+	// 5. Apply StatefulSet
 	if resources.StatefulSet != nil {
 		if err := r.applyResource(ctx, owner, resources.StatefulSet); err != nil {
 			return NewResourceApplyError("StatefulSet", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
 
-	// 5. Apply PodDisruptionBudget
+	// 6. Apply PodDisruptionBudget
 	if resources.PodDisruptionBudget != nil {
 		if err := r.applyResource(ctx, owner, resources.PodDisruptionBudget); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
 
-	// 6. Apply MetricsService
+	// 7. Apply MetricsService
 	if resources.MetricsService != nil {
 		if err := r.applyResource(ctx, owner, resources.MetricsService); err != nil {
 			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, buildCtx.ResourceName+"-metrics", "failed to apply metrics service", err)
@@ -672,6 +688,16 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	}
 
 	return nil
+}
+
+// resourceKind resolves a human-readable kind for an arbitrary resource (used in error
+// messages for ExtraResources, whose GVK is not fixed). Typed objects usually carry an empty
+// TypeMeta, so the scheme registration is preferred; the Go type name is the fallback.
+func (r *GenericReconciler[CR]) resourceKind(obj client.Object) string {
+	if gvks, _, err := r.scheme.ObjectKinds(obj); err == nil && len(gvks) > 0 {
+		return gvks[0].Kind
+	}
+	return fmt.Sprintf("%T", obj)
 }
 
 // applyResource applies a single resource using CreateOrUpdate.

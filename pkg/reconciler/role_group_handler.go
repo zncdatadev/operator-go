@@ -53,6 +53,29 @@ type RoleGroupResources struct {
 
 	// MetricsService is a headless service with Prometheus scrape annotations (optional).
 	MetricsService *corev1.Service
+
+	// ExtraResources are additional product-specific resources for this role group that the
+	// framework's fixed fields have no slot for — e.g. a listeners.kubedoop.dev Listener CR
+	// that the pods reference by name through an ephemeral CSI volume. They flow through the
+	// same apply path as the fixed fields: each object gets a controller owner reference to
+	// the cluster CR (so it is garbage-collected when the CR is deleted) and is created or
+	// updated idempotently. Each object's type must be registered in the reconciler's scheme,
+	// and products should label extras with the role group's labels (see
+	// BaseRoleGroupHandler.SelectorLabels) like any other resource they build.
+	//
+	// Ordering: extras are applied after the ConfigMap and Services but BEFORE the
+	// StatefulSet, in slice order. Extras are typically prerequisites for pod scheduling —
+	// e.g. a Listener CR must exist before the pods that mount its CSI volume are created,
+	// otherwise the pods hang in ContainerCreating.
+	//
+	// Cleanup: RoleGroupCleaner only deletes the framework's fixed, well-known resources
+	// (PDB, StatefulSet, ConfigMap, Services) when a role group is removed or renamed; it
+	// cannot discover arbitrary-GVK extras. Extras of a removed role group therefore remain
+	// until the cluster CR itself is deleted (owner-reference GC). Products that need eager
+	// removal must delete such extras themselves (e.g. in a role group extension).
+	//
+	// A nil/empty slice behaves exactly as before this field existed; nil entries are skipped.
+	ExtraResources []client.Object
 }
 
 // VolumeProvider supplies extra pod volumes and their container mounts (typically CSI

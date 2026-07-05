@@ -137,7 +137,7 @@ The `GenericReconciler` provides a fixed reconciliation flow with customizable e
      - RoleGroup PreReconcile Extensions
      - Build RoleGroupBuildContext
      - Delegate to RoleGroupHandler.BuildResources()
-     - Apply Resources (CM -> HeadlessSvc -> Service -> STS -> PDB)
+     - Apply Resources (CM -> HeadlessSvc -> Service -> Extras -> STS -> PDB -> MetricsSvc)
      - RoleGroup PostReconcile Extensions
    - Role PostReconcile Extensions
 6. Cleanup Orphaned Resources
@@ -161,6 +161,8 @@ handler.SetRoleServicePorts("coordinator", svcPorts)
 ```
 
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
+
+Besides the fixed fields (ConfigMap, Services, StatefulSet, PDB, MetricsService), `RoleGroupResources.ExtraResources []client.Object` lets products ship arbitrary per-role-group resources (e.g. a `listeners.kubedoop.dev` Listener CR) through the framework's apply path: same controller owner reference, applied BEFORE the StatefulSet because extras are typically pod-scheduling prerequisites. The cleaner does not discover arbitrary-GVK extras — extras of removed role groups are reclaimed only via owner-reference GC when the CR is deleted (see the field's doc comment).
 
 ### 4. RoleInterface and RoleGroupInfo
 `RoleInterface` defines role-level operations for interacting with role configurations:
