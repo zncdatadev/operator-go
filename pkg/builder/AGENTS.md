@@ -15,6 +15,7 @@ Kubernetes resource builders for StatefulSet, Service, ConfigMap, PDB, RBAC, and
 | `pdb_builder.go` | PodDisruptionBudget builder |
 | `rbac_builder.go` | RBAC (Role, RoleBinding) builder |
 | `serviceaccount_builder.go` | ServiceAccount builder |
+| `metrics_service_builder.go` | Metrics headless Service builder (Prometheus scrape annotations; targetPort defaults to the numeric port, `WithTargetPortName` opts into a named targetPort) |
 
 ## Working Instructions
 

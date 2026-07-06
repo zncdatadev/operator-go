@@ -35,14 +35,15 @@ import (
 //
 // Override defaults with WithScheme() and WithPath().
 type MetricsServiceBuilder struct {
-	resourceName string
-	namespace    string
-	port         int32
-	portName     string
-	labels       map[string]string
-	selector     map[string]string
-	scheme       string
-	path         string
+	resourceName   string
+	namespace      string
+	port           int32
+	portName       string
+	targetPortName string
+	labels         map[string]string
+	selector       map[string]string
+	scheme         string
+	path           string
 }
 
 // NewMetricsServiceBuilder creates a builder for a metrics headless service.
@@ -79,6 +80,15 @@ func (b *MetricsServiceBuilder) WithPortName(name string) *MetricsServiceBuilder
 	return b
 }
 
+// WithTargetPortName targets the container port by name instead of by number.
+// By default the Service targets the numeric port; opting into a named
+// targetPort keeps the Service valid if the container port number changes,
+// as long as the container declares a port with the given name.
+func (b *MetricsServiceBuilder) WithTargetPortName(name string) *MetricsServiceBuilder {
+	b.targetPortName = name
+	return b
+}
+
 // WithSelector sets a dedicated pod selector (default: the labels). Use this to decouple the
 // selector from the descriptive labels.
 func (b *MetricsServiceBuilder) WithSelector(selector map[string]string) *MetricsServiceBuilder {
@@ -112,6 +122,11 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 		selector = map[string]string{}
 	}
 
+	targetPort := intstr.FromInt(int(b.port))
+	if b.targetPortName != "" {
+		targetPort = intstr.FromString(b.targetPortName)
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.resourceName + "-metrics",
@@ -126,7 +141,7 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 				{
 					Name:       b.portName,
 					Port:       b.port,
-					TargetPort: intstr.FromInt(int(b.port)),
+					TargetPort: targetPort,
 				},
 			},
 		},
