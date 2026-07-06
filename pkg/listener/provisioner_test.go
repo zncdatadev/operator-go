@@ -87,6 +87,34 @@ var _ = Describe("ListenerProvisioner", func() {
 			))
 		})
 
+		It("should set both annotations when class and listener name are given", func() {
+			provisioner.RegisterVolume(
+				listener.NewVolume("listener", listener.ListenerClassClusterInternal).
+					WithListenerName("my-listener"),
+			)
+			volumes := provisioner.Volumes()
+			annotations := volumes[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations).To(HaveKeyWithValue(
+				listener.ListenerClassAnnotation, "cluster-internal",
+			))
+			Expect(annotations).To(HaveKeyWithValue(
+				listener.AnnotationListenerName, "my-listener",
+			))
+		})
+
+		It("should omit class annotation for by-name registrations", func() {
+			provisioner.RegisterVolume(
+				listener.NewVolume("listener", "").
+					WithListenerName("my-listener"),
+			)
+			volumes := provisioner.Volumes()
+			annotations := volumes[0].Ephemeral.VolumeClaimTemplate.Annotations
+			Expect(annotations).NotTo(HaveKey(listener.ListenerClassAnnotation))
+			Expect(annotations).To(HaveKeyWithValue(
+				listener.AnnotationListenerName, "my-listener",
+			))
+		})
+
 		It("should use EphemeralVolumeSource with correct PVC spec", func() {
 			provisioner.RegisterVolume(
 				listener.NewVolume("listener", listener.ListenerClassClusterInternal),
@@ -128,6 +156,14 @@ var _ = Describe("ListenerProvisioner", func() {
 					listener.NewVolume("vol", listener.ListenerClassExternalStable),
 				)
 			}).To(Panic())
+		})
+
+		It("should panic when neither class nor listener name is set", func() {
+			Expect(func() {
+				provisioner.RegisterVolume(
+					listener.NewVolume("vol", ""),
+				)
+			}).To(PanicWith(ContainSubstring("must set a listener class or a listener name")))
 		})
 
 		It("should return empty volumes when none registered", func() {

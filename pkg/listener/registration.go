@@ -32,6 +32,9 @@ type VolumeRegistration struct {
 }
 
 // NewVolume creates a VolumeRegistration with the given volume name and listener class.
+// The class may be empty when the volume references a pre-created Listener by name
+// via WithListenerName; a registration with neither a class nor a listener name is
+// rejected by ListenerProvisioner.RegisterVolume.
 func NewVolume(name string, class ListenerClass) *VolumeRegistration {
 	return &VolumeRegistration{
 		volumeName:    name,
@@ -52,9 +55,14 @@ func (r *VolumeRegistration) WithListenerName(name string) *VolumeRegistration {
 }
 
 // buildAnnotations constructs the PVC template annotations for this registration.
+// The class annotation is omitted when the listener class is empty (by-name
+// registrations): an empty class would at best be noise and at worst confuse
+// the listener-operator CSI provisioner.
 func (r *VolumeRegistration) buildAnnotations() map[string]string {
-	annotations := map[string]string{
-		ListenerClassAnnotation: string(r.listenerClass),
+	annotations := map[string]string{}
+
+	if r.listenerClass != "" {
+		annotations[ListenerClassAnnotation] = string(r.listenerClass)
 	}
 
 	if r.scope != nil {
