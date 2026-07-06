@@ -18,6 +18,7 @@ package reconciler_test
 
 import (
 	"context"
+	"encoding/json"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,6 +37,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -778,6 +780,157 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(podSpec.SecurityContext).To(BeNil())
 		Expect(podSpec.Containers).NotTo(BeEmpty())
 		Expect(podSpec.Containers[0].SecurityContext).To(BeNil())
+	})
+})
+
+var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumption", func() {
+	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
+	var buildCtx *reconciler.RoleGroupBuildContext
+
+	// configAffinity is the affinity declared in the CRD role group config (as RawExtension).
+	configAffinity := &corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+				{
+					TopologyKey: corev1.LabelHostname,
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app.kubernetes.io/instance": "test-cluster"},
+					},
+				},
+			},
+		},
+	}
+
+	rawConfigAffinity := func() *k8sruntime.RawExtension {
+		raw, err := json.Marshal(configAffinity)
+		Expect(err).NotTo(HaveOccurred())
+		return &k8sruntime.RawExtension{Raw: raw}
+	}
+
+	BeforeEach(func() {
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		buildCtx = &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			ClusterLabels:    map[string]string{},
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-default",
+		}
+	})
+
+	It("applies the config affinity (RawExtension) to the pod spec", func() {
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+			Affinity: rawConfigAffinity(),
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Affinity).To(Equal(configAffinity))
+	})
+
+	It("fails the build loudly on invalid affinity JSON", func() {
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+			Affinity: &k8sruntime.RawExtension{Raw: []byte(`{"podAntiAffinity": [`)},
+		}
+
+		_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("affinity"))
+	})
+
+	It("maps gracefulShutdownTimeout to terminationGracePeriodSeconds", func() {
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+			GracefulShutdownTimeout: "30s",
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		grace := resources.StatefulSet.Spec.Template.Spec.TerminationGracePeriodSeconds
+		Expect(grace).NotTo(BeNil())
+		Expect(*grace).To(Equal(int64(30)))
+	})
+
+	It("fails the build loudly on an unparsable gracefulShutdownTimeout", func() {
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+			GracefulShutdownTimeout: "not-a-duration",
+		}
+
+		_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).To(HaveOccurred())
+		// The error names the field and the offending value.
+		Expect(err.Error()).To(ContainSubstring("gracefulShutdownTimeout"))
+		Expect(err.Error()).To(ContainSubstring("not-a-duration"))
+	})
+
+	It("fails the build loudly on a zero or negative gracefulShutdownTimeout", func() {
+		for _, timeout := range []string{"0s", "-30s"} {
+			buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+				GracefulShutdownTimeout: timeout,
+			}
+
+			_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+			Expect(err).To(HaveOccurred(), "timeout %q must be rejected", timeout)
+			Expect(err.Error()).To(ContainSubstring("gracefulShutdownTimeout"))
+			Expect(err.Error()).To(ContainSubstring(timeout))
+			Expect(err.Error()).To(ContainSubstring("must be a positive duration"))
+		}
+	})
+
+	It("leaves affinity and terminationGracePeriodSeconds unset when the config fields are empty", func() {
+		// Config present but with neither affinity nor gracefulShutdownTimeout set. Backward
+		// compatible: products that post-process the built StatefulSet with
+		// `if podSpec.Affinity == nil { ... }` default guards remain correct.
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		podSpec := resources.StatefulSet.Spec.Template.Spec
+		Expect(podSpec.Affinity).To(BeNil())
+		Expect(podSpec.TerminationGracePeriodSeconds).To(BeNil())
+	})
+
+	It("leaves the pod spec untouched when the whole role group config is nil", func() {
+		Expect(buildCtx.RoleGroupSpec.Config).To(BeNil())
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		podSpec := resources.StatefulSet.Spec.Template.Spec
+		Expect(podSpec.Affinity).To(BeNil())
+		Expect(podSpec.TerminationGracePeriodSeconds).To(BeNil())
+	})
+
+	It("lets a PodOverrides affinity win over the config affinity", func() {
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+			Affinity: rawConfigAffinity(),
+		}
+		overrideAffinity := &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{Key: "disktype", Operator: corev1.NodeSelectorOpIn, Values: []string{"ssd"}},
+							},
+						},
+					},
+				},
+			},
+		}
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Affinity: overrideAffinity},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		// The builder applies PodOverrides last, so the user's pod override replaces the
+		// config-declared affinity.
+		Expect(resources.StatefulSet.Spec.Template.Spec.Affinity).To(Equal(overrideAffinity))
 	})
 })
 

@@ -18,7 +18,9 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
@@ -531,15 +533,53 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		stsBuilder.WithServiceAccount(buildCtx.ServiceAccountName)
 	}
 
-	// Set resources if configured
+	// Wire the role group's declared runtime config (commons RoleGroupConfigSpec) into the
+	// StatefulSet. All of these land on the builder BEFORE pod overrides take effect: the
+	// builder applies PodOverrides last in Build(), so a user-supplied pod override (e.g. an
+	// affinity in podOverrides) always keeps precedence over the config-declared value.
 	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
-	if roleGroupConfig != nil && roleGroupConfig.Resources != nil {
-		stsBuilder.WithResources(roleGroupConfig.Resources)
-		// Opt-in data PVC: when a product sets StorageMountPath, build a VolumeClaimTemplate
-		// from the configured storage and mount it, so the volume/mount contract is enforced
-		// by the builder instead of being hand-assembled by each product.
-		if h.StorageMountPath != "" && roleGroupConfig.Resources.Storage != nil {
-			stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
+	if roleGroupConfig != nil {
+		if roleGroupConfig.Resources != nil {
+			stsBuilder.WithResources(roleGroupConfig.Resources)
+			// Opt-in data PVC: when a product sets StorageMountPath, build a VolumeClaimTemplate
+			// from the configured storage and mount it, so the volume/mount contract is enforced
+			// by the builder instead of being hand-assembled by each product.
+			if h.StorageMountPath != "" && roleGroupConfig.Resources.Storage != nil {
+				stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
+			}
+		}
+
+		// Affinity: the CRD carries it as a schema-free RawExtension holding a corev1.Affinity.
+		// Invalid JSON fails the build loudly — silently dropping a user's scheduling
+		// constraints could place pods on nodes the user explicitly excluded (same loud-failure
+		// stance as a Vector misconfiguration). Backward compatible: the framework sets affinity
+		// only when the CRD config provides one, so products that post-process the built
+		// StatefulSet with `if podSpec.Affinity == nil { ... }` default guards remain correct.
+		if roleGroupConfig.Affinity != nil && len(roleGroupConfig.Affinity.Raw) > 0 {
+			affinity := &corev1.Affinity{}
+			if err := json.Unmarshal(roleGroupConfig.Affinity.Raw, affinity); err != nil {
+				return nil, fmt.Errorf("invalid affinity in role group config (role %q, group %q): %w",
+					buildCtx.RoleName, buildCtx.RoleGroupName, err)
+			}
+			stsBuilder.WithAffinity(affinity)
+		}
+
+		// GracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds (see
+		// docs/architecture.md §4.11.2 Graceful Shutdown). An unparsable or non-positive
+		// duration fails the build loudly rather than silently falling back. A positive
+		// sub-second duration rounds up to 1s so it never truncates to 0 (which would mean
+		// immediate SIGKILL). Empty leaves the pod spec untouched (k8s default of 30s applies).
+		if roleGroupConfig.GracefulShutdownTimeout != "" {
+			d, err := time.ParseDuration(roleGroupConfig.GracefulShutdownTimeout)
+			if err != nil {
+				return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): %w",
+					roleGroupConfig.GracefulShutdownTimeout, buildCtx.RoleName, buildCtx.RoleGroupName, err)
+			}
+			if d <= 0 {
+				return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): must be a positive duration",
+					roleGroupConfig.GracefulShutdownTimeout, buildCtx.RoleName, buildCtx.RoleGroupName)
+			}
+			stsBuilder.WithTerminationGracePeriod(int64((d + time.Second - 1) / time.Second))
 		}
 	}
 
