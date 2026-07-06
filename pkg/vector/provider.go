@@ -19,6 +19,8 @@ package vector
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	corev1 "k8s.io/api/core/v1"
@@ -46,8 +48,9 @@ func WithDataVolumeSize(quantity resource.Quantity) ProviderOption {
 
 // WithProducers sets the names of the log-producer containers. The provider creates the shared
 // log volume and RW-mounts it on each of these containers (if present in the PodSpec), in
-// addition to RO-mounting it on the Vector container. These are the containers whose log files
-// Vector collects; typically the product's main container.
+// addition to mounting it on the Vector container, whose command pre-creates each producer's
+// per-container log directory. These are the containers whose log files Vector collects;
+// typically the product's main container.
 func WithProducers(containers []string) ProviderOption {
 	return func(p *VectorSidecarProvider) {
 		// Copy so a later caller mutation of the slice can't change the provider's configuration.
@@ -133,11 +136,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 		Name:            p.name,
 		Image:           image,
 		ImagePullPolicy: pullPolicy,
-		Command: []string{
-			VectorSidecarName,
-			"--config",
-			VectorConfigMountPath + "/" + VectorConfigFileName,
-		},
+		Command:         vectorCommand(p.producers),
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      VectorConfigVolumeName,
@@ -149,9 +148,10 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 				MountPath: VectorDataMountPath,
 			},
 			{
+				// Read-write (not read-only): the command above pre-creates the producers'
+				// per-container log directories in this volume before exec'ing vector.
 				Name:      VectorLogVolumeName,
 				MountPath: VectorLogMountPath,
-				ReadOnly:  true,
 			},
 		},
 		ReadinessProbe:  defaultReadinessProbe(),
@@ -186,7 +186,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 
 	// The Vector provider is the single owner of the shared log pipeline: it creates the shared
 	// log emptyDir, RW-mounts it on each declared producer container (so the product writes its
-	// log files there), and RO-mounts it on the Vector container (above). Creating and mounting
+	// log files there), and mounts it on the Vector container (above). Creating and mounting
 	// the volume in one place removes the previous double-owner split (base handler produced,
 	// provider consumed) and makes a double-mount impossible.
 	logVolumeSizeLimit := resource.MustParse(DefaultLogVolumeSize)
@@ -233,8 +233,8 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 
 	sidecar.AddVolumes(podSpec, volumes)
 
-	// RW-mount the shared log volume on each producer container present in the PodSpec (the
-	// Vector container mounts it read-only). Producers are expected to exist by now — the main
+	// RW-mount the shared log volume on each producer container present in the PodSpec.
+	// Producers are expected to exist by now — the main
 	// container always does; a SidecarManager-injected init-container producer must be injected
 	// before Vector (InjectAll ordering).
 	producerMount := corev1.VolumeMount{
@@ -251,6 +251,30 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	}
 
 	return nil
+}
+
+// vectorCommand builds the Vector container command. Vector runs as a native init container
+// (restartPolicy Always) so the kubelet starts it BEFORE the producer containers; that makes
+// it the right place to pre-create each declared producer's log directory
+// ("<LogDir>/<lowercased container>", the stable path convention from
+// productlogging.RenderConfigFile). log4j 1.x's RollingFileAppender and Python's FileHandler
+// do not create parent directories, so without this step their file appenders would fail to
+// open on startup. With no producers declared the command execs vector directly.
+func vectorCommand(producers []string) []string {
+	if len(producers) == 0 {
+		return []string{
+			VectorSidecarName,
+			"--config",
+			VectorConfigMountPath + "/" + VectorConfigFileName,
+		}
+	}
+	dirs := make([]string, 0, len(producers))
+	for _, name := range producers {
+		dirs = append(dirs, path.Join(VectorLogMountPath, strings.ToLower(name)))
+	}
+	script := "mkdir -p " + strings.Join(dirs, " ") +
+		" && exec " + VectorSidecarName + " --config " + VectorConfigMountPath + "/" + VectorConfigFileName
+	return []string{"/bin/sh", "-c", script}
 }
 
 // defaultSecurityContext returns a hardened security context for the Vector container.

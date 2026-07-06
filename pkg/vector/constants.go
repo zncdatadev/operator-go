@@ -43,15 +43,19 @@ const (
 	// VectorDataVolumeName is the name of the Vector data volume.
 	VectorDataVolumeName = "vector-data"
 
-	// VectorDataMountPath is the mount path for Vector data.
-	VectorDataMountPath = "/var/lib/vector"
+	// VectorDataMountPath is the mount path for Vector data. It must match the data_dir in
+	// the generated vector.yaml (the stable pipeline uses /kubedoop/vector/var), otherwise
+	// Vector would persist its checkpoints on the read-only root filesystem and fail.
+	VectorDataMountPath = "/kubedoop/vector/var"
 
 	// VectorDataVolumeSize is the default size for the Vector data volume.
 	VectorDataVolumeSize = "50Mi"
 
-	// VectorLogVolumeName is the canonical name of the shared log volume. The producer side
-	// (the role-group base handler) creates this emptyDir and RW-mounts it on each product
-	// container; the Vector sidecar (the consumer) RO-mounts the same volume by this name.
+	// VectorLogVolumeName is the canonical name of the shared log volume. The Vector provider
+	// creates this emptyDir, RW-mounts it on each declared producer container, and mounts it
+	// on the Vector sidecar as well — read-write there too, because the sidecar (a native init
+	// container that starts before the producers) pre-creates each producer's per-container
+	// log directory ("<LogDir>/<container>") before exec'ing vector.
 	VectorLogVolumeName = "log"
 
 	// VectorLogMountPath is the mount path for the shared log volume on the Vector container.

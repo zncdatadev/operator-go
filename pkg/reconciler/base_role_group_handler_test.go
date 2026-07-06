@@ -1107,7 +1107,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		Expect(logback).NotTo(BeEmpty())
 		Expect(logback).To(ContainSubstring(`<root level="WARN">`))
 		Expect(logback).To(ContainSubstring(`<logger name="org.x" level="DEBUG" />`))
-		Expect(logback).To(ContainSubstring("<file>/kubedoop/log/main.stdout.log</file>"))
+		Expect(logback).To(ContainSubstring("<file>/kubedoop/log/main/main.log4j.xml</file>"))
 		// The aggregator address was not resolved (buildCtx.VectorAggregatorAddress empty), so the
 		// framework leaves vector.yaml to the product.
 		Expect(resources.ConfigMap.Data).NotTo(HaveKey("vector.yaml"))
@@ -1177,7 +1177,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		logback := resources.ConfigMap.Data["logback.xml"]
 		Expect(logback).NotTo(BeEmpty())
 		// No file appender is emitted when Vector is disabled (file logging is coupled to Vector).
-		Expect(logback).NotTo(ContainSubstring("main.stdout.log"))
+		Expect(logback).NotTo(ContainSubstring("main.log4j.xml"))
 		Expect(logback).NotTo(ContainSubstring("RollingFileAppender"))
 
 		// And no shared log volume is created on the pod (the Vector provider owns it and is not
@@ -1187,7 +1187,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		}
 	})
 
-	It("end-to-end: the Vector provider creates the shared log volume, RW-mounts producers, RO-mounts itself", func() {
+	It("end-to-end: the Vector provider creates the shared log volume, RW-mounts producers, mounts itself", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		// The base StatefulSet main container is named after the resource name; declare it as
 		// the logging container so the Vector provider RW-mounts the shared volume on it.
@@ -1262,7 +1262,8 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		}
 		Expect(foundRW).To(BeTrue())
 
-		// The Vector consumer RO-mounts the same volume on its own init container.
+		// The Vector consumer mounts the same volume on its own init container — read-write,
+		// because it pre-creates the producers' per-container log dirs before exec'ing vector.
 		vectorIdx := -1
 		for i := range podSpec.InitContainers {
 			if podSpec.InitContainers[i].Name == "vector" {
@@ -1270,15 +1271,15 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			}
 		}
 		Expect(vectorIdx).To(BeNumerically(">=", 0))
-		var vectorRO bool
+		var vectorMounted bool
 		for _, m := range podSpec.InitContainers[vectorIdx].VolumeMounts {
 			if m.Name == "log" {
-				vectorRO = true
-				Expect(m.ReadOnly).To(BeTrue())
+				vectorMounted = true
+				Expect(m.ReadOnly).To(BeFalse())
 				Expect(m.MountPath).To(Equal(constant.KubedoopLogDir))
 			}
 		}
-		Expect(vectorRO).To(BeTrue())
+		Expect(vectorMounted).To(BeTrue())
 	})
 
 	It("end-to-end: honors a custom shared log volume size via the Vector provider", func() {

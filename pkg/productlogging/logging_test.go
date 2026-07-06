@@ -74,9 +74,10 @@ var _ = Describe("GeneratorFor", func() {
 })
 
 var _ = Describe("RenderConfigFile file path", func() {
-	// constant.KubedoopLogDir carries a trailing slash; the framework-derived file path
-	// (<container>.stdout.log) must collapse to a single slash (no "/kubedoop/log//main.stdout.log").
-	It("renders the framework-derived file appender path with a single slash", func() {
+	// constant.KubedoopLogDir carries a trailing slash; the framework-derived stable file path
+	// ("<LogDir>/<lowercased container>/<container>.<framework suffix>") must collapse to a
+	// single slash (no "/kubedoop/log//main/...").
+	It("renders the framework-derived per-container file appender path with a single slash", func() {
 		for _, fw := range []productlogging.LoggingFramework{
 			productlogging.LoggingFrameworkLogback,
 			productlogging.LoggingFrameworkLog4j,
@@ -85,13 +86,21 @@ var _ = Describe("RenderConfigFile file path", func() {
 		} {
 			_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
 				Framework: fw,
-				Container: "main",
+				Container: "Main", // mixed case: the directory is lowercased, the file keeps the name
 			}, true)
 			Expect(err).NotTo(HaveOccurred(), "framework %s", fw)
-			Expect(content).To(ContainSubstring("/kubedoop/log/main.stdout.log"), "framework %s", fw)
-			Expect(content).NotTo(ContainSubstring("/kubedoop/log//main.stdout.log"), "framework %s", fw)
-			Expect(content).NotTo(ContainSubstring("//main.stdout.log"), "framework %s", fw)
+			expected := "/kubedoop/log/main/Main" + productlogging.LogFileSuffix(fw)
+			Expect(content).To(ContainSubstring(expected), "framework %s", fw)
+			Expect(content).NotTo(ContainSubstring("//main"), "framework %s", fw)
 		}
+	})
+
+	It("derives the framework-owned file names (stable per-framework suffixes)", func() {
+		Expect(productlogging.ContainerLogFileName(productlogging.LoggingFrameworkLog4j, "kafka")).To(Equal("kafka.log4j.xml"))
+		Expect(productlogging.ContainerLogFileName(productlogging.LoggingFrameworkLogback, "zookeeper")).To(Equal("zookeeper.log4j.xml"))
+		Expect(productlogging.ContainerLogFileName(productlogging.LoggingFrameworkLog4j2, "hive")).To(Equal("hive.log4j2.xml"))
+		Expect(productlogging.ContainerLogFileName(productlogging.LoggingFrameworkPython, "superset")).To(Equal("superset.py.json"))
+		Expect(productlogging.ContainerLogDir("Main")).To(Equal("/kubedoop/log/main"))
 	})
 
 	It("omits the file appender when withFileAppender is false (console-only)", func() {
@@ -100,7 +109,7 @@ var _ = Describe("RenderConfigFile file path", func() {
 			Container: "main",
 		}, false)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(content).NotTo(ContainSubstring("main.stdout.log"))
+		Expect(content).NotTo(ContainSubstring("main.log4j.xml"))
 		Expect(content).NotTo(ContainSubstring("RollingFileAppender"))
 	})
 
@@ -113,10 +122,10 @@ var _ = Describe("RenderConfigFile file path", func() {
 		Expect(fileName).To(Equal("log4j.properties"))
 		Expect(content).To(ContainSubstring("log4j.rootLogger=INFO, CONSOLE\n"))
 		Expect(content).NotTo(ContainSubstring("FILE"))
-		Expect(content).NotTo(ContainSubstring("kafka.stdout.log"))
+		Expect(content).NotTo(ContainSubstring("kafka.log4j.xml"))
 	})
 
-	It("wires the log4j FILE appender to the framework-derived path when withFileAppender is true", func() {
+	It("wires the log4j FILE appender (XMLLayout) to the framework-derived path when withFileAppender is true", func() {
 		fileName, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
 			Framework: productlogging.LoggingFrameworkLog4j,
 			Container: "kafka",
@@ -125,13 +134,16 @@ var _ = Describe("RenderConfigFile file path", func() {
 		Expect(fileName).To(Equal("log4j.properties"))
 		Expect(content).To(ContainSubstring("log4j.rootLogger=INFO, CONSOLE, FILE"))
 		Expect(content).To(ContainSubstring("log4j.appender.FILE=org.apache.log4j.RollingFileAppender"))
-		Expect(content).To(ContainSubstring("log4j.appender.FILE.File=/kubedoop/log/kafka.stdout.log"))
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.File=/kubedoop/log/kafka/kafka.log4j.xml"))
 		Expect(content).To(ContainSubstring("log4j.appender.FILE.MaxFileSize=5MB"))
 		Expect(content).To(ContainSubstring("log4j.appender.FILE.MaxBackupIndex=1"))
-		Expect(content).To(ContainSubstring("log4j.appender.FILE.layout=org.apache.log4j.PatternLayout"))
+		// The stable FILE layout is the log4j XMLLayout, which the Vector files_log4j source
+		// edge-parses; no plain-text pattern on the FILE appender.
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout"))
+		Expect(content).NotTo(ContainSubstring("log4j.appender.FILE.layout.ConversionPattern"))
 	})
 
-	It("renders a product-supplied log4j conversion pattern verbatim (Kafka style)", func() {
+	It("renders a product-supplied log4j conversion pattern verbatim on the console appender (Kafka style)", func() {
 		_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
 			Framework: productlogging.LoggingFrameworkLog4j,
 			Container: "kafka",
@@ -139,7 +151,8 @@ var _ = Describe("RenderConfigFile file path", func() {
 		}, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(content).To(ContainSubstring("log4j.appender.CONSOLE.layout.ConversionPattern=[%d] %p %m (%c)%n"))
-		Expect(content).To(ContainSubstring("log4j.appender.FILE.layout.ConversionPattern=[%d] %p %m (%c)%n"))
+		// The FILE appender uses XMLLayout; the pattern only applies to the console appender.
+		Expect(content).To(ContainSubstring("log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout"))
 	})
 })
 
@@ -220,7 +233,7 @@ var _ = Describe("Render with appender thresholds", func() {
 
 	It("renders logback root, loggers and console/file ThresholdFilters", func() {
 		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkLogback)
-		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk.stdout.log"})
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j.xml"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring(`<root level="WARN">`))
 		Expect(out).To(ContainSubstring(`<logger name="org.apache.zookeeper" level="DEBUG" />`))
@@ -232,7 +245,7 @@ var _ = Describe("Render with appender thresholds", func() {
 
 	It("renders log4j root, loggers and appender Thresholds", func() {
 		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkLog4j)
-		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk.stdout.log"})
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j.xml"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring("log4j.rootLogger=WARN, CONSOLE, FILE"))
 		Expect(out).To(ContainSubstring("log4j.appender.CONSOLE.Threshold=INFO"))
@@ -245,7 +258,7 @@ var _ = Describe("Render with appender thresholds", func() {
 
 	It("renders log4j2 root, loggers and threshold filters", func() {
 		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkLog4j2)
-		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk.stdout.log"})
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j.xml"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring("rootLogger.level=WARN"))
 		Expect(out).To(ContainSubstring("appenders=console,file"))
@@ -260,7 +273,7 @@ var _ = Describe("Render with appender thresholds", func() {
 
 	It("renders python root, loggers and a file handler", func() {
 		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkPython)
-		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk.stdout.log"})
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j.xml"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring("'level': 'WARNING'")) // root WARN -> WARNING
 		Expect(out).To(ContainSubstring("'org.apache.zookeeper'"))

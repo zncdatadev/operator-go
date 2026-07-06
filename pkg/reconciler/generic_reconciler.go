@@ -536,7 +536,8 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 
 	// The handler declares which containers produce logs and the shared log volume size. The
 	// Vector provider is the single owner of the shared log pipeline: it creates the volume,
-	// RW-mounts it on the producer containers, RO-mounts it on itself, and adds the sidecar.
+	// RW-mounts it on the producer containers, mounts it on itself (pre-creating the per-container
+	// log dirs, as it starts first), and adds the sidecar.
 	var producers []productlogging.ContainerLogging
 	var logVolumeSize string
 	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {

@@ -298,6 +298,7 @@ func TestProvider_Inject_Command(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
+	// No declared producers: no directories to pre-create, exec vector directly.
 	cmd := vectorInitContainer(podSpec).Command
 	expectedCmd := []string{"vector", "--config", VectorConfigMountPath + "/" + VectorConfigFileName}
 	if len(cmd) != len(expectedCmd) {
@@ -307,6 +308,36 @@ func TestProvider_Inject_Command(t *testing.T) {
 		if c != expectedCmd[i] {
 			t.Errorf("Command[%d] = %q, want %q", i, c, expectedCmd[i])
 		}
+	}
+}
+
+// TestProvider_Inject_CommandPreCreatesProducerLogDirs asserts the sidecar (which starts
+// before the producers, being a native init container) pre-creates each declared producer's
+// per-container log directory (lowercased, matching the stable "<LogDir>/<container>/<file>"
+// path convention) before exec'ing vector. log4j 1.x and python's FileHandler do not create
+// parent directories.
+func TestProvider_Inject_CommandPreCreatesProducerLogDirs(t *testing.T) {
+	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]string{"Main", "sidekick"}))
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "Main", Image: "main-image"},
+			{Name: "sidekick", Image: "sidekick-image"},
+		},
+	}
+	if err := p.Inject(podSpec, &sidecar.SidecarConfig{Enabled: true}); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	cmd := vectorInitContainer(podSpec).Command
+	if len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" {
+		t.Fatalf("Command = %v, want a /bin/sh -c script", cmd)
+	}
+	script := cmd[2]
+	if !strings.Contains(script, "mkdir -p /kubedoop/log/main /kubedoop/log/sidekick") {
+		t.Errorf("script must pre-create lowercased per-producer log dirs, got %q", script)
+	}
+	if !strings.Contains(script, "exec vector --config "+VectorConfigMountPath+"/"+VectorConfigFileName) {
+		t.Errorf("script must exec vector with the mounted config, got %q", script)
 	}
 }
 
@@ -338,14 +369,15 @@ func TestProvider_Inject_VolumeMounts(t *testing.T) {
 		}
 	}
 
-	// Config and shared-log mounts must be read-only on the Vector (consumer) container.
+	// The config mount is read-only; the shared log mount must be read-write because the
+	// sidecar pre-creates the producers' per-container log directories before exec'ing vector.
 	for _, m := range volumeMounts {
 		if m.Name == VectorConfigVolumeName && !m.ReadOnly {
 			t.Error("config volume mount should be read-only")
 		}
 		if m.Name == VectorLogVolumeName {
-			if !m.ReadOnly {
-				t.Error("log volume mount should be read-only")
+			if m.ReadOnly {
+				t.Error("log volume mount must be read-write (the sidecar pre-creates log dirs)")
 			}
 			if m.MountPath != VectorLogMountPath {
 				t.Errorf("log mount path = %q, want %q", m.MountPath, VectorLogMountPath)
@@ -456,7 +488,7 @@ func TestProvider_Inject_ConfigMapVolume(t *testing.T) {
 
 // TestProvider_Inject_NoProducers_NoProducerMount asserts that with no configured producers the
 // provider does not RW-mount the shared log volume on any product container (it still creates the
-// volume and RO-mounts it on the Vector container).
+// volume and mounts it on the Vector container).
 func TestProvider_Inject_NoProducers_NoProducerMount(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
@@ -510,7 +542,8 @@ func TestProvider_Inject_ProducerGetsRWLogMount(t *testing.T) {
 }
 
 // TestProvider_Inject_LogMountOnVectorContainer asserts the consumer side: the shared log
-// volume is RO-mounted on the Vector container at the framework-canonical log dir.
+// volume is mounted read-write on the Vector container at the framework-canonical log dir
+// (read-write because the sidecar pre-creates the producers' log dirs before exec'ing vector).
 func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
@@ -532,8 +565,8 @@ func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 	for _, m := range c.VolumeMounts {
 		if m.Name == VectorLogVolumeName {
 			found = true
-			if !m.ReadOnly {
-				t.Error("vector log mount should be read-only")
+			if m.ReadOnly {
+				t.Error("vector log mount must be read-write (the sidecar pre-creates log dirs)")
 			}
 			if m.MountPath != VectorLogMountPath {
 				t.Errorf("log mount path = %q, want %q", m.MountPath, VectorLogMountPath)
@@ -541,7 +574,7 @@ func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("vector container should RO-mount the shared log volume")
+		t.Error("vector container should mount the shared log volume")
 	}
 }
 

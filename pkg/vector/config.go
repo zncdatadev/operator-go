@@ -19,12 +19,16 @@ package vector
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
 // VectorConfigData contains parameters for vector.yaml generation.
 type VectorConfigData struct {
-	// LogDir is the directory where application log files are written.
+	// LogDir is the directory under which each producer container writes its log files
+	// ("<LogDir>/<container>/<file>", see productlogging.ContainerLogFileName). A trailing
+	// slash is appended when missing: the stable pipeline's source globs and container/file
+	// extraction are rendered as "<LogDir>*/*.<suffix>" and "^<LogDir>(?P<container>...)".
 	LogDir string
 
 	// AggregatorAddress is the address of the Vector aggregator.
@@ -52,6 +56,9 @@ func RenderVectorConfig(data VectorConfigData) (string, error) {
 	if data.LogDir == "" {
 		return "", fmt.Errorf("LogDir is required")
 	}
+	// The template composes per-container globs as "<LogDir>*/*.<suffix>", so LogDir must end
+	// with exactly one slash (constant.KubedoopLogDir already carries one).
+	data.LogDir = strings.TrimRight(data.LogDir, "/") + "/"
 
 	tmpl, err := template.New(VectorSidecarName).Funcs(template.FuncMap{
 		"APIPort": func() int { return VectorAPIPort },

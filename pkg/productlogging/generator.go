@@ -24,19 +24,17 @@ import (
 )
 
 // boundedFileDefaults applies sensible defaults to the rolling-file bounds so a generated
-// file appender can never grow without limit. Takes raw fields (rather than an options
-// struct) so both RenderOptions and LogbackOptions callers can share it.
-func boundedFileDefaults(maxFileSize string, maxHistory int, totalSizeCap string) (string, int, string) {
+// file appender can never grow without limit (total usage <= maxFileSize * (maxHistory + 1)).
+// Takes raw fields (rather than an options struct) so both RenderOptions and LogbackOptions
+// callers can share it.
+func boundedFileDefaults(maxFileSize string, maxHistory int) (string, int) {
 	if maxFileSize == "" {
 		maxFileSize = "5MB"
 	}
 	if maxHistory <= 0 {
 		maxHistory = 1
 	}
-	if totalSizeCap == "" {
-		totalSizeCap = "8MB"
-	}
-	return maxFileSize, maxHistory, totalSizeCap
+	return maxFileSize, maxHistory
 }
 
 // parseSizeBytes converts a size string like "5MB" / "512KB" / "1024" into bytes, returning
@@ -176,12 +174,16 @@ func GenerateLogback(configs map[string]LoggerConfig) (string, error) {
 // output of GenerateLogback.
 type LogbackOptions struct {
 	// FileOutputPath, when set, adds a bounded RollingFileAppender writing to this path in
-	// addition to the console appender. The filename must match the log consumer's glob —
-	// e.g. the Vector sidecar collects "<LogDir>/*.stdout.log", so pass
-	// "<LogDir>/<app>.stdout.log". Without this, log aggregation has nothing to read.
+	// addition to the console appender. The file appender emits log4j-compatible XMLLayout
+	// events, so the path must match the Vector "files_log4j" glob
+	// ("<LogDir>*/*.log4j.xml") — pass "<LogDir>/<lowercased container>/<container>.log4j.xml"
+	// (see ContainerLogDir / ContainerLogFileName). Without this, log aggregation has nothing
+	// to read.
 	FileOutputPath string
 
-	// Pattern overrides the encoder pattern for both appenders.
+	// Pattern overrides the console encoder pattern. The FILE appender always uses the
+	// log4j-compatible XMLLayout (machine-parsed by Vector), so the pattern does not apply
+	// to it.
 	Pattern string
 
 	// RootLevel overrides the level of the root logger. Defaults to INFO when empty.
@@ -195,8 +197,10 @@ type LogbackOptions struct {
 	// applies when FileOutputPath is set. Empty means no threshold.
 	FileLevel LogLevel
 
-	// MaxFileSize / MaxHistory / TotalSizeCap bound the rolling file appender so it cannot
-	// exhaust the log volume. Sensible defaults are applied when left zero.
+	// MaxFileSize / MaxHistory bound the rolling file appender so it cannot exhaust the log
+	// volume (total usage <= MaxFileSize * (MaxHistory + 1)). Sensible defaults are applied
+	// when left zero. TotalSizeCap is retained for API compatibility but unused: the stable
+	// FixedWindowRollingPolicy is already bounded by the other two knobs.
 	MaxFileSize  string
 	MaxHistory   int
 	TotalSizeCap string
@@ -223,21 +227,27 @@ func GenerateLogbackWithOptions(configs map[string]LoggerConfig, opts LogbackOpt
 
 	hasFile := opts.FileOutputPath != ""
 	if hasFile {
-		maxFileSize, maxHistory, totalSizeCap := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
+		// The stable (v0.12.6) FILE appender: log4j-compatible XMLLayout (the Vector files_log4j
+		// source edge-parses "<log4j:event>" records) with a bounded FixedWindowRollingPolicy
+		// ("<file>.%i" backups). Total disk usage is bounded by maxFileSize * (maxIndex + 1),
+		// so TotalSizeCap does not apply here.
+		maxFileSize, maxHistory := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory)
 		fmt.Fprintf(&sb, `
   <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
     <file>%s</file>
-%s    <encoder>
-      <pattern>%s</pattern>
+%s    <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+      <layout class="ch.qos.logback.classic.log4j.XMLLayout" />
     </encoder>
-    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-      <fileNamePattern>%s.%%d{yyyy-MM-dd}.%%i</fileNamePattern>
-      <maxFileSize>%s</maxFileSize>
-      <maxHistory>%d</maxHistory>
-      <totalSizeCap>%s</totalSizeCap>
+    <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+      <minIndex>1</minIndex>
+      <maxIndex>%d</maxIndex>
+      <fileNamePattern>%s.%%i</fileNamePattern>
     </rollingPolicy>
+    <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+      <maxFileSize>%s</maxFileSize>
+    </triggeringPolicy>
   </appender>
-`, escapeXML(opts.FileOutputPath), logbackThresholdFilter(opts.FileLevel), pattern, escapeXML(opts.FileOutputPath), maxFileSize, maxHistory, totalSizeCap)
+`, escapeXML(opts.FileOutputPath), logbackThresholdFilter(opts.FileLevel), maxHistory, escapeXML(opts.FileOutputPath), maxFileSize)
 	}
 
 	rootLevel := opts.RootLevel
@@ -362,10 +372,11 @@ func renderLogback(cfg LogConfig, opts RenderOptions) (string, error) {
 
 // renderLog4j renders log4j 1.x properties (log4j 1.2 / reload4j) from the framework-neutral
 // model. When opts.FileOutputPath is set it adds a bounded RollingFileAppender wired to the
-// root logger. Both appenders use a plain-text PatternLayout so the file output matches the
-// Vector "files_stdout" consumer (see LogFileSuffix). Patterns are emitted verbatim: '%' has
-// no special meaning in log4j properties values, so conversion patterns like
-// "[%d] %p %m (%c)%n" need no escaping.
+// root logger. The console appender uses a plain-text PatternLayout; the FILE appender uses
+// the stable org.apache.log4j.xml.XMLLayout so the file output matches the Vector
+// "files_log4j" edge parser (see LogFileSuffix). Patterns are emitted verbatim: '%' has no
+// special meaning in log4j properties values, so conversion patterns like "[%d] %p %m (%c)%n"
+// need no escaping.
 func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
 	pattern := opts.Pattern
 	if pattern == "" {
@@ -395,7 +406,9 @@ func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
 
 	if hasFile {
 		// Bounded rollover (MaxFileSize + MaxBackupIndex) so the file cannot grow without limit.
-		maxFileSize, maxHistory, _ := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
+		// The stable (v0.12.6) layout is org.apache.log4j.xml.XMLLayout: Vector's files_log4j
+		// source multiline-assembles the "<log4j:event>" records and edge-parses them.
+		maxFileSize, maxHistory := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory)
 		sb.WriteString("\nlog4j.appender.FILE=org.apache.log4j.RollingFileAppender\n")
 		if cfg.FileLevel != "" {
 			fmt.Fprintf(&sb, "log4j.appender.FILE.Threshold=%s\n", cfg.FileLevel)
@@ -403,8 +416,7 @@ func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
 		fmt.Fprintf(&sb, "log4j.appender.FILE.File=%s\n", opts.FileOutputPath)
 		fmt.Fprintf(&sb, "log4j.appender.FILE.MaxFileSize=%s\n", maxFileSize)
 		fmt.Fprintf(&sb, "log4j.appender.FILE.MaxBackupIndex=%d\n", maxHistory)
-		sb.WriteString("log4j.appender.FILE.layout=org.apache.log4j.PatternLayout\n")
-		fmt.Fprintf(&sb, "log4j.appender.FILE.layout.ConversionPattern=%s\n", pattern)
+		sb.WriteString("log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout\n")
 	}
 
 	if len(cfg.Loggers) == 0 {
@@ -455,13 +467,14 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 	}
 	sb.WriteString("\n")
 	if hasFile {
-		maxFileSize, maxHistory, _ := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
+		// The stable (v0.12.6) FILE appender: log4j2 XMLLayout ("<Event>" records edge-parsed by
+		// Vector's files_log4j2 source) with the plain "<file>.%i" rollover pattern.
+		maxFileSize, maxHistory := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory)
 		sb.WriteString("appender.file.type=RollingFile\n")
 		sb.WriteString("appender.file.name=FILE\n")
 		fmt.Fprintf(&sb, "appender.file.fileName=%s\n", opts.FileOutputPath)
-		fmt.Fprintf(&sb, "appender.file.filePattern=%s.%%d{yyyy-MM-dd}.%%i\n", opts.FileOutputPath)
-		sb.WriteString("appender.file.layout.type=PatternLayout\n")
-		fmt.Fprintf(&sb, "appender.file.layout.pattern=%s\n", pattern)
+		fmt.Fprintf(&sb, "appender.file.filePattern=%s.%%i\n", opts.FileOutputPath)
+		sb.WriteString("appender.file.layout.type=XMLLayout\n")
 		if cfg.FileLevel != "" {
 			sb.WriteString("appender.file.filter.threshold.type=ThresholdFilter\n")
 			fmt.Fprintf(&sb, "appender.file.filter.threshold.level=%s\n", cfg.FileLevel)
@@ -492,7 +505,13 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 }
 
 // renderPython renders a Python logging.config dictConfig from the framework-neutral model.
-// When opts.FileOutputPath is set it adds a file handler wired to the root logger.
+// When opts.FileOutputPath is set it adds a rotating file handler wired to the root logger,
+// writing one JSON object per line with the keys the Vector "files_py" edge parser expects
+// (asctime / name / levelname / message; see processed_files_py in pkg/vector). v0.12.6 had
+// no python generator, so this matches the vector template's files_py contract directly.
+// The JSON is produced by a plain %-format string: a message containing JSON-special
+// characters (quotes, backslashes) yields an unparsable line, which the Vector transform
+// degrades gracefully (raw line kept as .message plus a .errors entry).
 func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 	rootLevel := toPythonLogLevel(cfg.RootLevel)
 	consoleLevel := string(LogLevelDebug)
@@ -510,6 +529,11 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 	sb.WriteString("        'standard': {\n")
 	sb.WriteString("            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'\n")
 	sb.WriteString("        },\n")
+	if hasFile {
+		sb.WriteString("        'json': {\n")
+		sb.WriteString(`            'format': '{"asctime": "%(asctime)s", "name": "%(name)s", "levelname": "%(levelname)s", "message": "%(message)s"}'` + "\n")
+		sb.WriteString("        },\n")
+	}
 	sb.WriteString("    },\n")
 	sb.WriteString("    'handlers': {\n")
 	sb.WriteString("        'console': {\n")
@@ -522,7 +546,7 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 		if cfg.FileLevel != "" {
 			fileLevel = toPythonLogLevel(cfg.FileLevel)
 		}
-		maxFileSize, maxHistory, _ := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory, opts.TotalSizeCap)
+		maxFileSize, maxHistory := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory)
 		maxBytes := parseSizeBytes(maxFileSize, 5*1024*1024)
 		sb.WriteString("        'file': {\n")
 		fmt.Fprintf(&sb, "            'level': '%s',\n", fileLevel)
@@ -531,7 +555,7 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 		// Bound the file so rotation is actually enabled (maxBytes=0 would disable it).
 		fmt.Fprintf(&sb, "            'maxBytes': %d,\n", maxBytes)
 		fmt.Fprintf(&sb, "            'backupCount': %d,\n", maxHistory)
-		sb.WriteString("            'formatter': 'standard',\n")
+		sb.WriteString("            'formatter': 'json',\n")
 		sb.WriteString("        },\n")
 	}
 	sb.WriteString("    },\n")
