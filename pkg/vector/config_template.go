@@ -83,7 +83,7 @@ transforms:
     inputs:
       - "files_stdout"
     source: |
-      .message = string!(.message) ?? ""
+      .message = string(.message) ?? ""
       .tags.log_type = "stdout"
 
   parse_stderr:
@@ -91,7 +91,7 @@ transforms:
     inputs:
       - "files_stderr"
     source: |
-      .message = string!(.message) ?? ""
+      .message = string(.message) ?? ""
       .tags.log_type = "stderr"
 
   parse_log4j:
@@ -99,7 +99,7 @@ transforms:
     inputs:
       - "files_log4j"
     source: |
-      .message = string!(.message) ?? ""
+      .message = string(.message) ?? ""
       .tags.log_type = "log4j"
 
   parse_log4j2:
@@ -107,7 +107,7 @@ transforms:
     inputs:
       - "files_log4j2"
     source: |
-      .message = string!(.message) ?? ""
+      .message = string(.message) ?? ""
       .tags.log_type = "log4j2"
 
   parse_py:
@@ -115,7 +115,7 @@ transforms:
     inputs:
       - "files_py"
     source: |
-      .message = string!(.message) ?? ""
+      .message = string(.message) ?? ""
       .tags.log_type = "py"
 
   parse_airlift:
@@ -123,7 +123,7 @@ transforms:
     inputs:
       - "files_airlift"
     source: |
-      .message = string!(.message) ?? ""
+      .message = string(.message) ?? ""
       .tags.log_type = "airlift"
 
   enrich_metadata:
