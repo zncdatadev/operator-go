@@ -257,6 +257,21 @@ Precedence (low → high): **product config < role overrides < role group overri
 
 Use `ProductConfig` for product-intrinsic and derived config (e.g. a ZooKeeper connection string built from the actual resources, a JVM heap sized from resources, role-specific keys) so the product no longer hand-builds ConfigMaps/StatefulSets. Use `ProductDefaulter` for stable, user-facing typed spec defaults.
 
+### 11. Discovery ConfigMaps
+Every product operator publishes "discovery ConfigMaps" — cluster-scoped ConfigMaps (usually named `<cluster>`, optionally suffixed like `<cluster>-nodeport`) carrying client connection info. `reconciler.EnsureDiscoveryConfigMap` (in `pkg/reconciler/discovery.go`) owns the ensure semantics; the product owns computing the data map (address aggregation differs per product) and typically calls it from a `ClusterExtension.PostReconcile`:
+
+```go
+err := reconciler.EnsureDiscoveryConfigMap(ctx, client, scheme, cr, cr.GetName(),
+    map[string]string{"KAFKA": bootstrapServers},
+    reconciler.WithDiscoveryProductName("kafka"),
+    reconciler.WithDiscoveryExtraLabels(map[string]string{
+        reconciler.ClusterLabelKey("kafka.kubedoop.dev"): cr.GetName(),
+    }),
+)
+```
+
+The helper is idempotent (CreateOrUpdate), sets a controller owner reference (the ConfigMap is GC'd with the CR), and applies canonical labels (`app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`, plus `app.kubernetes.io/name` via `WithDiscoveryProductName`); extra labels/annotations are merged via options, but canonical labels always win. Data is replaced wholesale.
+
 ## Building a New Operator
 
 1. **Define CRD** - Create API types implementing `ClusterInterface` (embed `ClusterObject` for defaults)
