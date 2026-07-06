@@ -187,8 +187,10 @@ func TestRenderVectorConfig_APIDefaults(t *testing.T) {
 	if !strings.Contains(result, "enabled: true") {
 		t.Error("RenderVectorConfig() API should be enabled")
 	}
-	if !strings.Contains(result, "127.0.0.1:8686") {
-		t.Error("RenderVectorConfig() API address should be 127.0.0.1:8686")
+	// The API must bind all interfaces: the readiness probe is a kubelet httpGet against
+	// the pod IP, which a loopback-only bind can never answer.
+	if !strings.Contains(result, "0.0.0.0:8686") {
+		t.Error("RenderVectorConfig() API address should be 0.0.0.0:8686")
 	}
 }
 

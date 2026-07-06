@@ -19,7 +19,10 @@ package vector
 const vectorConfigTemplate = `---
 api:
   enabled: true
-  address: "127.0.0.1:{{APIPort}}"
+  # Bind on all interfaces: the container's readiness probe is an httpGet issued by the
+  # kubelet against the POD IP, which a loopback-only bind can never answer (the sidecar
+  # would stay NotReady forever, wedging the whole pod).
+  address: "0.0.0.0:{{APIPort}}"
 
 sources:
   files_stdout:
