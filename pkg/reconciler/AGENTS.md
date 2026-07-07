@@ -10,6 +10,7 @@ GenericReconciler framework for operator reconciliation logic and state manageme
 | File | Purpose |
 |------|---------|
 | `generic_reconciler.go` | Core reconciliation framework |
+| `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec/data copy that preserves Kubernetes immutable fields (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
 | `reconciler.go` | Reconciler interface definitions |
 | `status.go` | Status management utilities |
 | `finalizer.go` | Finalizer handling |

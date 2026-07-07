@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1662,5 +1663,272 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		props := captured.ConfigFiles["config.properties"]
 		Expect(props).To(HaveKeyWithValue("shared", "from-crd"))
 		Expect(props).NotTo(HaveKey("product-only"))
+	})
+})
+
+// Regression coverage for issue #526: applyResource was create-only — the CreateOrUpdate
+// mutate func only set the owner reference, so after initial creation no CR change ever
+// reached the StatefulSet/ConfigMap/Service/extras. These specs drive two reconciles with a
+// handler whose desired output changes in between and assert the change propagates, plus the
+// copy rules of copyDesiredState: wholesale labels, merged (foreign-preserving) annotations,
+// immutable StatefulSet fields kept from live, and allocated Service NodePorts carried over.
+var _ = Describe("GenericReconciler update propagation (issue #526)", func() {
+	var (
+		namespace    string
+		crName       string
+		resourceName string
+		mockCR       *testutil.MockCluster
+		fakeRecorder *record.FakeRecorder
+	)
+
+	BeforeEach(func() {
+		namespace = testNamespace
+		crName = fmt.Sprintf("update-prop-cr-%d", time.Now().UnixNano())
+		resourceName = reconciler.RoleGroupResourceName(crName, "broker", "default")
+		mockCR = testutil.NewMockCluster(crName, namespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"broker": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(1))},
+					},
+				},
+			})
+		Expect(k8sClient.Create(ctx, mockCR)).To(Succeed())
+		// Dedicated recorder so event assertions don't race with other specs sharing the
+		// suite-level recorder.
+		fakeRecorder = record.NewFakeRecorder(100)
+	})
+
+	AfterEach(func() {
+		_ = k8sClient.Delete(ctx, mockCR)
+		// envtest runs no garbage collector, so reclaim the owned resources by name.
+		meta := metav1.ObjectMeta{Name: resourceName, Namespace: namespace}
+		_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: meta})
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: meta})
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-extra", Namespace: namespace}})
+	})
+
+	// newReconciler wires a GenericReconciler whose handler defers to build, so specs can
+	// change the desired output between reconciles by mutating captured variables.
+	newReconciler := func(build func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				return build(buildCtx), nil
+			},
+		}
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         fakeRecorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace)),
+		}
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		return r
+	}
+
+	reconcile := func(r *reconciler.GenericReconciler[*testutil.ClusterWrapper]) {
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	drainEvents := func() []string {
+		var events []string
+		for {
+			select {
+			case e := <-fakeRecorder.Events:
+				events = append(events, e)
+			default:
+				return events
+			}
+		}
+	}
+
+	It("propagates StatefulSet replicas and template changes and emits an Update event", func() {
+		replicas := int32(1)
+		envValue := "v1"
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			sts := testutil.NewTestStatefulSet(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			sts.Spec.Replicas = ptr.To(replicas)
+			sts.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "PROPAGATION_PROBE", Value: envValue}}
+			return &reconciler.RoleGroupResources{StatefulSet: sts}
+		})
+
+		reconcile(r)
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, sts)).To(Succeed())
+		Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
+
+		// The CR changed (e.g. kubectl patch replicas 1 -> 3): the handler now builds
+		// different desired state, and the second reconcile must propagate it.
+		replicas = 3
+		envValue = "v2"
+		Expect(drainEvents()).To(ContainElement(ContainSubstring("Created")))
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, sts)).To(Succeed())
+		Expect(*sts.Spec.Replicas).To(Equal(int32(3)), "replicas change must reach the live StatefulSet")
+		Expect(sts.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "PROPAGATION_PROBE", Value: "v2"}), "template change must reach the live StatefulSet")
+
+		// OperationResultUpdated surfaced through the event plumbing.
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("Updated"),
+			ContainSubstring(resourceName),
+		)))
+	})
+
+	It("propagates ConfigMap data changes, including removed keys", func() {
+		data := map[string]string{"keep": "one", "remove": "two"}
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			return &reconciler.RoleGroupResources{
+				ConfigMap: testutil.NewTestConfigMapWithData(buildCtx.ResourceName, buildCtx.ClusterNamespace, data),
+			}
+		})
+
+		reconcile(r)
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, cm)).To(Succeed())
+		Expect(cm.Data).To(HaveKeyWithValue("remove", "two"))
+
+		data = map[string]string{"keep": "changed"}
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, cm)).To(Succeed())
+		// Data is replaced wholesale: the changed value propagates AND the removed key
+		// disappears from the live ConfigMap.
+		Expect(cm.Data).To(Equal(map[string]string{"keep": "changed"}))
+	})
+
+	It("propagates Service port changes while preserving the allocated NodePort", func() {
+		port := int32(9092)
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			svc := testutil.NewTestService(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			svc.Spec.Type = corev1.ServiceTypeNodePort
+			svc.Spec.Ports = []corev1.ServicePort{{
+				Name:       "client",
+				Port:       port,
+				TargetPort: intstr.FromInt(9092),
+				Protocol:   corev1.ProtocolTCP,
+				// NodePort deliberately unset: the API server allocates it on create and the
+				// apply path must carry the allocation over on updates.
+			}}
+			return &reconciler.RoleGroupResources{Service: svc}
+		})
+
+		reconcile(r)
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, svc)).To(Succeed())
+		Expect(svc.Spec.Ports).To(HaveLen(1))
+		allocatedNodePort := svc.Spec.Ports[0].NodePort
+		Expect(allocatedNodePort).NotTo(BeZero())
+		clusterIP := svc.Spec.ClusterIP
+		Expect(clusterIP).NotTo(BeEmpty())
+
+		port = 9093
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, svc)).To(Succeed())
+		Expect(svc.Spec.Ports).To(HaveLen(1))
+		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(9093)), "port change must reach the live Service")
+		Expect(svc.Spec.Ports[0].NodePort).To(Equal(allocatedNodePort), "allocated NodePort must survive the update")
+		Expect(svc.Spec.ClusterIP).To(Equal(clusterIP), "allocated ClusterIP must never be touched")
+	})
+
+	It("propagates data and label changes of extra resources via the generic fallback", func() {
+		payload := "v1"
+		labelValue := "v1"
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			// A Secret has no typed rule in copyDesiredState, so it exercises the
+			// unstructured top-level-field fallback used for arbitrary-GVK extras.
+			extra := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      buildCtx.ResourceName + "-extra",
+					Namespace: buildCtx.ClusterNamespace,
+					Labels:    map[string]string{"app.kubernetes.io/version": labelValue},
+				},
+				Data: map[string][]byte{"payload": []byte(payload)},
+			}
+			return &reconciler.RoleGroupResources{ExtraResources: []client.Object{extra}}
+		})
+
+		reconcile(r)
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName + "-extra"}, secret)).To(Succeed())
+		Expect(secret.Data).To(HaveKeyWithValue("payload", []byte("v1")))
+
+		payload = "v2"
+		labelValue = "v2"
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName + "-extra"}, secret)).To(Succeed())
+		Expect(secret.Data).To(HaveKeyWithValue("payload", []byte("v2")), "extra resource data must propagate")
+		Expect(secret.Labels).To(HaveKeyWithValue("app.kubernetes.io/version", "v2"), "extra resource labels must propagate")
+	})
+
+	It("keeps foreign annotations but replaces labels wholesale", func() {
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			return &reconciler.RoleGroupResources{
+				ConfigMap: testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
+			}
+		})
+
+		reconcile(r)
+		cm := &corev1.ConfigMap{}
+		key := types.NamespacedName{Namespace: namespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, cm)).To(Succeed())
+
+		// Out-of-band actor (e.g. kubectl apply) decorates the live object.
+		if cm.Annotations == nil {
+			cm.Annotations = map[string]string{}
+		}
+		cm.Annotations["kubectl.kubernetes.io/last-applied-configuration"] = "{}"
+		cm.Labels["foreign-label"] = "added-out-of-band"
+		Expect(k8sClient.Update(ctx, cm)).To(Succeed())
+
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, key, cm)).To(Succeed())
+		// Annotations are merged, so the foreign annotation survives the reconcile...
+		Expect(cm.Annotations).To(HaveKeyWithValue("kubectl.kubernetes.io/last-applied-configuration", "{}"))
+		// ...but labels are framework-owned and replaced wholesale.
+		Expect(cm.Labels).NotTo(HaveKey("foreign-label"))
+		Expect(cm.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", resourceName))
+	})
+
+	It("preserves the live StatefulSet's immutable fields when the handler's selector changes", func() {
+		selectorVersion := ""
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			sts := testutil.NewTestStatefulSet(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			if selectorVersion != "" {
+				// The handler starts producing a different selector layout (e.g. after an
+				// operator upgrade). Template labels stay a superset of the live selector,
+				// which the API server requires.
+				sts.Spec.Selector.MatchLabels["version"] = selectorVersion
+				sts.Spec.Template.Labels["version"] = selectorVersion
+			}
+			return &reconciler.RoleGroupResources{StatefulSet: sts}
+		})
+
+		reconcile(r)
+		sts := &appsv1.StatefulSet{}
+		key := types.NamespacedName{Namespace: namespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, sts)).To(Succeed())
+		originalSelector := sts.Spec.Selector.DeepCopy()
+		originalServiceName := sts.Spec.ServiceName
+
+		selectorVersion = "v2"
+		// The reconcile must NOT fail with an immutable-field error...
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, key, sts)).To(Succeed())
+		// ...because the live selector/serviceName are preserved (changing them requires a
+		// manual delete/recreate migration, see copyStatefulSetState).
+		Expect(sts.Spec.Selector).To(Equal(originalSelector))
+		Expect(sts.Spec.ServiceName).To(Equal(originalServiceName))
+		// The mutable template change still propagates.
+		Expect(sts.Spec.Template.Labels).To(HaveKeyWithValue("version", "v2"))
 	})
 })

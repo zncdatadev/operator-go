@@ -771,6 +771,14 @@ The rationale follows Kubernetes resource dependency rules:
 
 This creation order is the inverse of the deletion order used during orphaned resource cleanup (see §4.4.2).
 
+**Resource Application Semantics (create-or-update)**
+
+Applying a resource is not create-only: when the resource already exists, `applyResource` updates the live object to the handler-built desired state on every reconcile, so CR spec changes (replicas, config overrides, ports, ...) propagate to existing resources (issue #526). The update rules live in `copyDesiredState` (`pkg/reconciler/apply.go`):
+
+- **Labels** are framework-owned and replaced wholesale; **annotations** are merged, so foreign annotations (e.g. `kubectl.kubernetes.io/last-applied-configuration`) survive.
+- **Typed kinds** copy their spec/data from the desired object while preserving Kubernetes immutable/allocated fields: StatefulSet `selector`, `serviceName`, `volumeClaimTemplates` and `podManagementPolicy` keep their live values (changing them requires a manual delete/recreate migration); Service `clusterIP(s)`/`ipFamilies` are never touched, and NodePorts already allocated by the API server are carried over; ConfigMap data is replaced wholesale (removed keys disappear).
+- **Arbitrary GVKs** (`ExtraResources`) get a generic copy of every top-level field except `apiVersion`/`kind`/`metadata`/`status` via unstructured conversion.
+
 ### 5.3.4 Benefits
 
 - **Consistency**: All products follow the same reconciliation structure.
