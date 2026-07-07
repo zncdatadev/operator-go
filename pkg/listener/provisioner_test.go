@@ -166,6 +166,12 @@ var _ = Describe("ListenerProvisioner", func() {
 			}).To(PanicWith(ContainSubstring("must set a listener class or a listener name")))
 		})
 
+		It("should panic on a nil registration with a clear message", func() {
+			Expect(func() {
+				provisioner.RegisterVolume(nil)
+			}).To(PanicWith(ContainSubstring("must not be nil")))
+		})
+
 		It("should return empty volumes when none registered", func() {
 			Expect(provisioner.Volumes()).To(BeEmpty())
 		})

@@ -63,6 +63,9 @@ func (p *ListenerProvisioner) WithMountBasePath(basePath string) *ListenerProvis
 // registration gives the CSI provisioner nothing to provision from.
 func (p *ListenerProvisioner) RegisterVolume(registrations ...*VolumeRegistration) *ListenerProvisioner {
 	for _, reg := range registrations {
+		if reg == nil {
+			panic("listener volume registration must not be nil")
+		}
 		if _, exists := p.volumeNames[reg.volumeName]; exists {
 			panic(fmt.Sprintf("listener volume %q is already registered", reg.volumeName))
 		}
