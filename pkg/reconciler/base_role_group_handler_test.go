@@ -932,6 +932,24 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 		// config-declared affinity.
 		Expect(resources.StatefulSet.Spec.Template.Spec.Affinity).To(Equal(overrideAffinity))
 	})
+
+	It("lets a PodOverrides terminationGracePeriodSeconds win over gracefulShutdownTimeout", func() {
+		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
+			GracefulShutdownTimeout: "30s",
+		}
+		overrideGrace := int64(120)
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{TerminationGracePeriodSeconds: &overrideGrace},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		// The builder applies PodOverrides last, so the user's pod override replaces the
+		// config-declared termination grace.
+		Expect(resources.StatefulSet.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(&overrideGrace))
+	})
 })
 
 var _ = Describe("ConfigGenerator integration", func() {

@@ -664,6 +664,12 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 		sts.Spec.Template.Spec.NodeSelector = b.PodOverrides.Spec.NodeSelector
 	}
 
+	// Override termination grace period, so podOverrides.spec.terminationGracePeriodSeconds
+	// wins over the config-declared gracefulShutdownTimeout (the documented precedence).
+	if b.PodOverrides.Spec.TerminationGracePeriodSeconds != nil {
+		sts.Spec.Template.Spec.TerminationGracePeriodSeconds = b.PodOverrides.Spec.TerminationGracePeriodSeconds
+	}
+
 	// Override priority class name
 	if b.PodOverrides.Spec.PriorityClassName != "" {
 		sts.Spec.Template.Spec.PriorityClassName = b.PodOverrides.Spec.PriorityClassName
