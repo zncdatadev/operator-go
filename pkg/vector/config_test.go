@@ -25,7 +25,7 @@ import (
 
 func defaultConfigData() VectorConfigData {
 	return VectorConfigData{
-		LogDir:            "/var/log/app",
+		LogDir:            "/kubedoop/log/",
 		AggregatorAddress: "vector-aggregator:9000",
 		Namespace:         "default",
 		ClusterName:       "test-cluster",
@@ -43,7 +43,7 @@ func TestRenderVectorConfig(t *testing.T) {
 		{
 			name:     "default config",
 			data:     defaultConfigData(),
-			contains: []string{"/var/log/app", "vector-aggregator:9000", "default", "test-cluster", "worker", "default"},
+			contains: []string{"/kubedoop/log/", "vector-aggregator:9000", "default", "test-cluster", "worker", "default"},
 		},
 		{
 			name: "custom aggregator address",
@@ -58,10 +58,10 @@ func TestRenderVectorConfig(t *testing.T) {
 			name: "custom log directory",
 			data: func() VectorConfigData {
 				d := defaultConfigData()
-				d.LogDir = "/custom/logs"
+				d.LogDir = "/custom/logs/"
 				return d
 			}(),
-			contains: []string{"/custom/logs"},
+			contains: []string{"/custom/logs/"},
 		},
 		{
 			name: "custom namespace and cluster",
@@ -90,6 +90,23 @@ func TestRenderVectorConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRenderVectorConfig_LogDirTrailingSlash asserts that a LogDir without a trailing slash
+// is normalized: the stable per-container globs are composed as "<LogDir>*/*.<suffix>".
+func TestRenderVectorConfig_LogDirTrailingSlash(t *testing.T) {
+	data := defaultConfigData()
+	data.LogDir = "/var/log/app" // no trailing slash
+	result, err := RenderVectorConfig(data)
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+	if !strings.Contains(result, "/var/log/app/*/*.stdout.log") {
+		t.Errorf("RenderVectorConfig() missing normalized per-container glob, got:\n%s", result)
+	}
+	if strings.Contains(result, "/var/log/app*/") {
+		t.Errorf("RenderVectorConfig() rendered an unnormalized glob (missing slash)")
 	}
 }
 
@@ -136,6 +153,21 @@ func TestRenderVectorConfig_ContainsAllSources(t *testing.T) {
 			t.Errorf("RenderVectorConfig() missing source %q", source)
 		}
 	}
+
+	// The per-container globs of the stable pipeline ("<LogDir>*/*.<suffix>").
+	expectedGlobs := []string{
+		"/kubedoop/log/*/*.stdout.log",
+		"/kubedoop/log/*/*.stderr.log",
+		"/kubedoop/log/*/*.log4j.xml",
+		"/kubedoop/log/*/*.log4j2.xml",
+		"/kubedoop/log/*/*.py.json",
+		"/kubedoop/log/*/*.airlift.json",
+	}
+	for _, glob := range expectedGlobs {
+		if !strings.Contains(result, glob) {
+			t.Errorf("RenderVectorConfig() missing per-container glob %q", glob)
+		}
+	}
 }
 
 func TestRenderVectorConfig_ContainsAllTransforms(t *testing.T) {
@@ -146,18 +178,54 @@ func TestRenderVectorConfig_ContainsAllTransforms(t *testing.T) {
 	}
 
 	expectedTransforms := []string{
-		"parse_stdout",
-		"parse_stderr",
-		"parse_log4j",
-		"parse_log4j2",
-		"parse_py",
-		"parse_airlift",
-		"enrich_metadata",
+		"processed_files_stdout",
+		"processed_files_stderr",
+		"processed_files_log4j",
+		"processed_files_log4j2",
+		"processed_files_py",
+		"processed_files_airlift",
+		"extended_logs_files",
+		"extended_logs",
 	}
 
 	for _, transform := range expectedTransforms {
 		if !strings.Contains(result, transform+":") {
 			t.Errorf("RenderVectorConfig() missing transform %q", transform)
+		}
+	}
+}
+
+// TestRenderVectorConfig_EdgeParsing asserts the stable edge-parsing semantics survive
+// rendering: structured parsing of log4j/log4j2/py events, container/file extraction, and
+// the normalized event schema fields.
+func TestRenderVectorConfig_EdgeParsing(t *testing.T) {
+	data := defaultConfigData()
+	result, err := RenderVectorConfig(data)
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	checks := []string{
+		// log4j XML edge parsing (namespace wrapper + XML parse).
+		`xmlns:log4j=\"http://jakarta.apache.org/log4j/\"`,
+		"parse_xml(wrapped_xml_event)",
+		// log4j2 Instant/timeMillis handling.
+		"instant.@epochSecond",
+		"event.@timeMillis",
+		// python JSON parsing.
+		"parse_json(raw_message)",
+		`parse_timestamp(asctime, "%F %T,%3f")`,
+		// container/file extraction from the source path.
+		"parse_regex!(.file, r'^/kubedoop/log/(?P<container>.*?)/(?P<file>.*?)$')",
+		"del(.source_type)",
+		// stable host key.
+		`host_key: "pod"`,
+		// data dir matches the sidecar data volume mount.
+		"data_dir: /kubedoop/vector/var",
+	}
+	for _, check := range checks {
+		if !strings.Contains(result, check) {
+			t.Errorf("RenderVectorConfig() missing stable pipeline fragment %q", check)
 		}
 	}
 }
@@ -172,8 +240,11 @@ func TestRenderVectorConfig_ContainsSink(t *testing.T) {
 	if !strings.Contains(result, "aggregator:") {
 		t.Error("RenderVectorConfig() missing aggregator sink")
 	}
-	if !strings.Contains(result, `type: "vector"`) {
+	if !strings.Contains(result, "type: vector") {
 		t.Error("RenderVectorConfig() missing vector sink type")
+	}
+	if !strings.Contains(result, "- extended_logs") {
+		t.Error("RenderVectorConfig() aggregator sink should consume extended_logs")
 	}
 }
 
@@ -187,14 +258,18 @@ func TestRenderVectorConfig_APIDefaults(t *testing.T) {
 	if !strings.Contains(result, "enabled: true") {
 		t.Error("RenderVectorConfig() API should be enabled")
 	}
-	if !strings.Contains(result, "127.0.0.1:8686") {
-		t.Error("RenderVectorConfig() API address should be 127.0.0.1:8686")
+	// The API must bind 0.0.0.0 so the pod-IP readiness probe can reach /health.
+	if !strings.Contains(result, "address: 0.0.0.0:8686") {
+		t.Error("RenderVectorConfig() API address should be 0.0.0.0:8686")
+	}
+	if !strings.Contains(result, "playground: false") {
+		t.Error("RenderVectorConfig() API playground should be disabled")
 	}
 }
 
 func TestRenderVectorConfig_MetadataEnrichment(t *testing.T) {
 	data := VectorConfigData{
-		LogDir:            "/var/log/app",
+		LogDir:            "/kubedoop/log/",
 		AggregatorAddress: "vector-aggregator:9000",
 		Namespace:         "my-namespace",
 		ClusterName:       "my-cluster",
@@ -206,19 +281,23 @@ func TestRenderVectorConfig_MetadataEnrichment(t *testing.T) {
 		t.Fatalf("RenderVectorConfig() error = %v", err)
 	}
 
+	// The stable schema stamps FLAT metadata fields (not nested under .tags).
 	metadataChecks := []struct {
 		key   string
 		value string
 	}{
-		{`tags.namespace = "my-namespace"`, "namespace"},
-		{`tags.cluster = "my-cluster"`, "cluster"},
-		{`tags.role = "server"`, "role"},
-		{`tags.role_group = "default"`, "role_group"},
+		{`.namespace = "my-namespace"`, "namespace"},
+		{`.cluster = "my-cluster"`, "cluster"},
+		{`.role = "server"`, "role"},
+		{`.roleGroup = "default"`, "roleGroup"},
 	}
 
 	for _, check := range metadataChecks {
 		if !strings.Contains(result, check.key) {
 			t.Errorf("RenderVectorConfig() missing metadata enrichment for %s: %q", check.value, check.key)
 		}
+	}
+	if strings.Contains(result, ".tags.") {
+		t.Error("RenderVectorConfig() must not nest metadata under .tags (stable schema is flat)")
 	}
 }

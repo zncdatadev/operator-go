@@ -127,7 +127,8 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// enables the Vector agent, the GenericReconciler passes these container names to the Vector
 	// sidecar provider (via LoggingProducers()), which is the single owner of the shared log
 	// volume: it creates the size-limited log emptyDir, RW-mounts it on each producer container,
-	// and RO-mounts it on itself. When Vector is disabled, no shared volume exists and no file
+	// and mounts it on itself (pre-creating each producer's per-container log directory before
+	// exec'ing vector). When Vector is disabled, no shared volume exists and no file
 	// appender is emitted (console-only).
 	LoggingContainers []productlogging.ContainerLogging
 

@@ -24,6 +24,7 @@ package productlogging
 import (
 	"fmt"
 	"path"
+	"strings"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/constant"
@@ -46,16 +47,45 @@ type ContainerLogging struct {
 	Pattern string
 }
 
-// LogFileSuffix is appended to a producer container's name to form its rolling log-file name.
-// Every generator emits plain-text logs, so the file matches the Vector "files_stdout" source
-// (globs "<LogDir>/*.stdout.log"); the producer file name is therefore framework-independent.
-const LogFileSuffix = ".stdout.log"
+// LogFileSuffix returns the framework-owned rolling log-file suffix for a producer container.
+// The suffix selects the Vector source that parses the file at the edge (the stable pipeline
+// globs "<LogDir>*/*.<suffix>"):
+//   - log4j and logback write log4j 1.x XMLLayout events -> ".log4j.xml" (files_log4j),
+//   - log4j2 writes log4j2 XMLLayout events -> ".log4j2.xml" (files_log4j2),
+//   - python writes JSON lines -> ".py.json" (files_py).
+//
+// Unknown frameworks return "" (RenderConfigFile rejects them via GeneratorFor first).
+func LogFileSuffix(framework LoggingFramework) string {
+	switch framework {
+	case LoggingFrameworkLog4j, LoggingFrameworkLogback:
+		return ".log4j.xml"
+	case LoggingFrameworkLog4j2:
+		return ".log4j2.xml"
+	case LoggingFrameworkPython:
+		return ".py.json"
+	default:
+		return ""
+	}
+}
 
 // ContainerLogFileName returns the conventional rolling log-file name for a producer container
-// ("<container>.stdout.log"). It is the single source of the convention so the file appender
-// (this package) and the shared-volume producer mount (pkg/vector) cannot drift.
-func ContainerLogFileName(container string) string {
-	return container + LogFileSuffix
+// (e.g. "<container>.log4j.xml"). It is the single source of the convention so the file
+// appender (this package) and the Vector pipeline (pkg/vector) cannot drift.
+// An unknown framework returns "" (not the bare container name), so direct callers fail
+// fast on an invalid path instead of silently writing an ambiguous file.
+func ContainerLogFileName(framework LoggingFramework, container string) string {
+	suffix := LogFileSuffix(framework)
+	if suffix == "" {
+		return ""
+	}
+	return container + suffix
+}
+
+// ContainerLogDir returns the per-container log directory ("<KubedoopLogDir>/<lowercased
+// container>") under which the container's rolling log file is written. The Vector sidecar
+// pre-creates this directory (it starts first) and extracts the .container field from it.
+func ContainerLogDir(container string) string {
+	return path.Join(constant.KubedoopLogDir, strings.ToLower(container))
 }
 
 // RenderConfigFile generates the logging config file for a container declaration from its
@@ -63,10 +93,12 @@ func ContainerLogFileName(container string) string {
 // (no user config), in which case the generator falls back to its defaults.
 //
 // withFileAppender controls the rolling file appender: when true the config also writes to
-// "<KubedoopLogDir>/<container>.stdout.log" so the Vector sidecar can collect it; when false the
-// config is console-only. File logging is coupled to Vector — without a Vector consumer there is
-// no shared log volume, so callers pass false to avoid an appender that writes to an unmounted
-// path. The path convention is framework-owned (ContainerLogFileName), not product-supplied.
+// "<KubedoopLogDir>/<lowercased container>/<container>.<framework suffix>" so the Vector
+// sidecar can collect and edge-parse it (see LogFileSuffix); when false the config is
+// console-only. File logging is coupled to Vector — without a Vector consumer there is no
+// shared log volume, so callers pass false to avoid an appender that writes to an unmounted
+// path. The path convention is framework-owned (ContainerLogDir + ContainerLogFileName),
+// not product-supplied.
 func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, withFileAppender bool) (string, string, error) {
 	gen, err := GeneratorFor(decl.Framework)
 	if err != nil {
@@ -78,9 +110,9 @@ func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, w
 	}
 	opts := RenderOptions{Pattern: decl.Pattern}
 	if withFileAppender {
-		// constant.KubedoopLogDir carries a trailing slash ("/kubedoop/log/"); use path.Join so
-		// the rendered file path collapses to a single slash ("/kubedoop/log/<app>.stdout.log").
-		opts.FileOutputPath = path.Join(constant.KubedoopLogDir, ContainerLogFileName(decl.Container))
+		// The stable path convention: "<KubedoopLogDir>/<lowercased container>/<file>". path.Join
+		// collapses the trailing slash constant.KubedoopLogDir carries.
+		opts.FileOutputPath = path.Join(ContainerLogDir(decl.Container), ContainerLogFileName(decl.Framework, decl.Container))
 	}
 	content, err := gen.Render(LogConfigFromSpec(spec), opts)
 	if err != nil {
@@ -155,11 +187,14 @@ type RenderOptions struct {
 	// Pattern overrides the encoder/layout pattern. Empty uses the framework default.
 	Pattern string
 	// FileOutputPath, when set, adds a bounded rolling file appender writing to this path.
-	// The filename must match the log consumer's glob (the Vector sidecar collects
-	// "<LogDir>/*.stdout.log"), so pass "<LogDir>/<app>.stdout.log".
+	// The path must match the log consumer's glob (the Vector sidecar collects
+	// "<LogDir>*/*.<framework suffix>"), so pass
+	// "<LogDir>/<lowercased container>/<container>.<framework suffix>"
+	// (ContainerLogDir + ContainerLogFileName).
 	FileOutputPath string
-	// MaxFileSize / MaxHistory / TotalSizeCap bound the rolling file appender. Sensible
-	// defaults are applied when left zero.
+	// MaxFileSize / MaxHistory bound the rolling file appender (total usage <=
+	// MaxFileSize * (MaxHistory + 1)). Sensible defaults are applied when left zero.
+	// TotalSizeCap is retained for API compatibility but unused by the stable appenders.
 	MaxFileSize  string
 	MaxHistory   int
 	TotalSizeCap string

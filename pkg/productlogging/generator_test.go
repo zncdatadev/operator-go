@@ -574,12 +574,17 @@ var _ = Describe("GenerateLogbackWithOptions", func() {
 
 	It("adds a bounded rolling file appender matching the consumer glob", func() {
 		out, err := productlogging.GenerateLogbackWithOptions(nil, productlogging.LogbackOptions{
-			FileOutputPath: "/kubedoop/log/zookeeper.stdout.log",
+			FileOutputPath: "/kubedoop/log/zookeeper/zookeeper.log4j.xml",
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring(`class="ch.qos.logback.core.rolling.RollingFileAppender"`))
-		Expect(out).To(ContainSubstring("<file>/kubedoop/log/zookeeper.stdout.log</file>"))
-		Expect(out).To(ContainSubstring("<totalSizeCap>8MB</totalSizeCap>"))
+		Expect(out).To(ContainSubstring("<file>/kubedoop/log/zookeeper/zookeeper.log4j.xml</file>"))
+		// The stable FILE encoder is the log4j-compatible XMLLayout (edge-parsed by Vector's
+		// files_log4j source), bounded by FixedWindowRollingPolicy + SizeBasedTriggeringPolicy.
+		Expect(out).To(ContainSubstring(`<layout class="ch.qos.logback.classic.log4j.XMLLayout" />`))
+		Expect(out).To(ContainSubstring(`class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy"`))
+		Expect(out).To(ContainSubstring("<fileNamePattern>/kubedoop/log/zookeeper/zookeeper.log4j.xml.%i</fileNamePattern>"))
+		Expect(out).To(ContainSubstring("<maxFileSize>5MB</maxFileSize>"))
 		Expect(out).To(ContainSubstring(`<appender-ref ref="FILE" />`))
 	})
 
