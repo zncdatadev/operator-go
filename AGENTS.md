@@ -145,6 +145,8 @@ The `GenericReconciler` provides a fixed reconciliation flow with customizable e
 8. PostReconcile Extensions
 9. Final Status Update
 
+Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration.
+
 ### 3. RoleGroupHandler and BaseRoleGroupHandler
 Product operators implement `RoleGroupHandler` to define resource building logic:
 ```go

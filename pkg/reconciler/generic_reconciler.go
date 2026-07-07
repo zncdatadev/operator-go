@@ -629,6 +629,8 @@ func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Conte
 // Order: ConfigMap -> Headless Service -> Service -> ExtraResources -> StatefulSet -> PDB -> MetricsService
 // ExtraResources are applied before the StatefulSet because they are typically prerequisites
 // for pod scheduling (e.g. a Listener CR referenced by an ephemeral CSI volume).
+// Each resource is created when absent and updated to the handler-built desired state when it
+// already exists (see applyResource / copyDesiredState for the exact update semantics).
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
 	owner := r.getAsClientObject(cr)
 
@@ -701,16 +703,40 @@ func (r *GenericReconciler[CR]) resourceKind(obj client.Object) string {
 	return fmt.Sprintf("%T", obj)
 }
 
-// applyResource applies a single resource using CreateOrUpdate.
+// applyResource applies a single resource using CreateOrUpdate: it creates the object when
+// absent and otherwise UPDATES the live object to the handler-built desired state, so CR spec
+// changes (replicas, config, ports, ...) propagate to existing resources on every reconcile
+// (issue #526).
+//
+// controllerutil.CreateOrUpdate overwrites the passed object with live cluster state on Get
+// before running the mutate func, so the desired state is deep-copied up front and copied
+// back onto the live object inside the mutate func. The copy semantics — wholesale labels,
+// merged annotations, per-kind spec/data rules that respect Kubernetes immutable fields
+// (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy, Service
+// clusterIP/allocated NodePorts), and a generic top-level field copy for arbitrary GVKs —
+// are documented on copyDesiredState in apply.go.
+//
 // After the operation, emits a Create or Update event based on the result.
 // If the Kubernetes API returns 429 Too Many Requests, a RateLimitError is returned.
+//
+// Note: handler-built objects usually omit server-defaulted fields, so a steady-state
+// reconcile may still issue an Update whose server-side result is identical to the stored
+// object; the API server short-circuits such writes (no resourceVersion bump, no watch
+// event), so this cannot cause a reconcile loop.
 func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.Object, obj client.Object) error {
+	// Capture the desired state before CreateOrUpdate clobbers obj with live state on Get.
+	desired, ok := obj.DeepCopyObject().(client.Object)
+	if !ok {
+		return fmt.Errorf("failed to deep copy desired object %T: copy is not a client.Object", obj)
+	}
 	result, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
 		// Set ownership
 		if err := controllerutil.SetControllerReference(owner, obj, r.scheme); err != nil {
 			return err
 		}
-		return nil
+		// Copy the desired state onto the live object; without this the apply path is
+		// create-only (see the doc comment above and copyDesiredState).
+		return copyDesiredState(desired, obj)
 	})
 	if err != nil {
 		if errors.IsTooManyRequests(err) {
