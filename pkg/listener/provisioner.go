@@ -58,11 +58,19 @@ func (p *ListenerProvisioner) WithMountBasePath(basePath string) *ListenerProvis
 }
 
 // RegisterVolume adds CSI volume declarations to the provisioner.
-// Panics if a volume with the same name is already registered.
+// Panics if a volume with the same name is already registered, or if a
+// registration has neither a listener class nor a listener name — such a
+// registration gives the CSI provisioner nothing to provision from.
 func (p *ListenerProvisioner) RegisterVolume(registrations ...*VolumeRegistration) *ListenerProvisioner {
 	for _, reg := range registrations {
+		if reg == nil {
+			panic("listener volume registration must not be nil")
+		}
 		if _, exists := p.volumeNames[reg.volumeName]; exists {
 			panic(fmt.Sprintf("listener volume %q is already registered", reg.volumeName))
+		}
+		if reg.listenerClass == "" && reg.listenerName == "" {
+			panic(fmt.Sprintf("listener volume %q must set a listener class or a listener name", reg.volumeName))
 		}
 		p.volumeNames[reg.volumeName] = struct{}{}
 		p.volumeRegs = append(p.volumeRegs, reg)
