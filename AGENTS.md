@@ -160,6 +160,8 @@ handler.SetRoleContainerPorts("coordinator", ports)
 handler.SetRoleServicePorts("coordinator", svcPorts)
 ```
 
+When building the StatefulSet, `BaseRoleGroupHandler` consumes the role group's `config` (commons `RoleGroupConfigSpec`): `resources` (requests/limits, plus an opt-in data PVC via `StorageMountPath`), `affinity` (a RawExtension unmarshaled into `corev1.Affinity` and set on the pod spec — invalid JSON fails the build), and `gracefulShutdownTimeout` (a Go duration mapped to `terminationGracePeriodSeconds` — unparsable or non-positive values fail the build). All of these are applied before `podOverrides`, so user pod overrides keep precedence. The framework sets affinity only when the config provides one, so products that post-process the built StatefulSet with `if podSpec.Affinity == nil {...}` default guards remain correct.
+
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
 
 Besides the fixed fields (ConfigMap, Services, StatefulSet, PDB, MetricsService), `RoleGroupResources.ExtraResources []client.Object` lets products ship arbitrary per-role-group resources (e.g. a `listeners.kubedoop.dev` Listener CR) through the framework's apply path: same controller owner reference, applied BEFORE the StatefulSet because extras are typically pod-scheduling prerequisites. The cleaner does not discover arbitrary-GVK extras — extras of removed role groups are reclaimed only via owner-reference GC when the CR is deleted (see the field's doc comment).
