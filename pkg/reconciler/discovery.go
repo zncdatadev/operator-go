@@ -83,8 +83,9 @@ func WithDiscoveryAnnotations(annotations map[string]string) DiscoveryConfigMapO
 }
 
 // EnsureDiscoveryConfigMap creates or updates a product "discovery ConfigMap": a
-// cluster-scoped ConfigMap, usually named after the CR (optionally suffixed, e.g.
-// "<cluster>-nodeport"), that publishes client connection info for the product.
+// cluster-level ConfigMap (namespaced, written into the CR's namespace), usually named
+// after the CR (optionally suffixed, e.g. "<cluster>-nodeport"), that publishes client
+// connection info for the product.
 //
 // The split of responsibilities is deliberately modest. The framework owns the ensure
 // semantics only:
@@ -126,9 +127,10 @@ func EnsureDiscoveryConfigMap(
 	// SetControllerReference needs a client.Object; every real CR is one, so the runtime
 	// object of a ClusterInterface is expected to be too (same contract the reconciler's
 	// own apply path relies on).
-	ownerObj, ok := owner.GetRuntimeObject().(client.Object)
+	runtimeObj := owner.GetRuntimeObject()
+	ownerObj, ok := runtimeObj.(client.Object)
 	if !ok {
-		return fmt.Errorf("discovery configmap owner %q: runtime object %T is not a client.Object", owner.GetName(), owner.GetRuntimeObject())
+		return fmt.Errorf("discovery configmap owner %q: runtime object %T is not a client.Object", owner.GetName(), runtimeObj)
 	}
 
 	options := &DiscoveryConfigMapOptions{}
