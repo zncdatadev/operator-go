@@ -17,6 +17,10 @@ spec:
       default:
         replicas: 1
         config:
+          # Consumed by the framework (podOverrides take precedence when both are set):
+          # gracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds, and an
+          # `affinity:` block here (a full corev1.Affinity) lands on the pod spec as-is.
+          gracefulShutdownTimeout: "30s"
           resources:
             cpu:
               min: "500m"

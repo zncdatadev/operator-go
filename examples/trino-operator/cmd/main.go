@@ -94,6 +94,12 @@ func main() {
 	healthExt := extensions.NewHealthExtension()
 	common.GetExtensionRegistry().RegisterRoleExtension(healthExt)
 
+	// Register Discovery extension (demonstrates ClusterExtension PostReconcile +
+	// reconciler.EnsureDiscoveryConfigMap): publishes the coordinator URI in a discovery
+	// ConfigMap named after the cluster, the kubedoop pattern every product follows.
+	discoveryExt := extensions.NewDiscoveryExtension(mgr.GetScheme())
+	common.GetExtensionRegistry().RegisterClusterExtension(discoveryExt)
+
 	// ==================== Create GenericReconciler ====================
 	// Use operator-go SDK's GenericReconciler instead of traditional Controller
 

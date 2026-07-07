@@ -15,7 +15,7 @@ Complete Trino operator implementation demonstrating the operator-go framework w
 | `internal/controller/` | `TrinoRoleGroupHandler` — embeds the SDK `BaseRoleGroupHandler`; the framework owns resource orchestration |
 | `internal/product/` | `ProductConfig` hook (`product.ComputeConfig`): Trino's `config.properties` (role-branched, derived) computed and returned as data |
 | `internal/config/` | `JVMConfigBuilder` (non-key-value `jvm.config`) and `CatalogConfigBuilder` |
-| `internal/extensions/` | Catalog validation + health (ClusterExtension / RoleExtension) |
+| `internal/extensions/` | Catalog validation + health + discovery ConfigMap (ClusterExtension / RoleExtension; discovery uses `reconciler.EnsureDiscoveryConfigMap`) |
 
 ## Architecture (ProductConfig pattern)
 
@@ -24,6 +24,8 @@ This example demonstrates the SDK's preferred division of labour:
 - **Framework owns the 90%.** `TrinoRoleGroupHandler` embeds `reconciler.BaseRoleGroupHandler`, so the ConfigMap, Services, StatefulSet (with sidecars + `podOverrides` applied), and PDB are built by the SDK. The handler sets `ConfigMountPath` (`/etc/trino`), `MainContainerName` (`trino`), `LoggingContainers` (declarative Log4j2), and per-role ports.
 - **Logging is fully framework-owned.** `LoggingContainers` declares only the container + framework (no output file — the framework derives `<LogDir>/<lowercased container>/<container>.<framework suffix>`, e.g. `.log4j.xml` for log4j/logback). When a role group enables the Vector agent, the SDK's Vector provider is the single owner of the shared log volume (creates it, RW-mounts the producer, mounts it on the agent, which pre-creates the per-container log dirs before exec'ing vector), and — because `TrinoCluster` implements `reconciler.VectorAggregatorProvider` (`VectorAggregatorConfigMapName()` from `spec.clusterConfig`) — the framework also generates `vector.yaml` into the ConfigMap. The product writes no Vector wiring by hand.
 - **Product config flows as data through the merge pipeline.** `product.ComputeConfig` computes `config.properties` and returns it as an `*OverridesSpec`, wired via `GenericReconcilerConfig.ProductConfig` — the lowest merge layer, so any user `configOverrides` in the CRD always win. This is config generation (recomputed every reconcile), not webhook defaulting.
+- **Scheduling and shutdown are declarative.** The framework consumes the role group config's `affinity` (a raw `corev1.Affinity`) and `gracefulShutdownTimeout` (mapped to `terminationGracePeriodSeconds`); user `podOverrides` keep precedence over both. The sample CR demonstrates `gracefulShutdownTimeout`.
+- **Discovery is a one-liner.** `extensions.DiscoveryExtension` (a `ClusterExtension` running PostReconcile) publishes the coordinator URI in a discovery ConfigMap named after the cluster via `reconciler.EnsureDiscoveryConfigMap` — the framework owns CreateOrUpdate + controller owner reference + canonical labels; the product only computes the data map.
 - **Escape hatch for what the pipeline can't model.** `BuildResources` calls the base, then appends the CR-driven image, the non-key-value `jvm.config`, and coordinator-only catalog files. There is no hand-built `StatefulSet`.
 
 ## Working Instructions
