@@ -758,7 +758,7 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 Within step 3, resources are applied in a strict dependency order:
 
 ```
-ConfigMap → HeadlessService → Service → StatefulSet → PDB
+ConfigMap → HeadlessService → Service → ExtraResources → StatefulSet → PDB → MetricsService
 ```
 
 The rationale follows Kubernetes resource dependency rules:
@@ -766,8 +766,10 @@ The rationale follows Kubernetes resource dependency rules:
 1. **ConfigMap**: Applied first because Pods reference ConfigMaps as volume mounts or environment sources. The configuration data must exist before any Pod starts.
 2. **HeadlessService**: A StatefulSet requires a `serviceName` pointing to a headless Service. Kubernetes uses it to create stable, predictable DNS entries (`pod-0.svc.ns.svc.cluster.local`) for inter-pod communication. It must exist before the StatefulSet is created.
 3. **Service** (client-facing): Created before the StatefulSet so that client endpoints are available as soon as Pods become ready.
-4. **StatefulSet**: Applied after all its dependencies (configs, DNS) are in place. The StatefulSet controller then creates Pods in ordinal order.
-5. **PDB** (PodDisruptionBudget): Applied last, as it references existing Pods. It enforces availability guarantees during voluntary disruptions once the workload is running.
+4. **ExtraResources** (product-specific objects): Applied before the StatefulSet because they are typically pod-scheduling prerequisites — e.g. a Listener CR that the pods reference through an ephemeral CSI volume (see `RoleGroupResources.ExtraResources`).
+5. **StatefulSet**: Applied after all its dependencies (configs, DNS, extras) are in place. The StatefulSet controller then creates Pods in ordinal order.
+6. **PDB** (PodDisruptionBudget): Applied after the workload, as it references existing Pods. It enforces availability guarantees during voluntary disruptions once the workload is running.
+7. **MetricsService**: Applied last; it only exposes already-running Pods to Prometheus discovery and nothing depends on it.
 
 This creation order is the inverse of the deletion order used during orphaned resource cleanup (see §4.4.2).
 
