@@ -39,6 +39,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 var _ = Describe("GenericReconciler", func() {
@@ -1038,6 +1039,248 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 			// Stopped path handled by the gate before ensureServiceAccount, so no SA was provisioned.
 			Expect(k8serrors.IsNotFound(saLookup())).To(BeTrue(), "ServiceAccount should not be created for a stopped cluster")
 		})
+	})
+})
+
+// saCapturingHandler wraps the mock handler and records the ServiceAccountName each
+// RoleGroupBuildContext carries, so tests can assert the resolved SA name is propagated to
+// resource building (the base handler's pod-template binding is covered in
+// base_role_group_handler_test.go).
+type saCapturingHandler struct {
+	inner       reconciler.RoleGroupHandler[*testutil.ClusterWrapper]
+	seenSANames []string
+}
+
+func (h *saCapturingHandler) BuildResources(ctx context.Context, k8sClient client.Client, cr *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+	h.seenSANames = append(h.seenSANames, buildCtx.ServiceAccountName)
+	return h.inner.BuildResources(ctx, k8sClient, cr, buildCtx)
+}
+
+// Coverage for per-CR ServiceAccount naming: a static ServiceAccountName is shared by every CR
+// of a product in a namespace, so the second cluster hits AlreadyOwnedError forever and deleting
+// the first cluster garbage-collects the SA out from under the second. ServiceAccountNameFunc
+// resolves a per-CR name (precedence: func result > static name > "" = skip SA management).
+var _ = Describe("GenericReconciler per-CR ServiceAccount naming", func() {
+	var (
+		mockHandler *testutil.MockRoleGroupHandler
+		capturing   *saCapturingHandler
+		namespace   string
+		testID      string
+	)
+
+	newReconciler := func(prototype *testutil.ClusterWrapper, staticName string, nameFunc func(cr *testutil.ClusterWrapper) string) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:                 k8sClient,
+			Scheme:                 testScheme,
+			Recorder:               recorder,
+			RoleGroupHandler:       capturing,
+			Prototype:              prototype,
+			ServiceAccountName:     staticName,
+			ServiceAccountNameFunc: nameFunc,
+		}
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		return r
+	}
+
+	newCR := func(name string) *testutil.MockCluster {
+		cr := testutil.NewMockCluster(name, namespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"test-role": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(1))},
+					},
+				},
+			})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		return cr
+	}
+
+	getSA := func(name string) (*corev1.ServiceAccount, error) {
+		sa := &corev1.ServiceAccount{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, sa)
+		return sa, err
+	}
+
+	deleteSA := func(name string) {
+		_ = k8sClient.Delete(ctx, &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		})
+	}
+
+	reconcileReq := func(r *reconciler.GenericReconciler[*testutil.ClusterWrapper], crName string) (ctrl.Result, error) {
+		return r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}})
+	}
+
+	BeforeEach(func() {
+		namespace = testNamespace
+		mockHandler = testutil.NewMockRoleGroupHandler()
+		capturing = &saCapturingHandler{inner: &handlerAdapter{handler: mockHandler}}
+		testID = fmt.Sprintf("%d", time.Now().UnixNano())
+	})
+
+	It("uses the per-CR func over the static name and wires it into the build context", func() {
+		crName := "sa-func-" + testID
+		staticName := "sa-static-" + testID
+		perCRName := "sa-per-cr-" + crName
+		cr := newCR(crName)
+		defer func() {
+			Expect(k8sClient.Delete(ctx, cr)).To(Succeed())
+			deleteSA(perCRName)
+			deleteSA(staticName)
+		}()
+
+		r := newReconciler(testutil.WrapMockCluster(cr), staticName, func(c *testutil.ClusterWrapper) string {
+			return "sa-per-cr-" + c.GetName()
+		})
+
+		_, err := reconcileReq(r, crName)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The per-CR named SA exists and is controller-owned by this CR.
+		sa, err := getSA(perCRName)
+		Expect(err).NotTo(HaveOccurred())
+		ownerRef := metav1.GetControllerOf(sa)
+		Expect(ownerRef).NotTo(BeNil())
+		Expect(ownerRef.Name).To(Equal(crName))
+		Expect(ownerRef.Kind).To(Equal("MockCluster"))
+
+		// The static-named SA is never created when the func resolves a name.
+		_, err = getSA(staticName)
+		Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "static SA must not be created when the per-CR func resolves")
+
+		// The resolved name flows through RoleGroupBuildContext to resource building (the base
+		// handler binds it to the pod template; see base_role_group_handler_test.go).
+		Expect(capturing.seenSANames).NotTo(BeEmpty())
+		for _, seen := range capturing.seenSANames {
+			Expect(seen).To(Equal(perCRName))
+		}
+	})
+
+	It("falls back to the static name when the func is nil", func() {
+		crName := "sa-nilfunc-" + testID
+		staticName := "sa-static-nil-" + testID
+		cr := newCR(crName)
+		defer func() {
+			Expect(k8sClient.Delete(ctx, cr)).To(Succeed())
+			deleteSA(staticName)
+		}()
+
+		r := newReconciler(testutil.WrapMockCluster(cr), staticName, nil)
+
+		_, err := reconcileReq(r, crName)
+		Expect(err).NotTo(HaveOccurred())
+
+		sa, err := getSA(staticName)
+		Expect(err).NotTo(HaveOccurred())
+		ownerRef := metav1.GetControllerOf(sa)
+		Expect(ownerRef).NotTo(BeNil())
+		Expect(ownerRef.Name).To(Equal(crName))
+	})
+
+	It("falls back to the static name when the func returns empty", func() {
+		crName := "sa-emptyfunc-" + testID
+		staticName := "sa-static-empty-" + testID
+		cr := newCR(crName)
+		defer func() {
+			Expect(k8sClient.Delete(ctx, cr)).To(Succeed())
+			deleteSA(staticName)
+		}()
+
+		r := newReconciler(testutil.WrapMockCluster(cr), staticName, func(*testutil.ClusterWrapper) string {
+			return ""
+		})
+
+		_, err := reconcileReq(r, crName)
+		Expect(err).NotTo(HaveOccurred())
+
+		sa, err := getSA(staticName)
+		Expect(err).NotTo(HaveOccurred())
+		ownerRef := metav1.GetControllerOf(sa)
+		Expect(ownerRef).NotTo(BeNil())
+		Expect(ownerRef.Name).To(Equal(crName))
+	})
+
+	It("lets two clusters in one namespace each reconcile and own their own SA", func() {
+		// This is the multi-cluster scenario a shared static name breaks: the second cluster's
+		// SetControllerReference on the shared SA fails with AlreadyOwnedError forever.
+		crNameA := "sa-multi-a-" + testID
+		crNameB := "sa-multi-b-" + testID
+		crA := newCR(crNameA)
+		crB := newCR(crNameB)
+		defer func() {
+			Expect(k8sClient.Delete(ctx, crA)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, crB)).To(Succeed())
+			deleteSA("sa-per-cr-" + crNameA)
+			deleteSA("sa-per-cr-" + crNameB)
+		}()
+
+		nameFunc := func(c *testutil.ClusterWrapper) string { return "sa-per-cr-" + c.GetName() }
+		rA := newReconciler(testutil.WrapMockCluster(crA), "", nameFunc)
+		rB := newReconciler(testutil.WrapMockCluster(crB), "", nameFunc)
+
+		_, err := reconcileReq(rA, crNameA)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconcileReq(rB, crNameB)
+		Expect(err).NotTo(HaveOccurred(), "second cluster in the namespace must reconcile cleanly with per-CR SA naming")
+
+		// Reconcile both again: steady state must stay clean (no AlreadyOwnedError on re-reconcile).
+		_, err = reconcileReq(rA, crNameA)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconcileReq(rB, crNameB)
+		Expect(err).NotTo(HaveOccurred())
+
+		saA, err := getSA("sa-per-cr-" + crNameA)
+		Expect(err).NotTo(HaveOccurred())
+		saB, err := getSA("sa-per-cr-" + crNameB)
+		Expect(err).NotTo(HaveOccurred())
+
+		refA := metav1.GetControllerOf(saA)
+		Expect(refA).NotTo(BeNil())
+		Expect(refA.Name).To(Equal(crNameA))
+		refB := metav1.GetControllerOf(saB)
+		Expect(refB).NotTo(BeNil())
+		Expect(refB.Name).To(Equal(crNameB))
+	})
+
+	It("reports a clear error naming both owners when the SA is owned by a different owner", func() {
+		crName := "sa-victim-" + testID
+		otherName := "sa-squatter-" + testID
+		sharedSAName := "sa-shared-" + testID
+
+		// The "other" cluster that already controller-owns the shared SA.
+		otherCR := newCR(otherName)
+		cr := newCR(crName)
+		defer func() {
+			Expect(k8sClient.Delete(ctx, cr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, otherCR)).To(Succeed())
+			deleteSA(sharedSAName)
+		}()
+
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: sharedSAName, Namespace: namespace},
+		}
+		Expect(controllerutil.SetControllerReference(otherCR, sa, testScheme)).To(Succeed())
+		Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+
+		r := newReconciler(testutil.WrapMockCluster(cr), sharedSAName, nil)
+
+		_, err := reconcileReq(r, crName)
+		Expect(err).To(HaveOccurred())
+		// The error must diagnose the shared-name misconfiguration, naming both owners and the
+		// per-CR naming fix, instead of surfacing the raw AlreadyOwnedError.
+		Expect(err.Error()).To(ContainSubstring(sharedSAName))
+		Expect(err.Error()).To(ContainSubstring("already controlled by"))
+		Expect(err.Error()).To(ContainSubstring(otherName), "error should name the existing owner")
+		Expect(err.Error()).To(ContainSubstring(crName), "error should name the owner that failed to adopt")
+		Expect(err.Error()).To(ContainSubstring("ServiceAccountNameFunc"), "error should point at the per-CR naming fix")
+
+		// The squatter's ownership is untouched.
+		fetched, err := getSA(sharedSAName)
+		Expect(err).NotTo(HaveOccurred())
+		ref := metav1.GetControllerOf(fetched)
+		Expect(ref).NotTo(BeNil())
+		Expect(ref.Name).To(Equal(otherName))
 	})
 })
 

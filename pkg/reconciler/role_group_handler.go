@@ -130,7 +130,8 @@ type RoleGroupBuildContext struct {
 	ResourceName string
 
 	// ServiceAccountName is the name of the ServiceAccount the workload pods should run as.
-	// It is populated by GenericReconciler from its configured ServiceAccountName (the SA the
+	// It is populated by GenericReconciler with the resolved SA name — the per-CR
+	// ServiceAccountNameFunc result when set, else the static ServiceAccountName (the SA the
 	// reconciler auto-creates). When non-empty, the base StatefulSet builder binds it to the
 	// pod template via WithServiceAccount, so the created SA is actually used. Empty means no
 	// binding — pods fall back to the namespace default SA (backward compatible).
