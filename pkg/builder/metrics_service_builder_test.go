@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 var _ = Describe("MetricsServiceBuilder", func() {
@@ -73,6 +74,7 @@ var _ = Describe("MetricsServiceBuilder", func() {
 			Expect(svc.Spec.Ports).To(HaveLen(1))
 			Expect(svc.Spec.Ports[0].Name).To(Equal("metrics"))
 			Expect(svc.Spec.Ports[0].Port).To(Equal(port))
+			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromInt(int(port))))
 		})
 
 		It("should not mutate the original labels map", func() {
@@ -116,6 +118,44 @@ var _ = Describe("MetricsServiceBuilder", func() {
 				Build()
 
 			Expect(svc.Spec.Ports[0].Name).To(Equal("jmx-metrics"))
+		})
+
+		It("should not change the numeric targetPort", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithPortName("jmx-metrics").
+				Build()
+
+			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromInt(int(port))))
+		})
+	})
+
+	Describe("WithTargetPortName", func() {
+		It("should target the container port by name", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithTargetPortName("metrics").
+				Build()
+
+			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromString("metrics")))
+		})
+
+		It("should keep the numeric port and default port name", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithTargetPortName("metrics").
+				Build()
+
+			Expect(svc.Spec.Ports[0].Name).To(Equal("metrics"))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(port))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9505"))
+		})
+
+		It("should combine with WithPortName independently", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithPortName("jmx-metrics").
+				WithTargetPortName("jmx").
+				Build()
+
+			Expect(svc.Spec.Ports[0].Name).To(Equal("jmx-metrics"))
+			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromString("jmx")))
 		})
 	})
 })
