@@ -74,6 +74,7 @@ This layer focuses on how the Operator constructs the Kubernetes Pods and Resour
 Every specific Product Cluster managed by the SDK operates with its own distinct identity.
 
 - **Automated Provisioning**: The SDK automatically creates a dedicated `ServiceAccount` for each Cluster instance (or specific RoleGroup, depending on configuration).
+- **Per-CR Naming (recommended)**: Products should configure `GenericReconcilerConfig.ServiceAccountNameFunc` to derive the SA name from the CR (e.g. `"<product>-<cluster name>"`). Resolution order is: per-CR func result > static `ServiceAccountName` > empty (SA management skipped). A static name shared by two clusters of the same product in one namespace breaks isolation and reconciliation: the second cluster can never take controller ownership of the shared SA (the SDK surfaces a clear error naming both owners), and deleting the first cluster garbage-collects the SA out from under the second cluster's running pods.
 - **Scope**: Pods run as this ServiceAccount, meaning any audit logs in Kubernetes will reflect the specific application identity rather than a generic "default" account.
 - **Customization**: Users can override the generated ServiceAccount name in the CR Spec if integration with external IAM (like AWS IRSA or Google Workload Identity) is required.
 

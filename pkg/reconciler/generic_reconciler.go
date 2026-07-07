@@ -93,12 +93,32 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// +optional
 	GrayDeleteGracePeriod time.Duration
 
-	// ServiceAccountName is the name of the ServiceAccount to create for the workload.
-	// When set, the GenericReconciler automatically creates (or updates) a ServiceAccount
-	// with this name in the CR's namespace at the start of each reconciliation.
-	// Products can then reference this SA in their StatefulSetBuilder via WithServiceAccount().
+	// ServiceAccountName is the static name of the ServiceAccount to create for the workload.
+	// When set (and ServiceAccountNameFunc is nil or returns ""), the GenericReconciler
+	// automatically creates (or updates) a ServiceAccount with this name in the CR's namespace
+	// at the start of each reconciliation and propagates it to the workload pod template via
+	// RoleGroupBuildContext.ServiceAccountName.
+	//
+	// WARNING: a static name is shared by every CR of the product in a namespace. With two
+	// clusters in one namespace, the second cluster can never take controller ownership of the
+	// shared SA (its reconcile fails permanently), and deleting the first cluster garbage-collects
+	// the SA out from under the second cluster's running pods. Prefer ServiceAccountNameFunc for
+	// per-CR naming; keep this field only as a fallback or for single-cluster-per-namespace use.
 	// +optional
 	ServiceAccountName string
+
+	// ServiceAccountNameFunc computes the ServiceAccount name per CR at reconcile time.
+	// When set and returning a non-empty string, its result takes precedence over the static
+	// ServiceAccountName. When it returns "", the static ServiceAccountName is used as fallback;
+	// if that is also empty, ServiceAccount management is skipped entirely.
+	//
+	// RECOMMENDED for multi-cluster namespaces: derive the name from the CR, e.g.
+	// "<product>-<cr name>" ("kafka-" + cr.GetName()), so each cluster owns its own SA. This
+	// avoids the shared-SA failure mode described on ServiceAccountName (permanent ownership
+	// conflict for the second cluster, and SA garbage collection when the first cluster is
+	// deleted).
+	// +optional
+	ServiceAccountNameFunc func(cr CR) string
 
 	// ProductConfig, when set, computes the product's configuration contribution for a role
 	// group at reconcile time, returned as an *v1alpha1.OverridesSpec (the same shape users
@@ -163,7 +183,10 @@ type GenericReconciler[CR common.ClusterInterface] struct {
 	prototype           CR
 	rateLimitRetryAfter time.Duration
 	serviceAccountName  string
-	productConfig       func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
+	// serviceAccountNameFunc, when set, resolves a per-CR SA name that takes precedence over
+	// the static serviceAccountName (see resolveServiceAccountName).
+	serviceAccountNameFunc func(cr CR) string
+	productConfig          func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -209,20 +232,21 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 	}
 
 	return &GenericReconciler[CR]{
-		client:              cfg.Client,
-		scheme:              cfg.Scheme,
-		k8sUtil:             util.NewK8sUtil(cfg.Client, cfg.Scheme),
-		healthManager:       healthManager,
-		dependencyResolver:  NewDependencyResolver(cfg.Client),
-		cleaner:             cleaner,
-		eventManager:        NewEventManager(cfg.Recorder),
-		configMerger:        config.NewConfigMerger(),
-		roleGroupHandler:    cfg.RoleGroupHandler,
-		extensionRegistry:   common.GetExtensionRegistry(),
-		prototype:           cfg.Prototype,
-		rateLimitRetryAfter: rateLimitRetryAfter,
-		serviceAccountName:  cfg.ServiceAccountName,
-		productConfig:       cfg.ProductConfig,
+		client:                 cfg.Client,
+		scheme:                 cfg.Scheme,
+		k8sUtil:                util.NewK8sUtil(cfg.Client, cfg.Scheme),
+		healthManager:          healthManager,
+		dependencyResolver:     NewDependencyResolver(cfg.Client),
+		cleaner:                cleaner,
+		eventManager:           NewEventManager(cfg.Recorder),
+		configMerger:           config.NewConfigMerger(),
+		roleGroupHandler:       cfg.RoleGroupHandler,
+		extensionRegistry:      common.GetExtensionRegistry(),
+		prototype:              cfg.Prototype,
+		rateLimitRetryAfter:    rateLimitRetryAfter,
+		serviceAccountName:     cfg.ServiceAccountName,
+		serviceAccountNameFunc: cfg.ServiceAccountNameFunc,
+		productConfig:          cfg.ProductConfig,
 	}, nil
 }
 
@@ -324,9 +348,11 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 		}
 	}
 
-	// 0. Auto-create ServiceAccount if configured
-	if r.serviceAccountName != "" {
-		if err := r.ensureServiceAccount(ctx, cr); err != nil {
+	// 0. Auto-create ServiceAccount if configured. The name is resolved per CR (per-CR func
+	// wins over the static name; empty means SA management is disabled) so that two clusters
+	// of the same product in one namespace each own their own SA.
+	if saName := r.resolveServiceAccountName(cr); saName != "" {
+		if err := r.ensureServiceAccount(ctx, cr, saName); err != nil {
 			return ctrl.Result{}, NewReconcileError("ServiceAccount", "failed to ensure service account", err)
 		}
 	}
@@ -512,8 +538,9 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 		MergedConfig:     mergedConfig,
 		ResourceName:     resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
-		// the SA the reconciler creates. Empty when no SA is configured (backward compatible).
-		ServiceAccountName: r.serviceAccountName,
+		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
+		// empty when no SA is configured (backward compatible).
+		ServiceAccountName: r.resolveServiceAccountName(cr),
 	}
 }
 
@@ -828,16 +855,50 @@ func (r *GenericReconciler[CR]) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// ensureServiceAccount creates or updates the ServiceAccount for the cluster workload.
-func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR) error {
+// resolveServiceAccountName resolves the ServiceAccount name for a CR.
+// Precedence: ServiceAccountNameFunc (when set and returning non-empty) > static
+// ServiceAccountName > "" (SA management skipped). Per-CR naming is what keeps two clusters
+// of the same product in one namespace from fighting over a single shared SA.
+func (r *GenericReconciler[CR]) resolveServiceAccountName(cr CR) string {
+	if r.serviceAccountNameFunc != nil {
+		if name := r.serviceAccountNameFunc(cr); name != "" {
+			return name
+		}
+	}
+	return r.serviceAccountName
+}
+
+// ensureServiceAccount creates or updates the ServiceAccount for the cluster workload and sets
+// the CR as its controller owner.
+//
+// Guard rail: if an SA with this name already exists but is controlled by a DIFFERENT owner,
+// SetControllerReference refuses to steal it; that raw AlreadyOwnedError is wrapped in an
+// explicit error naming both owners, because it almost always means two CRs were configured to
+// share one static ServiceAccountName — the fix is per-CR naming via ServiceAccountNameFunc.
+func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR, name string) error {
 	owner := r.getAsClientObject(cr)
 	sa := &corev1.ServiceAccount{}
-	sa.Name = r.serviceAccountName
+	sa.Name = name
 	sa.Namespace = cr.GetNamespace()
 
 	_, err := r.k8sUtil.CreateOrUpdate(ctx, sa, func() error {
 		sa.Labels = cr.GetLabels()
-		return controllerutil.SetControllerReference(owner, sa, r.scheme)
+		if err := controllerutil.SetControllerReference(owner, sa, r.scheme); err != nil {
+			var alreadyOwned *controllerutil.AlreadyOwnedError
+			if stderrors.As(err, &alreadyOwned) {
+				return fmt.Errorf(
+					"ServiceAccount %s/%s is already controlled by %s %q and cannot be adopted by %s %q: "+
+						"multiple clusters appear to share one ServiceAccount name; "+
+						"use per-CR naming (GenericReconcilerConfig.ServiceAccountNameFunc, e.g. \"<product>-<cluster>\"): %w",
+					sa.Namespace, sa.Name,
+					alreadyOwned.Owner.Kind, alreadyOwned.Owner.Name,
+					r.resourceKind(owner), owner.GetName(),
+					err,
+				)
+			}
+			return err
+		}
+		return nil
 	})
 	return err
 }
