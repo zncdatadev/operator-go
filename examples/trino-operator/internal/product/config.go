@@ -98,3 +98,10 @@ func coordinatorServiceName(cr *trinov1alpha1.TrinoCluster) string {
 func discoveryURI(cr *trinov1alpha1.TrinoCluster, port int32) string {
 	return fmt.Sprintf("http://%s:%d", coordinatorServiceName(cr), port)
 }
+
+// DiscoveryURI returns the client-facing coordinator URI. It backs both the workers'
+// discovery.uri in config.properties and the cluster discovery ConfigMap published by
+// extensions.DiscoveryExtension.
+func DiscoveryURI(cr *trinov1alpha1.TrinoCluster) string {
+	return discoveryURI(cr, CoordinatorPort(cr))
+}
