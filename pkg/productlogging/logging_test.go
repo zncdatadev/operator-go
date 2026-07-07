@@ -258,7 +258,7 @@ var _ = Describe("Render with appender thresholds", func() {
 
 	It("renders log4j2 root, loggers and threshold filters", func() {
 		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkLog4j2)
-		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j.xml"})
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j2.xml"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring("rootLogger.level=WARN"))
 		Expect(out).To(ContainSubstring("appenders=console,file"))
@@ -273,7 +273,7 @@ var _ = Describe("Render with appender thresholds", func() {
 
 	It("renders python root, loggers and a file handler", func() {
 		g, _ := productlogging.GeneratorFor(productlogging.LoggingFrameworkPython)
-		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.log4j.xml"})
+		out, err := g.Render(cfg, productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zk/zk.py.json"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring("'level': 'WARNING'")) // root WARN -> WARNING
 		Expect(out).To(ContainSubstring("'org.apache.zookeeper'"))

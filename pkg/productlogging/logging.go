@@ -71,8 +71,14 @@ func LogFileSuffix(framework LoggingFramework) string {
 // ContainerLogFileName returns the conventional rolling log-file name for a producer container
 // (e.g. "<container>.log4j.xml"). It is the single source of the convention so the file
 // appender (this package) and the Vector pipeline (pkg/vector) cannot drift.
+// An unknown framework returns "" (not the bare container name), so direct callers fail
+// fast on an invalid path instead of silently writing an ambiguous file.
 func ContainerLogFileName(framework LoggingFramework, container string) string {
-	return container + LogFileSuffix(framework)
+	suffix := LogFileSuffix(framework)
+	if suffix == "" {
+		return ""
+	}
+	return container + suffix
 }
 
 // ContainerLogDir returns the per-container log directory ("<KubedoopLogDir>/<lowercased
