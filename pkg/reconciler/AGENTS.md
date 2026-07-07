@@ -13,6 +13,7 @@ GenericReconciler framework for operator reconciliation logic and state manageme
 | `reconciler.go` | Reconciler interface definitions |
 | `status.go` | Status management utilities |
 | `finalizer.go` | Finalizer handling |
+| `discovery.go` | `EnsureDiscoveryConfigMap` — shared ensure-helper for product discovery ConfigMaps (CreateOrUpdate + controller owner ref + canonical labels; the product computes the data map) |
 
 ## Working Instructions
 
