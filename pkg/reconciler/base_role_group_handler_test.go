@@ -464,6 +464,33 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(*resources.StatefulSet.Spec.Replicas).To(Equal(int32(3)))
 	})
 
+	It("forces replicas to 0 when the cluster is stopped, still building the StatefulSet", func() {
+		// Stopped scales pods to 0 while all resources are reconciled/preserved: the StatefulSet is
+		// still built (with the declared image, config volume, etc.), only its replica count is 0.
+		buildCtx.ClusterSpec = &v1alpha1.GenericClusterSpec{
+			ClusterOperation: &v1alpha1.ClusterOperationSpec{Stopped: true},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet).NotTo(BeNil())
+		Expect(resources.StatefulSet.Spec.Replicas).NotTo(BeNil())
+		Expect(*resources.StatefulSet.Spec.Replicas).To(Equal(int32(0)))
+	})
+
+	It("keeps the declared replicas when ClusterOperation is set but not stopped", func() {
+		// A non-stopped ClusterOperation (e.g. only reconciliationPaused set elsewhere) must not
+		// affect the replica count.
+		buildCtx.ClusterSpec = &v1alpha1.GenericClusterSpec{
+			ClusterOperation: &v1alpha1.ClusterOperationSpec{Stopped: false},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Replicas).NotTo(BeNil())
+		Expect(*resources.StatefulSet.Spec.Replicas).To(Equal(int32(3)))
+	})
+
 	It("should set image correctly", func() {
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())

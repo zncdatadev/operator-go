@@ -737,7 +737,10 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			Expect(k8sClient.Delete(ctx, stoppedCR)).To(Succeed())
 		})
 
-		It("should handle stopped cluster", func() {
+		It("should reconcile all resources with the StatefulSet scaled to zero when stopped", func() {
+			// A cluster created directly with stopped=true (no prior StatefulSet to scale) must
+			// still get its full resource set — the shortcut design left such a cluster with
+			// nothing. The new design runs the normal reconcile and forces replicas to 0.
 			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 
 			result, err := r.Reconcile(ctx, req)
@@ -745,9 +748,28 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}))
 
-			// Verify status shows unavailable due to stopped
+			resName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
+
+			// The ConfigMap and Service are provisioned even though the cluster is stopped.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resName}, &corev1.ConfigMap{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resName}, &corev1.Service{})).To(Succeed())
+
+			// The StatefulSet is CREATED (not merely scaled) with 0 replicas so it can be resumed.
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resName}, sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).NotTo(BeNil())
+			Expect(*sts.Spec.Replicas).To(Equal(int32(0)))
+
+			// The health step must report Stopped at the end of the reconcile: the Available
+			// condition is False with Reason == ReasonStopped. Asserting the reason (not merely
+			// "conditions are non-empty") is what discriminates the new behavior from a cluster
+			// that is merely Creating/Not-all-replicas-available.
 			fetchedCR := &testutil.MockCluster{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName}, fetchedCR)).To(Succeed())
+			availableCond := fetchedCR.Status.GetCondition(v1alpha1.ConditionAvailable)
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(availableCond.Reason).To(Equal(v1alpha1.ReasonStopped))
 		})
 	})
 
@@ -1005,24 +1027,19 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 			})
 		})
 
-		It("scales an existing StatefulSet to zero without provisioning the ServiceAccount first", func() {
-			// Pre-create a StatefulSet with replicas > 0 that the stopped path should scale down.
-			replicas := int32(3)
+		It("reconciles the full resource set — provisioning the ServiceAccount and creating the StatefulSet with zero replicas", func() {
+			// New design (was inverted under the shortcut): stopped is NOT a short-circuit. It runs
+			// the normal reconcile so every resource — including the ServiceAccount — is created and
+			// kept up to date, with the StatefulSet's replicas forced to 0. The old behavior (scale
+			// only pre-existing StatefulSets, never provision the SA) left a directly-stopped cluster
+			// with no resources at all.
 			stsName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
-			sts := &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: namespace},
-				Spec: appsv1.StatefulSetSpec{
-					Replicas: &replicas,
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": crName}},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": crName}},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{{Name: "test", Image: "test-image"}},
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+			// Guards: neither the SA nor the StatefulSet pre-exists.
+			Expect(k8serrors.IsNotFound(saLookup())).To(BeTrue())
+			Expect(k8serrors.IsNotFound(
+				k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, &appsv1.StatefulSet{}),
+			)).To(BeTrue())
 
 			r := newReconciler(testutil.WrapMockCluster(stoppedCR))
 			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
@@ -1031,13 +1048,14 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}))
 
-			// StatefulSet scaled to zero.
+			// The ServiceAccount IS provisioned (stopped runs the full reconcile).
+			Expect(saLookup()).To(Succeed(), "ServiceAccount should be created for a stopped cluster under the new design")
+
+			// The StatefulSet is CREATED with 0 replicas so the cluster can be resumed.
 			fetched := &appsv1.StatefulSet{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, fetched)).To(Succeed())
+			Expect(fetched.Spec.Replicas).NotTo(BeNil())
 			Expect(*fetched.Spec.Replicas).To(Equal(int32(0)))
-
-			// Stopped path handled by the gate before ensureServiceAccount, so no SA was provisioned.
-			Expect(k8serrors.IsNotFound(saLookup())).To(BeTrue(), "ServiceAccount should not be created for a stopped cluster")
 		})
 	})
 })
@@ -1284,7 +1302,7 @@ var _ = Describe("GenericReconciler per-CR ServiceAccount naming", func() {
 	})
 })
 
-var _ = Describe("GenericReconciler scaleToZero", func() {
+var _ = Describe("GenericReconciler stopped scales the StatefulSet to zero", func() {
 	var r *reconciler.GenericReconciler[*testutil.ClusterWrapper]
 	var mockHandler *testutil.MockRoleGroupHandler
 	var namespace string
@@ -1316,6 +1334,14 @@ var _ = Describe("GenericReconciler scaleToZero", func() {
 
 	AfterEach(func() {
 		Expect(k8sClient.Delete(ctx, customCR)).To(Succeed())
+		// envtest has no garbage collector, so explicitly remove the reconciled StatefulSet to
+		// keep the two specs in this block independent regardless of execution order.
+		_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      reconciler.RoleGroupResourceName(crName, "test-role", "default"),
+				Namespace: namespace,
+			},
+		})
 	})
 
 	JustBeforeEach(func() {
@@ -1332,22 +1358,27 @@ var _ = Describe("GenericReconciler scaleToZero", func() {
 		Expect(r).NotTo(BeNil())
 	})
 
-	It("should scale StatefulSet to zero when cluster is stopped", func() {
-		// Create StatefulSet with replicas > 0
+	It("updates an existing StatefulSet's replicas to zero while reconciling it", func() {
+		// Pre-create a StatefulSet with replicas > 0. The normal reconcile now UPDATES it to the
+		// handler-built desired state, whose replicas are forced to 0 because the cluster is stopped.
+		// The selector/template labels must match those the mock handler builds
+		// (app.kubernetes.io/name = resource name) so the update keeps the immutable selector valid.
 		replicas := int32(3)
+		stsName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
+		stsLabels := map[string]string{"app.kubernetes.io/name": stsName}
 		sts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      reconciler.RoleGroupResourceName(crName, "test-role", "default"),
+				Name:      stsName,
 				Namespace: namespace,
 			},
 			Spec: appsv1.StatefulSetSpec{
 				Replicas: &replicas,
 				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": crName},
+					MatchLabels: stsLabels,
 				},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{"app": crName},
+						Labels: stsLabels,
 					},
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{
@@ -1363,13 +1394,30 @@ var _ = Describe("GenericReconciler scaleToZero", func() {
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
+
+		fetched := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, fetched)).To(Succeed())
+		Expect(fetched.Spec.Replicas).NotTo(BeNil())
+		Expect(*fetched.Spec.Replicas).To(Equal(int32(0)))
 	})
 
-	It("should handle StatefulSet not existing when scaling to zero", func() {
+	It("creates the StatefulSet with zero replicas when none exists yet", func() {
+		// A cluster stopped from the start has no StatefulSet to scale; the reconcile must CREATE
+		// it (with 0 replicas) rather than do nothing.
+		stsName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
+		Expect(k8serrors.IsNotFound(
+			k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, &appsv1.StatefulSet{}),
+		)).To(BeTrue())
+
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
+
+		fetched := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, fetched)).To(Succeed())
+		Expect(fetched.Spec.Replicas).NotTo(BeNil())
+		Expect(*fetched.Spec.Replicas).To(Equal(int32(0)))
 	})
 })
 
