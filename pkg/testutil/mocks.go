@@ -246,11 +246,23 @@ func (h *MockRoleGroupHandler) BuildResources(ctx context.Context, k8sClient cli
 		return h.BuildResourcesFunc(ctx, k8sClient, cr, buildCtx)
 	}
 
+	// Effective replica count, mirroring the real BaseRoleGroupHandler: the role group's declared
+	// replicas, but forced to 0 when the cluster is stopped (ClusterOperation.stopped). Stopping
+	// runs zero pods while all resources are still built/preserved, so the mock must produce the
+	// StatefulSet with replicas 0 rather than short-circuiting resource creation.
+	replicas := buildCtx.RoleGroupSpec.GetReplicas()
+	if buildCtx.ClusterSpec != nil &&
+		buildCtx.ClusterSpec.ClusterOperation != nil &&
+		buildCtx.ClusterSpec.ClusterOperation.Stopped {
+		replicas = int32(0)
+	}
+
 	// Return default resources
 	return &reconciler.RoleGroupResources{
 		ConfigMap: NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
 		Service:   NewTestService(buildCtx.ResourceName, buildCtx.ClusterNamespace),
 		StatefulSet: NewTestStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
+			WithReplicas(replicas).
 			WithImage(h.Image, corev1.PullIfNotPresent).
 			Build(),
 	}, nil

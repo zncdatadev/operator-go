@@ -518,11 +518,23 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// Use the builder pattern from the existing codebase
 	stsBuilder := builder.NewStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace)
 
+	// Effective replica count. Normally the role group's declared replicas, but when the cluster
+	// is stopped (ClusterOperation.stopped) it is forced to 0: stopping a cluster means "run zero
+	// pods while every resource — ConfigMap, Service, StatefulSet, PDB, ServiceAccount, PVCs — is
+	// still reconciled and preserved so the cluster can be resumed". Only the pod count changes;
+	// the full resource set is created/updated (and spec/config changes are applied) as usual.
+	replicas := buildCtx.RoleGroupSpec.GetReplicas()
+	if buildCtx.ClusterSpec != nil &&
+		buildCtx.ClusterSpec.ClusterOperation != nil &&
+		buildCtx.ClusterSpec.ClusterOperation.Stopped {
+		replicas = int32(0)
+	}
+
 	// Set basic properties
 	stsBuilder.WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
-		WithReplicas(buildCtx.RoleGroupSpec.GetReplicas()).
+		WithReplicas(replicas).
 		WithImage(h.containerImage(buildCtx.RoleName), h.ImagePullPolicy).
 		WithConfig(buildCtx.MergedConfig).
 		WithPorts(h.containerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))

@@ -150,8 +150,10 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //  2. Panic recovery wrapper
 //  3. Execute reconcile():
 //     a. ClusterOperation gate (evaluated first, before any mutation)
-//     - Handle ReconciliationPaused -> return early
-//     - Handle Stopped -> scale to 0
+//     - Handle ReconciliationPaused -> return early (full freeze)
+//     - Stopped is NOT short-circuited here: it falls through to the normal reconcile
+//     so all resources are created/preserved, with StatefulSet replicas forced to 0
+//     downstream (see BaseRoleGroupHandler.buildStatefulSet)
 //     b. PreReconcile Extensions (Hook)
 //     c. Validate Dependencies
 //     d. For Each Role:
@@ -333,18 +335,22 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 
 	// ClusterOperation gate — evaluated FIRST, before any resource mutation (ServiceAccount
 	// provisioning, PreReconcile extensions, role reconciliation). reconciliationPaused must fully
-	// freeze reconciliation per the documented contract (docs/architecture.md), and stopped scales
-	// workloads to zero; neither should be preceded by mutating steps.
+	// freeze reconciliation per the documented contract (docs/architecture.md), so it returns here
+	// before any mutating step.
+	//
+	// Note: `stopped` is deliberately NOT gated here. Stopping a cluster means "keep every resource
+	// (ConfigMap, Service, StatefulSet, PDB, ServiceAccount, PVCs) created and up to date, but run
+	// zero pods", so it must fall through to the full normal reconcile. The StatefulSet replica
+	// count is forced to 0 downstream (see BaseRoleGroupHandler.buildStatefulSet), which is what
+	// scales the workload down while all resources are still reconciled/preserved and any spec or
+	// config change applied while stopped is honored. The stopped status is reported by the health
+	// step at the end of the normal reconcile (see health.go).
 	if op := spec.ClusterOperation; op != nil {
 		if op.ReconciliationPaused {
 			logger.Info("Reconciliation is paused")
 			status.SetDegraded(true, v1alpha1.ReasonReconciliationPaused, "Reconciliation is paused")
 			_ = r.updateStatus(ctx, cr) //nolint:errcheck
 			return ctrl.Result{}, nil
-		}
-		if op.Stopped {
-			logger.Info("Cluster is stopped, scaling to zero")
-			return r.handleStoppedCluster(ctx, cr)
 		}
 	}
 
@@ -779,51 +785,6 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 		r.eventManager.EmitUpdateEvent(owner.GetName(), obj)
 	}
 	return nil
-}
-
-// handleStoppedCluster handles the case when a cluster is stopped.
-func (r *GenericReconciler[CR]) handleStoppedCluster(ctx context.Context, cr CR) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	spec := cr.GetSpec()
-	status := cr.GetStatus()
-
-	// Scale all role groups to 0
-	for roleName, roleSpec := range spec.Roles {
-		for groupName := range roleSpec.GetRoleGroups() {
-			resourceName := RoleGroupResourceName(cr.GetName(), roleName, groupName)
-			if err := r.scaleToZero(ctx, cr.GetNamespace(), resourceName); err != nil {
-				logger.Error(err, "Failed to scale role group to zero", "role", roleName, "group", groupName)
-				// Continue with other groups
-			}
-		}
-	}
-
-	status.SetUnavailable(v1alpha1.ReasonStopped, "Cluster is stopped")
-	status.SetDegraded(false, v1alpha1.ReasonStopped, "Cluster is intentionally stopped")
-
-	if err := r.updateStatus(ctx, cr); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
-}
-
-// scaleToZero scales a StatefulSet to zero replicas.
-func (r *GenericReconciler[CR]) scaleToZero(ctx context.Context, namespace, name string) error {
-	sts := &appsv1.StatefulSet{}
-	key := types.NamespacedName{Namespace: namespace, Name: name}
-
-	if err := r.client.Get(ctx, key, sts); err != nil {
-		if errors.IsNotFound(err) {
-			return nil // StatefulSet doesn't exist, nothing to scale
-		}
-		return err
-	}
-
-	zero := int32(0)
-	sts.Spec.Replicas = &zero
-
-	return r.client.Update(ctx, sts)
 }
 
 // executeErrorHooks executes error hooks when reconciliation fails.
