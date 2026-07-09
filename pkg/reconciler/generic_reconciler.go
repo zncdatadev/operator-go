@@ -431,12 +431,55 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 		}
 	}
 
+	// Reconcile the role-level PodDisruptionBudget (one per role, covering all its role groups).
+	if err := r.reconcileRolePodDisruptionBudget(ctx, cr, roleName, roleSpec); err != nil {
+		return err
+	}
+
 	// Execute role PostReconcile extensions
 	if err := r.extensionRegistry.ExecuteRolePostReconcile(ctx, r.client, cr, roleName); err != nil {
 		return NewReconcileError("RolePostReconcile", fmt.Sprintf("role %s extension hook failed", roleName), err)
 	}
 
 	logger.V(1).Info("Role reconciled", "role", roleName)
+	return nil
+}
+
+// rolePodDisruptionBudgetBuilder is satisfied by BaseRoleGroupHandler (and any handler that
+// embeds it, via the promoted method). Asserting on this method-set interface — rather than the
+// concrete *BaseRoleGroupHandler[CR] — is what lets product handlers that embed the base handler
+// (e.g. *ZkRoleGroupHandler) still get a role-level PDB. The method signature does not depend on
+// CR, so the interface is non-generic.
+type rolePodDisruptionBudgetBuilder interface {
+	BuildRolePodDisruptionBudget(clusterName, namespace, roleName string, clusterLabels map[string]string, roleSpec *v1alpha1.RoleSpec) *policyv1.PodDisruptionBudget
+}
+
+// reconcileRolePodDisruptionBudget builds and applies the role's single PodDisruptionBudget.
+// The PDB is a role-level resource (roleConfig.podDisruptionBudget covers all pods of a role
+// across every role group), so it is reconciled here rather than per role group. When the PDB
+// is unset or disabled, any previously-created role PDB is deleted so toggling it off takes
+// effect. Handlers that neither are nor embed BaseRoleGroupHandler manage their own PDBs.
+func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec) error {
+	handler, ok := r.roleGroupHandler.(rolePodDisruptionBudgetBuilder)
+	if !ok {
+		return nil
+	}
+
+	owner := r.getAsClientObject(cr)
+	name := RoleResourceName(cr.GetName(), roleName)
+
+	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, cr.GetLabels(), roleSpec)
+	if pdb == nil {
+		// PDB unset or disabled: remove any role PDB we previously created (ownership-checked).
+		if err := r.cleaner.deletePDB(ctx, cr.GetNamespace(), name, owner.GetUID()); err != nil {
+			return NewResourceApplyError("PodDisruptionBudget", cr.GetNamespace(), name, "failed to delete disabled PDB", err)
+		}
+		return nil
+	}
+
+	if err := r.applyResource(ctx, owner, pdb); err != nil {
+		return NewResourceApplyError("PodDisruptionBudget", cr.GetNamespace(), name, "failed to apply", err)
+	}
 	return nil
 }
 
@@ -514,6 +557,14 @@ func RoleGroupResourceName(clusterName, roleName, groupName string) string {
 	suffix := hex.EncodeToString(sum[:])[:8]
 	head := strings.TrimRight(name[:maxRoleGroupNameLen-len(suffix)-1], "-")
 	return head + "-" + suffix
+}
+
+// RoleResourceName returns the canonical resource name for a role-level resource:
+// "<cluster>-<role>". Used for resources that span all of a role's role groups, e.g. the
+// role's PodDisruptionBudget. It is always shorter than the corresponding role group name,
+// so no truncation is needed to stay within DNS limits.
+func RoleResourceName(clusterName, roleName string) string {
+	return fmt.Sprintf("%s-%s", clusterName, roleName)
 }
 
 // buildRoleGroupContext creates the build context for a role group.
@@ -709,11 +760,18 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 		}
 	}
 
-	// 6. Apply PodDisruptionBudget
+	// 6. Apply the custom per-group PodDisruptionBudget (escape hatch), or reclaim the legacy
+	// per-role-group PDB. The framework's own PDB is now role-level (reconcileRolePodDisruptionBudget);
+	// a product may still ship a custom per-group PDB via RoleGroupResources.PodDisruptionBudget.
+	// When it does not, delete any PDB named "<cluster>-<role>-<group>" left behind by older
+	// framework versions (ownership-checked, no-op if absent) so upgraded clusters converge to
+	// exactly one role-level PDB instead of retaining stale per-group constraints.
 	if resources.PodDisruptionBudget != nil {
 		if err := r.applyResource(ctx, owner, resources.PodDisruptionBudget); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
+	} else if err := r.cleaner.deletePDB(ctx, buildCtx.ClusterNamespace, buildCtx.ResourceName, owner.GetUID()); err != nil {
+		return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to delete legacy per-group PDB", err)
 	}
 
 	// 7. Apply MetricsService

@@ -2223,3 +2223,108 @@ var _ = Describe("GenericReconciler update propagation (issue #526)", func() {
 		Expect(sts.Spec.Template.Labels).To(HaveKeyWithValue("version", "v2"))
 	})
 })
+
+// embeddingRoleGroupHandler mirrors how product operators (e.g. ZkRoleGroupHandler) consume the
+// framework: it EMBEDS *BaseRoleGroupHandler rather than being it exactly. It is the regression
+// guard for the role-level PDB — the reconciler must still emit it for an embedding handler,
+// which it does by asserting on the promoted method set (rolePodDisruptionBudgetBuilder) instead
+// of the concrete *BaseRoleGroupHandler type.
+type embeddingRoleGroupHandler struct {
+	*reconciler.BaseRoleGroupHandler[*testutil.ClusterWrapper]
+}
+
+var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
+	var r *reconciler.GenericReconciler[*testutil.ClusterWrapper]
+	var namespace string
+	var crName string
+	var mockCR *testutil.MockCluster
+
+	BeforeEach(func() {
+		namespace = testNamespace
+		crName = fmt.Sprintf("pdb-role-%d", time.Now().UnixNano())
+
+		handler := &embeddingRoleGroupHandler{
+			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.ClusterWrapper]("test-image:latest", testScheme),
+		}
+
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster(crName, namespace)),
+		}
+		var err error
+		r, err = reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+
+		maxUnavailable := int32(2)
+		mockCR = testutil.NewMockCluster(crName, namespace).WithRoles(map[string]v1alpha1.RoleSpec{
+			"server": {
+				RoleConfig: &v1alpha1.RoleConfigSpec{
+					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{Enabled: true, MaxUnavailable: &maxUnavailable},
+				},
+				RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+					"default":   {Replicas: ptr.To(int32(2))},
+					"secondary": {Replicas: ptr.To(int32(1))},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, mockCR)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		_ = k8sClient.Delete(ctx, mockCR)
+	})
+
+	It("emits exactly one role-level PDB across role groups for an embedding handler", func() {
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// One role-level PDB named "<cluster>-<role>" (not "<cluster>-<role>-<group>").
+		rolePDB := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleResourceName(crName, "server")}, rolePDB)).To(Succeed())
+		Expect(rolePDB.Spec.MaxUnavailable.IntVal).To(Equal(int32(2)))
+
+		// No per-group PDBs: the role PDB's selector spans every group.
+		for _, group := range []string{"default", "secondary"} {
+			perGroup := &policyv1.PodDisruptionBudget{}
+			getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleGroupResourceName(crName, "server", group)}, perGroup)
+			Expect(k8serrors.IsNotFound(getErr)).To(BeTrue(), "no per-group PDB should exist for group %q", group)
+		}
+	})
+
+	It("reclaims a legacy per-role-group PDB left by an older framework version", func() {
+		// Simulate an upgrade: a per-group PDB "<cluster>-server-default", owned by the CR, was
+		// written by an older framework version and still lingers.
+		legacyName := reconciler.RoleGroupResourceName(crName, "server", "default")
+		legacy := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      legacyName,
+				Namespace: namespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "test.zncdata.dev/v1alpha1",
+					Kind:       "MockCluster",
+					Name:       crName,
+					UID:        mockCR.GetUID(),
+					Controller: ptr.To(true),
+				}},
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{"legacy": "true"}},
+				MaxUnavailable: func() *intstr.IntOrString { v := intstr.FromInt(1); return &v }(),
+			},
+		}
+		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The legacy per-group PDB is reclaimed; exactly the role-level PDB remains.
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: legacyName}, &policyv1.PodDisruptionBudget{})
+		Expect(k8serrors.IsNotFound(getErr)).To(BeTrue(), "legacy per-group PDB should have been deleted")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleResourceName(crName, "server")}, &policyv1.PodDisruptionBudget{})).To(Succeed())
+	})
+})

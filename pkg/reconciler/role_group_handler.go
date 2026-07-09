@@ -48,7 +48,11 @@ type RoleGroupResources struct {
 	// HeadlessService is the headless service for StatefulSet network identity.
 	HeadlessService *corev1.Service
 
-	// PodDisruptionBudget controls pod eviction (optional).
+	// PodDisruptionBudget is an optional escape hatch for a custom, role-group-scoped PDB.
+	// The framework's own PDB (from roleConfig.podDisruptionBudget) is a role-level resource
+	// covering all of a role's groups and is emitted once per role by the generic reconciler
+	// (see BaseRoleGroupHandler.BuildRolePodDisruptionBudget); it is NOT set here. Leave this
+	// nil unless a product deliberately needs an extra per-group PDB.
 	PodDisruptionBudget *policyv1.PodDisruptionBudget
 
 	// MetricsService is a headless service with Prometheus scrape annotations (optional).
