@@ -35,6 +35,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/vector"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -189,37 +190,16 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			Expect(resources.StatefulSet.Namespace).To(Equal("default"))
 		})
 
-		It("should not build PDB when not configured", func() {
-			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(resources.PodDisruptionBudget).To(BeNil())
-		})
-
-		It("should build PDB when configured", func() {
+		It("should never set a role-group PDB (the PDB is a role-level resource)", func() {
+			// Even with roleConfig.podDisruptionBudget configured, BuildResources must not emit
+			// a per-group PDB: the framework builds exactly one PDB per role via
+			// BuildRolePodDisruptionBudget (covered in the "PodDisruptionBudget building" suite).
 			maxUnavailable := int32(1)
 			buildCtx.RoleSpec = &v1alpha1.RoleSpec{
 				RoleConfig: &v1alpha1.RoleConfigSpec{
 					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
 						Enabled:        true,
 						MaxUnavailable: &maxUnavailable,
-					},
-				},
-			}
-
-			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(resources.PodDisruptionBudget).NotTo(BeNil())
-			Expect(resources.PodDisruptionBudget.Name).To(Equal("test-cluster-default"))
-		})
-
-		It("should not build PDB when disabled", func() {
-			enabled := false
-			buildCtx.RoleSpec = &v1alpha1.RoleSpec{
-				RoleConfig: &v1alpha1.RoleConfigSpec{
-					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-						Enabled: enabled,
 					},
 				},
 			}
@@ -391,50 +371,56 @@ var _ = Describe("RoleGroupHandlerFuncs", func() {
 
 var _ = Describe("PodDisruptionBudget building", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
-	var buildCtx *reconciler.RoleGroupBuildContext
 
 	BeforeEach(func() {
 		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		buildCtx = &reconciler.RoleGroupBuildContext{
-			ClusterName:      "test-cluster",
-			ClusterNamespace: "default",
-			ClusterLabels:    map[string]string{},
-			RoleName:         "test-role",
-			RoleSpec:         &v1alpha1.RoleSpec{},
-			RoleGroupName:    "default",
-			RoleGroupSpec:    v1alpha1.RoleGroupSpec{},
-			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-default",
-		}
+	})
+
+	roleWithPDB := func(spec *v1alpha1.PodDisruptionBudgetSpec) *v1alpha1.RoleSpec {
+		return &v1alpha1.RoleSpec{RoleConfig: &v1alpha1.RoleConfigSpec{PodDisruptionBudget: spec}}
+	}
+
+	It("should name the PDB at role level (<cluster>-<role>), not per role group", func() {
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true})
+
+		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
+		Expect(pdb).NotTo(BeNil())
+		Expect(pdb.Name).To(Equal("test-cluster-test-role"))
+		Expect(pdb.Namespace).To(Equal("default"))
 	})
 
 	It("should set maxUnavailable correctly", func() {
 		maxUnavailable := int32(2)
-		buildCtx.RoleSpec.RoleConfig = &v1alpha1.RoleConfigSpec{
-			PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled:        true,
-				MaxUnavailable: &maxUnavailable,
-			},
-		}
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true, MaxUnavailable: &maxUnavailable})
 
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.PodDisruptionBudget).NotTo(BeNil())
-		Expect(resources.PodDisruptionBudget.Spec.MaxUnavailable.IntVal).To(Equal(int32(2)))
+		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
+		Expect(pdb).NotTo(BeNil())
+		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(2)))
 	})
 
-	It("should set selector with correct labels", func() {
-		buildCtx.RoleSpec.RoleConfig = &v1alpha1.RoleConfigSpec{
-			PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled: true,
-			},
-		}
-		buildCtx.ClusterLabels["app"] = "test"
+	It("should build a role-scoped selector without the role group label", func() {
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true})
 
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.PodDisruptionBudget.Spec.Selector).NotTo(BeNil())
-		Expect(resources.PodDisruptionBudget.Spec.Selector.MatchLabels).NotTo(BeEmpty())
+		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role",
+			map[string]string{"app": "test"}, roleSpec)
+		Expect(pdb.Spec.Selector).NotTo(BeNil())
+		Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-cluster"))
+		Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "test-role"))
+		// The selector must match all of the role's pods across role groups, so it must not
+		// carry the role group marker "<cluster>-<group>" that scopes a single group.
+		Expect(pdb.Spec.Selector.MatchLabels).NotTo(HaveKey("test-cluster-default"))
+	})
+
+	It("should return nil when disabled", func() {
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: false})
+		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)).To(BeNil())
+	})
+
+	It("should return nil when PodDisruptionBudget or RoleConfig is unset", func() {
+		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil,
+			roleWithPDB(nil))).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil,
+			&v1alpha1.RoleSpec{})).To(BeNil())
 	})
 })
 
@@ -1101,76 +1087,35 @@ var _ = Describe("BaseRoleGroupHandler extra labels and annotations", func() {
 
 var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
-	var buildCtx *reconciler.RoleGroupBuildContext
 
 	BeforeEach(func() {
 		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		buildCtx = &reconciler.RoleGroupBuildContext{
-			ClusterName:      "test-cluster",
-			ClusterNamespace: "default",
-			ClusterLabels:    map[string]string{},
-			RoleName:         "test-role",
-			RoleSpec:         &v1alpha1.RoleSpec{},
-			RoleGroupName:    "default",
-			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(3))},
-			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-default",
-		}
 	})
+
+	buildRolePDB := func(spec *v1alpha1.PodDisruptionBudgetSpec) *policyv1.PodDisruptionBudget {
+		roleSpec := &v1alpha1.RoleSpec{RoleConfig: &v1alpha1.RoleConfigSpec{PodDisruptionBudget: spec}}
+		return handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
+	}
 
 	It("should create PDB when MaxUnavailable is set and Enabled is true", func() {
 		maxUnavailable := int32(1)
-		buildCtx.RoleSpec = &v1alpha1.RoleSpec{
-			RoleConfig: &v1alpha1.RoleConfigSpec{
-				PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-					Enabled:        true,
-					MaxUnavailable: &maxUnavailable,
-				},
-			},
-		}
-
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.PodDisruptionBudget).NotTo(BeNil())
-		Expect(resources.PodDisruptionBudget.Spec.MaxUnavailable).NotTo(BeNil())
+		pdb := buildRolePDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true, MaxUnavailable: &maxUnavailable})
+		Expect(pdb).NotTo(BeNil())
+		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 	})
 
 	It("should not create PDB when Enabled is false", func() {
 		maxUnavailable := int32(1)
-		buildCtx.RoleSpec = &v1alpha1.RoleSpec{
-			RoleConfig: &v1alpha1.RoleConfigSpec{
-				PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-					Enabled:        false,
-					MaxUnavailable: &maxUnavailable,
-				},
-			},
-		}
-
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.PodDisruptionBudget).To(BeNil())
+		Expect(buildRolePDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: false, MaxUnavailable: &maxUnavailable})).To(BeNil())
 	})
 
 	It("should not create PDB when PodDisruptionBudget is nil", func() {
-		buildCtx.RoleSpec = &v1alpha1.RoleSpec{
-			RoleConfig: &v1alpha1.RoleConfigSpec{
-				PodDisruptionBudget: nil,
-			},
-		}
-
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.PodDisruptionBudget).To(BeNil())
+		Expect(buildRolePDB(nil)).To(BeNil())
 	})
 
 	It("should not create PDB when RoleConfig is nil", func() {
-		buildCtx.RoleSpec = &v1alpha1.RoleSpec{
-			RoleConfig: nil,
-		}
-
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.PodDisruptionBudget).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil,
+			&v1alpha1.RoleSpec{})).To(BeNil())
 	})
 })
 

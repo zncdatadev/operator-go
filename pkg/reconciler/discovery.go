@@ -145,7 +145,7 @@ func EnsureDiscoveryConfigMap(
 	// Canonical labels are framework-owned and set last, so extras cannot override them:
 	// consumers select discovery ConfigMaps by these keys.
 	labels["app.kubernetes.io/instance"] = owner.GetName()
-	labels["app.kubernetes.io/managed-by"] = "operator-go"
+	labels["app.kubernetes.io/managed-by"] = managedByValue
 	if options.ProductName != "" {
 		labels["app.kubernetes.io/name"] = options.ProductName
 	}

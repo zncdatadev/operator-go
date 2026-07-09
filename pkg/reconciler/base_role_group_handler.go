@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
@@ -36,10 +37,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// managedByValue is the app.kubernetes.io/managed-by value stamped on framework-built resources.
+const managedByValue = "operator-go"
 
 // BaseRoleGroupHandler provides a base implementation of RoleGroupHandler.
 // Product operators can embed this struct and override methods as needed.
@@ -223,7 +226,11 @@ func (h *BaseRoleGroupHandler[CR]) resolveSecurityContext() (*corev1.SecurityCon
 // - Headless Service for StatefulSet
 // - Service (if ports are defined)
 // - StatefulSet with standard configuration
-// - PodDisruptionBudget (if configured in RoleConfig)
+//
+// The PodDisruptionBudget is intentionally NOT built here: it is a role-level resource
+// (roleConfig.podDisruptionBudget covers all pods of a role across every role group), so the
+// generic reconciler builds exactly one per role via BuildRolePodDisruptionBudget. Building it
+// per role group here would emit one PDB per group and split the role's disruption budget.
 func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	ctx context.Context,
 	k8sClient client.Client,
@@ -260,12 +267,6 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		return nil, fmt.Errorf("failed to build StatefulSet: %w", err)
 	}
 	resources.StatefulSet = sts
-
-	// Build PodDisruptionBudget
-	pdb := h.buildPodDisruptionBudget(buildCtx, labels)
-	if pdb != nil {
-		resources.PodDisruptionBudget = pdb
-	}
 
 	logger.V(1).Info("Built role group resources",
 		"role", buildCtx.RoleName,
@@ -347,7 +348,7 @@ func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) 
 	// Add standard labels
 	labels["app.kubernetes.io/instance"] = buildCtx.ClusterName
 	labels["app.kubernetes.io/component"] = buildCtx.RoleName
-	labels["app.kubernetes.io/managed-by"] = "operator-go"
+	labels["app.kubernetes.io/managed-by"] = managedByValue
 
 	// Role group label
 	labels[buildCtx.ClusterName+"-"+buildCtx.RoleGroupName] = "true"
@@ -682,45 +683,86 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	return sts, nil
 }
 
-// buildPodDisruptionBudget creates the PDB for the role group.
-func (h *BaseRoleGroupHandler[CR]) buildPodDisruptionBudget(buildCtx *RoleGroupBuildContext, labels map[string]string) *policyv1.PodDisruptionBudget {
-	// Check if PDB is configured in RoleConfig
-	roleConfig := buildCtx.RoleSpec.GetRoleConfig()
+// BuildRolePodDisruptionBudget builds the role-level PodDisruptionBudget from
+// roleConfig.podDisruptionBudget. A role's PDB covers every pod of the role across all of its
+// role groups (name "<cluster>-<role>", selector on the cluster+role identity labels), so
+// exactly one is emitted per role. Returns nil when the PDB is unset or explicitly disabled.
+func (h *BaseRoleGroupHandler[CR]) BuildRolePodDisruptionBudget(
+	clusterName, namespace, roleName string,
+	clusterLabels map[string]string,
+	roleSpec *v1alpha1.RoleSpec,
+) *policyv1.PodDisruptionBudget {
+	roleConfig := roleSpec.GetRoleConfig()
 	if roleConfig == nil || roleConfig.PodDisruptionBudget == nil {
 		return nil
 	}
 
-	pdbSpec := roleConfig.PodDisruptionBudget
+	b := builder.NewPDBBuilder(RoleResourceName(clusterName, roleName), namespace).
+		WithLabels(h.buildRoleLabels(clusterName, roleName, clusterLabels)).
+		WithAnnotations(h.ExtraAnnotations).
+		WithSelector(h.buildRoleSelectorLabels(clusterName, roleName)).
+		WithSpec(roleConfig.PodDisruptionBudget)
 
-	// Check if PDB is enabled (default is true if Enabled is not set)
-	if !pdbSpec.Enabled {
+	// Enabled defaults to true in the CRD; honor an explicit disable.
+	if !b.IsEnabled() {
 		return nil
 	}
 
-	// Build PDB spec
-	pdb := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        buildCtx.ResourceName,
-			Namespace:   buildCtx.ClusterNamespace,
-			Labels:      labels,
-			Annotations: h.buildAnnotations(buildCtx),
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: h.buildSelectorLabels(buildCtx),
-			},
-		},
-	}
+	return b.Build()
+}
 
-	// Set max unavailable (only option available in PodDisruptionBudgetSpec)
-	if pdbSpec.MaxUnavailable != nil {
-		pdb.Spec.MaxUnavailable = &intstr.IntOrString{
-			Type:   intstr.Int,
-			IntVal: *pdbSpec.MaxUnavailable,
+// roleIdentityLabels are the product-owned labels that identify a role (cluster + role, without
+// a role group). They are a subset of every pod's identity labels, so a selector built from them
+// matches all of a role's pods across role groups. Empty when the handler has no LabelDomain.
+func (h *BaseRoleGroupHandler[CR]) roleIdentityLabels(clusterName, roleName string) map[string]string {
+	if h.LabelDomain == "" {
+		return nil
+	}
+	return map[string]string{
+		ClusterLabelKey(h.LabelDomain): clusterName,
+		RoleLabelKey(h.LabelDomain):    roleName,
+	}
+}
+
+// buildRoleSelectorLabels is the role-scoped analogue of buildSelectorLabels: it must match all
+// pods of the role across every role group, so it omits the role group marker/identity label.
+func (h *BaseRoleGroupHandler[CR]) buildRoleSelectorLabels(clusterName, roleName string) map[string]string {
+	if h.LabelDomain == "" {
+		// Without product identity labels the selector falls back to the recommended labels.
+		// Include managed-by (framework pods always carry it) so the PDB stays scoped to
+		// operator-go-managed pods and cannot accidentally match another operator's workloads
+		// that reuse the same instance/component labels.
+		return map[string]string{
+			"app.kubernetes.io/instance":   clusterName,
+			"app.kubernetes.io/component":  roleName,
+			"app.kubernetes.io/managed-by": managedByValue,
 		}
 	}
+	return h.roleIdentityLabels(clusterName, roleName)
+}
 
-	return pdb
+// buildRoleLabels is the role-scoped analogue of buildLabels for metadata on role-level
+// resources: the standard recommended labels plus cluster/extra labels, but no role group marker.
+func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(clusterName, roleName string, clusterLabels map[string]string) map[string]string {
+	labels := make(map[string]string)
+
+	for k, v := range clusterLabels {
+		labels[k] = v
+	}
+
+	labels["app.kubernetes.io/instance"] = clusterName
+	labels["app.kubernetes.io/component"] = roleName
+	labels["app.kubernetes.io/managed-by"] = managedByValue
+
+	for k, v := range h.roleIdentityLabels(clusterName, roleName) {
+		labels[k] = v
+	}
+
+	for k, v := range h.ExtraLabels {
+		labels[k] = v
+	}
+
+	return labels
 }
 
 // SetRoleImage sets the image for a specific role.
