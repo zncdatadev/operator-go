@@ -107,7 +107,15 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// Products use this when the container name is significant — e.g. it must match the
 	// per-container logging key (logging.containers.<name>) declared in LoggingContainers.
 	// Defaults to the resource name (set by the StatefulSet builder) when empty.
+	//
+	// Products whose primary container name differs per role (e.g. HDFS: namenode / datanode /
+	// journalnode) set it per role via SetRoleMainContainerName; the per-role value wins over
+	// this global default.
 	MainContainerName string
+
+	// RoleMainContainerName maps role names to a role-specific primary container name, overriding
+	// MainContainerName for that role. Symmetric with RoleContainerPorts.
+	RoleMainContainerName map[string]string
 
 	// PublishNotReadyAddresses, when true, sets the same flag on the headless Service so
 	// peers can resolve each other's DNS before readiness (required by quorum systems).
@@ -135,7 +143,14 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// and mounts it on itself (pre-creating each producer's per-container log directory before
 	// exec'ing vector). When Vector is disabled, no shared volume exists and no file
 	// appender is emitted (console-only).
+	//
+	// Products whose primary container name (and therefore its logging key) differs per role set
+	// this per role via SetRoleLoggingContainers; the per-role value wins over this global list.
 	LoggingContainers []productlogging.ContainerLogging
+
+	// RoleLoggingContainers maps role names to a role-specific logging-producer list, overriding
+	// LoggingContainers for that role. Symmetric with RoleContainerPorts.
+	RoleLoggingContainers map[string][]productlogging.ContainerLogging
 
 	// LogVolumeSize overrides the SizeLimit of the shared log emptyDir. Empty uses
 	// vector.DefaultLogVolumeSize. The GenericReconciler forwards it to the Vector provider,
@@ -168,14 +183,16 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 // NewBaseRoleGroupHandler creates a new BaseRoleGroupHandler with defaults.
 func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *runtime.Scheme) *BaseRoleGroupHandler[CR] {
 	return &BaseRoleGroupHandler[CR]{
-		Image:              image,
-		ImagePullPolicy:    corev1.PullIfNotPresent,
-		RoleImages:         make(map[string]string),
-		RoleContainerPorts: make(map[string][]corev1.ContainerPort),
-		RoleServicePorts:   make(map[string][]corev1.ServicePort),
-		Scheme:             scheme,
-		ExtraLabels:        make(map[string]string),
-		ExtraAnnotations:   make(map[string]string),
+		Image:                 image,
+		ImagePullPolicy:       corev1.PullIfNotPresent,
+		RoleImages:            make(map[string]string),
+		RoleContainerPorts:    make(map[string][]corev1.ContainerPort),
+		RoleServicePorts:      make(map[string][]corev1.ServicePort),
+		RoleMainContainerName: make(map[string]string),
+		RoleLoggingContainers: make(map[string][]productlogging.ContainerLogging),
+		Scheme:                scheme,
+		ExtraLabels:           make(map[string]string),
+		ExtraAnnotations:      make(map[string]string),
 	}
 }
 
@@ -288,11 +305,48 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 	return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
 }
 
-// LoggingProducers implements LoggingProducerProvider: it exposes the handler's declared
+// LoggingProducers implements LoggingProducerProvider: it exposes the role's declared
 // log-producer containers so the GenericReconciler can configure the Vector sidecar (the single
-// owner of the shared log volume) without reaching into handler internals.
-func (h *BaseRoleGroupHandler[CR]) LoggingProducers() []productlogging.ContainerLogging {
+// owner of the shared log volume) without reaching into handler internals. The per-role list set
+// via SetRoleLoggingContainers wins over the global LoggingContainers.
+func (h *BaseRoleGroupHandler[CR]) LoggingProducers(roleName string) []productlogging.ContainerLogging {
+	return h.loggingContainersFor(roleName)
+}
+
+// loggingContainersFor returns the role-specific logging-producer list when set, else the global
+// LoggingContainers.
+func (h *BaseRoleGroupHandler[CR]) loggingContainersFor(roleName string) []productlogging.ContainerLogging {
+	if lc, ok := h.RoleLoggingContainers[roleName]; ok {
+		return lc
+	}
 	return h.LoggingContainers
+}
+
+// mainContainerNameFor returns the role-specific primary container name when set, else the global
+// MainContainerName.
+func (h *BaseRoleGroupHandler[CR]) mainContainerNameFor(roleName string) string {
+	if name, ok := h.RoleMainContainerName[roleName]; ok {
+		return name
+	}
+	return h.MainContainerName
+}
+
+// SetRoleLoggingContainers sets the logging-producer list for a specific role, overriding the
+// global LoggingContainers for that role. Symmetric with SetRoleContainerPorts.
+func (h *BaseRoleGroupHandler[CR]) SetRoleLoggingContainers(roleName string, containers []productlogging.ContainerLogging) {
+	if h.RoleLoggingContainers == nil {
+		h.RoleLoggingContainers = make(map[string][]productlogging.ContainerLogging)
+	}
+	h.RoleLoggingContainers[roleName] = containers
+}
+
+// SetRoleMainContainerName sets the primary container name for a specific role, overriding the
+// global MainContainerName for that role. Symmetric with SetRoleContainerPorts.
+func (h *BaseRoleGroupHandler[CR]) SetRoleMainContainerName(roleName, name string) {
+	if h.RoleMainContainerName == nil {
+		h.RoleMainContainerName = make(map[string]string)
+	}
+	h.RoleMainContainerName[roleName] = name
 }
 
 // LogVolumeSizeLimit implements LoggingProducerProvider: the shared log volume SizeLimit override
@@ -443,7 +497,7 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 	// vector.yaml when the Vector agent is enabled (RenderLoggingConfigMapData owns the file
 	// appender and vector.yaml gating). Fail fast on a key collision rather than silently
 	// overwriting a file the product already produced (e.g. via MergedConfig.ConfigFiles).
-	loggingData, err := RenderLoggingConfigMapData(buildCtx, h.LoggingContainers)
+	loggingData, err := RenderLoggingConfigMapData(buildCtx, h.loggingContainersFor(buildCtx.RoleName))
 	if err != nil {
 		return nil, err
 	}
@@ -665,8 +719,8 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// its per-container logging key). The builder makes the primary container index 0. This runs
 	// before sidecar injection so the Vector provider (which RW-mounts the shared log volume on
 	// the producer containers by name) sees the final container names.
-	if h.MainContainerName != "" && len(sts.Spec.Template.Spec.Containers) > 0 {
-		sts.Spec.Template.Spec.Containers[0].Name = h.MainContainerName
+	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" && len(sts.Spec.Template.Spec.Containers) > 0 {
+		sts.Spec.Template.Spec.Containers[0].Name = mainName
 	}
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field

@@ -184,7 +184,7 @@ type VectorAggregatorProvider interface {
 type LoggingProducerProvider interface {
 	// LoggingProducers returns the declared log-producer containers (the containers whose log
 	// files Vector collects; the provider RW-mounts the shared log volume on each).
-	LoggingProducers() []productlogging.ContainerLogging
+	LoggingProducers(roleName string) []productlogging.ContainerLogging
 	// LogVolumeSizeLimit returns the shared log volume SizeLimit override; "" uses the framework
 	// default (vector.DefaultLogVolumeSize).
 	LogVolumeSizeLimit() string

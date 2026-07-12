@@ -128,6 +128,32 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 	})
 
+	Describe("per-role logging and main container name", func() {
+		It("SetRoleLoggingContainers wins over the global LoggingContainers for that role", func() {
+			global := []productlogging.ContainerLogging{{Container: "app", Framework: productlogging.LoggingFrameworkLogback}}
+			perRole := []productlogging.ContainerLogging{{Container: "namenode", Framework: productlogging.LoggingFrameworkLog4j}}
+			handler.LoggingContainers = global
+			handler.SetRoleLoggingContainers("namenode", perRole)
+
+			Expect(handler.LoggingProducers("namenode")).To(Equal(perRole))
+			Expect(handler.LoggingProducers("datanode")).To(Equal(global), "roles without an override fall back to global")
+		})
+
+		It("SetRoleMainContainerName records a per-role override", func() {
+			handler.MainContainerName = "app"
+			handler.SetRoleMainContainerName("namenode", "namenode")
+			Expect(handler.RoleMainContainerName["namenode"]).To(Equal("namenode"))
+		})
+
+		It("initializes the per-role maps when nil", func() {
+			nilHandler := &reconciler.BaseRoleGroupHandler[common.ClusterInterface]{}
+			nilHandler.SetRoleMainContainerName("r", "c")
+			nilHandler.SetRoleLoggingContainers("r", []productlogging.ContainerLogging{{Container: "c"}})
+			Expect(nilHandler.RoleMainContainerName).NotTo(BeNil())
+			Expect(nilHandler.RoleLoggingContainers).NotTo(BeNil())
+		})
+	})
+
 	Describe("SetRoleServicePorts", func() {
 		It("should set ports for a role", func() {
 			testPorts := []corev1.ServicePort{{Name: "http", Port: 80}}
