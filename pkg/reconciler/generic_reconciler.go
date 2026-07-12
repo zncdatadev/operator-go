@@ -625,7 +625,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 	var producers []productlogging.ContainerLogging
 	var logVolumeSize string
 	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
-		producers = lp.LoggingProducers()
+		producers = lp.LoggingProducers(buildCtx.RoleName)
 		logVolumeSize = lp.LogVolumeSizeLimit()
 	}
 
@@ -674,9 +674,9 @@ func producerContainerNames(producers []productlogging.ContainerLogging) []strin
 // LoggingProducerProvider (nil otherwise). Both Vector sidecar registration and aggregator-address
 // resolution gate on "≥1 producer" so they stay consistent: the framework only wires Vector — and
 // only resolves/generates its config — when there is actually something to collect.
-func (r *GenericReconciler[CR]) loggingProducers() []productlogging.ContainerLogging {
+func (r *GenericReconciler[CR]) loggingProducers(roleName string) []productlogging.ContainerLogging {
 	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
-		return lp.LoggingProducers()
+		return lp.LoggingProducers(roleName)
 	}
 	return nil
 }
@@ -689,7 +689,7 @@ func (r *GenericReconciler[CR]) loggingProducers() []productlogging.ContainerLog
 // must be non-empty and resolvable; an unset name or a discovery failure is returned as an error,
 // failing loudly rather than shipping a Vector sidecar with no aggregator.
 func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) error {
-	if !vectorEnabledFor(buildCtx) || len(r.loggingProducers()) == 0 {
+	if !vectorEnabledFor(buildCtx) || len(r.loggingProducers(buildCtx.RoleName)) == 0 {
 		return nil
 	}
 	provider, ok := any(cr).(VectorAggregatorProvider)

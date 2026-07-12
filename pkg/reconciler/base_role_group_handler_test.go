@@ -128,6 +128,32 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 	})
 
+	Describe("per-role logging and main container name", func() {
+		It("SetRoleLoggingContainers wins over the global LoggingContainers for that role", func() {
+			global := []productlogging.ContainerLogging{{Container: "app", Framework: productlogging.LoggingFrameworkLogback}}
+			perRole := []productlogging.ContainerLogging{{Container: "namenode", Framework: productlogging.LoggingFrameworkLog4j}}
+			handler.LoggingContainers = global
+			handler.SetRoleLoggingContainers("namenode", perRole)
+
+			Expect(handler.LoggingProducers("namenode")).To(Equal(perRole))
+			Expect(handler.LoggingProducers("datanode")).To(Equal(global), "roles without an override fall back to global")
+		})
+
+		It("SetRoleMainContainerName records a per-role override", func() {
+			handler.MainContainerName = "app"
+			handler.SetRoleMainContainerName("namenode", "namenode")
+			Expect(handler.RoleMainContainerName["namenode"]).To(Equal("namenode"))
+		})
+
+		It("initializes the per-role maps when nil", func() {
+			nilHandler := &reconciler.BaseRoleGroupHandler[common.ClusterInterface]{}
+			nilHandler.SetRoleMainContainerName("r", "c")
+			nilHandler.SetRoleLoggingContainers("r", []productlogging.ContainerLogging{{Container: "c"}})
+			Expect(nilHandler.RoleMainContainerName).NotTo(BeNil())
+			Expect(nilHandler.RoleLoggingContainers).NotTo(BeNil())
+		})
+	})
+
 	Describe("SetRoleServicePorts", func() {
 		It("should set ports for a role", func() {
 			testPorts := []corev1.ServicePort{{Name: "http", Port: 80}}
@@ -1700,6 +1726,20 @@ var _ = Describe("VolumeProvider injection", func() {
 		// into the primary container).
 		Expect(hasVolume(sts, "tls-cert")).To(BeTrue())
 		Expect(sts.Spec.Template.Spec.InitContainers).To(ContainElement(HaveField("Name", "init-config")))
+	})
+
+	It("applies the per-role MainContainerName over the global one when building the StatefulSet", func() {
+		// buildCtx.RoleName is "test-role"; the per-role override must win over the global name in
+		// the actual built StatefulSet, exercising the mainContainerNameFor wiring end-to-end.
+		handler.MainContainerName = "global-main"
+		handler.SetRoleMainContainerName(buildCtx.RoleName, "per-role-main")
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := resources.StatefulSet
+		Expect(sts.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+		Expect(sts.Spec.Template.Spec.Containers[0].Name).To(Equal("per-role-main"))
 	})
 
 	It("supports multiple providers, injecting every volume + mount", func() {

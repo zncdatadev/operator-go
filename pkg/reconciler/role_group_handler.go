@@ -182,9 +182,12 @@ type VectorAggregatorProvider interface {
 // configure the Vector sidecar (the single owner of the shared log volume) without depending on a
 // concrete handler type.
 type LoggingProducerProvider interface {
-	// LoggingProducers returns the declared log-producer containers (the containers whose log
-	// files Vector collects; the provider RW-mounts the shared log volume on each).
-	LoggingProducers() []productlogging.ContainerLogging
+	// LoggingProducers returns the declared log-producer containers for the given role (the
+	// containers whose log files Vector collects; the provider RW-mounts the shared log volume on
+	// each). roleName selects the declaration: an implementation may return a role-specific list
+	// (e.g. a per-role container name), falling back to a global default for roles without an
+	// override. The GenericReconciler calls it once per role group, passing buildCtx.RoleName.
+	LoggingProducers(roleName string) []productlogging.ContainerLogging
 	// LogVolumeSizeLimit returns the shared log volume SizeLimit override; "" uses the framework
 	// default (vector.DefaultLogVolumeSize).
 	LogVolumeSizeLimit() string
