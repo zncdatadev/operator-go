@@ -65,7 +65,11 @@ var _ = BeforeSuite(func() {
 	k8sClient = testEnv.GetClient()
 	Expect(k8sClient).NotTo(BeNil())
 
-	recorder = record.NewFakeRecorder(100)
+	// Large buffer: this recorder is shared across the whole suite and never drained, so a small
+	// buffer fills up (FakeRecorder blocks on a full channel) and hangs a reconcile mid-suite —
+	// which specs trigger it depends on Ginkgo's randomized order. Specs that assert on emitted
+	// events use their own drained recorder instead.
+	recorder = record.NewFakeRecorder(10000)
 	Expect(recorder).NotTo(BeNil())
 })
 
