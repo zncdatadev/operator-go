@@ -1728,6 +1728,20 @@ var _ = Describe("VolumeProvider injection", func() {
 		Expect(sts.Spec.Template.Spec.InitContainers).To(ContainElement(HaveField("Name", "init-config")))
 	})
 
+	It("applies the per-role MainContainerName over the global one when building the StatefulSet", func() {
+		// buildCtx.RoleName is "test-role"; the per-role override must win over the global name in
+		// the actual built StatefulSet, exercising the mainContainerNameFor wiring end-to-end.
+		handler.MainContainerName = "global-main"
+		handler.SetRoleMainContainerName(buildCtx.RoleName, "per-role-main")
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := resources.StatefulSet
+		Expect(sts.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+		Expect(sts.Spec.Template.Spec.Containers[0].Name).To(Equal("per-role-main"))
+	})
+
 	It("supports multiple providers, injecting every volume + mount", func() {
 		second := &fakeVolumeProvider{
 			volume: corev1.Volume{
