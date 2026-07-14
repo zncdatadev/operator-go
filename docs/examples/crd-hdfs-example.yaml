@@ -21,10 +21,10 @@ spec:
         secretClass: "hdfs-kerberos-secret"
     # Sidecar Injection:
     # Injects Vector agent for HDFS audit and service log collection.
-    vectorAgentConfigMap: "hdfs-vector-agent-configmap"
+    vectorAggregatorConfigMapName: "hdfs-vector-agent-configmap"
     # HDFS Specific Dependencies:
     # References the ConfigMap containing Zookeeper connection strings (required for HDFS HA and JournalNodes).
-    zookeeperConfigMap: "hdfs-zk-configmap"
+    zookeeperConfigMapName: "hdfs-zk-configmap"
     # HDFS Business Logic Configuration:
     # Sets the default replication factor for files stored in HDFS.
     dfsReplication: 3
@@ -32,10 +32,6 @@ spec:
   # Role: NameNode
   # The metadata server of HDFS. In HA mode, typically requires 2 or more replicas.
   nameNodes:
-    # JVM Tuning:
-    # Sets the heap size for the NameNode process.
-    jvmArgumentOverrides:
-      - "-Xmx4g"
     roleGroups:
       default:
         replicas: 2 # HA setup usually runs 2 NameNodes (Active/Standby)
@@ -63,6 +59,6 @@ spec:
           # Sets DEBUG level logging for DataNodes to troubleshoot block replication issues.
           logging:
             containers:
-              dataNode:
+              datanode:
                 console:
                   level: "DEBUG"
