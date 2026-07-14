@@ -17,6 +17,8 @@ limitations under the License.
 package builder
 
 import (
+	"sort"
+
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	appsv1 "k8s.io/api/apps/v1"
@@ -521,12 +523,21 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 		container.Args = b.Args
 	}
 
-	// Add environment variables from merged config
+	// Add environment variables from merged config. Iterate in sorted key order: EnvVars is a
+	// map, and Go map iteration order is randomized, so appending directly would produce a
+	// different container.Env ordering on every reconcile. That makes the rendered StatefulSet
+	// differ each time, so CreateOrUpdate issues an endless stream of no-op updates (the pods are
+	// recreated on every reconcile and never stabilize).
 	if b.Config != nil {
-		for k, v := range b.Config.EnvVars {
+		envKeys := make([]string, 0, len(b.Config.EnvVars))
+		for k := range b.Config.EnvVars {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		for _, k := range envKeys {
 			container.Env = append(container.Env, corev1.EnvVar{
 				Name:  k,
-				Value: v,
+				Value: b.Config.EnvVars[k],
 			})
 		}
 		// Add CLI args

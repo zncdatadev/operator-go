@@ -927,6 +927,33 @@ var _ = Describe("StatefulSetBuilder", func() {
 			))
 		})
 
+		It("emits config env vars in a deterministic (sorted) order across builds", func() {
+			// EnvVars is a map; without sorting, Go's randomized map iteration would produce a
+			// different container.Env ordering each Build(), making the rendered StatefulSet
+			// differ every reconcile and causing an endless CreateOrUpdate loop.
+			cfg := &config.MergedConfig{
+				EnvVars: map[string]string{"DDD": "4", "AAA": "1", "CCC": "3", "BBB": "2", "EEE": "5"},
+			}
+			build := func() []string {
+				sts := builder.NewStatefulSetBuilder(name, namespace).
+					WithImage(image, corev1.PullIfNotPresent).
+					WithConfig(cfg).Build()
+				env := sts.Spec.Template.Spec.Containers[0].Env
+				names := make([]string, 0, len(env))
+				for _, e := range env {
+					names = append(names, e.Name)
+				}
+				return names
+			}
+			first := build()
+			// The five config keys appear in sorted order.
+			Expect(first).To(Equal([]string{"AAA", "BBB", "CCC", "DDD", "EEE"}))
+			// Repeated builds are byte-for-byte identical (no churn).
+			for i := 0; i < 20; i++ {
+				Expect(build()).To(Equal(first))
+			}
+		})
+
 		It("should include CLI args from merged config", func() {
 			cfg := &config.MergedConfig{
 				CliArgs: []string{"--arg1", "--arg2"},
