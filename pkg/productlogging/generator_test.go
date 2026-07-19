@@ -384,12 +384,28 @@ var _ = Describe("GenerateLog4j2", func() {
 		Expect(content).To(ContainSubstring("# Log4j2 Configuration"))
 		Expect(content).To(ContainSubstring("rootLogger.level=INFO"))
 		Expect(content).To(ContainSubstring("rootLogger.appenderRefs=stdout"))
+		Expect(content).To(ContainSubstring("rootLogger.appenderRef.stdout.ref=STDOUT"))
 		Expect(content).To(ContainSubstring("appenders=console"))
 		Expect(content).To(ContainSubstring("appender.console.type=Console"))
 		Expect(content).To(ContainSubstring("appender.console.layout.type=PatternLayout"))
 		Expect(content).To(ContainSubstring("loggers=com.example.app"))
 		Expect(content).To(ContainSubstring("logger.com_example_app.name=com.example.app"))
 		Expect(content).To(ContainSubstring("logger.com_example_app.level=INFO"))
+	})
+
+	It("binds both stdout and file appenderRefs to the root logger when file output is enabled", func() {
+		gen, err := productlogging.GeneratorFor(productlogging.LoggingFrameworkLog4j2)
+		Expect(err).ToNot(HaveOccurred())
+		content, err := gen.Render(
+			productlogging.LogConfig{},
+			productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/zookeeper/zookeeper.log4j2.xml"},
+		)
+		Expect(err).ToNot(HaveOccurred())
+		// Both identifiers must be declared AND bound; without the file binding the rolling file
+		// appender is silently not wired to the root logger (empty log file, nothing to ship).
+		Expect(content).To(ContainSubstring("rootLogger.appenderRefs=stdout,file"))
+		Expect(content).To(ContainSubstring("rootLogger.appenderRef.stdout.ref=STDOUT"))
+		Expect(content).To(ContainSubstring("rootLogger.appenderRef.file.ref=FILE"))
 	})
 
 	It("should handle logger names with dollar sign", func() {
