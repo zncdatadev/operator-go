@@ -258,6 +258,27 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 
 	resources := &RoleGroupResources{}
 
+	// Propagate the product image to the registered sidecars (e.g. Vector, which ships inside
+	// the product image). This must happen here — not earlier in GenericReconciler — because the
+	// documented embedding pattern resolves the CR-driven image inside the product's
+	// BuildResources override, immediately before delegating to this method; any earlier
+	// propagation would see a stale (or empty) image. Doing it in the base implementation means
+	// every embedding handler gets it for free instead of hand-calling SetProductImage.
+	//
+	// Select the manager exactly as sidecar injection does below (prefer the SDK-created one,
+	// fall back to the instance field) so propagation and injection can never target different
+	// managers. Call SetProductImage unconditionally: it rejects an empty image, so a
+	// misconfigured product fails loudly here instead of silently injecting a sidecar with an
+	// empty image field.
+	if sidecarMgr := buildCtx.SidecarManager; sidecarMgr != nil || h.sidecarManager != nil {
+		if sidecarMgr == nil {
+			sidecarMgr = h.sidecarManager
+		}
+		if err := sidecarMgr.SetProductImage(h.containerImage(buildCtx.RoleName), h.ImagePullPolicy); err != nil {
+			return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
+		}
+	}
+
 	// Build labels
 	labels := h.buildLabels(buildCtx)
 

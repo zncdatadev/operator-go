@@ -1778,3 +1778,74 @@ var _ = Describe("VolumeProvider injection", func() {
 		Expect(primaryMountNames(resources.StatefulSet)).To(ConsistOf("config"))
 	})
 })
+
+// embeddingImageHandler mimics the documented product pattern: a handler embedding
+// BaseRoleGroupHandler that resolves the CR-driven image inside its BuildResources override,
+// immediately before delegating to the base implementation.
+type embeddingImageHandler struct {
+	*reconciler.BaseRoleGroupHandler[common.ClusterInterface]
+	image string
+}
+
+func (h *embeddingImageHandler) BuildResources(
+	ctx context.Context,
+	k8sClient client.Client,
+	cr common.ClusterInterface,
+	buildCtx *reconciler.RoleGroupBuildContext,
+) (*reconciler.RoleGroupResources, error) {
+	h.Image = h.image
+	return h.BaseRoleGroupHandler.BuildResources(ctx, k8sClient, cr, buildCtx)
+}
+
+var _ = Describe("Sidecar product image propagation", func() {
+	// Regression: the propagation used to live in GenericReconciler behind a concrete
+	// *BaseRoleGroupHandler type assertion, so embedding handlers (every product operator)
+	// never had the product image set on framework-registered sidecars and had to call
+	// SetProductImage by hand.
+	It("propagates the image resolved in an embedding handler's BuildResources to the Vector sidecar", func() {
+		base := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("", testScheme)
+		base.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
+		handler := &embeddingImageHandler{BaseRoleGroupHandler: base, image: "product-image:1.2.3"}
+
+		mgr := sidecar.NewSidecarManager()
+		mgr.Register(
+			vector.NewVectorSidecarProvider("",
+				vector.WithConfigMapName("test-cluster-default"),
+				vector.WithProducers([]string{"main"})),
+			&sidecar.SidecarConfig{Enabled: true},
+		)
+
+		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			ResourceName:     "test-cluster-default",
+			SidecarManager:   mgr,
+			MergedConfig: &config.MergedConfig{
+				Logging: &v1alpha1.LoggingSpec{
+					EnableVectorAgent: ptr.To(true),
+					Containers:        map[string]v1alpha1.LoggingConfigSpec{"main": {}},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		podSpec := resources.StatefulSet.Spec.Template.Spec
+		var vectorImage string
+		for _, c := range append(podSpec.InitContainers, podSpec.Containers...) {
+			if c.Name == vector.VectorSidecarName {
+				vectorImage = c.Image
+			}
+		}
+		Expect(vectorImage).To(Equal("product-image:1.2.3"))
+	})
+})
