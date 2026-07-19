@@ -501,18 +501,11 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 		return NewResourceBuildError("resources", roleName, groupName, "failed to resolve vector aggregator address", err)
 	}
 
-	// Auto-create SidecarManager based on CRD configuration
+	// Auto-create SidecarManager based on CRD configuration. The product image is propagated to
+	// the registered sidecars by BaseRoleGroupHandler.BuildResources — after the product's
+	// BuildResources override has resolved the CR-driven image — so both plain and embedding
+	// handlers are covered without a concrete-type assertion here.
 	buildCtx.SidecarManager = r.buildSidecarManager(ctx, buildCtx)
-
-	// Set product image on sidecar manager so sidecars use the product image
-	if buildCtx.SidecarManager != nil {
-		if handler, ok := r.roleGroupHandler.(*BaseRoleGroupHandler[CR]); ok {
-			image := handler.containerImage(buildCtx.RoleName)
-			if err := buildCtx.SidecarManager.SetProductImage(image, handler.ImagePullPolicy); err != nil {
-				return NewResourceBuildError("sidecar", roleName, groupName, "failed to set product image", err)
-			}
-		}
-	}
 
 	// Delegate to handler for resource building
 	resources, err := r.roleGroupHandler.BuildResources(ctx, r.client, cr, buildCtx)
