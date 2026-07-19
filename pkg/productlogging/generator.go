@@ -139,6 +139,7 @@ func GenerateLog4j(configs map[string]LoggerConfig) (string, error) {
 // The output format is:
 // rootLogger.level=INFO
 // rootLogger.appenderRefs=stdout
+// rootLogger.appenderRef.stdout.ref=STDOUT
 // appenders=console
 // appender.console.type=Console
 // appender.console.name=STDOUT
@@ -445,10 +446,16 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("# Log4j2 Configuration\n")
 	fmt.Fprintf(&sb, "rootLogger.level=%s\n", rootLevel)
+	// The appenderRefs line only declares reference identifiers; each identifier MUST be bound
+	// to an appender name via "rootLogger.appenderRef.<id>.ref=<AppenderName>", otherwise the
+	// root logger ends up with no appenders at all (no console output, empty log file).
 	if hasFile {
-		sb.WriteString("rootLogger.appenderRefs=stdout,file\n\n")
+		sb.WriteString("rootLogger.appenderRefs=stdout,file\n")
+		sb.WriteString("rootLogger.appenderRef.stdout.ref=STDOUT\n")
+		sb.WriteString("rootLogger.appenderRef.file.ref=FILE\n\n")
 	} else {
-		sb.WriteString("rootLogger.appenderRefs=stdout\n\n")
+		sb.WriteString("rootLogger.appenderRefs=stdout\n")
+		sb.WriteString("rootLogger.appenderRef.stdout.ref=STDOUT\n\n")
 	}
 
 	sb.WriteString("# Appenders\n")
