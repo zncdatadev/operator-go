@@ -17,6 +17,9 @@ limitations under the License.
 package security
 
 import (
+	"strings"
+
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/constant"
 )
 
@@ -74,3 +77,28 @@ const (
 	ServiceScope        SecretScope = "service"
 	ListenerVolumeScope SecretScope = "listener-volume"
 )
+
+// ScopeString renders a commons CredentialsScope as the CSI scope annotation value the
+// secret-operator parses: comma-separated entries of "node", "pod", "service=<name>" and
+// "listener-volume=<name>". Named entries carry the key= prefix — bare service names are
+// skipped by the secret-operator's scope parser. Returns "" for a nil or empty scope (the
+// scope annotation should then be omitted).
+func ScopeString(scope *commonsv1alpha1.CredentialsScope) string {
+	if scope == nil {
+		return ""
+	}
+	entries := []string{}
+	if scope.Node {
+		entries = append(entries, string(NodeScope))
+	}
+	if scope.Pod {
+		entries = append(entries, string(PodScope))
+	}
+	for _, svc := range scope.Services {
+		entries = append(entries, string(ServiceScope)+"="+svc)
+	}
+	for _, lv := range scope.ListenerVolumes {
+		entries = append(entries, string(ListenerVolumeScope)+"="+lv)
+	}
+	return strings.Join(entries, CommonDelimiter)
+}
