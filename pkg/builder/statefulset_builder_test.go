@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("StatefulSetBuilder", func() {
@@ -729,6 +730,184 @@ var _ = Describe("StatefulSetBuilder", func() {
 				Build()
 
 			Expect(sts.Spec.Template.Labels).To(HaveKeyWithValue("custom", "label"))
+		})
+	})
+
+	Describe("PodOverrides container-level fidelity", func() {
+		It("should merge container resources into the main container by name", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: name,
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("2"),
+									corev1.ResourceMemory: resource.MustParse("2Gi"),
+								},
+							},
+						},
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			main := sts.Spec.Template.Spec.Containers[0]
+			Expect(main.Image).To(Equal(image), "merging resources must not clobber the built container")
+			Expect(main.Resources.Limits.Cpu().String()).To(Equal("2"))
+			Expect(main.Resources.Limits.Memory().String()).To(Equal("2Gi"))
+		})
+
+		It("should merge container env by name, overriding built values and adding new ones", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: name,
+							Env: []corev1.EnvVar{
+								{Name: "COMMON_VAR", Value: "override-value"},
+								{Name: "EXTRA_VAR", Value: "extra-value"},
+							},
+						},
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				AddEnvVar("COMMON_VAR", "built-value").
+				WithPodOverrides(overrides).
+				Build()
+
+			envByName := map[string]string{}
+			for _, e := range sts.Spec.Template.Spec.Containers[0].Env {
+				envByName[e.Name] = e.Value
+			}
+			Expect(envByName).To(HaveKeyWithValue("COMMON_VAR", "override-value"))
+			Expect(envByName).To(HaveKeyWithValue("EXTRA_VAR", "extra-value"))
+		})
+
+		It("should append override-only containers as additional pod containers", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "extra-sidecar", Image: "sidecar:1.0"},
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithPodOverrides(overrides).
+				Build()
+
+			names := []string{}
+			for _, c := range sts.Spec.Template.Spec.Containers {
+				names = append(names, c.Name)
+			}
+			Expect(names).To(ConsistOf(name, "extra-sidecar"))
+		})
+
+		It("should treat an unnamed override container as the main container (back-compat)", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							SecurityContext: &corev1.SecurityContext{
+								RunAsUser: ptr.To(int64(1234)),
+							},
+						},
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			sc := sts.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(sc).NotTo(BeNil())
+			Expect(*sc.RunAsUser).To(Equal(int64(1234)))
+		})
+
+		It("should deep-merge the pod security context instead of replacing it", func() {
+			built := &corev1.PodSecurityContext{
+				RunAsUser: ptr.To(int64(1000)),
+				FSGroup:   ptr.To(int64(1000)),
+			}
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser: ptr.To(int64(0)),
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithSecurityContext(nil, built).
+				WithPodOverrides(overrides).
+				Build()
+
+			sc := sts.Spec.Template.Spec.SecurityContext
+			Expect(sc).NotTo(BeNil())
+			Expect(*sc.RunAsUser).To(Equal(int64(0)), "the overridden field wins")
+			Expect(sc.FSGroup).NotTo(BeNil(), "fields the override omits keep the built values")
+			Expect(*sc.FSGroup).To(Equal(int64(1000)))
+		})
+
+		It("should re-assert selector labels the override tries to change", func() {
+			overrides := &corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "hijacked"},
+				},
+			}
+			sts := stsBuilder.
+				WithSelectorLabels(map[string]string{"app": "test"}).
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "test"))
+			Expect(sts.Spec.Template.Labels).To(HaveKeyWithValue("app", "test"),
+				"pod template must keep matching the immutable selector")
+		})
+
+		It("should merge container volumeMounts and pod volumes", func() {
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: name,
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "extra-vol", MountPath: "/extra"},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{Name: "extra-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				AddVolumeMount(corev1.VolumeMount{Name: "built-vol", MountPath: "/built"}).
+				AddVolume(corev1.Volume{Name: "built-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}).
+				WithPodOverrides(overrides).
+				Build()
+
+			mountPaths := []string{}
+			for _, m := range sts.Spec.Template.Spec.Containers[0].VolumeMounts {
+				mountPaths = append(mountPaths, m.MountPath)
+			}
+			Expect(mountPaths).To(ConsistOf("/built", "/extra"))
+
+			volNames := []string{}
+			for _, v := range sts.Spec.Template.Spec.Volumes {
+				volNames = append(volNames, v.Name)
+			}
+			Expect(volNames).To(ConsistOf("built-vol", "extra-vol"))
 		})
 	})
 

@@ -750,9 +750,11 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(csc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 	})
 
-	It("should let PodOverrides REPLACE the default pod security context (no deep merge)", func() {
-		// The override sets only RunAsUser. Replace semantics mean the rest of the default
-		// (RunAsGroup, FSGroup, RunAsNonRoot, SeccompProfile) is wiped, not merged on top.
+	It("should deep-merge PodOverrides into the default pod security context (strategic merge)", func() {
+		// The override sets only RunAsUser. Strategic-merge semantics (the documented merge
+		// strategy for PodTemplate) mean the rest of the default hardening (RunAsGroup, FSGroup,
+		// RunAsNonRoot, SeccompProfile) is kept; an override must explicitly restate a field
+		// (e.g. runAsNonRoot: false) to change it.
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -770,14 +772,14 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(podSC).NotTo(BeNil())
 		Expect(podSC.RunAsUser).NotTo(BeNil())
 		Expect(*podSC.RunAsUser).To(Equal(int64(1234)))
-		// Negative assertions documenting REPLACE (not merge): default hardening fields are gone.
-		Expect(podSC.FSGroup).To(BeNil())
-		Expect(podSC.RunAsGroup).To(BeNil())
-		Expect(podSC.RunAsNonRoot).To(BeNil())
-		Expect(podSC.SeccompProfile).To(BeNil())
+		// The default hardening fields the override did not mention survive the merge.
+		Expect(podSC.FSGroup).NotTo(BeNil())
+		Expect(podSC.RunAsGroup).NotTo(BeNil())
+		Expect(podSC.RunAsNonRoot).NotTo(BeNil())
+		Expect(podSC.SeccompProfile).NotTo(BeNil())
 	})
 
-	It("should let PodOverrides REPLACE the default container security context (no deep merge)", func() {
+	It("should deep-merge PodOverrides into the default container security context (strategic merge)", func() {
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -802,11 +804,11 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(csc).NotTo(BeNil())
 		Expect(csc.RunAsUser).NotTo(BeNil())
 		Expect(*csc.RunAsUser).To(Equal(int64(4321)))
-		// Negative assertions documenting REPLACE (not merge): default hardening fields are gone.
-		Expect(csc.AllowPrivilegeEscalation).To(BeNil())
-		Expect(csc.Capabilities).To(BeNil())
-		Expect(csc.RunAsNonRoot).To(BeNil())
-		Expect(csc.SeccompProfile).To(BeNil())
+		// The default hardening fields the override did not mention survive the merge.
+		Expect(csc.AllowPrivilegeEscalation).NotTo(BeNil())
+		Expect(csc.Capabilities).NotTo(BeNil())
+		Expect(csc.RunAsNonRoot).NotTo(BeNil())
+		Expect(csc.SeccompProfile).NotTo(BeNil())
 	})
 
 	It("should allow disabling the default security context", func() {
@@ -967,9 +969,13 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
-		// The builder applies PodOverrides last, so the user's pod override replaces the
-		// config-declared affinity.
-		Expect(resources.StatefulSet.Spec.Template.Spec.Affinity).To(Equal(overrideAffinity))
+		// The builder applies PodOverrides last via strategic merge: affinity kinds the override
+		// sets win, while config-declared affinity kinds it does not mention are kept.
+		merged := resources.StatefulSet.Spec.Template.Spec.Affinity
+		Expect(merged).NotTo(BeNil())
+		Expect(merged.NodeAffinity).To(Equal(overrideAffinity.NodeAffinity))
+		Expect(merged.PodAntiAffinity).NotTo(BeNil(),
+			"config-declared podAntiAffinity survives a nodeAffinity-only override")
 	})
 
 	It("lets a PodOverrides terminationGracePeriodSeconds win over gracefulShutdownTimeout", func() {
