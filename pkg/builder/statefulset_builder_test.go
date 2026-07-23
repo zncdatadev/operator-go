@@ -803,7 +803,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 				WithPodOverrides(overrides).
 				Build()
 
-			names := []string{}
+			names := make([]string, 0, len(sts.Spec.Template.Spec.Containers))
 			for _, c := range sts.Spec.Template.Spec.Containers {
 				names = append(names, c.Name)
 			}
@@ -897,13 +897,13 @@ var _ = Describe("StatefulSetBuilder", func() {
 				WithPodOverrides(overrides).
 				Build()
 
-			mountPaths := []string{}
+			mountPaths := make([]string, 0, len(sts.Spec.Template.Spec.Containers[0].VolumeMounts))
 			for _, m := range sts.Spec.Template.Spec.Containers[0].VolumeMounts {
 				mountPaths = append(mountPaths, m.MountPath)
 			}
 			Expect(mountPaths).To(ConsistOf("/built", "/extra"))
 
-			volNames := []string{}
+			volNames := make([]string, 0, len(sts.Spec.Template.Spec.Volumes))
 			for _, v := range sts.Spec.Template.Spec.Volumes {
 				volNames = append(volNames, v.Name)
 			}

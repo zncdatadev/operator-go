@@ -193,7 +193,7 @@ var _ = Describe("Credentials wiring", func() {
 
 		volumes := provisioner.Volumes()
 		Expect(volumes).To(HaveLen(1))
-		annotations := volumes[0].VolumeSource.Ephemeral.VolumeClaimTemplate.Annotations
+		annotations := volumes[0].Ephemeral.VolumeClaimTemplate.Annotations
 		Expect(annotations).To(HaveKeyWithValue(security.SecretClassAnnotation, "s3-credentials"))
 		Expect(annotations).NotTo(HaveKey(security.AnnotationSecretsFormat),
 			"plain credential secrets carry no format annotation")
@@ -217,7 +217,7 @@ var _ = Describe("Credentials wiring", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		provisioner := info.CredentialsProvisioner(s3.DefaultCredentialsVolumeName)
-		annotations := provisioner.Volumes()[0].VolumeSource.Ephemeral.VolumeClaimTemplate.Annotations
+		annotations := provisioner.Volumes()[0].Ephemeral.VolumeClaimTemplate.Annotations
 		Expect(annotations).To(HaveKeyWithValue(security.SecretClassScopeAnnotation, "node,pod,service=minio"))
 	})
 

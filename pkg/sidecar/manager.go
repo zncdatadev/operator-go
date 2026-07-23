@@ -103,6 +103,16 @@ func ValidateConfigMapExists(ctx context.Context, c client.Client, namespace, na
 	return nil
 }
 
+// ValidateSecretExists validates that a Secret exists.
+func ValidateSecretExists(ctx context.Context, c client.Client, namespace, name string) error {
+	secret := &corev1.Secret{}
+	err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, secret)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // Register registers a sidecar provider with its configuration.
 func (m *SidecarManager) Register(provider SidecarProvider, config *SidecarConfig) {
 	m.providers[provider.Name()] = provider

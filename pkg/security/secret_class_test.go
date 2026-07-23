@@ -54,7 +54,7 @@ var _ = Describe("CredentialsVolume", func() {
 
 		volumes := provisioner.Volumes()
 		Expect(volumes).To(HaveLen(1))
-		annotations := volumes[0].VolumeSource.Ephemeral.VolumeClaimTemplate.Annotations
+		annotations := volumes[0].Ephemeral.VolumeClaimTemplate.Annotations
 		Expect(annotations).To(HaveKeyWithValue(security.SecretClassAnnotation, "s3-credentials"))
 		Expect(annotations).NotTo(HaveKey(security.AnnotationSecretsFormat))
 		Expect(annotations).NotTo(HaveKey(security.SecretClassScopeAnnotation))
@@ -64,7 +64,7 @@ var _ = Describe("CredentialsVolume", func() {
 		provisioner := security.NewSecretProvisioner().
 			Register(security.CredentialsVolume("creds", "class").WithScope("node,pod"))
 
-		annotations := provisioner.Volumes()[0].VolumeSource.Ephemeral.VolumeClaimTemplate.Annotations
+		annotations := provisioner.Volumes()[0].Ephemeral.VolumeClaimTemplate.Annotations
 		Expect(annotations).To(HaveKeyWithValue(security.SecretClassScopeAnnotation, "node,pod"))
 	})
 })
