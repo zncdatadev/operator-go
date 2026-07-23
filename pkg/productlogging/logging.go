@@ -45,6 +45,12 @@ type ContainerLogging struct {
 	// Pattern overrides the encoder/layout pattern (product-specific, e.g. ZooKeeper's
 	// "[myid:%X{myid}]" MDC). Empty uses the framework default.
 	Pattern string
+	// LogFileName overrides the rolling log-file name (default ContainerLogFileName, e.g.
+	// "node.log4j2.xml") for products with an established file-name contract (e.g. Spark's
+	// "spark.log4j2.xml"). The name MUST keep the framework suffix (LogFileSuffix) — the
+	// Vector pipeline selects its edge parser by that suffix, so RenderConfigFile rejects a
+	// name that drops it. The per-container log directory is unaffected.
+	LogFileName string
 }
 
 // LogFileSuffix returns the framework-owned rolling log-file suffix for a producer container.
@@ -110,9 +116,18 @@ func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, w
 	}
 	opts := RenderOptions{Pattern: decl.Pattern}
 	if withFileAppender {
+		logFileName := ContainerLogFileName(decl.Framework, decl.Container)
+		if decl.LogFileName != "" {
+			if !strings.HasSuffix(decl.LogFileName, LogFileSuffix(decl.Framework)) {
+				return "", "", fmt.Errorf(
+					"log file name %q for container %q must keep the framework suffix %q (it selects the Vector edge parser)",
+					decl.LogFileName, decl.Container, LogFileSuffix(decl.Framework))
+			}
+			logFileName = decl.LogFileName
+		}
 		// The stable path convention: "<KubedoopLogDir>/<lowercased container>/<file>". path.Join
 		// collapses the trailing slash constant.KubedoopLogDir carries.
-		opts.FileOutputPath = path.Join(ContainerLogDir(decl.Container), ContainerLogFileName(decl.Framework, decl.Container))
+		opts.FileOutputPath = path.Join(ContainerLogDir(decl.Container), logFileName)
 	}
 	content, err := gen.Render(LogConfigFromSpec(spec), opts)
 	if err != nil {
