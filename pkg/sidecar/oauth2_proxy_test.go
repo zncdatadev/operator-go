@@ -18,6 +18,7 @@ package sidecar_test
 
 import (
 	"encoding/base64"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -164,18 +165,48 @@ var _ = Describe("OAuth2ProxyProviderFor", func() {
 })
 
 var _ = Describe("DeterministicCookieSecret", func() {
-	It("is stable and decodes to 32 bytes", func() {
+	It("is stable and URL-safe-decodes to 32 bytes, as oauth2-proxy requires", func() {
 		first := sidecar.DeterministicCookieSecret("cr-uid")
 		second := sidecar.DeterministicCookieSecret("cr-uid")
 		Expect(first).To(Equal(second))
 
-		raw, err := base64.StdEncoding.DecodeString(first)
+		// oauth2-proxy's SecretBytes attempts ONLY unpadded URL-safe base64; a value with
+		// '+' or '/' would fall back to the raw string (invalid length) and crash the proxy.
+		Expect(first).NotTo(ContainSubstring("+"))
+		Expect(first).NotTo(ContainSubstring("/"))
+		Expect(first).NotTo(ContainSubstring("="))
+		raw, err := base64.RawURLEncoding.DecodeString(first)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(raw).To(HaveLen(32))
+	})
+
+	It("stays URL-safe across many seeds", func() {
+		for i := 0; i < 256; i++ {
+			secret := sidecar.DeterministicCookieSecret(fmt.Sprintf("seed-%d", i))
+			_, err := base64.RawURLEncoding.DecodeString(secret)
+			Expect(err).NotTo(HaveOccurred(), "seed-%d", i)
+		}
 	})
 
 	It("differs per seed", func() {
 		Expect(sidecar.DeterministicCookieSecret("a")).NotTo(
 			Equal(sidecar.DeterministicCookieSecret("b")))
+	})
+})
+
+var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
+	It("injects no readiness probe (an unready native sidecar would gate the whole pod)", func() {
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, "cr-uid")
+
+		Expect(provider.Inject(podSpec, nil)).To(Succeed())
+		Expect(podSpec.InitContainers[0].ReadinessProbe).To(BeNil())
+	})
+
+	It("rejects injection without an OIDC provider", func() {
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
+		provider := sidecar.NewOAuth2ProxySidecarProvider(nil, "oidc-credentials", 18080, "cr-uid")
+		Expect(provider.Inject(podSpec, nil)).To(MatchError(ContainSubstring("OIDC provider is required")))
 	})
 })

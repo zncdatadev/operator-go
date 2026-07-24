@@ -34,7 +34,11 @@ import (
 type StatefulSetBuilder struct {
 	Name      string
 	Namespace string
-	Labels    map[string]string
+	// MainContainerName, when set, names the primary container (default: Name). It must be
+	// set BEFORE Build() so podOverrides addressing the container by its user-facing name
+	// strategic-merge into it instead of appending a phantom container.
+	MainContainerName string
+	Labels            map[string]string
 	// SelectorLabels, when set, is used for the StatefulSet's immutable .spec.selector
 	// (and must be a subset of Labels, which are applied to the pod template). When empty,
 	// Labels is used for the selector. Decoupling the selector from the full descriptive
@@ -148,6 +152,22 @@ func (b *StatefulSetBuilder) selectorMatchLabels() map[string]string {
 		return b.SelectorLabels
 	}
 	return b.Labels
+}
+
+// WithMainContainerName names the primary container (default: the StatefulSet name). Set it
+// before Build(): the podOverrides strategic merge keys containers by name, so the primary
+// container must already carry its final, user-facing name when overrides are applied.
+func (b *StatefulSetBuilder) WithMainContainerName(name string) *StatefulSetBuilder {
+	b.MainContainerName = name
+	return b
+}
+
+// primaryContainerName returns the effective primary container name.
+func (b *StatefulSetBuilder) primaryContainerName() string {
+	if b.MainContainerName != "" {
+		return b.MainContainerName
+	}
+	return b.Name
 }
 
 // WithAnnotations sets the annotations.
@@ -504,7 +524,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 // buildContainer builds the main container.
 func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 	container := corev1.Container{
-		Name:            b.Name,
+		Name:            b.primaryContainerName(),
 		Image:           b.Image,
 		ImagePullPolicy: b.ImagePullPolicy,
 		Ports:           b.Ports,
@@ -659,12 +679,19 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	}
 
 	override := b.PodOverrides.DeepCopy()
-	// Back-compat: an unnamed override container has always addressed the main container (which
-	// shares the StatefulSet's name). Normalize the name before the merge — an empty name would
-	// otherwise be treated as a distinct merge key and appended as a broken extra container.
+	// PodSpec.Containers is the one PodSpec field without omitempty: a nil slice marshals as
+	// "containers": null, which strategic merge treats as a DELETE directive — an
+	// annotations-only override would wipe every container. Normalize nil to empty (an empty
+	// merge-strategy list is a no-op).
+	if override.Spec.Containers == nil {
+		override.Spec.Containers = []corev1.Container{}
+	}
+	// Back-compat: an unnamed override container has always addressed the main container.
+	// Normalize the name before the merge — an empty name would otherwise be treated as a
+	// distinct merge key and appended as a broken extra container.
 	for i := range override.Spec.Containers {
 		if override.Spec.Containers[i].Name == "" {
-			override.Spec.Containers[i].Name = b.Name
+			override.Spec.Containers[i].Name = b.primaryContainerName()
 		}
 	}
 

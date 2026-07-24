@@ -28,7 +28,6 @@ import (
 	authv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/authentication/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -134,6 +133,9 @@ func (p *OAuth2ProxySidecarProvider) Validate(ctx context.Context, c client.Clie
 // container with restartPolicy Always), following the SidecarManager's single-owner model.
 // This method is idempotent — calling it multiple times will not duplicate the container.
 func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *SidecarConfig) error {
+	if p.oidcProvider == nil {
+		return fmt.Errorf("oauth2-proxy: OIDC provider is required")
+	}
 	if config == nil {
 		config = &SidecarConfig{Enabled: true}
 	}
@@ -199,17 +201,9 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ping",
-					Port: intstr.FromInt(int(p.port)),
-				},
-			},
-			InitialDelaySeconds: 5,
-			TimeoutSeconds:      5,
-			PeriodSeconds:       10,
-		},
+		// Deliberately no readiness probe: as a native sidecar, an unready oauth2-proxy
+		// would gate readiness of the WHOLE pod — an issuer (IdP) outage would take the
+		// product's non-auth ports out of every Service, not just the login flow.
 	}
 
 	if config.Resources != nil {
@@ -274,10 +268,13 @@ func OAuth2ProxyProviderFor(providerHint string) string {
 }
 
 // DeterministicCookieSecret derives a stable oauth2-proxy cookie secret from a seed
-// (typically the CR UID): base64(sha256(seed)), which oauth2-proxy decodes to a 32-byte
-// secret. Deriving instead of generating keeps reconciles idempotent — a random secret
-// would roll every pod on every reconcile.
+// (typically the CR UID): the URL-safe, unpadded base64 of sha256(seed), which
+// oauth2-proxy's SecretBytes decodes to a 32-byte secret. URL-safe encoding is load-bearing:
+// oauth2-proxy attempts ONLY base64.URLEncoding — a standard-encoded value containing '+'
+// or '/' fails that decode and falls back to the raw 43/44-byte string, an invalid secret
+// length that crash-loops the proxy. Deriving instead of generating keeps reconciles
+// idempotent — a random secret would roll every pod on every reconcile.
 func DeterministicCookieSecret(seed string) string {
 	hash := sha256.Sum256([]byte(seed))
-	return base64.StdEncoding.EncodeToString(hash[:])
+	return base64.RawURLEncoding.EncodeToString(hash[:])
 }

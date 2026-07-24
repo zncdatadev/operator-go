@@ -874,6 +874,62 @@ var _ = Describe("StatefulSetBuilder", func() {
 				"pod template must keep matching the immutable selector")
 		})
 
+		It("should keep the built containers when the override sets no containers", func() {
+			// Regression: PodSpec.Containers has no omitempty, so a nil slice marshals as
+			// "containers": null — a strategic-merge DELETE directive. An annotations-only or
+			// grace-period-only override must not wipe the pod's containers.
+			grace := int64(120)
+			overrides := &corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"custom": "annotation"},
+				},
+				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: &grace,
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal(image))
+			Expect(sts.Spec.Template.Annotations).To(HaveKeyWithValue("custom", "annotation"))
+			Expect(*sts.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(grace))
+		})
+
+		It("should merge overrides addressing the main container by its significant name", func() {
+			// Regression: with WithMainContainerName("node"), an override container named
+			// "node" must merge into the primary container — not append a phantom,
+			// image-less second container (the merge runs inside Build(), so the primary
+			// container must already carry its final name).
+			overrides := &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "node",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU: resource.MustParse("2"),
+								},
+							},
+						},
+					},
+				},
+			}
+			sts := stsBuilder.
+				WithImage(image, corev1.PullIfNotPresent).
+				WithMainContainerName("node").
+				WithPodOverrides(overrides).
+				Build()
+
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			main := sts.Spec.Template.Spec.Containers[0]
+			Expect(main.Name).To(Equal("node"))
+			Expect(main.Image).To(Equal(image), "the merged container keeps the built image")
+			Expect(main.Resources.Limits.Cpu().String()).To(Equal("2"))
+		})
+
 		It("should merge container volumeMounts and pod volumes", func() {
 			overrides := &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{

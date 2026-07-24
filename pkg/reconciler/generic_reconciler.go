@@ -574,6 +574,13 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 	// logging config file generation read from a single merged source.
 	mergedConfig.Logging = productlogging.MergeLoggingSpec(roleSpec.GetConfig().Logging, groupSpec.GetConfig().Logging)
 
+	// Merge the role-level config into the role group config (group wins per field), so
+	// role-wide defaults for resources/affinity/gracefulShutdownTimeout reach every group —
+	// previously only logging and overrides were merged and role-level config was silently
+	// dropped. The merge works on copies; the CR's spec objects are never mutated.
+	mergedGroupSpec := groupSpec.DeepCopy()
+	mergedGroupSpec.Config = MergeRoleGroupConfig(roleSpec.GetConfig(), groupSpec.GetConfig())
+
 	resourceName := RoleGroupResourceName(cr.GetName(), roleName, groupName)
 
 	return &RoleGroupBuildContext{
@@ -584,7 +591,7 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 		RoleName:         roleName,
 		RoleSpec:         roleSpec,
 		RoleGroupName:    groupName,
-		RoleGroupSpec:    *groupSpec,
+		RoleGroupSpec:    *mergedGroupSpec,
 		MergedConfig:     mergedConfig,
 		ResourceName:     resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as

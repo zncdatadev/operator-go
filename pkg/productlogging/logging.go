@@ -123,6 +123,11 @@ func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, w
 					"log file name %q for container %q must keep the framework suffix %q (it selects the Vector edge parser)",
 					decl.LogFileName, decl.Container, LogFileSuffix(decl.Framework))
 			}
+			if strings.Contains(decl.LogFileName, "/") {
+				return "", "", fmt.Errorf(
+					"log file name %q for container %q must be a bare file name: a path separator would escape the per-container log directory and the Vector collection glob",
+					decl.LogFileName, decl.Container)
+			}
 			logFileName = decl.LogFileName
 		}
 		// The stable path convention: "<KubedoopLogDir>/<lowercased container>/<file>". path.Join
