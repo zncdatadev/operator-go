@@ -268,6 +268,47 @@ func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []pro
 	return data, nil
 }
 
+// MergeRoleGroupConfig merges a role-level RoleGroupConfigSpec into a role group's config,
+// the group winning per field (resources merge per sub-field; logging deep-merges per
+// container via productlogging.MergeLoggingSpec). The inputs are never mutated; the result
+// is always a fresh copy (or nil when both inputs are nil). GenericReconciler applies this
+// when building the RoleGroupBuildContext, so role-wide config defaults reach every group.
+func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.RoleGroupConfigSpec {
+	switch {
+	case role == nil && group == nil:
+		return nil
+	case role == nil:
+		return group.DeepCopy()
+	case group == nil:
+		return role.DeepCopy()
+	}
+
+	merged := group.DeepCopy()
+	if merged.Affinity == nil {
+		merged.Affinity = role.Affinity.DeepCopy()
+	}
+	if merged.GracefulShutdownTimeout == "" {
+		merged.GracefulShutdownTimeout = role.GracefulShutdownTimeout
+	}
+	merged.Logging = productlogging.MergeLoggingSpec(role.Logging, group.Logging)
+	if role.Resources != nil {
+		if merged.Resources == nil {
+			merged.Resources = role.Resources.DeepCopy()
+		} else {
+			if merged.Resources.CPU == nil {
+				merged.Resources.CPU = role.Resources.CPU.DeepCopy()
+			}
+			if merged.Resources.Memory == nil {
+				merged.Resources.Memory = role.Resources.Memory.DeepCopy()
+			}
+			if merged.Resources.Storage == nil {
+				merged.Resources.Storage = role.Resources.Storage.DeepCopy()
+			}
+		}
+	}
+	return merged
+}
+
 // RoleGroupHandler is the interface that product operators must implement
 // to define how resources are built for each role group.
 //

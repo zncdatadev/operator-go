@@ -733,16 +733,19 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		}
 	}
 
+	// Name the primary container when the product needs a significant name (e.g. to match its
+	// per-container logging key). This must reach the builder BEFORE Build(): podOverrides are
+	// strategic-merged by container name inside Build(), so an override addressing the
+	// user-facing name (e.g. "node") must find the primary container already carrying it — a
+	// post-build rename would leave the override appended as a phantom, image-less container.
+	// Sidecar injection below also sees the final name (the Vector provider RW-mounts the
+	// shared log volume on the producer containers by name).
+	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" {
+		stsBuilder.WithMainContainerName(mainName)
+	}
+
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
-
-	// Rename the primary container when the product needs a significant name (e.g. to match
-	// its per-container logging key). The builder makes the primary container index 0. This runs
-	// before sidecar injection so the Vector provider (which RW-mounts the shared log volume on
-	// the producer containers by name) sees the final container names.
-	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" && len(sts.Spec.Template.Spec.Containers) > 0 {
-		sts.Spec.Template.Spec.Containers[0].Name = mainName
-	}
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager
