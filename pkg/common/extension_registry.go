@@ -191,7 +191,8 @@ func extensionsOf[T Extension](entries []extensionEntry[T]) []T {
 
 // executeHooks runs hook for every entry in execution order. A failing extension aborts the
 // loop when its (possibly overridden) stop-on-error setting says so; otherwise the failure is
-// logged and the remaining extensions still run.
+// logged and the remaining extensions still run. Every failure the policy aggregates is part
+// of the returned error, whether the loop ran to completion or was stopped by a later one.
 func executeHooks[T Extension](ctx context.Context, entries []extensionEntry[T], policy hookPolicy, hook func(T) error) error {
 	var errs []error
 	for _, entry := range entries {
@@ -202,7 +203,14 @@ func executeHooks[T Extension](ctx context.Context, entries []extensionEntry[T],
 
 		extensionErr := NewExtensionError(entry.extension.Name(), err)
 		if entry.stopsOnError(policy.stopOnError) {
-			return extensionErr
+			// Failures already collected from tolerant extensions are reported alongside the
+			// stopping one; dropping them would hide from the CR status that those extensions
+			// failed too. With nothing collected the *ExtensionError is returned unwrapped so
+			// the common single-failure case stays directly inspectable.
+			if len(errs) == 0 {
+				return extensionErr
+			}
+			return errors.Join(append(errs, extensionErr)...)
 		}
 
 		log.FromContext(ctx).Error(err, "Extension hook failed, continuing with remaining extensions",

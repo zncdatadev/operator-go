@@ -803,6 +803,126 @@ var _ = Describe("ExtensionRegistry", func() {
 			Expect(executed).To(Equal([]string{"failing"}))
 		})
 
+		// A tolerant extension's failure is collected, not returned on the spot. If a later
+		// extension then stops the loop, the collected failures have to travel out with it —
+		// otherwise the CR status only ever names the stopping extension and the tolerant one
+		// fails invisibly.
+		It("should report the tolerant failures alongside the stopping one in PreReconcile", func() {
+			registry.RegisterClusterExtension(&hdfsClusterExtension{
+				NameFunc: func() string { return "tolerant" },
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
+					executed = append(executed, "tolerant")
+					return errors.New("tolerant hook failed")
+				},
+			}, common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
+
+			registry.RegisterClusterExtension(&hdfsClusterExtension{
+				NameFunc: func() string { return "stopping" },
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
+					executed = append(executed, "stopping")
+					return errors.New("stopping hook failed")
+				},
+			}, common.WithPriority(common.PriorityLow))
+
+			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("tolerant"))
+			Expect(err.Error()).To(ContainSubstring("tolerant hook failed"))
+			Expect(err.Error()).To(ContainSubstring("stopping"))
+			Expect(err.Error()).To(ContainSubstring("stopping hook failed"))
+			Expect(executed).To(Equal([]string{"tolerant", "stopping"}))
+		})
+
+		It("should report the tolerant failures alongside the stopping one in PostReconcile", func() {
+			registry.RegisterClusterExtension(&hdfsClusterExtension{
+				NameFunc: func() string { return "tolerant" },
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
+					return errors.New("tolerant hook failed")
+				},
+			}, common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
+
+			registry.RegisterClusterExtension(&hdfsClusterExtension{
+				NameFunc: func() string { return "stopping" },
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
+					return errors.New("stopping hook failed")
+				},
+			}, common.WithPriority(common.PriorityLow))
+
+			err := registry.ExecuteClusterPostReconcile(context.Background(), nil, nil)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("tolerant"))
+			Expect(err.Error()).To(ContainSubstring("stopping"))
+		})
+
+		It("should report the tolerant failures alongside the stopping one in role hooks", func() {
+			registry.RegisterRoleExtension(&hdfsRoleExtension{
+				NameFunc: func() string { return "tolerant" },
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName string) error {
+					return errors.New("tolerant hook failed")
+				},
+			}, common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
+
+			registry.RegisterRoleExtension(&hdfsRoleExtension{
+				NameFunc: func() string { return "stopping" },
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName string) error {
+					return errors.New("stopping hook failed")
+				},
+			}, common.WithPriority(common.PriorityLow))
+
+			err := registry.ExecuteRolePreReconcile(context.Background(), nil, nil, "test-role")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("tolerant"))
+			Expect(err.Error()).To(ContainSubstring("stopping"))
+		})
+
+		It("should report the tolerant failures alongside the stopping one in role group hooks", func() {
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{
+				NameFunc: func() string { return "tolerant" },
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
+					return errors.New("tolerant hook failed")
+				},
+			}, common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
+
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{
+				NameFunc: func() string { return "stopping" },
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
+					return errors.New("stopping hook failed")
+				},
+			}, common.WithPriority(common.PriorityLow))
+
+			err := registry.ExecuteRoleGroupPreReconcile(context.Background(), nil, nil, "test-role", "test-group")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("tolerant"))
+			Expect(err.Error()).To(ContainSubstring("stopping"))
+		})
+
+		// Error handlers do not aggregate: a tolerant handler's failure is only logged, so a
+		// stopping handler's error must reach the caller alone and stay directly inspectable.
+		It("should return only the stopping handler's error from OnReconcileError", func() {
+			registry.RegisterClusterExtension(&hdfsClusterExtension{
+				NameFunc: func() string { return "tolerant" },
+				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, reconcileErr error) error {
+					return errors.New("tolerant handler failed")
+				},
+			}, common.WithPriority(common.PriorityHigh))
+
+			registry.RegisterClusterExtension(&hdfsClusterExtension{
+				NameFunc: func() string { return "stopping" },
+				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, reconcileErr error) error {
+					return errors.New("stopping handler failed")
+				},
+			}, common.WithPriority(common.PriorityLow), common.WithStopOnError(true))
+
+			err := registry.ExecuteClusterOnError(context.Background(), nil, nil, errors.New("reconcile error"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("stopping handler failed"))
+			Expect(err.Error()).ToNot(ContainSubstring("tolerant handler failed"))
+
+			var extensionErr *common.ExtensionError
+			Expect(errors.As(err, &extensionErr)).To(BeTrue())
+			Expect(extensionErr.ExtensionName).To(Equal("stopping"))
+		})
+
 		It("should run the remaining role hooks when the extension opts out", func() {
 			registry.RegisterRoleExtension(&hdfsRoleExtension{
 				NameFunc: func() string { return "failing" },
