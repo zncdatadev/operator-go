@@ -16,6 +16,15 @@ largest edit most products will make) and a [checklist](#5-checklist).
 
 ## Before you start
 
+**Which "before" this guide describes.** Every "Removed" symbol below is checked against `main` as it
+stood before the v0.13.0 work — that is, the framework introduced by the architecture redesign
+(#441) and extended by the four correctness waves after it. It is **not** the last tag: v0.12.6
+predates the framework entirely (no `pkg/common`, no `GenericReconciler`, no `ClusterInterface`, no
+`pkg/sidecar`/`pkg/vector`/`pkg/security`, and `pkg/constants` rather than `pkg/constant`). If your
+operator is still on v0.12.6 or earlier, this guide does not cover your migration: you are adopting
+the framework rather than upgrading it, so start from
+[the architecture document](architecture.md) §7.2 and the `examples/trino-operator/` walkthrough.
+
 ```sh
 go get github.com/zncdatadev/operator-go@v0.13.0
 make generate      # controller-gen must emit DeepCopy() for your CR — see 1.1
@@ -104,20 +113,28 @@ The registry is generic over the CR type and owned by the reconciler.
 
 | Removed | Replacement |
 |---|---|
-| `common.NewExtensionRegistry()` | `common.NewExtensionRegistry[*MyCluster]()` — the type argument cannot be inferred from a no-argument call |
+| `common.GetExtensionRegistry()` | `common.NewExtensionRegistry[*MyCluster]()` — construct your own and pass it as `GenericReconcilerConfig.ExtensionRegistry`. There is no process-wide registry and no constructor without a type argument (it cannot be inferred from a no-argument call) |
 | `*common.ExtensionRegistry` (type) | `*common.ExtensionRegistry[*MyCluster]` in every declaration, field and parameter |
-| `common.GetExtensionRegistry()` | nothing — there is no process-wide registry. Build one per CR type and pass it as `GenericReconcilerConfig.ExtensionRegistry` |
 | `common.ResetExtensionRegistry()` | `registry.Clear()` on the instance you own (it still empties in place, so a reconciler that captured the pointer observes the reset) |
-| `common.AsClusterExtension[*MyCluster](ext)` and `AsRoleExtension` / `AsRoleGroupExtension` | nothing — pass `ext` directly; extensions declare the concrete CR type in their hook signatures |
 | `RegisterClusterExtensionWithPriority(ext, p)` | `RegisterClusterExtension(ext, common.WithPriority(p))` |
-| `RegisterClusterExtensionWithOptions(ext, o1, o2)` | `RegisterClusterExtension(ext, o1, o2)` |
 | `cr common.ClusterInterface` in a hook signature | the concrete CR, e.g. `cr *hdfsv1alpha1.HdfsCluster` |
 | `var _ common.ClusterExtension[common.ClusterInterface] = &MyExt{}` | `var _ common.ClusterExtension[*MyCluster] = &MyExt{}` |
-| `common.PrioritizedExtension`, `common.NoOpExtension` | removed — the registry orders solely by the `WithPriority` registration option, so a `Priority()` method was silently ignored |
+| `common.PrioritizedExtension`, `common.NoOpExtension` | removed — the registry orders solely by the `WithPriority` registration option, so a `Priority()` method was silently ignored. `NoOpExtension`'s hooks took `common.ClusterInterface`, which no longer typechecks against a registry instantiated for your CR; embed `common.BaseExtension` (still present) and write the hooks you need |
 
-Same substitutions for the Role and RoleGroup levels. `WithPriority`, `WithStopOnError`, the
-priority constants and the ordering semantics (highest priority first, registration order as the
-tiebreak) are unchanged.
+Same substitutions for the Role and RoleGroup levels: `RegisterRoleExtensionWithPriority` and
+`RegisterRoleGroupExtensionWithPriority` collapse into the variadic
+`RegisterRoleExtension`/`RegisterRoleGroupExtension` the same way — six registration methods become
+three. The priority constants and "highest priority first" are unchanged. Two things are genuinely
+new and need no migration, only awareness:
+
+- **`common.WithStopOnError(bool)`** opts one registration out of (or into) the hook's default fault
+  tolerance. The defaults match the old behaviour exactly: `PreReconcile`/`PostReconcile` stop at the
+  first failure, `OnReconcileError` runs every handler and only logs theirs.
+- **Same-priority extensions now execute in registration order.** Registration used to re-sort the
+  slice with `sort.Slice` on priority alone, which is not stable, so equal priorities ran in an
+  arbitrary order. Each entry now carries a registration sequence number, making the order total. If
+  two of your extensions share a priority and one implicitly depended on running first, that
+  dependency is now honoured as written — check that "as written" is what you meant.
 
 `GenericReconcilerConfig.ExtensionRegistry` is now `*common.ExtensionRegistry[CR]`, so one registry
 instance can no longer be shared between reconcilers of two different CR types — that is a compile
@@ -162,7 +179,7 @@ move to the typed checks above:
 | `listener.VolumeRegistration.WithScope`, `listener.ListenerScope`, `ListenerScopeNode`, `ListenerScopeCluster`, `ListenerScopeAnnotation` | nothing — the listener-operator never read the annotation. Declare a volume with `listener.NewVolume(name, class)` and optionally `.WithListenerName(name)`; a registration with neither a class nor a listener name is rejected |
 | `sidecar.SidecarConfig.MainContainerName` | `sidecar.FindContainer(podSpec, name)` inside the provider; the primary container's name is set through `reconciler.BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName` |
 | `sidecar.FindMainContainer(podSpec, name)` | `sidecar.FindContainer(podSpec, name)` (or `sidecar.FindContainerIndex`) |
-| `RoleGroupCleaner.Cleanup(ctx, namespace, clusterName, spec, status) error` | `Cleanup(ctx, namespace, clusterName, spec, status, ownerUID types.UID, crAnnotations map[string]string) (time.Duration, error)` — the duration is the earliest pending wakeup (0 when nothing is pending). Only affects code driving the cleaner directly; `GenericReconciler` does this for you |
+| `RoleGroupCleaner.Cleanup(...) error` | same parameters, new return: `(time.Duration, error)`. The duration is the earliest pending wakeup — a gray-delete deadline, or the poll interval of a deletion in flight — and `0` means nothing is pending. A caller driving the cleaner directly must now loop until it returns `0`: one call no longer reclaims a role group (see §3.3, "Orphan cleanup takes several reconciles"). `GenericReconciler` does this for you |
 | `commonsv1alpha1.ZKConfig` | `DependencyResolver.ValidateZKConfig` accepts the connection string; a `*ZKConfig` was silently accepted whatever it contained |
 | `commonsv1alpha1.GracefulShutdownSpec` | `RoleGroupConfigSpec.GracefulShutdownTimeout` (a duration string) |
 | `commonsv1alpha1.StorageResourceSpec` | `ResourcesSpec.Storage` |
@@ -228,8 +245,15 @@ a pod restart if the workload carries the restarter label):
 - YAML: a duplicate key is an error instead of last-one-wins. De-duplicate the input.
 - Logger names from the CRD are escaped per target format, so a name containing a space, separator,
   quote or line break no longer re-shapes the file.
-- The generated Python logging file is no longer named `logging.py` (it shadowed the standard
-  library module whenever the config directory ended up on `sys.path`).
+- **The generated Python logging file is `log_config.py`, not `logging.py`** (`logging.py` shadowed
+  the standard library module whenever the config directory ended up on `sys.path`, breaking every
+  `import logging` in the process). This is the ConfigMap key and the file name inside the config
+  mount, so a product entrypoint that reads the old path — `logging.config.fileConfig(".../logging.py")`,
+  a `PYTHONPATH`/`--log-config` argument, a `COPY`/`ENV` in the product image — must be repointed at
+  `log_config.py` or the container starts with default logging. Override the name per container with
+  `productlogging.ContainerLogging.FileName` if the product cannot be changed. The *rolling log
+  file* the Vector source globs is unaffected (still `<container>.py.json` under
+  `<LogDir>/<lowercased container>/`).
 
 **Listener PVC templates no longer carry `listeners.kubedoop.dev/scope`.** These are ephemeral
 volumes in the pod template, so this is a rolling update, not an immutable-field conflict.
@@ -332,16 +356,20 @@ var _ common.ClusterExtension[common.ClusterInterface] = &CatalogExtension{}
 ```
 
 ```go
-// main.go
-common.GetExtensionRegistry().RegisterClusterExtensionWithPriority(
-    common.AsClusterExtension[*trinov1alpha1.TrinoCluster](extensions.NewCatalogExtension()),
-    common.PriorityHigh,
-)
+// main.go — registration went into the process-wide singleton, untyped
+common.GetExtensionRegistry().RegisterClusterExtension(extensions.NewCatalogExtension())
+common.GetExtensionRegistry().RegisterRoleExtension(extensions.NewHealthExtension())
+common.GetExtensionRegistry().RegisterClusterExtension(
+    extensions.NewDiscoveryExtension(mgr.GetScheme()))
 
 reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
-    // … no ExtensionRegistry field: the reconciler used the singleton
+    // … no ExtensionRegistry field existed: the reconciler read the singleton
 }
 ```
+
+A call that pinned a priority — `RegisterClusterExtensionWithPriority(ext, common.PriorityHigh)` —
+becomes `RegisterClusterExtension(ext, common.WithPriority(common.PriorityHigh))`; the example had
+none, so the "after" below introduces one for the discovery extension on purpose.
 
 ### After
 
@@ -415,6 +443,8 @@ Per-test instances also make the specs safe to run in parallel.
 - [ ] `security.ListenerVolume` calls pass a listener volume name.
 - [ ] Shared CRDs re-applied; consumers of `.status.condition` moved to `.status.conditions`.
 - [ ] Product config/images referencing `/opt/jmx_exporter` for the exporter *config* updated.
+- [ ] Python products: every entrypoint, image layer and CI fixture naming `logging.py` repointed at
+      `log_config.py` (§2).
 - [ ] Golden files and manifest fixtures regenerated (`.env` quoting, XML `&#13;`, required scalars).
 - [ ] `HealthCheckInterval` reviewed (§3.2).
 - [ ] `make lint && make test`.

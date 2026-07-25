@@ -181,7 +181,9 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
 
 Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration.
 
-**Requeue cadence.** A successful reconcile returns `ctrl.Result{RequeueAfter: HealthCheckInterval}` (`DefaultHealthCheckInterval` = 120s; a negative value disables the periodic wakeup), or the earliest pending gray-delete deadline when that is sooner. Watches only cover the kinds the framework owns, so anything that changes without producing an event — a product `ServiceHealthCheck` probe, a grace period running out — depends on this timer.
+**Requeue cadence.** A successful reconcile returns `ctrl.Result{RequeueAfter: HealthCheckInterval}` (`DefaultHealthCheckInterval` = 120s; a negative value disables the periodic wakeup), or the cleaner's earliest pending wakeup when that is sooner — a remaining gray-delete deadline, or the drain poll interval of an orphan deletion in flight. Watches only cover the kinds the framework owns, so anything that changes without producing an event — a product `ServiceHealthCheck` probe, a grace period running out, a StatefulSet finishing its drain — depends on this timer.
+
+**Orphan cleanup is a multi-pass state machine.** A role group removed from the spec is retired over several reconciles: scale the StatefulSet to zero (under `RetryOnConflict`), wait for the controller's ordered drain (`.status.replicas` reaching 0), then delete `PDB → StatefulSet → ConfigMap → Service → headless → metrics`, each step confirmed absent before the next is issued. A group's status entry is pruned only after a real deletion; a failure is isolated to its own group and the others still progress; a 429 becomes a `*reconciler.RateLimitError` that aborts the pass and backs off instead of marking the cluster `Degraded`. The cleaner also reclaims the role-level PDB of a role deleted from the spec outright, found by the `pdb.kubedoop.dev/role` label (`reconciler.LabelRolePodDisruptionBudget`) rather than by derived name.
 
 **Status writes are conditional.** `updateStatus` skips the write entirely when the whole CR is `apiequality.Semantic.DeepEqual` to the object read at the start of the cycle — comparing the whole object, not just the embedded generic status, so a product's own status fields count too. Without that guard the controller's watch on its own CR would turn every reconcile into another reconcile. The write itself goes out from the in-memory object (a re-fetch would discard product-specific status fields); a 409 refreshes only the `resourceVersion`, preferring `GenericReconcilerConfig.APIReader` because the informer cache has not seen the competing write, and a `NotFound` is treated as success.
 
@@ -373,6 +375,8 @@ The check runs against the API server through the injected `client.Client`; the 
 ### 9. Logging Configuration
 `LoggingFramework`-aware logging config generation (Log4j, Log4j2, Logback, Python) lives in `pkg/productlogging`. `BaseRoleGroupHandler.LoggingContainers` (or the per-role `SetRoleLoggingContainers`) declares which containers get a generated config file; the framework merges the CRD logging spec, renders the file and injects it into the role group ConfigMap. The same declaration names the producers of the Vector log pipeline.
 
+Default config file names come from each generator's `DefaultFileName()`: `logback.xml`, `log4j.properties`, `log4j2.properties` and — deliberately **not** `logging.py` — `log_config.py`, since a config directory on `sys.path` would otherwise shadow the standard library's `logging` module. `ContainerLogging.FileName` overrides the name per container. The rolling *log* file the Vector sources glob is separate and framework-owned: `<KubedoopLogDir>/<lowercased container>/<container><suffix>`, with `.log4j.xml` (log4j/logback), `.log4j2.xml` (log4j2) or `.py.json` (python) selecting the Vector edge parser; `ContainerLogging.LogFileName` may rename it only if the suffix survives and it stays a bare file name.
+
 ### 10. Product Config (`ProductConfig`)
 Products contribute their computed configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductConfig` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):
 
@@ -480,9 +484,25 @@ after the producer containers whose shared log volume it mounts.
 `SidecarProvider.Validate(ctx, client, namespace)` is a real gate, not advisory: the reconciler calls
 `ValidateAll` before applying the StatefulSet, and a failure aborts the role group with a
 `*reconciler.ValidationError`. The Vector provider's `Validate` requires the target ConfigMap to
-exist **and** to carry the `vector.yaml` key: the framework generates that key only for CRs
-implementing `reconciler.VectorAggregatorProvider`, and without it the agent starts unconfigured and
+exist **and** to carry the `vector.yaml` key, without which the agent starts unconfigured and
 crash-loops.
+
+**Vector registration passes three gates**, all evaluated in `buildSidecarManager`; failing any one
+of them skips the sidecar rather than failing the role group:
+
+1. the agent is enabled (`logging.enableVectorAgent`, after the role/role-group logging merge);
+2. the handler's `LoggingProducers(roleName)` returns at least one producer — an agent with nothing
+   to collect would mount an empty pipeline;
+3. **something supplies `vector.yaml`**: the CR implements `reconciler.VectorAggregatorProvider` (the
+   framework renders the file) *or* the handler implements `reconciler.VectorConfigProvider` and
+   answers `ProvidesVectorConfig(roleName) == true` (the product writes it).
+
+Gate 3 exists because registering the provider without a source for `vector.yaml` would fail the
+`Validate` above on every cycle and abort the whole cluster's reconcile over a product that is simply
+not wired for Vector. Instead the reconciler emits a `VectorSidecarSkipped` **Warning event** on the
+CR naming the role group and both interfaces, and reconciliation continues. Within gate 3's first
+branch, an empty `VectorAggregatorConfigMapName()` or an undiscoverable aggregator address is a hard
+error, not a skip.
 
 `SidecarConfig` carries `Image`, `ImagePullPolicy`, `Resources`, `EnvVars`, `Volumes`,
 `VolumeMounts`, `Ports`, `Enabled` and `SecurityContext`. There is no `MainContainerName` field and

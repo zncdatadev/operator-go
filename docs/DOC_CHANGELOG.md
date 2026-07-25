@@ -4,6 +4,75 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-26] (adversarial review — six sections describing code that no longer exists)
+
+An adversarial re-read of the branch found the architecture document still describing pre-wave
+behavior in six places. Because `architecture.md` is declared authoritative, a reader following it
+would have written code against contracts the SDK does not have. Every replacement claim below was
+re-verified against the committed source named beside it; both language versions carry identical
+edits.
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+- **§4.2.5 told hook authors the opposite of the truth about status.** The "Hooks are
+  observe-and-act … mutations to the in-memory CR are never persisted" bullet contradicted the
+  status path, which issues `Status().Update` from the in-memory object *without* re-fetching
+  precisely so that a hook's product status fields survive (`generic_reconciler.go:updateStatus`,
+  regression test `persists product-specific status fields written by an extension hook`). The
+  bullet is split: spec mutations are neither persisted nor reliably observed; status mutations
+  through `cr.GetStatus()` or a product's own fields **are** persisted by the final write.
+- **§4.4 documented the deleted single-pass cleaner.** Rewritten from `pkg/reconciler/cleaner.go`:
+  orphan cleanup is a multi-pass state machine — ordered scale-to-zero under `RetryOnConflict`, a
+  drain wait on `.status.replicas`, per-step deletion confirmation (`confirmDeleted`), per-group
+  error isolation, the role-PDB reclaim by `pdb.kubedoop.dev/role` label, the derived-name collision
+  guard, the `DefaultDrainPollInterval` pacing, and a returned requeue duration. §4.4.2 step 4,
+  §4.4.3's "best-effort, single-pass semantics" block and §4.4.4's 409/429 rows all asserted the
+  reverse; §4.4.4 now records that a 429 becomes a `*RateLimitError` that aborts the pass into a
+  backoff instead of a `Degraded` condition.
+- **§8.2 listed two delivered items as future work** (ordered drain, cleaner conflict/throttling
+  resilience). Removed.
+- **§3.2.2, §3.2.5, §5.1.2 documented `RoleInterface`/`RoleInfo`/`RoleGroupInfo`**, which
+  `pkg/common/role_interface.go` no longer defines. Replaced with how role and role-group
+  configuration actually reaches a handler: the `reconciler.RoleGroupBuildContext` the reconciler
+  builds per role group. The role level now costs a product zero methods, which is the ISP point
+  §5.1.2 was making.
+- **§4.6.2 described two Vector gates; there are three.** Documented the third — a source for
+  `vector.yaml`, either `VectorAggregatorProvider` on the CR or the new
+  `reconciler.VectorConfigProvider` on the handler — and the `VectorSidecarSkipped` Warning event
+  emitted when neither is present, together with the reason it is a skip rather than a failure.
+- **Consequential cross-references corrected**: §4.8.4 and the §5.3.3 template box (the cleaner's
+  requeue is a gray-delete deadline *or* a drain poll interval), §4.13.2 (the cleaner does retry on
+  conflict, on the scale-to-zero), §6 (orphan-cleanup solution summary), and §4.7.2
+  (`ValidateZKConfig`; `ValidateZKConnection` is a deprecated alias forwarding to it).
+
+### Project Documentation (`AGENTS.md`)
+
+- §14: documented the three Vector gates and the `VectorSidecarSkipped` event.
+- §2: the requeue cadence includes the drain poll interval, and a new paragraph describes orphan
+  cleanup as a multi-pass state machine with per-group error isolation, 429 backoff and the role-PDB
+  label reclaim.
+
+### Upgrade Guide (`docs/UPGRADING.md`)
+
+- **Added a "Which before this guide describes" note.** Removed symbols are checked against `main`
+  before the v0.13.0 work — *not* against the last tag: v0.12.6 predates the framework entirely (no
+  `pkg/common`, no `GenericReconciler`, no `pkg/sidecar`/`pkg/vector`/`pkg/security`, and
+  `pkg/constants` rather than `pkg/constant`), so an operator on v0.12.6 is adopting the framework,
+  not upgrading it.
+- **Four "Removed" rows cited symbols that never shipped.** `common.NewExtensionRegistry()`
+  (non-generic), `common.AsClusterExtension`/`AsRoleExtension`/`AsRoleGroupExtension` and
+  `RegisterClusterExtensionWithOptions` exist nowhere in `git show main:pkg/common/`; the
+  `RoleGroupCleaner.Cleanup` row invented a five-parameter "before" when only the return type
+  changed. The §4 worked example's "Before" block cited two of the phantom symbols and is now the
+  code `main` actually had. Added the two genuine registry behaviour changes a reader must know
+  about (`WithStopOnError` defaults, and same-priority extensions now running in registration order
+  where `sort.Slice` on priority alone used to leave them arbitrary).
+- **§2 named the removed Python logging file but not its replacement.** It is `log_config.py`
+  (`productlogging.pythonGenerator.DefaultFileName`), with the sites a product must repoint and a
+  checklist item; the Vector-collected rolling log file (`<container>.py.json`) is unaffected.
+
+---
+
 ## [2026-07-25] (second pass — three breaking redesigns)
 
 ### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
