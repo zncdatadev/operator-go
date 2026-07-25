@@ -22,6 +22,10 @@ import (
 
 // GracefulShutdownSpec configures graceful shutdown behavior for pods.
 // This controls how pods are terminated during scale down, rolling updates, or cluster stop.
+//
+// Deprecated: no CRD embeds this type. The live field is
+// RoleGroupConfigSpec.GracefulShutdownTimeout, which carries the same duration pattern
+// and default.
 type GracefulShutdownSpec struct {
 	// Timeout is the termination grace period for pods.
 	// This maps to terminationGracePeriodSeconds in the PodSpec.

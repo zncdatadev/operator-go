@@ -30,12 +30,13 @@ import (
 //
 // # Recommended Usage with controller-runtime
 //
-// Use DefaulterAdapter and ValidatorAdapter to bridge SDK types to controller-runtime:
+// ProductDefaulter[CR] and ProductValidator[CR] mirror admission.Defaulter[T] and
+// admission.Validator[T], so a typed implementation is passed straight through:
 //
 //	func SetupWebhookWithManager(mgr ctrl.Manager) error {
 //	   return ctrl.NewWebhookManagedBy(mgr, &MyCluster{}).
-//	       WithDefaulter(webhook.NewDefaulterAdapter(&MyClusterDefaulter{})).
-//	       WithValidator(webhook.NewValidatorAdapter[*MyCluster](&MyClusterValidator{})).
+//	       WithDefaulter(&MyClusterDefaulter{}).
+//	       WithValidator(&MyClusterValidator{}).
 //	       Complete()
 //	}
 //
@@ -113,13 +114,17 @@ func (m *WebhookManager[CR]) HasValidator() bool {
 
 // DefaulterAdapter adapts a typed ProductDefaulter[CR] to the untyped
 // admission.CustomDefaulter (i.e. admission.Defaulter[runtime.Object]).
-// Use this to pass a typed SDK defaulter to ctrl.NewWebhookManagedBy(...).WithDefaulter(...).
+//
+// It is only for the deprecated WithCustomDefaulter entry point, or for a hand-written
+// admission handler that receives a runtime.Object. It must not be passed to
+// WithDefaulter, whose parameter is admission.Defaulter[CR] for the builder's own CR type;
+// pass the ProductDefaulter implementation itself there.
 //
 // Example:
 //
 // ctrl.NewWebhookManagedBy(mgr, &MyCluster{}).
 //
-//	WithDefaulter(webhook.NewDefaulterAdapter(&MyClusterDefaulter{})).
+//	WithCustomDefaulter(webhook.NewDefaulterAdapter(&MyClusterDefaulter{})).
 //	Complete()
 type DefaulterAdapter[CR runtime.Object] struct {
 	inner ProductDefaulter[CR]
@@ -142,13 +147,17 @@ func (a *DefaulterAdapter[CR]) Default(ctx context.Context, obj runtime.Object) 
 
 // ValidatorAdapter adapts a typed ProductValidator[CR] to the untyped
 // admission.CustomValidator (i.e. admission.Validator[runtime.Object]).
-// Use this to pass a typed SDK validator to ctrl.NewWebhookManagedBy(...).WithValidator(...).
+//
+// It is only for the deprecated WithCustomValidator entry point, or for a hand-written
+// admission handler that receives a runtime.Object. It must not be passed to
+// WithValidator, whose parameter is admission.Validator[CR] for the builder's own CR type;
+// pass the ProductValidator implementation itself there.
 //
 // Example:
 //
 // ctrl.NewWebhookManagedBy(mgr, &MyCluster{}).
 //
-//	WithValidator(webhook.NewValidatorAdapter[*MyCluster](&MyClusterValidator{})).
+//	WithCustomValidator(webhook.NewValidatorAdapter[*MyCluster](&MyClusterValidator{})).
 //	Complete()
 type ValidatorAdapter[CR runtime.Object] struct {
 	inner ProductValidator[CR]

@@ -32,7 +32,7 @@ type S3ConnectionSpec struct {
 	Credentials *commonsv1alpha1.Credentials `json:"credentials"`
 
 	// +kubebuilder:validation:Required
-	Host string `json:"host,omitempty"`
+	Host string `json:"host"`
 
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=0
@@ -56,8 +56,12 @@ type Tls struct {
 }
 
 type S3ConnectionStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
 	// +kubebuilder:validation:Optional
-	Conditions []metav1.Condition `json:"condition,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // +kubebuilder:object:root=true
@@ -83,7 +87,7 @@ type S3ConnectionList struct {
 type S3BucketSpec struct {
 
 	// +kubebuilder:validation:Required
-	BucketName string `json:"bucketName,omitempty"`
+	BucketName string `json:"bucketName"`
 
 	// +kubebuilder:validation:Optional
 	Connection *S3BucketConnectionSpec `json:"connection,omitempty"`
@@ -98,8 +102,12 @@ type S3BucketConnectionSpec struct {
 }
 
 type S3BucketStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
 	// +kubebuilder:validation:Optional
-	Conditions []metav1.Condition `json:"condition,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // +kubebuilder:object:root=true

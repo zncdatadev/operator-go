@@ -18,6 +18,10 @@ package v1alpha1
 
 // ZKConfig defines Zookeeper connection configuration.
 // Used by products that require Zookeeper for coordination (e.g., HBase, Kafka, Pulsar).
+//
+// Deprecated: nothing consumes this type. DependencyResolver.ValidateZKConfig only
+// understands a connection string, so a *ZKConfig passed to it is silently accepted;
+// pass the connection string instead.
 type ZKConfig struct {
 	// ConnectionString is the Zookeeper connection string.
 	// Format: host1:port1,host2:port2,.../path

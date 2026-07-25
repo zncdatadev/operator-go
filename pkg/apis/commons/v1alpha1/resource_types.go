@@ -31,6 +31,9 @@ type ResourcesSpec struct {
 	Storage *StorageResource `json:"storage,omitempty"`
 }
 
+// StorageResourceSpec wraps a single data volume request.
+//
+// Deprecated: no CRD embeds this type. Use ResourcesSpec.Storage.
 type StorageResourceSpec struct {
 	Data *StorageResource `json:"data"`
 }

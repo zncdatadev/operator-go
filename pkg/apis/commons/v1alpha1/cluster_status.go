@@ -17,8 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"time"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -106,44 +104,62 @@ func (s *GenericClusterStatus) GetCondition(conditionType ConditionType) *metav1
 }
 
 // SetCondition sets the condition with the given type.
-// If a condition of that type already exists, it is updated.
+// If a condition of that type already exists, Reason, Message and ObservedGeneration are
+// updated in place, and LastTransitionTime is preserved unless Status actually changed.
+// Rewriting LastTransitionTime on every call would make each reconcile produce a different
+// status object, which triggers a new watch event and hence an endless reconcile loop.
+//
+// A zero LastTransitionTime is stamped with the current time, and a zero ObservedGeneration
+// inherits GenericClusterStatus.ObservedGeneration, so callers only need to supply
+// Type, Status, Reason and Message.
 func (s *GenericClusterStatus) SetCondition(condition metav1.Condition) {
-	// Ensure the conditions slice is initialized
-	if s.Conditions == nil {
-		s.Conditions = make([]metav1.Condition, 0)
+	if condition.LastTransitionTime.IsZero() {
+		condition.LastTransitionTime = metav1.Now()
+	}
+	if condition.ObservedGeneration == 0 {
+		condition.ObservedGeneration = s.ObservedGeneration
 	}
 
-	// Find existing condition
-	for i := range s.Conditions {
-		if s.Conditions[i].Type == condition.Type {
-			s.Conditions[i] = condition
-			return
-		}
+	existing := s.GetCondition(ConditionType(condition.Type))
+	if existing == nil {
+		s.Conditions = append(s.Conditions, condition)
+		return
 	}
 
-	// Add new condition
-	s.Conditions = append(s.Conditions, condition)
+	if existing.Status != condition.Status {
+		existing.Status = condition.Status
+		existing.LastTransitionTime = condition.LastTransitionTime
+	}
+	existing.Reason = condition.Reason
+	existing.Message = condition.Message
+	existing.ObservedGeneration = condition.ObservedGeneration
+}
+
+// SetObservedGeneration records the CR generation this status was computed from. Conditions set
+// afterwards inherit it, so call it before the Set* condition helpers. It means "observed", not
+// "successfully reconciled": whether the cycle actually succeeded is carried by the
+// ReconcileComplete and Degraded conditions, which are the pair consumers should gate on.
+func (s *GenericClusterStatus) SetObservedGeneration(generation int64) {
+	s.ObservedGeneration = generation
 }
 
 // SetAvailable sets the Available condition to True.
 func (s *GenericClusterStatus) SetAvailable(reason, message string) {
 	s.SetCondition(metav1.Condition{
-		Type:               string(ConditionAvailable),
-		Status:             metav1.ConditionTrue,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+		Type:    string(ConditionAvailable),
+		Status:  metav1.ConditionTrue,
+		Reason:  reason,
+		Message: message,
 	})
 }
 
 // SetUnavailable sets the Available condition to False.
 func (s *GenericClusterStatus) SetUnavailable(reason, message string) {
 	s.SetCondition(metav1.Condition{
-		Type:               string(ConditionAvailable),
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+		Type:    string(ConditionAvailable),
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: message,
 	})
 }
 
@@ -154,11 +170,10 @@ func (s *GenericClusterStatus) SetProgressing(isProgressing bool, reason, messag
 		status = metav1.ConditionTrue
 	}
 	s.SetCondition(metav1.Condition{
-		Type:               string(ConditionProgressing),
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+		Type:    string(ConditionProgressing),
+		Status:  status,
+		Reason:  reason,
+		Message: message,
 	})
 }
 
@@ -169,11 +184,10 @@ func (s *GenericClusterStatus) SetDegraded(isDegraded bool, reason, message stri
 		status = metav1.ConditionTrue
 	}
 	s.SetCondition(metav1.Condition{
-		Type:               string(ConditionDegraded),
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+		Type:    string(ConditionDegraded),
+		Status:  status,
+		Reason:  reason,
+		Message: message,
 	})
 }
 
@@ -184,11 +198,10 @@ func (s *GenericClusterStatus) SetServiceHealthy(isHealthy bool, reason, message
 		status = metav1.ConditionTrue
 	}
 	s.SetCondition(metav1.Condition{
-		Type:               string(ConditionServiceHealthy),
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+		Type:    string(ConditionServiceHealthy),
+		Status:  status,
+		Reason:  reason,
+		Message: message,
 	})
 }
 
@@ -199,11 +212,10 @@ func (s *GenericClusterStatus) SetReconcileComplete(isComplete bool, reason, mes
 		status = metav1.ConditionTrue
 	}
 	s.SetCondition(metav1.Condition{
-		Type:               string(ConditionReconcileComplete),
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+		Type:    string(ConditionReconcileComplete),
+		Status:  status,
+		Reason:  reason,
+		Message: message,
 	})
 }
 

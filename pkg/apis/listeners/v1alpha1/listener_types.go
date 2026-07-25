@@ -35,7 +35,7 @@ const (
 // ListenerSpec defines the desired state of Listener
 type ListenerSpec struct {
 	// +kubebuilder:validation:Required
-	ClassName string `json:"className,omitempty"`
+	ClassName string `json:"className"`
 
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={}
@@ -44,21 +44,32 @@ type ListenerSpec struct {
 	// +kubebuilder:validation:Optional
 	Ports []PortSpec `json:"ports,omitempty"`
 
+	// Pointer so a client can request false; a plain bool would be dropped by omitempty
+	// and the CRD default would restore true.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
-	PublishNotReadyAddresses bool `json:"publishNotReadyAddresses,omitempty"`
+	PublishNotReadyAddresses *bool `json:"publishNotReadyAddresses,omitempty"`
+}
+
+// GetPublishNotReadyAddresses returns whether not-ready addresses are published,
+// applying the documented default of true when unset.
+func (s *ListenerSpec) GetPublishNotReadyAddresses() bool {
+	if s == nil || s.PublishNotReadyAddresses == nil {
+		return true
+	}
+	return *s.PublishNotReadyAddresses
 }
 
 type PortSpec struct {
 	// +kubebuilder:validation:Required
-	Name string `json:"name,omitempty"`
+	Name string `json:"name"`
 
 	// L4 protocol, `TCP`` or `UDP`
 	// +kubebuilder:validation:Optional
 	Protocol corev1.Protocol `json:"protocol,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Port int32 `json:"port,omitempty"`
+	Port int32 `json:"port"`
 }
 
 // ListenerStatus defines the observed state of Listener
@@ -70,14 +81,14 @@ type ListenerStatus struct {
 
 type IngressAddressSpec struct {
 	// +kubebuilder:validation:Required
-	Address string `json:"address,omitempty"`
+	Address string `json:"address"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Enum=Hostname;IP
-	AddressType AddressType `json:"addressType,omitempty"`
+	AddressType AddressType `json:"addressType"`
 
 	// +kubebuilder:validation:Required
-	Ports map[string]int32 `json:"ports,omitempty"`
+	Ports map[string]int32 `json:"ports"`
 }
 
 // +kubebuilder:object:root=true

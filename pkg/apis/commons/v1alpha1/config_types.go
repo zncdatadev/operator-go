@@ -28,6 +28,7 @@ type RoleGroupConfigSpec struct {
 	// +kubebuilder:validation:Type=object
 	Affinity *k8sruntime.RawExtension `json:"affinity,omitempty"`
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
 	// +kubebuilder:default="30s"
 	GracefulShutdownTimeout string `json:"gracefulShutdownTimeout,omitempty"`
 	// +kubebuilder:validation:Optional
