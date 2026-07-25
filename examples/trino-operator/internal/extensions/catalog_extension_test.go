@@ -167,13 +167,5 @@ var _ = Describe("CatalogExtension", func() {
 				Expect(err.Error()).To(ContainSubstring("invalid catalog type"))
 			})
 		})
-
-		Context("with invalid cluster type", func() {
-			It("should fail when passed wrong cluster type", func() {
-				// The type assertion check in PreReconcile is a runtime safety check
-				// Skip this test as it requires a mock that implements ClusterInterface but isn't *TrinoCluster
-				Skip("Cannot create a type that implements ClusterInterface but isn't *TrinoCluster without extensive mocking")
-			})
-		})
 	})
 })

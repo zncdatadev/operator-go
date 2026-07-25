@@ -24,39 +24,43 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/common"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// The mocks are generic over the CR type so a single definition can be instantiated for either
+// simulated product below, mirroring how a registry is instantiated per product CR.
+
 // MockClusterExtension is a mock implementation of ClusterExtension for testing
-type MockClusterExtension struct {
+type MockClusterExtension[CR common.ClusterInterface] struct {
 	NameFunc             func() string
-	PreReconcileFunc     func(ctx context.Context, client client.Client, cr common.ClusterInterface) error
-	PostReconcileFunc    func(ctx context.Context, client client.Client, cr common.ClusterInterface) error
-	OnReconcileErrorFunc func(ctx context.Context, client client.Client, cr common.ClusterInterface, reconcileErr error) error
+	PreReconcileFunc     func(ctx context.Context, client client.Client, cr CR) error
+	PostReconcileFunc    func(ctx context.Context, client client.Client, cr CR) error
+	OnReconcileErrorFunc func(ctx context.Context, client client.Client, cr CR, reconcileErr error) error
 }
 
-func (m *MockClusterExtension) Name() string {
+func (m *MockClusterExtension[CR]) Name() string {
 	if m.NameFunc != nil {
 		return m.NameFunc()
 	}
 	return "mock-cluster-extension"
 }
 
-func (m *MockClusterExtension) PreReconcile(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+func (m *MockClusterExtension[CR]) PreReconcile(ctx context.Context, client client.Client, cr CR) error {
 	if m.PreReconcileFunc != nil {
 		return m.PreReconcileFunc(ctx, client, cr)
 	}
 	return nil
 }
 
-func (m *MockClusterExtension) PostReconcile(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+func (m *MockClusterExtension[CR]) PostReconcile(ctx context.Context, client client.Client, cr CR) error {
 	if m.PostReconcileFunc != nil {
 		return m.PostReconcileFunc(ctx, client, cr)
 	}
 	return nil
 }
 
-func (m *MockClusterExtension) OnReconcileError(ctx context.Context, client client.Client, cr common.ClusterInterface, reconcileErr error) error {
+func (m *MockClusterExtension[CR]) OnReconcileError(ctx context.Context, client client.Client, cr CR, reconcileErr error) error {
 	if m.OnReconcileErrorFunc != nil {
 		return m.OnReconcileErrorFunc(ctx, client, cr, reconcileErr)
 	}
@@ -64,27 +68,27 @@ func (m *MockClusterExtension) OnReconcileError(ctx context.Context, client clie
 }
 
 // MockRoleExtension is a mock implementation of RoleExtension for testing
-type MockRoleExtension struct {
+type MockRoleExtension[CR common.ClusterInterface] struct {
 	NameFunc          func() string
-	PreReconcileFunc  func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error
-	PostReconcileFunc func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error
+	PreReconcileFunc  func(ctx context.Context, client client.Client, cr CR, roleName string) error
+	PostReconcileFunc func(ctx context.Context, client client.Client, cr CR, roleName string) error
 }
 
-func (m *MockRoleExtension) Name() string {
+func (m *MockRoleExtension[CR]) Name() string {
 	if m.NameFunc != nil {
 		return m.NameFunc()
 	}
 	return "mock-role-extension"
 }
 
-func (m *MockRoleExtension) PreReconcile(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error {
+func (m *MockRoleExtension[CR]) PreReconcile(ctx context.Context, client client.Client, cr CR, roleName string) error {
 	if m.PreReconcileFunc != nil {
 		return m.PreReconcileFunc(ctx, client, cr, roleName)
 	}
 	return nil
 }
 
-func (m *MockRoleExtension) PostReconcile(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error {
+func (m *MockRoleExtension[CR]) PostReconcile(ctx context.Context, client client.Client, cr CR, roleName string) error {
 	if m.PostReconcileFunc != nil {
 		return m.PostReconcileFunc(ctx, client, cr, roleName)
 	}
@@ -92,108 +96,237 @@ func (m *MockRoleExtension) PostReconcile(ctx context.Context, client client.Cli
 }
 
 // MockRoleGroupExtension is a mock implementation of RoleGroupExtension for testing
-type MockRoleGroupExtension struct {
+type MockRoleGroupExtension[CR common.ClusterInterface] struct {
 	NameFunc          func() string
-	PreReconcileFunc  func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error
-	PostReconcileFunc func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error
+	PreReconcileFunc  func(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error
+	PostReconcileFunc func(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error
 }
 
-func (m *MockRoleGroupExtension) Name() string {
+func (m *MockRoleGroupExtension[CR]) Name() string {
 	if m.NameFunc != nil {
 		return m.NameFunc()
 	}
 	return "mock-rolegroup-extension"
 }
 
-func (m *MockRoleGroupExtension) PreReconcile(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error {
+func (m *MockRoleGroupExtension[CR]) PreReconcile(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error {
 	if m.PreReconcileFunc != nil {
 		return m.PreReconcileFunc(ctx, client, cr, roleName, roleGroupName)
 	}
 	return nil
 }
 
-func (m *MockRoleGroupExtension) PostReconcile(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error {
+func (m *MockRoleGroupExtension[CR]) PostReconcile(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error {
 	if m.PostReconcileFunc != nil {
 		return m.PostReconcileFunc(ctx, client, cr, roleName, roleGroupName)
 	}
 	return nil
 }
 
+// The registry is instantiated per CR type, so the specs below register extensions bound to the
+// simulated HDFS product CR (defined in extension_product_pattern_test.go).
+type hdfsClusterExtension = MockClusterExtension[*HdfsCluster]
+type hdfsRoleExtension = MockRoleExtension[*HdfsCluster]
+type hdfsRoleGroupExtension = MockRoleGroupExtension[*HdfsCluster]
+
+// typedClusterExtension is written the way a product operator writes its extensions: against the
+// concrete CR, reading product-only spec fields without converting anything.
+type typedClusterExtension struct {
+	common.BaseExtension
+	seen     []string
+	seenArgs []string
+	err      error
+}
+
+func newTypedClusterExtension(err error) *typedClusterExtension {
+	return &typedClusterExtension{BaseExtension: common.NewBaseExtension("typed-hdfs-extension"), err: err}
+}
+
+func (e *typedClusterExtension) record(cr *HdfsCluster) error {
+	e.seen = append(e.seen, cr.Name)
+	if cr.Spec.NameNodes != nil {
+		e.seenArgs = cr.Spec.NameNodes.JvmArgumentOverrides
+	}
+	return e.err
+}
+
+func (e *typedClusterExtension) PreReconcile(_ context.Context, _ client.Client, cr *HdfsCluster) error {
+	return e.record(cr)
+}
+
+func (e *typedClusterExtension) PostReconcile(_ context.Context, _ client.Client, cr *HdfsCluster) error {
+	return e.record(cr)
+}
+
+func (e *typedClusterExtension) OnReconcileError(_ context.Context, _ client.Client, cr *HdfsCluster, _ error) error {
+	return e.record(cr)
+}
+
+// typedRoleExtension is the role-level equivalent of typedClusterExtension.
+type typedRoleExtension struct {
+	common.BaseExtension
+	seen []string
+}
+
+func newTypedRoleExtension() *typedRoleExtension {
+	return &typedRoleExtension{BaseExtension: common.NewBaseExtension("typed-hdfs-role-extension")}
+}
+
+func (e *typedRoleExtension) PreReconcile(_ context.Context, _ client.Client, cr *HdfsCluster, roleName string) error {
+	e.seen = append(e.seen, cr.Name+"/"+roleName)
+	return nil
+}
+
+func (e *typedRoleExtension) PostReconcile(_ context.Context, _ client.Client, _ *HdfsCluster, _ string) error {
+	return nil
+}
+
+// typedRoleGroupExtension is the role-group-level equivalent of typedClusterExtension.
+type typedRoleGroupExtension struct {
+	common.BaseExtension
+	seen []string
+}
+
+func newTypedRoleGroupExtension() *typedRoleGroupExtension {
+	return &typedRoleGroupExtension{BaseExtension: common.NewBaseExtension("typed-hdfs-rolegroup-extension")}
+}
+
+func (e *typedRoleGroupExtension) PreReconcile(_ context.Context, _ client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
+	e.seen = append(e.seen, cr.Name+"/"+roleName+"/"+roleGroupName)
+	return nil
+}
+
+func (e *typedRoleGroupExtension) PostReconcile(_ context.Context, _ client.Client, _ *HdfsCluster, _, _ string) error {
+	return nil
+}
+
 var _ = Describe("ExtensionRegistry", func() {
-	var registry *common.ExtensionRegistry
+	var registry *common.ExtensionRegistry[*HdfsCluster]
 
 	BeforeEach(func() {
-		registry = common.GetExtensionRegistry()
-		registry.Clear()
-	})
-
-	AfterEach(func() {
-		registry.Clear()
-	})
-
-	Describe("GetExtensionRegistry", func() {
-		It("should return the global registry singleton", func() {
-			r1 := common.GetExtensionRegistry()
-			r2 := common.GetExtensionRegistry()
-			Expect(r1).To(Equal(r2))
-		})
-	})
-
-	Describe("ResetExtensionRegistry", func() {
-		It("should reset the global registry", func() {
-			registry.RegisterClusterExtension(&MockClusterExtension{})
-			Expect(registry.Count()).To(BeNumerically(">", 0))
-
-			common.ResetExtensionRegistry()
-			registry = common.GetExtensionRegistry()
-			Expect(registry.Count()).To(Equal(0))
-		})
-
-		It("should keep the singleton pointer stable for already captured references", func() {
-			// Reconcilers capture the registry at construction time; a reset that swapped the
-			// singleton pointer would leave them executing the stale registry.
-			captured := common.GetExtensionRegistry()
-			captured.RegisterClusterExtension(&MockClusterExtension{})
-
-			common.ResetExtensionRegistry()
-
-			Expect(common.GetExtensionRegistry()).To(BeIdenticalTo(captured))
-			Expect(captured.Count()).To(Equal(0))
-		})
+		registry = common.NewExtensionRegistry[*HdfsCluster]()
 	})
 
 	Describe("NewExtensionRegistry", func() {
-		It("should create a registry isolated from the global singleton", func() {
-			isolated := common.NewExtensionRegistry()
-			isolated.RegisterClusterExtension(&MockClusterExtension{})
+		It("should create an empty registry", func() {
+			Expect(registry.Count()).To(Equal(0))
+		})
 
-			Expect(isolated.Count()).To(Equal(1))
-			Expect(common.GetExtensionRegistry().Count()).To(Equal(0))
+		It("should create registries that are isolated from one another", func() {
+			other := common.NewExtensionRegistry[*HdfsCluster]()
+			registry.RegisterClusterExtension(&hdfsClusterExtension{})
+
+			Expect(registry.Count()).To(Equal(1))
+			Expect(other.Count()).To(Equal(0))
+		})
+	})
+
+	Describe("Typed registration", func() {
+		var hdfs *HdfsCluster
+
+		BeforeEach(func() {
+			hdfs = &HdfsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "hdfs-typed", Namespace: "default"},
+				Spec: HdfsClusterSpec{
+					NameNodes: &HdfsRoleSpec{JvmArgumentOverrides: []string{"-Xmx4g"}},
+				},
+			}
+		})
+
+		It("should hand the concrete CR to a cluster extension written for it", func() {
+			ext := newTypedClusterExtension(nil)
+			registry.RegisterClusterExtension(ext)
+
+			Expect(registry.ExecuteClusterPreReconcile(context.Background(), nil, hdfs)).To(Succeed())
+
+			// The hook read a field that only exists on the product CR, so it received the
+			// concrete type rather than the ClusterInterface view of it.
+			Expect(ext.seen).To(Equal([]string{"hdfs-typed"}))
+			Expect(ext.seenArgs).To(Equal([]string{"-Xmx4g"}))
+		})
+
+		It("should hand the concrete CR to a role extension written for it", func() {
+			ext := newTypedRoleExtension()
+			registry.RegisterRoleExtension(ext)
+
+			Expect(registry.ExecuteRolePreReconcile(context.Background(), nil, hdfs, "nameNodes")).To(Succeed())
+			Expect(ext.seen).To(Equal([]string{"hdfs-typed/nameNodes"}))
+		})
+
+		It("should hand the concrete CR to a role group extension written for it", func() {
+			ext := newTypedRoleGroupExtension()
+			registry.RegisterRoleGroupExtension(ext)
+
+			Expect(registry.ExecuteRoleGroupPreReconcile(context.Background(), nil, hdfs, "nameNodes", "default")).To(Succeed())
+			Expect(ext.seen).To(Equal([]string{"hdfs-typed/nameNodes/default"}))
+		})
+
+		It("should report a typed hook failure under the extension name", func() {
+			ext := newTypedClusterExtension(errors.New("typed failure"))
+			registry.RegisterClusterExtension(ext)
+
+			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, hdfs)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("typed-hdfs-extension"))
+			Expect(err.Error()).To(ContainSubstring("typed failure"))
+		})
+	})
+
+	// A registry only ever holds extensions of its own CR type — a foreign extension does not
+	// typecheck — so a process hosting several products cannot run one product's hooks against
+	// another product's clusters. Before the registry was typed, all of them shared one instance
+	// and every hook ran for every CR type.
+	Describe("Per-CR-type isolation", func() {
+		It("should execute only the extensions of the registry's own CR type", func() {
+			var ran []string
+
+			hdfsRegistry := common.NewExtensionRegistry[*HdfsCluster]()
+			hdfsRegistry.RegisterClusterExtension(&hdfsClusterExtension{
+				PreReconcileFunc: func(context.Context, client.Client, *HdfsCluster) error {
+					ran = append(ran, "hdfs")
+					return nil
+				},
+			})
+
+			otherRegistry := common.NewExtensionRegistry[*MockClusterForProductTest]()
+			otherRegistry.RegisterClusterExtension(&MockClusterExtension[*MockClusterForProductTest]{
+				PreReconcileFunc: func(context.Context, client.Client, *MockClusterForProductTest) error {
+					ran = append(ran, "other")
+					return nil
+				},
+			})
+
+			hdfs := &HdfsCluster{ObjectMeta: metav1.ObjectMeta{Name: "hdfs-isolated"}}
+			Expect(hdfsRegistry.ExecuteClusterPreReconcile(context.Background(), nil, hdfs)).To(Succeed())
+			Expect(ran).To(Equal([]string{"hdfs"}))
+
+			other := &MockClusterForProductTest{name: "other-isolated"}
+			Expect(otherRegistry.ExecuteClusterPreReconcile(context.Background(), nil, other)).To(Succeed())
+			Expect(ran).To(Equal([]string{"hdfs", "other"}))
+
+			Expect(hdfsRegistry.Count()).To(Equal(1))
+			Expect(otherRegistry.Count()).To(Equal(1))
 		})
 	})
 
 	Describe("RegisterClusterExtension", func() {
 		It("should register a cluster extension", func() {
-			ext := &MockClusterExtension{}
-			registry.RegisterClusterExtension(ext)
+			registry.RegisterClusterExtension(&hdfsClusterExtension{})
 			Expect(registry.HasClusterExtensions()).To(BeTrue())
 			Expect(registry.Count()).To(Equal(1))
 		})
-	})
 
-	Describe("RegisterClusterExtensionWithPriority", func() {
 		It("should register a cluster extension with priority", func() {
-			ext := &MockClusterExtension{}
-			registry.RegisterClusterExtensionWithPriority(ext, common.PriorityHigh)
+			registry.RegisterClusterExtension(&hdfsClusterExtension{}, common.WithPriority(common.PriorityHigh))
 			Expect(registry.HasClusterExtensions()).To(BeTrue())
 		})
 
 		It("should sort extensions by priority", func() {
-			lowExt := &MockClusterExtension{NameFunc: func() string { return "low" }}
-			highExt := &MockClusterExtension{NameFunc: func() string { return "high" }}
+			lowExt := &hdfsClusterExtension{NameFunc: func() string { return "low" }}
+			highExt := &hdfsClusterExtension{NameFunc: func() string { return "high" }}
 
-			registry.RegisterClusterExtensionWithPriority(lowExt, common.PriorityLow)
-			registry.RegisterClusterExtensionWithPriority(highExt, common.PriorityHigh)
+			registry.RegisterClusterExtension(lowExt, common.WithPriority(common.PriorityLow))
+			registry.RegisterClusterExtension(highExt, common.WithPriority(common.PriorityHigh))
 
 			extensions := registry.GetClusterExtensions()
 			Expect(extensions[0].Name()).To(Equal("high"))
@@ -203,42 +336,34 @@ var _ = Describe("ExtensionRegistry", func() {
 
 	Describe("RegisterRoleExtension", func() {
 		It("should register a role extension", func() {
-			ext := &MockRoleExtension{}
-			registry.RegisterRoleExtension(ext)
+			registry.RegisterRoleExtension(&hdfsRoleExtension{})
 			Expect(registry.HasRoleExtensions()).To(BeTrue())
 			Expect(registry.Count()).To(Equal(1))
 		})
-	})
 
-	Describe("RegisterRoleExtensionWithPriority", func() {
 		It("should register a role extension with priority", func() {
-			ext := &MockRoleExtension{}
-			registry.RegisterRoleExtensionWithPriority(ext, common.PriorityHigh)
+			registry.RegisterRoleExtension(&hdfsRoleExtension{}, common.WithPriority(common.PriorityHigh))
 			Expect(registry.HasRoleExtensions()).To(BeTrue())
 		})
 	})
 
 	Describe("RegisterRoleGroupExtension", func() {
 		It("should register a role group extension", func() {
-			ext := &MockRoleGroupExtension{}
-			registry.RegisterRoleGroupExtension(ext)
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{})
 			Expect(registry.HasRoleGroupExtensions()).To(BeTrue())
 			Expect(registry.Count()).To(Equal(1))
 		})
-	})
 
-	Describe("RegisterRoleGroupExtensionWithPriority", func() {
 		It("should register a role group extension with priority", func() {
-			ext := &MockRoleGroupExtension{}
-			registry.RegisterRoleGroupExtensionWithPriority(ext, common.PriorityHigh)
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{}, common.WithPriority(common.PriorityHigh))
 			Expect(registry.HasRoleGroupExtensions()).To(BeTrue())
 		})
 	})
 
 	Describe("GetClusterExtensions", func() {
 		It("should return all cluster extensions", func() {
-			ext1 := &MockClusterExtension{NameFunc: func() string { return "ext1" }}
-			ext2 := &MockClusterExtension{NameFunc: func() string { return "ext2" }}
+			ext1 := &hdfsClusterExtension{NameFunc: func() string { return "ext1" }}
+			ext2 := &hdfsClusterExtension{NameFunc: func() string { return "ext2" }}
 
 			registry.RegisterClusterExtension(ext1)
 			registry.RegisterClusterExtension(ext2)
@@ -255,8 +380,8 @@ var _ = Describe("ExtensionRegistry", func() {
 
 	Describe("GetRoleExtensions", func() {
 		It("should return all role extensions", func() {
-			ext1 := &MockRoleExtension{NameFunc: func() string { return "role-ext1" }}
-			ext2 := &MockRoleExtension{NameFunc: func() string { return "role-ext2" }}
+			ext1 := &hdfsRoleExtension{NameFunc: func() string { return "role-ext1" }}
+			ext2 := &hdfsRoleExtension{NameFunc: func() string { return "role-ext2" }}
 
 			registry.RegisterRoleExtension(ext1)
 			registry.RegisterRoleExtension(ext2)
@@ -268,8 +393,8 @@ var _ = Describe("ExtensionRegistry", func() {
 
 	Describe("GetRoleGroupExtensions", func() {
 		It("should return all role group extensions", func() {
-			ext1 := &MockRoleGroupExtension{NameFunc: func() string { return "rg-ext1" }}
-			ext2 := &MockRoleGroupExtension{NameFunc: func() string { return "rg-ext2" }}
+			ext1 := &hdfsRoleGroupExtension{NameFunc: func() string { return "rg-ext1" }}
+			ext2 := &hdfsRoleGroupExtension{NameFunc: func() string { return "rg-ext2" }}
 
 			registry.RegisterRoleGroupExtension(ext1)
 			registry.RegisterRoleGroupExtension(ext2)
@@ -285,7 +410,7 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should return true when cluster extensions registered", func() {
-			registry.RegisterClusterExtension(&MockClusterExtension{})
+			registry.RegisterClusterExtension(&hdfsClusterExtension{})
 			Expect(registry.HasClusterExtensions()).To(BeTrue())
 		})
 	})
@@ -296,7 +421,7 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should return true when role extensions registered", func() {
-			registry.RegisterRoleExtension(&MockRoleExtension{})
+			registry.RegisterRoleExtension(&hdfsRoleExtension{})
 			Expect(registry.HasRoleExtensions()).To(BeTrue())
 		})
 	})
@@ -307,16 +432,16 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should return true when role group extensions registered", func() {
-			registry.RegisterRoleGroupExtension(&MockRoleGroupExtension{})
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{})
 			Expect(registry.HasRoleGroupExtensions()).To(BeTrue())
 		})
 	})
 
 	Describe("Clear", func() {
 		It("should remove all extensions", func() {
-			registry.RegisterClusterExtension(&MockClusterExtension{})
-			registry.RegisterRoleExtension(&MockRoleExtension{})
-			registry.RegisterRoleGroupExtension(&MockRoleGroupExtension{})
+			registry.RegisterClusterExtension(&hdfsClusterExtension{})
+			registry.RegisterRoleExtension(&hdfsRoleExtension{})
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{})
 
 			Expect(registry.Count()).To(Equal(3))
 
@@ -327,14 +452,26 @@ var _ = Describe("ExtensionRegistry", func() {
 			Expect(registry.HasRoleExtensions()).To(BeFalse())
 			Expect(registry.HasRoleGroupExtensions()).To(BeFalse())
 		})
+
+		It("should empty the registry in place so captured references stay valid", func() {
+			// Reconcilers capture the registry at construction time; emptying has to be visible
+			// through the reference they already hold.
+			captured := registry
+			captured.RegisterClusterExtension(&hdfsClusterExtension{})
+
+			registry.Clear()
+
+			Expect(captured.Count()).To(Equal(0))
+			Expect(captured).To(BeIdenticalTo(registry))
+		})
 	})
 
 	Describe("Count", func() {
 		It("should return total count of all extensions", func() {
-			registry.RegisterClusterExtension(&MockClusterExtension{})
-			registry.RegisterClusterExtension(&MockClusterExtension{})
-			registry.RegisterRoleExtension(&MockRoleExtension{})
-			registry.RegisterRoleGroupExtension(&MockRoleGroupExtension{})
+			registry.RegisterClusterExtension(&hdfsClusterExtension{})
+			registry.RegisterClusterExtension(&hdfsClusterExtension{})
+			registry.RegisterRoleExtension(&hdfsRoleExtension{})
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{})
 
 			Expect(registry.Count()).To(Equal(4))
 		})
@@ -347,8 +484,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteClusterPreReconcile", func() {
 		It("should execute all PreReconcile hooks", func() {
 			executed := false
-			ext := &MockClusterExtension{
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+			ext := &hdfsClusterExtension{
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 					executed = true
 					return nil
 				},
@@ -361,8 +498,8 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should return error when PreReconcile fails", func() {
-			ext := &MockClusterExtension{
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+			ext := &hdfsClusterExtension{
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 					return errors.New("pre-reconcile error")
 				},
 			}
@@ -376,8 +513,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteClusterPostReconcile", func() {
 		It("should execute all PostReconcile hooks", func() {
 			executed := false
-			ext := &MockClusterExtension{
-				PostReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+			ext := &hdfsClusterExtension{
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 					executed = true
 					return nil
 				},
@@ -390,8 +527,8 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should return error when PostReconcile fails", func() {
-			ext := &MockClusterExtension{
-				PostReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+			ext := &hdfsClusterExtension{
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 					return errors.New("post-reconcile error")
 				},
 			}
@@ -405,8 +542,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteClusterOnError", func() {
 		It("should execute all OnReconcileError hooks", func() {
 			executed := false
-			ext := &MockClusterExtension{
-				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, reconcileErr error) error {
+			ext := &hdfsClusterExtension{
+				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, reconcileErr error) error {
 					executed = true
 					return nil
 				},
@@ -422,8 +559,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteRolePreReconcile", func() {
 		It("should execute all role PreReconcile hooks", func() {
 			executed := false
-			ext := &MockRoleExtension{
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error {
+			ext := &hdfsRoleExtension{
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName string) error {
 					executed = true
 					Expect(roleName).To(Equal("test-role"))
 					return nil
@@ -440,8 +577,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteRolePostReconcile", func() {
 		It("should execute all role PostReconcile hooks", func() {
 			executed := false
-			ext := &MockRoleExtension{
-				PostReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error {
+			ext := &hdfsRoleExtension{
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName string) error {
 					executed = true
 					return nil
 				},
@@ -457,8 +594,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteRoleGroupPreReconcile", func() {
 		It("should execute all role group PreReconcile hooks", func() {
 			executed := false
-			ext := &MockRoleGroupExtension{
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error {
+			ext := &hdfsRoleGroupExtension{
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
 					executed = true
 					Expect(roleName).To(Equal("test-role"))
 					Expect(roleGroupName).To(Equal("test-group"))
@@ -476,8 +613,8 @@ var _ = Describe("ExtensionRegistry", func() {
 	Describe("ExecuteRoleGroupPostReconcile", func() {
 		It("should execute all role group PostReconcile hooks", func() {
 			executed := false
-			ext := &MockRoleGroupExtension{
-				PostReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error {
+			ext := &hdfsRoleGroupExtension{
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
 					executed = true
 					return nil
 				},
@@ -522,9 +659,9 @@ var _ = Describe("ExtensionRegistry", func() {
 		It("should order cluster extensions by priority, then by registration order", func() {
 			for i := 0; i < extensionCount; i++ {
 				name := extensionName(i)
-				registry.RegisterClusterExtensionWithPriority(
-					&MockClusterExtension{NameFunc: func() string { return name }},
-					priorities[i%len(priorities)],
+				registry.RegisterClusterExtension(
+					&hdfsClusterExtension{NameFunc: func() string { return name }},
+					common.WithPriority(priorities[i%len(priorities)]),
 				)
 			}
 
@@ -538,9 +675,9 @@ var _ = Describe("ExtensionRegistry", func() {
 		It("should order role extensions by priority, then by registration order", func() {
 			for i := 0; i < extensionCount; i++ {
 				name := extensionName(i)
-				registry.RegisterRoleExtensionWithPriority(
-					&MockRoleExtension{NameFunc: func() string { return name }},
-					priorities[i%len(priorities)],
+				registry.RegisterRoleExtension(
+					&hdfsRoleExtension{NameFunc: func() string { return name }},
+					common.WithPriority(priorities[i%len(priorities)]),
 				)
 			}
 
@@ -554,9 +691,9 @@ var _ = Describe("ExtensionRegistry", func() {
 		It("should order role group extensions by priority, then by registration order", func() {
 			for i := 0; i < extensionCount; i++ {
 				name := extensionName(i)
-				registry.RegisterRoleGroupExtensionWithPriority(
-					&MockRoleGroupExtension{NameFunc: func() string { return name }},
-					priorities[i%len(priorities)],
+				registry.RegisterRoleGroupExtension(
+					&hdfsRoleGroupExtension{NameFunc: func() string { return name }},
+					common.WithPriority(priorities[i%len(priorities)]),
 				)
 			}
 
@@ -571,9 +708,9 @@ var _ = Describe("ExtensionRegistry", func() {
 			executed := []string{}
 			for i := 0; i < extensionCount; i++ {
 				name := extensionName(i)
-				registry.RegisterClusterExtension(&MockClusterExtension{
+				registry.RegisterClusterExtension(&hdfsClusterExtension{
 					NameFunc: func() string { return name },
-					PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+					PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 						executed = append(executed, name)
 						return nil
 					},
@@ -594,28 +731,28 @@ var _ = Describe("ExtensionRegistry", func() {
 		// failing/following record their invocation so the tests can assert which hooks ran.
 		var executed []string
 
-		failingClusterExtension := func() *MockClusterExtension {
-			return &MockClusterExtension{
+		failingClusterExtension := func() *hdfsClusterExtension {
+			return &hdfsClusterExtension{
 				NameFunc: func() string { return "failing" },
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 					executed = append(executed, "failing")
 					return errors.New("hook failed")
 				},
-				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, reconcileErr error) error {
+				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, reconcileErr error) error {
 					executed = append(executed, "failing")
 					return errors.New("handler failed")
 				},
 			}
 		}
 
-		followingClusterExtension := func() *MockClusterExtension {
-			return &MockClusterExtension{
+		followingClusterExtension := func() *hdfsClusterExtension {
+			return &hdfsClusterExtension{
 				NameFunc: func() string { return "following" },
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface) error {
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster) error {
 					executed = append(executed, "following")
 					return nil
 				},
-				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, reconcileErr error) error {
+				OnReconcileErrorFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, reconcileErr error) error {
 					executed = append(executed, "following")
 					return nil
 				},
@@ -627,8 +764,8 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should skip the remaining PreReconcile hooks by default", func() {
-			registry.RegisterClusterExtensionWithPriority(failingClusterExtension(), common.PriorityHigh)
-			registry.RegisterClusterExtensionWithPriority(followingClusterExtension(), common.PriorityLow)
+			registry.RegisterClusterExtension(failingClusterExtension(), common.WithPriority(common.PriorityHigh))
+			registry.RegisterClusterExtension(followingClusterExtension(), common.WithPriority(common.PriorityLow))
 
 			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
 			Expect(err).To(HaveOccurred())
@@ -636,9 +773,9 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should run the remaining PreReconcile hooks when the extension opts out", func() {
-			registry.RegisterClusterExtensionWithOptions(failingClusterExtension(),
+			registry.RegisterClusterExtension(failingClusterExtension(),
 				common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
-			registry.RegisterClusterExtensionWithPriority(followingClusterExtension(), common.PriorityLow)
+			registry.RegisterClusterExtension(followingClusterExtension(), common.WithPriority(common.PriorityLow))
 
 			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
 			Expect(err).To(HaveOccurred())
@@ -647,8 +784,8 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should run every OnReconcileError handler and swallow their failures", func() {
-			registry.RegisterClusterExtensionWithPriority(failingClusterExtension(), common.PriorityHigh)
-			registry.RegisterClusterExtensionWithPriority(followingClusterExtension(), common.PriorityLow)
+			registry.RegisterClusterExtension(failingClusterExtension(), common.WithPriority(common.PriorityHigh))
+			registry.RegisterClusterExtension(followingClusterExtension(), common.WithPriority(common.PriorityLow))
 
 			err := registry.ExecuteClusterOnError(context.Background(), nil, nil, errors.New("reconcile error"))
 			Expect(err).ToNot(HaveOccurred())
@@ -656,9 +793,9 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should skip the remaining OnReconcileError handlers when the handler opts in", func() {
-			registry.RegisterClusterExtensionWithOptions(failingClusterExtension(),
+			registry.RegisterClusterExtension(failingClusterExtension(),
 				common.WithPriority(common.PriorityHigh), common.WithStopOnError(true))
-			registry.RegisterClusterExtensionWithPriority(followingClusterExtension(), common.PriorityLow)
+			registry.RegisterClusterExtension(followingClusterExtension(), common.WithPriority(common.PriorityLow))
 
 			err := registry.ExecuteClusterOnError(context.Background(), nil, nil, errors.New("reconcile error"))
 			Expect(err).To(HaveOccurred())
@@ -667,21 +804,21 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should run the remaining role hooks when the extension opts out", func() {
-			registry.RegisterRoleExtensionWithOptions(&MockRoleExtension{
+			registry.RegisterRoleExtension(&hdfsRoleExtension{
 				NameFunc: func() string { return "failing" },
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error {
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName string) error {
 					executed = append(executed, "failing")
 					return errors.New("hook failed")
 				},
 			}, common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
 
-			registry.RegisterRoleExtensionWithPriority(&MockRoleExtension{
+			registry.RegisterRoleExtension(&hdfsRoleExtension{
 				NameFunc: func() string { return "following" },
-				PreReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName string) error {
+				PreReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName string) error {
 					executed = append(executed, "following")
 					return nil
 				},
-			}, common.PriorityLow)
+			}, common.WithPriority(common.PriorityLow))
 
 			err := registry.ExecuteRolePreReconcile(context.Background(), nil, nil, "test-role")
 			Expect(err).To(HaveOccurred())
@@ -689,21 +826,21 @@ var _ = Describe("ExtensionRegistry", func() {
 		})
 
 		It("should run the remaining role group hooks when the extension opts out", func() {
-			registry.RegisterRoleGroupExtensionWithOptions(&MockRoleGroupExtension{
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{
 				NameFunc: func() string { return "failing" },
-				PostReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error {
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
 					executed = append(executed, "failing")
 					return errors.New("hook failed")
 				},
 			}, common.WithPriority(common.PriorityHigh), common.WithStopOnError(false))
 
-			registry.RegisterRoleGroupExtensionWithPriority(&MockRoleGroupExtension{
+			registry.RegisterRoleGroupExtension(&hdfsRoleGroupExtension{
 				NameFunc: func() string { return "following" },
-				PostReconcileFunc: func(ctx context.Context, client client.Client, cr common.ClusterInterface, roleName, roleGroupName string) error {
+				PostReconcileFunc: func(ctx context.Context, client client.Client, cr *HdfsCluster, roleName, roleGroupName string) error {
 					executed = append(executed, "following")
 					return nil
 				},
-			}, common.PriorityLow)
+			}, common.WithPriority(common.PriorityLow))
 
 			err := registry.ExecuteRoleGroupPostReconcile(context.Background(), nil, nil, "test-role", "test-group")
 			Expect(err).To(HaveOccurred())

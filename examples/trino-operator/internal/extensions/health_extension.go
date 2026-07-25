@@ -18,7 +18,6 @@ package extensions
 
 import (
 	"context"
-	"fmt"
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
@@ -28,6 +27,8 @@ import (
 
 // HealthExtension is a RoleExtension that performs health checks for Trino roles
 // This demonstrates the RoleExtension extension point of operator-go SDK
+//
+// Like the cluster-level extensions, it is declared for *TrinoCluster and receives that type.
 type HealthExtension struct {
 	common.BaseExtension
 }
@@ -43,11 +44,11 @@ func NewHealthExtension() *HealthExtension {
 func (e *HealthExtension) PreReconcile(
 	ctx context.Context,
 	k8sClient client.Client,
-	cr common.ClusterInterface,
+	cr *trinov1alpha1.TrinoCluster,
 	roleName string,
 ) error {
 	logger := log.FromContext(ctx)
-	logger.Info("HealthExtension PreReconcile", "cluster", cr.GetName(), "role", roleName)
+	logger.Info("HealthExtension PreReconcile", "cluster", cr.Name, "role", roleName)
 	return nil
 }
 
@@ -55,26 +56,18 @@ func (e *HealthExtension) PreReconcile(
 func (e *HealthExtension) PostReconcile(
 	ctx context.Context,
 	k8sClient client.Client,
-	cr common.ClusterInterface,
+	cr *trinov1alpha1.TrinoCluster,
 	roleName string,
 ) error {
 	logger := log.FromContext(ctx)
-	logger.Info("HealthExtension PostReconcile", "cluster", cr.GetName(), "role", roleName)
-
-	// Cast to TrinoCluster for type-specific operations
-	trinoCR, ok := cr.(*trinov1alpha1.TrinoCluster)
-	if !ok {
-		err := fmt.Errorf("expected *TrinoCluster, got %T", cr)
-		logger.Error(err, "type assertion failed")
-		return err
-	}
+	logger.Info("HealthExtension PostReconcile", "cluster", cr.Name, "role", roleName)
 
 	// Perform role-specific health checks
 	switch roleName {
 	case "coordinators":
-		e.checkCoordinatorHealth(ctx, trinoCR)
+		e.checkCoordinatorHealth(ctx, cr)
 	case "workers":
-		e.checkWorkerHealth(ctx, trinoCR)
+		e.checkWorkerHealth(ctx, cr)
 	}
 
 	return nil
@@ -101,4 +94,4 @@ func (e *HealthExtension) checkWorkerHealth(ctx context.Context, cr *trinov1alph
 }
 
 // Ensure interface implementation
-var _ common.RoleExtension[common.ClusterInterface] = &HealthExtension{}
+var _ common.RoleExtension[*trinov1alpha1.TrinoCluster] = &HealthExtension{}

@@ -32,6 +32,11 @@ type Extension interface {
 // ClusterExtension defines cluster-level extension points.
 // Extensions run at specific phases of the reconciliation loop.
 //
+// CR is the product's own cluster resource type (e.g. *TrinoCluster), not ClusterInterface: the
+// hooks receive exactly the type the extension is registered for, so a product extension reads
+// its spec and writes its status directly. See ExtensionRegistry for why the registry has to be
+// instantiated for that same type.
+//
 // Extension Lifecycle:
 // 1. PreReconcile: Called before reconciliation starts
 // 2. PostReconcile: Called after reconciliation completes successfully

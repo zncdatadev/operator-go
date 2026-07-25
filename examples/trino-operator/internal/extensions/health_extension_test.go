@@ -82,14 +82,5 @@ var _ = Describe("HealthExtension", func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
 		})
-
-		Context("with invalid cluster type", func() {
-			It("should fail PostReconcile when passed wrong cluster type", func() {
-				// Cannot create a type that implements ClusterInterface but isn't *TrinoCluster
-				// without extensive mocking. The type assertion check in PostReconcile is a
-				// runtime safety check that protects against incorrect usage.
-				Skip("Cannot create a type that implements ClusterInterface but isn't *TrinoCluster without extensive mocking")
-			})
-		})
 	})
 })

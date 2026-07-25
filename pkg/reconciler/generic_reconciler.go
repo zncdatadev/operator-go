@@ -170,13 +170,14 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// +optional
 	Dependencies func(cr CR) []Dependency
 
-	// ExtensionRegistry is the extension registry this reconciler executes hooks from.
-	// Defaults to the global singleton (common.GetExtensionRegistry()) for backward
-	// compatibility. Pass a dedicated instance to isolate a product's extensions: the global
-	// registry is shared by every GenericReconciler in the process, so an extension written for
-	// one CR type also runs — and can fail — for another product's clusters.
+	// ExtensionRegistry is the extension registry this reconciler executes hooks from. It is
+	// typed for this reconciler's CR, so its extensions receive the product CR directly and no
+	// registry can be shared with a reconciler of another product. Build it with
+	// common.NewExtensionRegistry[CR]() and register the product's extensions on it.
+	//
+	// Optional: when unset the reconciler runs with an empty registry and every hook is a no-op.
 	// +optional
-	ExtensionRegistry *common.ExtensionRegistry
+	ExtensionRegistry *common.ExtensionRegistry[CR]
 
 	// Prototype is a zero-value instance of the CR type used for controller setup.
 	// This is required because Go generics don't allow creating new instances.
@@ -224,7 +225,7 @@ type GenericReconciler[CR common.ClusterInterface] struct {
 	configMerger        *config.ConfigMerger
 	apiReader           client.Reader
 	roleGroupHandler    RoleGroupHandler[CR]
-	extensionRegistry   *common.ExtensionRegistry
+	extensionRegistry   *common.ExtensionRegistry[CR]
 	prototype           CR
 	rateLimitRetryAfter time.Duration
 	// healthCheckInterval is the cadence at which a successful reconcile requeues itself; <= 0
@@ -286,9 +287,11 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
 	}
 
+	// An empty registry rather than nil keeps the hook call sites unconditional; a product that
+	// registers no extensions pays an empty loop per hook.
 	extensionRegistry := cfg.ExtensionRegistry
 	if extensionRegistry == nil {
-		extensionRegistry = common.GetExtensionRegistry()
+		extensionRegistry = common.NewExtensionRegistry[CR]()
 	}
 
 	return &GenericReconciler[CR]{

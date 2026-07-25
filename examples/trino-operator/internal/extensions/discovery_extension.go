@@ -55,36 +55,29 @@ func NewDiscoveryExtension(scheme *runtime.Scheme) *DiscoveryExtension {
 	}
 }
 
-var _ common.ClusterExtension[common.ClusterInterface] = &DiscoveryExtension{}
+var _ common.ClusterExtension[*trinov1alpha1.TrinoCluster] = &DiscoveryExtension{}
 
 // PreReconcile is a no-op: the coordinator Service the URI points at does not exist yet.
-func (e *DiscoveryExtension) PreReconcile(_ context.Context, _ client.Client, _ common.ClusterInterface) error {
+func (e *DiscoveryExtension) PreReconcile(_ context.Context, _ client.Client, _ *trinov1alpha1.TrinoCluster) error {
 	return nil
 }
 
 // PostReconcile publishes the discovery ConfigMap once the role groups (and therefore the
 // coordinator Service) have been reconciled.
-func (e *DiscoveryExtension) PostReconcile(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
-	trinoCR, ok := cr.(*trinov1alpha1.TrinoCluster)
-	if !ok {
-		// The extension registry is shared by every controller in the process; skip
-		// clusters of other products.
-		return nil
-	}
-
-	if err := reconciler.EnsureDiscoveryConfigMap(ctx, c, e.scheme, trinoCR, trinoCR.Name,
-		map[string]string{TrinoDiscoveryKey: product.DiscoveryURI(trinoCR)},
+func (e *DiscoveryExtension) PostReconcile(ctx context.Context, c client.Client, cr *trinov1alpha1.TrinoCluster) error {
+	if err := reconciler.EnsureDiscoveryConfigMap(ctx, c, e.scheme, cr, cr.Name,
+		map[string]string{TrinoDiscoveryKey: product.DiscoveryURI(cr)},
 		reconciler.WithDiscoveryProductName("trino"),
 	); err != nil {
-		return fmt.Errorf("failed to ensure discovery configmap %s/%s: %w", trinoCR.Namespace, trinoCR.Name, err)
+		return fmt.Errorf("failed to ensure discovery configmap %s/%s: %w", cr.Namespace, cr.Name, err)
 	}
 
 	log.FromContext(ctx).V(1).Info("ensured discovery configmap",
-		"cluster", trinoCR.Name, "uri", product.DiscoveryURI(trinoCR))
+		"cluster", cr.Name, "uri", product.DiscoveryURI(cr))
 	return nil
 }
 
 // OnReconcileError is a no-op.
-func (e *DiscoveryExtension) OnReconcileError(_ context.Context, _ client.Client, _ common.ClusterInterface, _ error) error {
+func (e *DiscoveryExtension) OnReconcileError(_ context.Context, _ client.Client, _ *trinov1alpha1.TrinoCluster, _ error) error {
 	return nil
 }

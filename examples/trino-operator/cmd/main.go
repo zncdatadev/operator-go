@@ -169,6 +169,31 @@ func buildManagerOptions(f *managerFlags) (ctrl.Options, []*certwatcher.CertWatc
 	}, watchers, nil
 }
 
+// newExtensionRegistry builds the extension registry for TrinoCluster reconciliation.
+//
+// The registry is instantiated for the product's own CR type, which is what lets the extensions
+// declare *TrinoCluster in their hooks instead of the SDK's wide ClusterInterface. It is handed
+// to exactly one reconciler (GenericReconcilerConfig.ExtensionRegistry); an operator that manages
+// several CR types builds one registry per type.
+func newExtensionRegistry(scheme *runtime.Scheme) *common.ExtensionRegistry[*trinov1alpha1.TrinoCluster] {
+	registry := common.NewExtensionRegistry[*trinov1alpha1.TrinoCluster]()
+
+	// Register Catalog extension (demonstrates ClusterExtension)
+	registry.RegisterClusterExtension(extensions.NewCatalogExtension())
+
+	// Register Health extension (demonstrates RoleExtension)
+	registry.RegisterRoleExtension(extensions.NewHealthExtension())
+
+	// Register Discovery extension (demonstrates ClusterExtension PostReconcile +
+	// reconciler.EnsureDiscoveryConfigMap): publishes the coordinator URI in a discovery
+	// ConfigMap named after the cluster, the kubedoop pattern every product follows. It runs
+	// after the catalog extension has refreshed the status, so it is registered at a lower
+	// priority rather than relying on registration order alone.
+	registry.RegisterClusterExtension(extensions.NewDiscoveryExtension(scheme), common.WithPriority(common.PriorityLow))
+
+	return registry
+}
+
 func main() {
 	flags := registerManagerFlags(flag.CommandLine)
 	opts := zap.Options{
@@ -201,19 +226,7 @@ func main() {
 	// ==================== Register Extensions ====================
 	// This is the key to using operator-go SDK extension mechanism
 
-	// Register Catalog extension (demonstrates ClusterExtension)
-	catalogExt := extensions.NewCatalogExtension()
-	common.GetExtensionRegistry().RegisterClusterExtension(catalogExt)
-
-	// Register Health extension (demonstrates RoleExtension)
-	healthExt := extensions.NewHealthExtension()
-	common.GetExtensionRegistry().RegisterRoleExtension(healthExt)
-
-	// Register Discovery extension (demonstrates ClusterExtension PostReconcile +
-	// reconciler.EnsureDiscoveryConfigMap): publishes the coordinator URI in a discovery
-	// ConfigMap named after the cluster, the kubedoop pattern every product follows.
-	discoveryExt := extensions.NewDiscoveryExtension(mgr.GetScheme())
-	common.GetExtensionRegistry().RegisterClusterExtension(discoveryExt)
+	extensionRegistry := newExtensionRegistry(mgr.GetScheme())
 
 	// ==================== Create GenericReconciler ====================
 	// Use operator-go SDK's GenericReconciler instead of traditional Controller
@@ -238,6 +251,9 @@ func main() {
 		HealthCheckInterval: 120 * time.Second,
 		HealthCheckTimeout:  300 * time.Second,
 		Prototype:           &trinov1alpha1.TrinoCluster{},
+		// The reconciler owns its extensions; nothing outside this process-local registry can
+		// inject a hook into a TrinoCluster reconcile.
+		ExtensionRegistry: extensionRegistry,
 	}
 
 	// Create GenericReconciler

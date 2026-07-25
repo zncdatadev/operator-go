@@ -26,7 +26,6 @@ package common_test
 
 import (
 	"context"
-	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -110,6 +109,9 @@ func (h *HdfsCluster) DeepCopyCluster() common.ClusterInterface {
 // JvmArgumentsExtension is an HDFS-specific ClusterExtension that reads
 // JvmArgumentOverrides from the product CR and applies them (e.g., appends
 // to a ConfigMap or sets an env var).
+//
+// It is declared for *HdfsCluster, so the hooks receive the product CR itself and the product
+// field is reachable without any conversion or guard.
 type JvmArgumentsExtension struct {
 	common.BaseExtension
 	// appliedArgs captures what was processed, for test verification.
@@ -125,23 +127,18 @@ func NewJvmArgumentsExtension() *JvmArgumentsExtension {
 
 // PreReconcile reads JvmArgumentOverrides from the HdfsCluster CR and stores
 // them so the RoleGroupHandler can later render them into jvm.properties.
-func (e *JvmArgumentsExtension) PreReconcile(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
-	hdfs, ok := cr.(*HdfsCluster)
-	if !ok {
-		return fmt.Errorf("expected *HdfsCluster, got %T", cr)
-	}
-
-	if hdfs.Spec.NameNodes != nil && len(hdfs.Spec.NameNodes.JvmArgumentOverrides) > 0 {
-		e.appliedArgs["nameNodes"] = hdfs.Spec.NameNodes.JvmArgumentOverrides
+func (e *JvmArgumentsExtension) PreReconcile(ctx context.Context, c client.Client, cr *HdfsCluster) error {
+	if cr.Spec.NameNodes != nil && len(cr.Spec.NameNodes.JvmArgumentOverrides) > 0 {
+		e.appliedArgs["nameNodes"] = cr.Spec.NameNodes.JvmArgumentOverrides
 	}
 	return nil
 }
 
-func (e *JvmArgumentsExtension) PostReconcile(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
+func (e *JvmArgumentsExtension) PostReconcile(ctx context.Context, c client.Client, cr *HdfsCluster) error {
 	return nil
 }
 
-func (e *JvmArgumentsExtension) OnReconcileError(ctx context.Context, c client.Client, cr common.ClusterInterface, err error) error {
+func (e *JvmArgumentsExtension) OnReconcileError(ctx context.Context, c client.Client, cr *HdfsCluster, err error) error {
 	return nil
 }
 
@@ -151,15 +148,10 @@ func (e *JvmArgumentsExtension) OnReconcileError(ctx context.Context, c client.C
 
 var _ = Describe("Extension mechanism: product-specific fields pattern", func() {
 
-	var registry *common.ExtensionRegistry
+	var registry *common.ExtensionRegistry[*HdfsCluster]
 
 	BeforeEach(func() {
-		registry = common.GetExtensionRegistry()
-		registry.Clear()
-	})
-
-	AfterEach(func() {
-		registry.Clear()
+		registry = common.NewExtensionRegistry[*HdfsCluster]()
 	})
 
 	Describe("JvmArgumentOverrides via ClusterExtension", func() {
@@ -199,18 +191,6 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 			Expect(ext.appliedArgs).To(BeEmpty())
 		})
 
-		It("returns error when the CR is not of the expected product type", func() {
-			// Using a different ClusterInterface implementation (not HdfsCluster)
-			// demonstrates that extensions should guard with a type assertion.
-			otherCR := &MockClusterForProductTest{name: "other-cluster"}
-
-			ext := NewJvmArgumentsExtension()
-			registry.RegisterClusterExtension(ext)
-
-			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, otherCR)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("expected *HdfsCluster"))
-		})
 	})
 
 	Describe("RoleGroupExtension pattern: per-role-group JVM tuning", func() {
@@ -218,14 +198,10 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 			captured := map[string][]string{}
 
 			// A RoleGroupExtension that captures which JVM args were applied per group.
-			ext := &MockRoleGroupExtension{
-				PreReconcileFunc: func(ctx context.Context, c client.Client, cr common.ClusterInterface, roleName, groupName string) error {
-					hdfs, ok := cr.(*HdfsCluster)
-					if !ok {
-						return nil
-					}
-					if hdfs.Spec.NameNodes != nil && roleName == "nameNodes" {
-						captured[groupName] = hdfs.Spec.NameNodes.JvmArgumentOverrides
+			ext := &hdfsRoleGroupExtension{
+				PreReconcileFunc: func(ctx context.Context, c client.Client, cr *HdfsCluster, roleName, groupName string) error {
+					if cr.Spec.NameNodes != nil && roleName == "nameNodes" {
+						captured[groupName] = cr.Spec.NameNodes.JvmArgumentOverrides
 					}
 					return nil
 				},
@@ -252,23 +228,23 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 		It("executes extensions in highest-priority-first order", func() {
 			order := []string{}
 
-			low := &MockClusterExtension{
+			low := &hdfsClusterExtension{
 				NameFunc: func() string { return "low" },
-				PreReconcileFunc: func(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
+				PreReconcileFunc: func(ctx context.Context, c client.Client, cr *HdfsCluster) error {
 					order = append(order, "low")
 					return nil
 				},
 			}
-			high := &MockClusterExtension{
+			high := &hdfsClusterExtension{
 				NameFunc: func() string { return "high" },
-				PreReconcileFunc: func(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
+				PreReconcileFunc: func(ctx context.Context, c client.Client, cr *HdfsCluster) error {
 					order = append(order, "high")
 					return nil
 				},
 			}
 
-			registry.RegisterClusterExtensionWithPriority(low, common.PriorityLow)
-			registry.RegisterClusterExtensionWithPriority(high, common.PriorityHigh)
+			registry.RegisterClusterExtension(low, common.WithPriority(common.PriorityLow))
+			registry.RegisterClusterExtension(high, common.WithPriority(common.PriorityHigh))
 
 			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -277,7 +253,8 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 	})
 })
 
-// MockClusterForProductTest is a minimal ClusterInterface for testing type-assertion guards.
+// MockClusterForProductTest is a minimal ClusterInterface standing in for a second product's CR,
+// so specs can exercise two registries typed for different products.
 type MockClusterForProductTest struct {
 	name string
 }

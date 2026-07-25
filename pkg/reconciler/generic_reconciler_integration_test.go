@@ -37,25 +37,24 @@ import (
 )
 
 // productStatusExtension stands in for a product hook that computes a status field the SDK's
-// ClusterInterface knows nothing about.
+// ClusterInterface knows nothing about. Being registered for the concrete CR type, it reaches
+// that field directly.
 type productStatusExtension struct {
 	value string
 }
 
 func (e *productStatusExtension) Name() string { return "product-status" }
 
-func (e *productStatusExtension) PreReconcile(context.Context, client.Client, common.ClusterInterface) error {
+func (e *productStatusExtension) PreReconcile(context.Context, client.Client, *testutil.ClusterWrapper) error {
 	return nil
 }
 
-func (e *productStatusExtension) PostReconcile(_ context.Context, _ client.Client, cr common.ClusterInterface) error {
-	if wrapper, ok := cr.(*testutil.ClusterWrapper); ok {
-		wrapper.Status.ProductField = e.value
-	}
+func (e *productStatusExtension) PostReconcile(_ context.Context, _ client.Client, cr *testutil.ClusterWrapper) error {
+	cr.Status.ProductField = e.value
 	return nil
 }
 
-func (e *productStatusExtension) OnReconcileError(context.Context, client.Client, common.ClusterInterface, error) error {
+func (e *productStatusExtension) OnReconcileError(context.Context, client.Client, *testutil.ClusterWrapper, error) error {
 	return nil
 }
 
@@ -127,7 +126,7 @@ var _ = Describe("GenericReconciler steady-state status writes", func() {
 		// Products compute their own status fields in a hook; ClusterInterface only exposes the
 		// embedded generic status, so a write path that re-fetches the CR before updating would
 		// silently reload and re-persist the stored value instead.
-		registry := common.NewExtensionRegistry()
+		registry := common.NewExtensionRegistry[*testutil.ClusterWrapper]()
 		registry.RegisterClusterExtension(&productStatusExtension{value: "ready-42"})
 		DeferCleanup(registry.Clear)
 
@@ -364,7 +363,7 @@ var _ = Describe("GenericReconciler status on failure and non-running states", f
 	It("falsifies ReconcileComplete when the cycle fails", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("reconcile-failed"))
 
-		registry := common.NewExtensionRegistry()
+		registry := common.NewExtensionRegistry[*testutil.ClusterWrapper]()
 		registry.RegisterClusterExtension(&failingPostReconcileExtension{})
 		DeferCleanup(registry.Clear)
 
@@ -415,19 +414,125 @@ var _ = Describe("GenericReconciler status on failure and non-running states", f
 	})
 })
 
+// altClusterWrapper is a second CR type over the same stored object, standing in for another
+// product's cluster resource. A manager process hosting two products runs one GenericReconciler
+// per CR type, so this is what lets a spec put two of them side by side.
+type altClusterWrapper struct {
+	*testutil.ClusterWrapper
+}
+
+// DeepCopyCluster has to return an *altClusterWrapper: the reconciler materialises each fetched
+// CR by deep-copying its prototype, and the copy must be of the reconciler's own CR type.
+// DeepCopy is the wrapped MockCluster's, promoted through the embedded ClusterWrapper.
+func (w *altClusterWrapper) DeepCopyCluster() common.ClusterInterface {
+	return &altClusterWrapper{ClusterWrapper: testutil.WrapMockCluster(w.DeepCopy())}
+}
+
+// namingExtension records the clusters whose hooks it ran for, per CR type.
+type namingExtension[CR common.ClusterInterface] struct {
+	common.BaseExtension
+	seen *[]string
+}
+
+func (e *namingExtension[CR]) PreReconcile(_ context.Context, _ client.Client, cr CR) error {
+	*e.seen = append(*e.seen, e.Name()+":"+cr.GetName())
+	return nil
+}
+
+func (e *namingExtension[CR]) PostReconcile(context.Context, client.Client, CR) error { return nil }
+
+func (e *namingExtension[CR]) OnReconcileError(context.Context, client.Client, CR, error) error {
+	return nil
+}
+
+// A registry belongs to the reconciler it is configured on, and its type parameter is the
+// reconciler's CR type. Two products in one binary therefore cannot reach each other's
+// extensions: a foreign extension does not satisfy the registry's instantiation, and there is no
+// process-wide registry for either to fall back to.
+var _ = Describe("GenericReconciler extension registry ownership", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("executes only the extensions of the registry it was configured with", func() {
+		var ran []string
+
+		mainCR, _ := newResilienceCR(ctx, uniqueCRName("registry-main"))
+		altCR, _ := newResilienceCR(ctx, uniqueCRName("registry-alt"))
+
+		mainRegistry := common.NewExtensionRegistry[*testutil.ClusterWrapper]()
+		mainRegistry.RegisterClusterExtension(&namingExtension[*testutil.ClusterWrapper]{
+			BaseExtension: common.NewBaseExtension("main"), seen: &ran,
+		})
+
+		altRegistry := common.NewExtensionRegistry[*altClusterWrapper]()
+		altRegistry.RegisterClusterExtension(&namingExtension[*altClusterWrapper]{
+			BaseExtension: common.NewBaseExtension("alt"), seen: &ran,
+		})
+
+		mainReconciler, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:            k8sClient,
+			Scheme:            testScheme,
+			Recorder:          recorder,
+			RoleGroupHandler:  &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			Prototype:         testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			ExtensionRegistry: mainRegistry,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		altReconciler, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*altClusterWrapper]{
+			Client:            k8sClient,
+			Scheme:            testScheme,
+			Recorder:          recorder,
+			RoleGroupHandler:  testutil.NewMockRoleGroupHandlerFor[*altClusterWrapper](),
+			Prototype:         &altClusterWrapper{ClusterWrapper: testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace))},
+			ExtensionRegistry: altRegistry,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = mainReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: mainCR.Name}})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = altReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: altCR.Name}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(ran).To(ConsistOf("main:"+mainCR.Name, "alt:"+altCR.Name))
+	})
+
+	It("reconciles with an empty registry of its own when the config declares none", func() {
+		cr, _ := newResilienceCR(ctx, uniqueCRName("registry-none"))
+
+		// There is no process-wide registry left to fall back on, so an unconfigured reconciler
+		// has to substitute an empty one: the hook call sites invoke the registry unconditionally
+		// on every cycle, at cluster, role and role group level.
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 // failingPostReconcileExtension fails the cycle after every resource has been applied.
 type failingPostReconcileExtension struct{}
 
 func (e *failingPostReconcileExtension) Name() string { return "failing-post-reconcile" }
 
-func (e *failingPostReconcileExtension) PreReconcile(context.Context, client.Client, common.ClusterInterface) error {
+func (e *failingPostReconcileExtension) PreReconcile(context.Context, client.Client, *testutil.ClusterWrapper) error {
 	return nil
 }
 
-func (e *failingPostReconcileExtension) PostReconcile(context.Context, client.Client, common.ClusterInterface) error {
+func (e *failingPostReconcileExtension) PostReconcile(context.Context, client.Client, *testutil.ClusterWrapper) error {
 	return fmt.Errorf("post reconcile exploded")
 }
 
-func (e *failingPostReconcileExtension) OnReconcileError(context.Context, client.Client, common.ClusterInterface, error) error {
+func (e *failingPostReconcileExtension) OnReconcileError(context.Context, client.Client, *testutil.ClusterWrapper, error) error {
 	return nil
 }

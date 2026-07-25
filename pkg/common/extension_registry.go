@@ -92,94 +92,57 @@ var (
 	errorHookPolicy = hookPolicy{stopOnError: false, aggregate: false}
 )
 
-// ExtensionRegistry manages all registered extensions.
-// Extensions are executed in priority order (highest first), same-priority extensions in
-// registration order.
-type ExtensionRegistry struct {
-	clusterExtensions   []extensionEntry[ClusterExtension[ClusterInterface]]
-	roleExtensions      []extensionEntry[RoleExtension[ClusterInterface]]
-	roleGroupExtensions []extensionEntry[RoleGroupExtension[ClusterInterface]]
+// ExtensionRegistry holds the extensions of a single product CR type. Extensions execute in
+// priority order (highest first); same-priority extensions execute in registration order.
+//
+// The type parameter is load-bearing rather than cosmetic. Go generic types are invariant, so a
+// ClusterExtension[*TrinoCluster] does not satisfy ClusterExtension[ClusterInterface]: a registry
+// erased to the wide interface can only ever hold extensions written against ClusterInterface,
+// forcing every product hook to convert its own CR on entry. Instantiating the registry for the
+// product's CR type is what lets an extension declare the CR it operates on and receive exactly
+// that.
+//
+// The type parameter also bounds what a registry can reach. A registry is owned by the reconciler
+// it is passed to (reconciler.GenericReconcilerConfig.ExtensionRegistry), so a binary hosting two
+// products cannot run one product's hooks against the other's clusters — neither by construction
+// (a foreign extension does not typecheck) nor by accident (there is no shared instance). This is
+// why the package exposes no process-wide default registry.
+type ExtensionRegistry[CR ClusterInterface] struct {
+	clusterExtensions   []extensionEntry[ClusterExtension[CR]]
+	roleExtensions      []extensionEntry[RoleExtension[CR]]
+	roleGroupExtensions []extensionEntry[RoleGroupExtension[CR]]
 	// nextSeq hands out registration sequence numbers; guarded by mu.
 	nextSeq uint64
 	mu      sync.RWMutex
 }
 
-// NewExtensionRegistry creates an empty, isolated registry. Use it when extensions must not
-// leak into the process-wide singleton — a controller that owns its extensions, or tests
-// that run in parallel.
-func NewExtensionRegistry() *ExtensionRegistry {
-	return &ExtensionRegistry{}
+// NewExtensionRegistry creates an empty registry for a single CR type. Pass the result to the
+// product's GenericReconcilerConfig; a reconciler executes hooks from no other registry.
+func NewExtensionRegistry[CR ClusterInterface]() *ExtensionRegistry[CR] {
+	return &ExtensionRegistry[CR]{}
 }
 
-// globalRegistry is the singleton instance.
-// Thread-safety: All access to globalRegistry is protected by sync.RWMutex.
-// For testing scenarios, use ResetExtensionRegistry() to reset state between tests,
-// or create isolated instances with NewExtensionRegistry() for parallel tests.
-var globalRegistry = NewExtensionRegistry()
-
-// GetExtensionRegistry returns the global registry singleton.
-func GetExtensionRegistry() *ExtensionRegistry {
-	return globalRegistry
-}
-
-// ResetExtensionRegistry empties the global registry (for testing).
-// The singleton pointer is deliberately left untouched: reconcilers capture the registry at
-// construction time, so replacing the pointer would leave them executing a stale registry.
-func ResetExtensionRegistry() {
-	globalRegistry.Clear()
-}
-
-// RegisterClusterExtension registers a cluster-level extension with default priority.
-func (r *ExtensionRegistry) RegisterClusterExtension(extension ClusterExtension[ClusterInterface]) {
-	r.RegisterClusterExtensionWithOptions(extension)
-}
-
-// RegisterClusterExtensionWithPriority registers a cluster-level extension with specific priority.
-func (r *ExtensionRegistry) RegisterClusterExtensionWithPriority(extension ClusterExtension[ClusterInterface], priority ExtensionPriority) {
-	r.RegisterClusterExtensionWithOptions(extension, WithPriority(priority))
-}
-
-// RegisterClusterExtensionWithOptions registers a cluster-level extension, see WithPriority
-// and WithStopOnError for the available options.
-func (r *ExtensionRegistry) RegisterClusterExtensionWithOptions(extension ClusterExtension[ClusterInterface], opts ...RegistrationOption) {
+// RegisterClusterExtension registers a cluster-level extension. See WithPriority and
+// WithStopOnError for the available options.
+func (r *ExtensionRegistry[CR]) RegisterClusterExtension(extension ClusterExtension[CR], opts ...RegistrationOption) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.clusterExtensions = addEntry(r.clusterExtensions, extension, r.takeSeq(), opts)
 }
 
-// RegisterRoleExtension registers a role-level extension with default priority.
-func (r *ExtensionRegistry) RegisterRoleExtension(extension RoleExtension[ClusterInterface]) {
-	r.RegisterRoleExtensionWithOptions(extension)
-}
-
-// RegisterRoleExtensionWithPriority registers a role-level extension with specific priority.
-func (r *ExtensionRegistry) RegisterRoleExtensionWithPriority(extension RoleExtension[ClusterInterface], priority ExtensionPriority) {
-	r.RegisterRoleExtensionWithOptions(extension, WithPriority(priority))
-}
-
-// RegisterRoleExtensionWithOptions registers a role-level extension, see WithPriority and
-// WithStopOnError for the available options.
-func (r *ExtensionRegistry) RegisterRoleExtensionWithOptions(extension RoleExtension[ClusterInterface], opts ...RegistrationOption) {
+// RegisterRoleExtension registers a role-level extension. See WithPriority and WithStopOnError
+// for the available options.
+func (r *ExtensionRegistry[CR]) RegisterRoleExtension(extension RoleExtension[CR], opts ...RegistrationOption) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.roleExtensions = addEntry(r.roleExtensions, extension, r.takeSeq(), opts)
 }
 
-// RegisterRoleGroupExtension registers a role group-level extension with default priority.
-func (r *ExtensionRegistry) RegisterRoleGroupExtension(extension RoleGroupExtension[ClusterInterface]) {
-	r.RegisterRoleGroupExtensionWithOptions(extension)
-}
-
-// RegisterRoleGroupExtensionWithPriority registers a role group-level extension with specific priority.
-func (r *ExtensionRegistry) RegisterRoleGroupExtensionWithPriority(extension RoleGroupExtension[ClusterInterface], priority ExtensionPriority) {
-	r.RegisterRoleGroupExtensionWithOptions(extension, WithPriority(priority))
-}
-
-// RegisterRoleGroupExtensionWithOptions registers a role group-level extension, see
-// WithPriority and WithStopOnError for the available options.
-func (r *ExtensionRegistry) RegisterRoleGroupExtensionWithOptions(extension RoleGroupExtension[ClusterInterface], opts ...RegistrationOption) {
+// RegisterRoleGroupExtension registers a role group-level extension. See WithPriority and
+// WithStopOnError for the available options.
+func (r *ExtensionRegistry[CR]) RegisterRoleGroupExtension(extension RoleGroupExtension[CR], opts ...RegistrationOption) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -187,7 +150,7 @@ func (r *ExtensionRegistry) RegisterRoleGroupExtensionWithOptions(extension Role
 }
 
 // takeSeq returns the next registration sequence number. Callers must hold r.mu.
-func (r *ExtensionRegistry) takeSeq() uint64 {
+func (r *ExtensionRegistry[CR]) takeSeq() uint64 {
 	seq := r.nextSeq
 	r.nextSeq++
 	return seq
@@ -252,53 +215,53 @@ func executeHooks[T Extension](ctx context.Context, entries []extensionEntry[T],
 }
 
 // clusterEntries returns a snapshot of the cluster entries in execution order.
-func (r *ExtensionRegistry) clusterEntries() []extensionEntry[ClusterExtension[ClusterInterface]] {
+func (r *ExtensionRegistry[CR]) clusterEntries() []extensionEntry[ClusterExtension[CR]] {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.clusterExtensions)
 }
 
 // roleEntries returns a snapshot of the role entries in execution order.
-func (r *ExtensionRegistry) roleEntries() []extensionEntry[RoleExtension[ClusterInterface]] {
+func (r *ExtensionRegistry[CR]) roleEntries() []extensionEntry[RoleExtension[CR]] {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.roleExtensions)
 }
 
 // roleGroupEntries returns a snapshot of the role group entries in execution order.
-func (r *ExtensionRegistry) roleGroupEntries() []extensionEntry[RoleGroupExtension[ClusterInterface]] {
+func (r *ExtensionRegistry[CR]) roleGroupEntries() []extensionEntry[RoleGroupExtension[CR]] {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.roleGroupExtensions)
 }
 
 // GetClusterExtensions returns all registered cluster extensions in execution order.
-func (r *ExtensionRegistry) GetClusterExtensions() []ClusterExtension[ClusterInterface] {
+func (r *ExtensionRegistry[CR]) GetClusterExtensions() []ClusterExtension[CR] {
 	return extensionsOf(r.clusterEntries())
 }
 
 // GetRoleExtensions returns all registered role extensions in execution order.
-func (r *ExtensionRegistry) GetRoleExtensions() []RoleExtension[ClusterInterface] {
+func (r *ExtensionRegistry[CR]) GetRoleExtensions() []RoleExtension[CR] {
 	return extensionsOf(r.roleEntries())
 }
 
 // GetRoleGroupExtensions returns all registered role group extensions in execution order.
-func (r *ExtensionRegistry) GetRoleGroupExtensions() []RoleGroupExtension[ClusterInterface] {
+func (r *ExtensionRegistry[CR]) GetRoleGroupExtensions() []RoleGroupExtension[CR] {
 	return extensionsOf(r.roleGroupEntries())
 }
 
 // ExecuteClusterPreReconcile executes all cluster PreReconcile hooks.
-func (r *ExtensionRegistry) ExecuteClusterPreReconcile(ctx context.Context, client client.Client, cr ClusterInterface) error {
+func (r *ExtensionRegistry[CR]) ExecuteClusterPreReconcile(ctx context.Context, client client.Client, cr CR) error {
 	return executeHooks(ctx, r.clusterEntries(), reconcileHookPolicy,
-		func(ext ClusterExtension[ClusterInterface]) error {
+		func(ext ClusterExtension[CR]) error {
 			return ext.PreReconcile(ctx, client, cr)
 		})
 }
 
 // ExecuteClusterPostReconcile executes all cluster PostReconcile hooks.
-func (r *ExtensionRegistry) ExecuteClusterPostReconcile(ctx context.Context, client client.Client, cr ClusterInterface) error {
+func (r *ExtensionRegistry[CR]) ExecuteClusterPostReconcile(ctx context.Context, client client.Client, cr CR) error {
 	return executeHooks(ctx, r.clusterEntries(), reconcileHookPolicy,
-		func(ext ClusterExtension[ClusterInterface]) error {
+		func(ext ClusterExtension[CR]) error {
 			return ext.PostReconcile(ctx, client, cr)
 		})
 }
@@ -307,68 +270,70 @@ func (r *ExtensionRegistry) ExecuteClusterPostReconcile(ctx context.Context, cli
 // Handler failures are logged instead of returned, so that one broken handler neither hides
 // the original reconcile error nor skips the cleanup of the remaining handlers. A handler
 // registered with WithStopOnError(true) opts out and aborts the loop.
-func (r *ExtensionRegistry) ExecuteClusterOnError(ctx context.Context, client client.Client, cr ClusterInterface, reconcileErr error) error {
+func (r *ExtensionRegistry[CR]) ExecuteClusterOnError(ctx context.Context, client client.Client, cr CR, reconcileErr error) error {
 	return executeHooks(ctx, r.clusterEntries(), errorHookPolicy,
-		func(ext ClusterExtension[ClusterInterface]) error {
+		func(ext ClusterExtension[CR]) error {
 			return ext.OnReconcileError(ctx, client, cr, reconcileErr)
 		})
 }
 
 // ExecuteRolePreReconcile executes all role PreReconcile hooks.
-func (r *ExtensionRegistry) ExecuteRolePreReconcile(ctx context.Context, client client.Client, cr ClusterInterface, roleName string) error {
+func (r *ExtensionRegistry[CR]) ExecuteRolePreReconcile(ctx context.Context, client client.Client, cr CR, roleName string) error {
 	return executeHooks(ctx, r.roleEntries(), reconcileHookPolicy,
-		func(ext RoleExtension[ClusterInterface]) error {
+		func(ext RoleExtension[CR]) error {
 			return ext.PreReconcile(ctx, client, cr, roleName)
 		})
 }
 
 // ExecuteRolePostReconcile executes all role PostReconcile hooks.
-func (r *ExtensionRegistry) ExecuteRolePostReconcile(ctx context.Context, client client.Client, cr ClusterInterface, roleName string) error {
+func (r *ExtensionRegistry[CR]) ExecuteRolePostReconcile(ctx context.Context, client client.Client, cr CR, roleName string) error {
 	return executeHooks(ctx, r.roleEntries(), reconcileHookPolicy,
-		func(ext RoleExtension[ClusterInterface]) error {
+		func(ext RoleExtension[CR]) error {
 			return ext.PostReconcile(ctx, client, cr, roleName)
 		})
 }
 
 // ExecuteRoleGroupPreReconcile executes all role group PreReconcile hooks.
-func (r *ExtensionRegistry) ExecuteRoleGroupPreReconcile(ctx context.Context, client client.Client, cr ClusterInterface, roleName, roleGroupName string) error {
+func (r *ExtensionRegistry[CR]) ExecuteRoleGroupPreReconcile(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error {
 	return executeHooks(ctx, r.roleGroupEntries(), reconcileHookPolicy,
-		func(ext RoleGroupExtension[ClusterInterface]) error {
+		func(ext RoleGroupExtension[CR]) error {
 			return ext.PreReconcile(ctx, client, cr, roleName, roleGroupName)
 		})
 }
 
 // ExecuteRoleGroupPostReconcile executes all role group PostReconcile hooks.
-func (r *ExtensionRegistry) ExecuteRoleGroupPostReconcile(ctx context.Context, client client.Client, cr ClusterInterface, roleName, roleGroupName string) error {
+func (r *ExtensionRegistry[CR]) ExecuteRoleGroupPostReconcile(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error {
 	return executeHooks(ctx, r.roleGroupEntries(), reconcileHookPolicy,
-		func(ext RoleGroupExtension[ClusterInterface]) error {
+		func(ext RoleGroupExtension[CR]) error {
 			return ext.PostReconcile(ctx, client, cr, roleName, roleGroupName)
 		})
 }
 
 // HasClusterExtensions returns true if any cluster extensions are registered.
-func (r *ExtensionRegistry) HasClusterExtensions() bool {
+func (r *ExtensionRegistry[CR]) HasClusterExtensions() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.clusterExtensions) > 0
 }
 
 // HasRoleExtensions returns true if any role extensions are registered.
-func (r *ExtensionRegistry) HasRoleExtensions() bool {
+func (r *ExtensionRegistry[CR]) HasRoleExtensions() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.roleExtensions) > 0
 }
 
 // HasRoleGroupExtensions returns true if any role group extensions are registered.
-func (r *ExtensionRegistry) HasRoleGroupExtensions() bool {
+func (r *ExtensionRegistry[CR]) HasRoleGroupExtensions() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.roleGroupExtensions) > 0
 }
 
 // Clear removes all registered extensions (for testing).
-func (r *ExtensionRegistry) Clear() {
+// The registry is emptied in place rather than replaced: a reconciler captures the registry at
+// construction time, so handing out a fresh instance would leave it executing a stale one.
+func (r *ExtensionRegistry[CR]) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -379,7 +344,7 @@ func (r *ExtensionRegistry) Clear() {
 }
 
 // Count returns the total number of registered extensions.
-func (r *ExtensionRegistry) Count() int {
+func (r *ExtensionRegistry[CR]) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.clusterExtensions) + len(r.roleExtensions) + len(r.roleGroupExtensions)
