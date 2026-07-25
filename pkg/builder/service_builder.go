@@ -172,10 +172,12 @@ func (b *ServiceBuilder) Build() *corev1.Service {
 	return svc
 }
 
-// BuildHeadless creates a headless service.
+// BuildHeadless creates a headless Service. It does not reconfigure the builder: a Build() after
+// it still honors the configured service type, so the two calls cannot influence each other.
 func (b *ServiceBuilder) BuildHeadless() *corev1.Service {
-	b.Headless = true
-	return b.Build()
+	svc := b.Build()
+	svc.Spec.ClusterIP = corev1.ClusterIPNone
+	return svc
 }
 
 // NamespacedName returns the NamespacedName for the Service.

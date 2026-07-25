@@ -104,8 +104,18 @@ func (b *PDBBuilder) WithEnabled(enabled bool) *PDBBuilder {
 }
 
 // Build creates the PodDisruptionBudget. Like the other builders, the returned object shares no
-// map with the builder, so mutating it (or building twice) cannot corrupt the builder's state.
+// map or pointer with the builder, so mutating it (or building twice) cannot corrupt the
+// builder's state.
+//
+// It panics when no selector was set. A PodDisruptionBudget with an empty selector is accepted by
+// the API server and selects every pod in the namespace, so it would silently start blocking
+// voluntary evictions (node drains) for workloads the caller does not own — the one invalid
+// object in this package that no API server error would ever reveal.
 func (b *PDBBuilder) Build() *policyv1.PodDisruptionBudget {
+	if len(b.Selector) == 0 {
+		panic("PDBBuilder: " + b.Name + " has no selector; a PodDisruptionBudget with an empty selector matches every pod in the namespace")
+	}
+
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
@@ -121,7 +131,7 @@ func (b *PDBBuilder) Build() *policyv1.PodDisruptionBudget {
 	}
 
 	if b.MaxUnavailable != nil {
-		pdb.Spec.MaxUnavailable = b.MaxUnavailable
+		pdb.Spec.MaxUnavailable = clonePtr(b.MaxUnavailable)
 	} else {
 		// Default to MaxUnavailable=1
 		maxUnavailable := intstr.FromInt(1)

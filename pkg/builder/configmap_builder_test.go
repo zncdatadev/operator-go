@@ -129,6 +129,16 @@ var _ = Describe("ConfigMapBuilder", func() {
 
 			Expect(cm.BinaryData).To(HaveKey("binary.dat"))
 		})
+
+		It("should not share the binary data backing arrays with the builder", func() {
+			b := cmBuilder.AddBinaryData("binary.dat", []byte{0x01, 0x02, 0x03})
+
+			first := b.Build()
+			first.BinaryData["binary.dat"][0] = 0xff
+
+			second := b.Build()
+			Expect(second.BinaryData["binary.dat"]).To(Equal([]byte{0x01, 0x02, 0x03}))
+		})
 	})
 
 	Describe("NamespacedName", func() {

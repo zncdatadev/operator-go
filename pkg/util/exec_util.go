@@ -63,11 +63,12 @@ type ExecuteResult struct {
 	ExitCode int
 }
 
-// PodExecutor is an interface for executing commands in pods.
-// This interface allows for mocking in tests.
+// PodExecutor abstracts the exec transport: it runs one command in a pod container and copies the
+// command's output into the given writers. It is the single seam ExecUtil offers (for tests and
+// for alternative transports) and deliberately covers the transport only — ExecUtil keeps
+// ownership of pod selection, the timeout and the ExecuteResult, so no executor can change what a
+// captured stream or an exit code means.
 type PodExecutor interface {
-	// ExecuteWithTimeout runs a command with a timeout.
-	ExecuteWithTimeout(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*ExecuteResult, error)
 	// ExecuteWithOutput executes a command and streams output to the provided writers.
 	ExecuteWithOutput(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error
 }
@@ -77,45 +78,18 @@ func (e *ExecUtil) Execute(ctx context.Context, namespace, podName, containerNam
 	return e.ExecuteWithTimeout(ctx, namespace, podName, containerName, command, 30*time.Second)
 }
 
-// ExecuteWithTimeout runs a command with a timeout.
+// ExecuteWithTimeout runs a command with a timeout. The result carries whatever the command wrote
+// before it failed, and its exit code is derived from the stream error, so a failed command is
+// still reported with its own exit status.
 func (e *ExecUtil) ExecuteWithTimeout(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*ExecuteResult, error) {
-	if e.Executor != nil {
-		return e.Executor.ExecuteWithTimeout(ctx, namespace, podName, containerName, command, timeout)
-	}
-
 	// Create timeout context
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Prepare the exec request
-	req := e.ClientSet.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Name(podName).
-		Namespace(namespace).
-		SubResource("exec").
-		VersionedParams(&corev1.PodExecOptions{
-			Container: containerName,
-			Command:   command,
-			Stdin:     false,
-			Stdout:    true,
-			Stderr:    true,
-			TTY:       false,
-		}, scheme.ParameterCodec)
-
-	// Create the executor
-	exec, err := remotecommand.NewSPDYExecutor(e.Config, "POST", req.URL())
-	if err != nil {
-		return nil, fmt.Errorf("failed to create executor: %w", err)
-	}
-
 	// Capture output
 	var stdout, stderr bytes.Buffer
 
-	// Execute the command
-	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	})
+	err := e.ExecuteWithOutput(ctx, namespace, podName, containerName, command, &stdout, &stderr)
 
 	result := newExecuteResult(stdout.String(), stderr.String(), err)
 	if err != nil {
@@ -135,15 +109,9 @@ func newExecuteResult(stdout, stderr string, err error) *ExecuteResult {
 	}
 }
 
-// ExecuteSimple runs a command and returns only stdout.
+// ExecuteSimple runs a command and returns only stdout. A failed command yields an empty string
+// and the error; use Execute when the partial output of a failure matters.
 func (e *ExecUtil) ExecuteSimple(ctx context.Context, namespace, podName, containerName string, command []string) (string, error) {
-	if e.Executor != nil {
-		result, err := e.Executor.ExecuteWithTimeout(ctx, namespace, podName, containerName, command, 30*time.Second)
-		if err != nil && result == nil {
-			return "", err
-		}
-		return result.Stdout, err
-	}
 	result, err := e.Execute(ctx, namespace, podName, containerName, command)
 	if err != nil {
 		return "", err
@@ -184,14 +152,6 @@ func (e *ExecUtil) ExecuteInPod(ctx context.Context, namespace string, labels ma
 
 // CopyFromPod copies a file from a pod.
 func (e *ExecUtil) CopyFromPod(ctx context.Context, namespace, podName, containerName, srcPath string) ([]byte, error) {
-	if e.Executor != nil {
-		result, err := e.Executor.ExecuteWithTimeout(ctx, namespace, podName, containerName, []string{"cat", srcPath}, 30*time.Second)
-		if err != nil {
-			return nil, fmt.Errorf("failed to copy file from pod: %w", err)
-		}
-		return []byte(result.Stdout), nil
-	}
-
 	command := []string{"cat", srcPath}
 	result, err := e.Execute(ctx, namespace, podName, containerName, command)
 	if err != nil {
@@ -247,7 +207,10 @@ func (e *ExecUtil) WaitForPodReady(ctx context.Context, namespace, podName strin
 	}
 }
 
-// ExecuteWithOutput executes a command and streams output to the provided writers.
+// ExecuteWithOutput executes a command and streams output to the provided writers. It is the one
+// place the exec transport is chosen; every other exec entry point funnels through it, so a
+// configured Executor and the SPDY transport always produce identical results. The caller owns the
+// deadline: no timeout is applied here.
 func (e *ExecUtil) ExecuteWithOutput(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error {
 	if e.Executor != nil {
 		return e.Executor.ExecuteWithOutput(ctx, namespace, podName, containerName, command, stdout, stderr)

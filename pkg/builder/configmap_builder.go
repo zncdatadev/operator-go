@@ -19,6 +19,7 @@ package builder
 import (
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/zncdatadev/operator-go/pkg/config"
 	corev1 "k8s.io/api/core/v1"
@@ -120,7 +121,12 @@ func (b *ConfigMapBuilder) Build() *corev1.ConfigMap {
 	}
 
 	if len(b.BinaryData) > 0 {
-		cm.BinaryData = maps.Clone(b.BinaryData)
+		// maps.Clone would copy the map but keep every []byte backing array shared with the
+		// builder, so a caller writing into a built entry would reach back into the builder.
+		cm.BinaryData = make(map[string][]byte, len(b.BinaryData))
+		for key, value := range b.BinaryData {
+			cm.BinaryData[key] = slices.Clone(value)
+		}
 	}
 
 	return cm

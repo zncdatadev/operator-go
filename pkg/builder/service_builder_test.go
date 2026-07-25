@@ -160,6 +160,17 @@ var _ = Describe("ServiceBuilder", func() {
 
 			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
 		})
+
+		// A handler that builds both the headless and the client-facing Service from one builder
+		// must get the configured type for the second one.
+		It("should not turn the builder itself headless", func() {
+			b := builder.NewServiceBuilder(name, namespace).
+				WithSelector(map[string]string{"app": "test"})
+
+			Expect(b.BuildHeadless().Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+			Expect(b.Headless).To(BeFalse())
+			Expect(b.Build().Spec.ClusterIP).To(BeEmpty())
+		})
 	})
 
 	Describe("NamespacedName", func() {

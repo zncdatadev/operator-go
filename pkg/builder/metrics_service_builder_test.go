@@ -83,6 +83,14 @@ var _ = Describe("MetricsServiceBuilder", func() {
 			Expect(labels).NotTo(HaveKey("prometheus.io/scrape"))
 			Expect(svc.Labels).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
 		})
+
+		It("should not follow the caller's map after construction", func() {
+			b := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels)
+			labels["app.kubernetes.io/name"] = "reused-for-another-role"
+
+			svc := b.Build()
+			Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "test-cluster"))
+		})
 	})
 
 	Describe("WithScheme", func() {

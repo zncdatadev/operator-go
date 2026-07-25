@@ -17,7 +17,8 @@ Every non-test file in this package:
 | `rbac_builder.go` | `RoleBuilder`, `RoleBindingBuilder`, `ClusterRoleBuilder`, `ClusterRoleBindingBuilder` |
 | `serviceaccount_builder.go` | `ServiceAccountBuilder` |
 | `metrics_service_builder.go` | Metrics headless Service builder (Prometheus scrape annotations; targetPort defaults to the numeric port, `WithTargetPortName` opts into a named targetPort) |
-| `copy.go` | `cloneSlice` — the internal deep-copy helper the builders use so `Build()` never hands out builder-owned slices |
+| `pod_override_merge.go` | The pod template strategic merge patch and `clearSupersededUnions`, which resolves the collisions the patch format cannot express |
+| `copy.go` | `cloneSlice` / `clonePtr` — the internal deep-copy helpers the builders use so `Build()` never hands out builder-owned slices or pointers |
 
 Nothing in this package writes to the API server. The RBAC builders in particular are helpers only:
 `GenericReconciler` creates no Role/RoleBinding, so a product that needs workload RBAC builds the
@@ -26,12 +27,20 @@ extension).
 
 ## Builder Semantics
 
-- **`Build()` returns an independent object.** Every builder deep-copies its maps and slices into
-  the result, so building twice, or mutating a built object, cannot corrupt builder state or
-  another built object.
+- **`Build()` returns an independent object.** Every builder deep-copies its maps, slices and
+  scalar pointers into the result (including the `[]byte` values of `ConfigMap.BinaryData`), so
+  building twice, or mutating a built object, cannot corrupt builder state or another built
+  object. `ServiceBuilder.BuildHeadless()` likewise leaves the builder's service type alone.
+- **A builder never aliases a caller's map.** `WithLabels` / `WithAnnotations` / `WithSelector`
+  copy what they are given, as does `NewMetricsServiceBuilder`.
 - **`WithLabels` / `WithAnnotations` merge, they do not replace.** This holds for every builder
   that has them (StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount); calling them twice
   unions the entries.
+- **`PDBBuilder.Build()` panics without a selector.** An empty `LabelSelector` is accepted by the
+  API server and selects *every* pod in the namespace, so a PDB built without `WithSelector` would
+  silently block node drains for workloads the operator does not own. It is the only object in
+  this package whose invalidity no API server error would reveal, so the builder refuses to build
+  it.
 - **`NamespacedName()`** is available on the StatefulSet, Service, ConfigMap, PDB, `RoleBuilder`,
   `RoleBindingBuilder`, `ClusterRoleBuilder`, `ClusterRoleBindingBuilder` and ServiceAccount
   builders, for callers that need the key without building the object. The two cluster-scoped RBAC
@@ -53,6 +62,17 @@ extension).
   break the immutable `.spec.selector` ↔ template-labels invariant. Anything that must be
   addressable by an override (notably the primary container name) has to be set on the builder
   **before** `Build()`.
+- **Mutually exclusive fields are replaced, not merged.** Kubernetes' "one of" structs — a
+  `Volume`'s source, a probe handler, a lifecycle handler, `EnvVar.value` vs `valueFrom` — cannot
+  deep-merge: an object with two members set is rejected outright by the API server. When an
+  override states a different member than the framework did, `clearSupersededUnions` drops the
+  framework's member first, so the override's volume (probe, handler, env source) replaces it
+  wholesale at its original position. This is what `PodSpec.Volumes`' declared
+  `patchStrategy:"merge,retainKeys"` prescribes; a patch derived from a typed `PodTemplateSpec`
+  carries no `$retainKeys` directive to say so. An override naming the *same* member still merges
+  field by field (e.g. adding a `sizeLimit` to an `emptyDir`), and this is what makes overriding a
+  framework-owned volume such as `config` a supported operation rather than an opaque apply
+  failure.
 
 ## Working Instructions
 

@@ -50,13 +50,15 @@ type MetricsServiceBuilder struct {
 // resourceName is the role group resource name; "-metrics" suffix is appended automatically.
 // port is the metrics port number.
 // labels are used for both service labels and selector.
+// The labels are copied, like every other builder's: a caller that keeps mutating the map it
+// passed must not change what this builder produces later.
 func NewMetricsServiceBuilder(resourceName, namespace string, port int32, labels map[string]string) *MetricsServiceBuilder {
 	return &MetricsServiceBuilder{
 		resourceName: resourceName,
 		namespace:    namespace,
 		port:         port,
 		portName:     "metrics",
-		labels:       labels,
+		labels:       maps.Clone(labels),
 		scheme:       "http",
 		path:         "", // empty = default /metrics
 	}
@@ -90,9 +92,9 @@ func (b *MetricsServiceBuilder) WithTargetPortName(name string) *MetricsServiceB
 }
 
 // WithSelector sets a dedicated pod selector (default: the labels). Use this to decouple the
-// selector from the descriptive labels.
+// selector from the descriptive labels. The map is copied.
 func (b *MetricsServiceBuilder) WithSelector(selector map[string]string) *MetricsServiceBuilder {
-	b.selector = selector
+	b.selector = maps.Clone(selector)
 	return b
 }
 
