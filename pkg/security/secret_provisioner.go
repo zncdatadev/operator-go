@@ -133,6 +133,19 @@ func Custom(volumeName, secretClass string, format SecretFormat) *SecretVolumeRe
 	}
 }
 
+// CredentialsVolume creates a secret volume registration for plain credential secrets
+// (e.g. S3 or database access keys) that carry no format annotation — the secret-operator
+// serves the secret's keys as files verbatim. No scope is set by default (matching how
+// credential secrets are typically class-resolved); use WithScope, e.g. with ScopeString,
+// to add one.
+func CredentialsVolume(volumeName, secretClass string) *SecretVolumeRegistration {
+	return &SecretVolumeRegistration{
+		volumeName:  volumeName,
+		secretClass: secretClass,
+		storageSize: defaultSecretStorageSize,
+	}
+}
+
 // WithScope sets the CSI scope annotation value. Default is "pod,node".
 func (r *SecretVolumeRegistration) WithScope(scope string) *SecretVolumeRegistration {
 	r.scope = scope
@@ -193,9 +206,16 @@ func (r *SecretVolumeRegistration) WithExtraAnnotation(key, value string) *Secre
 // buildAnnotations constructs the PVC template annotations for this registration.
 func (r *SecretVolumeRegistration) buildAnnotations() map[string]string {
 	annotations := map[string]string{
-		SecretClassAnnotation:      r.secretClass,
-		SecretClassScopeAnnotation: r.scope,
-		AnnotationSecretsFormat:    string(r.format),
+		SecretClassAnnotation: r.secretClass,
+	}
+
+	// Scope and format are omitted when empty (plain credential volumes have neither);
+	// every typed constructor sets both, so their annotations are unchanged.
+	if r.scope != "" {
+		annotations[SecretClassScopeAnnotation] = r.scope
+	}
+	if r.format != "" {
+		annotations[AnnotationSecretsFormat] = string(r.format)
 	}
 
 	// PKCS12 password is only applicable to PKCS12 format

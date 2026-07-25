@@ -476,6 +476,119 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(*resources.StatefulSet.Spec.Replicas).To(Equal(int32(3)))
 	})
 
+	It("fails loudly when a podOverride container matches nothing (typo or sidecar name)", func() {
+		// Sidecars are injected AFTER the overrides merge, so an override naming one (or a
+		// typo) yields an image-less container; without this guard the API server would
+		// reject the StatefulSet and the CR would sit silently Degraded.
+		handler.MainContainerName = "node"
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "vector",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).To(MatchError(ContainSubstring(`container "vector" has no image`)))
+		Expect(err).To(MatchError(ContainSubstring(`main container: "node"`)))
+	})
+
+	It("does not alias the live CR spec through the merged logging config", func() {
+		roleCfg := &v1alpha1.RoleGroupConfigSpec{
+			Logging: &v1alpha1.LoggingSpec{
+				EnableVectorAgent: ptr.To(true),
+			},
+		}
+		merged := reconciler.MergeRoleGroupConfig(roleCfg, &v1alpha1.RoleGroupConfigSpec{})
+		Expect(merged.Logging).NotTo(BeIdenticalTo(roleCfg.Logging),
+			"the merged result must be a fresh copy, never the CR's own object")
+
+		*merged.Logging.EnableVectorAgent = false
+		Expect(*roleCfg.Logging.EnableVectorAgent).To(BeTrue(),
+			"mutating the merge result must not touch the input")
+	})
+
+	It("consumes role-level config when the role group declares none (role->group fallback)", func() {
+		// Regression: only logging and overrides were merged role->group; role-level
+		// resources/affinity/gracefulShutdownTimeout were silently dropped.
+		merged := reconciler.MergeRoleGroupConfig(
+			&v1alpha1.RoleGroupConfigSpec{
+				GracefulShutdownTimeout: "60s",
+				Resources: &v1alpha1.ResourcesSpec{
+					CPU: &v1alpha1.CPUResource{Max: resource.MustParse("2")},
+				},
+			},
+			nil,
+		)
+		Expect(merged).NotTo(BeNil())
+		Expect(merged.GracefulShutdownTimeout).To(Equal("60s"))
+		Expect(merged.Resources.CPU.Max.String()).To(Equal("2"))
+	})
+
+	It("lets role group config win per field over role config", func() {
+		merged := reconciler.MergeRoleGroupConfig(
+			&v1alpha1.RoleGroupConfigSpec{
+				GracefulShutdownTimeout: "60s",
+				Resources: &v1alpha1.ResourcesSpec{
+					CPU:    &v1alpha1.CPUResource{Max: resource.MustParse("2")},
+					Memory: &v1alpha1.MemoryResource{Limit: resource.MustParse("2Gi")},
+				},
+			},
+			&v1alpha1.RoleGroupConfigSpec{
+				Resources: &v1alpha1.ResourcesSpec{
+					CPU: &v1alpha1.CPUResource{Max: resource.MustParse("4")},
+				},
+			},
+		)
+		Expect(merged.Resources.CPU.Max.String()).To(Equal("4"), "group wins")
+		Expect(merged.Resources.Memory.Limit.String()).To(Equal("2Gi"), "role fills the gap")
+		Expect(merged.GracefulShutdownTimeout).To(Equal("60s"))
+	})
+
+	It("merges a podOverride addressing the renamed main container instead of appending a phantom", func() {
+		// Regression: with MainContainerName set, a podOverride container carrying the
+		// user-facing name (the documented contract, e.g. spark's "node") must merge into the
+		// primary container. Before the fix the rename ran after Build(), so the override was
+		// appended as a second, image-less container and the API server rejected the
+		// StatefulSet.
+		handler.MainContainerName = "node"
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "node",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("2"),
+									corev1.ResourceMemory: resource.MustParse("3Gi"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		containers := resources.StatefulSet.Spec.Template.Spec.Containers
+		Expect(containers).To(HaveLen(1))
+		Expect(containers[0].Name).To(Equal("node"))
+		Expect(containers[0].Image).To(Equal("test-image:latest"), "the merged container keeps the built image")
+		Expect(containers[0].Resources.Limits.Cpu().String()).To(Equal("2"))
+		Expect(containers[0].Resources.Limits.Memory().String()).To(Equal("3Gi"))
+	})
+
 	It("forces replicas to 0 when the cluster is stopped, still building the StatefulSet", func() {
 		// Stopped scales pods to 0 while all resources are reconciled/preserved: the StatefulSet is
 		// still built (with the declared image, config volume, etc.), only its replica count is 0.
@@ -750,9 +863,11 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(csc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 	})
 
-	It("should let PodOverrides REPLACE the default pod security context (no deep merge)", func() {
-		// The override sets only RunAsUser. Replace semantics mean the rest of the default
-		// (RunAsGroup, FSGroup, RunAsNonRoot, SeccompProfile) is wiped, not merged on top.
+	It("should deep-merge PodOverrides into the default pod security context (strategic merge)", func() {
+		// The override sets only RunAsUser. Strategic-merge semantics (the documented merge
+		// strategy for PodTemplate) mean the rest of the default hardening (RunAsGroup, FSGroup,
+		// RunAsNonRoot, SeccompProfile) is kept; an override must explicitly restate a field
+		// (e.g. runAsNonRoot: false) to change it.
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -770,14 +885,14 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(podSC).NotTo(BeNil())
 		Expect(podSC.RunAsUser).NotTo(BeNil())
 		Expect(*podSC.RunAsUser).To(Equal(int64(1234)))
-		// Negative assertions documenting REPLACE (not merge): default hardening fields are gone.
-		Expect(podSC.FSGroup).To(BeNil())
-		Expect(podSC.RunAsGroup).To(BeNil())
-		Expect(podSC.RunAsNonRoot).To(BeNil())
-		Expect(podSC.SeccompProfile).To(BeNil())
+		// The default hardening fields the override did not mention survive the merge.
+		Expect(podSC.FSGroup).NotTo(BeNil())
+		Expect(podSC.RunAsGroup).NotTo(BeNil())
+		Expect(podSC.RunAsNonRoot).NotTo(BeNil())
+		Expect(podSC.SeccompProfile).NotTo(BeNil())
 	})
 
-	It("should let PodOverrides REPLACE the default container security context (no deep merge)", func() {
+	It("should deep-merge PodOverrides into the default container security context (strategic merge)", func() {
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -802,11 +917,11 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(csc).NotTo(BeNil())
 		Expect(csc.RunAsUser).NotTo(BeNil())
 		Expect(*csc.RunAsUser).To(Equal(int64(4321)))
-		// Negative assertions documenting REPLACE (not merge): default hardening fields are gone.
-		Expect(csc.AllowPrivilegeEscalation).To(BeNil())
-		Expect(csc.Capabilities).To(BeNil())
-		Expect(csc.RunAsNonRoot).To(BeNil())
-		Expect(csc.SeccompProfile).To(BeNil())
+		// The default hardening fields the override did not mention survive the merge.
+		Expect(csc.AllowPrivilegeEscalation).NotTo(BeNil())
+		Expect(csc.Capabilities).NotTo(BeNil())
+		Expect(csc.RunAsNonRoot).NotTo(BeNil())
+		Expect(csc.SeccompProfile).NotTo(BeNil())
 	})
 
 	It("should allow disabling the default security context", func() {
@@ -967,9 +1082,13 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
-		// The builder applies PodOverrides last, so the user's pod override replaces the
-		// config-declared affinity.
-		Expect(resources.StatefulSet.Spec.Template.Spec.Affinity).To(Equal(overrideAffinity))
+		// The builder applies PodOverrides last via strategic merge: affinity kinds the override
+		// sets win, while config-declared affinity kinds it does not mention are kept.
+		merged := resources.StatefulSet.Spec.Template.Spec.Affinity
+		Expect(merged).NotTo(BeNil())
+		Expect(merged.NodeAffinity).To(Equal(overrideAffinity.NodeAffinity))
+		Expect(merged.PodAntiAffinity).NotTo(BeNil(),
+			"config-declared podAntiAffinity survives a nodeAffinity-only override")
 	})
 
 	It("lets a PodOverrides terminationGracePeriodSeconds win over gracefulShutdownTimeout", func() {

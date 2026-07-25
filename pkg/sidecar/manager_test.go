@@ -583,6 +583,42 @@ var _ = Describe("Sidecar Helper Functions", func() {
 			// VAR1 should keep old value since it already exists
 			Expect(container.Env[0].Value).To(Equal("old"))
 		})
+
+		It("should append new variables in sorted, deterministic order", func() {
+			// Map iteration is randomized; unsorted appends would re-render the pod
+			// template every reconcile (perpetual StatefulSet churn).
+			container := &corev1.Container{}
+			sidecar.AddEnvVars(container, map[string]string{
+				"ZULU": "z", "ALPHA": "a", "MIKE": "m",
+			})
+			names := make([]string, 0, len(container.Env))
+			for _, e := range container.Env {
+				names = append(names, e.Name)
+			}
+			Expect(names).To(Equal([]string{"ALPHA", "MIKE", "ZULU"}))
+		})
+	})
+
+	Describe("AddOrReplaceEnvVars", func() {
+		It("replaces same-named vars in place and appends new ones sorted", func() {
+			container := &corev1.Container{
+				Env: []corev1.EnvVar{
+					{Name: "KEEP", Value: "kept"},
+					{Name: "VAR1", Value: "old"},
+				},
+			}
+
+			sidecar.AddOrReplaceEnvVars(container, map[string]string{
+				"VAR1": "new",
+				"VAR2": "value2",
+			})
+
+			Expect(container.Env).To(HaveLen(3))
+			Expect(container.Env[0]).To(Equal(corev1.EnvVar{Name: "KEEP", Value: "kept"}))
+			Expect(container.Env[1]).To(Equal(corev1.EnvVar{Name: "VAR1", Value: "new"}),
+				"same-named var replaced in place, position preserved")
+			Expect(container.Env[2]).To(Equal(corev1.EnvVar{Name: "VAR2", Value: "value2"}))
+		})
 	})
 
 	Describe("AddPorts", func() {

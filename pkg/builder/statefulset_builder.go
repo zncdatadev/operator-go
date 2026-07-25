@@ -17,6 +17,7 @@ limitations under the License.
 package builder
 
 import (
+	"encoding/json"
 	"sort"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -26,13 +27,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 )
 
 // StatefulSetBuilder constructs StatefulSet resources.
 type StatefulSetBuilder struct {
 	Name      string
 	Namespace string
-	Labels    map[string]string
+	// MainContainerName, when set, names the primary container (default: Name). It must be
+	// set BEFORE Build() so podOverrides addressing the container by its user-facing name
+	// strategic-merge into it instead of appending a phantom container.
+	MainContainerName string
+	Labels            map[string]string
 	// SelectorLabels, when set, is used for the StatefulSet's immutable .spec.selector
 	// (and must be a subset of Labels, which are applied to the pod template). When empty,
 	// Labels is used for the selector. Decoupling the selector from the full descriptive
@@ -146,6 +152,22 @@ func (b *StatefulSetBuilder) selectorMatchLabels() map[string]string {
 		return b.SelectorLabels
 	}
 	return b.Labels
+}
+
+// WithMainContainerName names the primary container (default: the StatefulSet name). Set it
+// before Build(): the podOverrides strategic merge keys containers by name, so the primary
+// container must already carry its final, user-facing name when overrides are applied.
+func (b *StatefulSetBuilder) WithMainContainerName(name string) *StatefulSetBuilder {
+	b.MainContainerName = name
+	return b
+}
+
+// primaryContainerName returns the effective primary container name.
+func (b *StatefulSetBuilder) primaryContainerName() string {
+	if b.MainContainerName != "" {
+		return b.MainContainerName
+	}
+	return b.Name
 }
 
 // WithAnnotations sets the annotations.
@@ -502,7 +524,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 // buildContainer builds the main container.
 func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 	container := corev1.Container{
-		Name:            b.Name,
+		Name:            b.primaryContainerName(),
 		Image:           b.Image,
 		ImagePullPolicy: b.ImagePullPolicy,
 		Ports:           b.Ports,
@@ -634,97 +656,87 @@ func (b *StatefulSetBuilder) buildStartupProbe() *corev1.Probe {
 	return nil
 }
 
-// applyPodOverrides applies pod template overrides to the StatefulSet.
+// applyPodOverrides applies pod template overrides to the StatefulSet with full fidelity: the
+// merged podOverrides template is strategic-merge-patched onto the built pod template, exactly
+// as kubectl would merge it. Containers merge by name (env/ports/volumeMounts within a container
+// merge by their own keys), so container-level overrides — resources, env, extra volume mounts —
+// land on the built containers instead of being dropped, and override-only containers are
+// appended as additional pod containers. Scalar and struct fields set in the override replace or
+// deep-merge into the base per strategic-merge-patch semantics; fields the override omits keep
+// the built values (so podOverrides.spec.terminationGracePeriodSeconds still wins over the
+// config-declared gracefulShutdownTimeout, and enableServiceLinks still wins over the framework
+// default, only when actually set).
+//
+// Security contexts now deep-merge per field rather than being replaced wholesale: an override
+// stating only runAsUser keeps the framework-hardened remainder. Overrides that need to unset a
+// field must state it explicitly.
+//
+// After the merge the selector labels are re-asserted on the pod template, so an override can
+// never break the invariant that the immutable .spec.selector matches the template labels.
 func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	if b.PodOverrides == nil {
 		return
 	}
 
-	// Override annotations
-	if len(b.PodOverrides.Annotations) > 0 {
-		if sts.Spec.Template.Annotations == nil {
-			sts.Spec.Template.Annotations = make(map[string]string)
-		}
-		for k, v := range b.PodOverrides.Annotations {
-			sts.Spec.Template.Annotations[k] = v
-		}
+	override := b.PodOverrides.DeepCopy()
+	// PodSpec.Containers is the one PodSpec field without omitempty: a nil slice marshals as
+	// "containers": null, which strategic merge treats as a DELETE directive — an
+	// annotations-only override would wipe every container. Normalize nil to empty (an empty
+	// merge-strategy list is a no-op).
+	if override.Spec.Containers == nil {
+		override.Spec.Containers = []corev1.Container{}
 	}
-
-	// Override labels
-	if len(b.PodOverrides.Labels) > 0 {
-		if sts.Spec.Template.Labels == nil {
-			sts.Spec.Template.Labels = make(map[string]string)
-		}
-		for k, v := range b.PodOverrides.Labels {
-			sts.Spec.Template.Labels[k] = v
+	// Back-compat: an unnamed override container has always addressed the main container.
+	// Normalize the name before the merge — an empty name would otherwise be treated as a
+	// distinct merge key and appended as a broken extra container.
+	for i := range override.Spec.Containers {
+		if override.Spec.Containers[i].Name == "" {
+			override.Spec.Containers[i].Name = b.primaryContainerName()
 		}
 	}
 
-	// Override affinity
-	if b.PodOverrides.Spec.Affinity != nil {
-		sts.Spec.Template.Spec.Affinity = b.PodOverrides.Spec.Affinity
+	merged, err := strategicMergePodTemplate(&sts.Spec.Template, override)
+	if err != nil {
+		// Structurally valid templates cannot realistically fail to marshal or patch; if it ever
+		// happens, keep the built template rather than emitting a half-merged one.
+		return
 	}
+	sts.Spec.Template = *merged
 
-	// Override tolerations
-	if len(b.PodOverrides.Spec.Tolerations) > 0 {
-		sts.Spec.Template.Spec.Tolerations = b.PodOverrides.Spec.Tolerations
+	// Re-assert the selector labels: the override may have replaced or removed labels the
+	// immutable .spec.selector matches on.
+	if sts.Spec.Template.Labels == nil {
+		sts.Spec.Template.Labels = make(map[string]string)
 	}
-
-	// Override node selector
-	if len(b.PodOverrides.Spec.NodeSelector) > 0 {
-		sts.Spec.Template.Spec.NodeSelector = b.PodOverrides.Spec.NodeSelector
+	for k, v := range b.selectorMatchLabels() {
+		sts.Spec.Template.Labels[k] = v
 	}
-
-	// Override termination grace period, so podOverrides.spec.terminationGracePeriodSeconds
-	// wins over the config-declared gracefulShutdownTimeout (the documented precedence).
-	if b.PodOverrides.Spec.TerminationGracePeriodSeconds != nil {
-		sts.Spec.Template.Spec.TerminationGracePeriodSeconds = b.PodOverrides.Spec.TerminationGracePeriodSeconds
-	}
-
-	// Override priority class name
-	if b.PodOverrides.Spec.PriorityClassName != "" {
-		sts.Spec.Template.Spec.PriorityClassName = b.PodOverrides.Spec.PriorityClassName
-	}
-
-	// Override enableServiceLinks. This runs at the end of Build(), so a user PodOverride wins over
-	// the framework default set via WithEnableServiceLinks before the build.
-	if b.PodOverrides.Spec.EnableServiceLinks != nil {
-		sts.Spec.Template.Spec.EnableServiceLinks = b.PodOverrides.Spec.EnableServiceLinks
-	}
-
-	// Override pod-level security context. PodOverrides REPLACES the whole pod security context
-	// (no deep merge): a product supplying one must restate any default fields it wants to keep.
-	// This is how special images override the framework default (e.g. a different RunAsUser).
-	if b.PodOverrides.Spec.SecurityContext != nil {
-		sts.Spec.Template.Spec.SecurityContext = b.PodOverrides.Spec.SecurityContext
-	}
-
-	// Override the main container's security context. PodOverrides addresses the main container
-	// by name (it shares the StatefulSet's name); when an override container with a security
-	// context is supplied, it REPLACES the whole container security context (no deep merge).
-	b.applyContainerSecurityContextOverride(sts)
 }
 
-// applyContainerSecurityContextOverride replaces the main container's security context with the
-// one supplied in PodOverrides, if any. The main container is matched by name (b.Name); an
-// unnamed override container is also accepted so callers don't have to know the container name.
-func (b *StatefulSetBuilder) applyContainerSecurityContextOverride(sts *appsv1.StatefulSet) {
-	containers := sts.Spec.Template.Spec.Containers
-	if len(containers) == 0 {
-		return
+// strategicMergePodTemplate merges the override pod template onto the base using the same
+// strategic-merge-patch machinery Kubernetes applies to pod templates.
+func strategicMergePodTemplate(base, override *corev1.PodTemplateSpec) (*corev1.PodTemplateSpec, error) {
+	baseBytes, err := json.Marshal(base)
+	if err != nil {
+		return nil, err
 	}
-	for i := range b.PodOverrides.Spec.Containers {
-		oc := &b.PodOverrides.Spec.Containers[i]
-		if oc.SecurityContext == nil {
-			continue
-		}
-		if oc.Name != "" && oc.Name != b.Name {
-			continue
-		}
-		// Apply to the main container (index 0 is the container built by this builder).
-		containers[0].SecurityContext = oc.SecurityContext
-		return
+	overrideBytes, err := json.Marshal(override)
+	if err != nil {
+		return nil, err
 	}
+	patchMeta, err := strategicpatch.NewPatchMetaFromStruct(corev1.PodTemplateSpec{})
+	if err != nil {
+		return nil, err
+	}
+	mergedBytes, err := strategicpatch.StrategicMergePatchUsingLookupPatchMeta(baseBytes, overrideBytes, patchMeta)
+	if err != nil {
+		return nil, err
+	}
+	var merged corev1.PodTemplateSpec
+	if err := json.Unmarshal(mergedBytes, &merged); err != nil {
+		return nil, err
+	}
+	return &merged, nil
 }
 
 // NamespacedName returns the NamespacedName for the StatefulSet.

@@ -103,6 +103,16 @@ func ValidateConfigMapExists(ctx context.Context, c client.Client, namespace, na
 	return nil
 }
 
+// ValidateSecretExists validates that a Secret exists.
+func ValidateSecretExists(ctx context.Context, c client.Client, namespace, name string) error {
+	secret := &corev1.Secret{}
+	err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, secret)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // Register registers a sidecar provider with its configuration.
 func (m *SidecarManager) Register(provider SidecarProvider, config *SidecarConfig) {
 	m.providers[provider.Name()] = provider
@@ -191,14 +201,22 @@ func (m *SidecarManager) Count() int {
 // SetProductImage sets the product image on all enabled sidecar configs that
 // don't already have an image or pull policy set. This is used to propagate
 // the product container image to built-in sidecars (e.g. JMX Exporter) that
-// run as different commands within the same product image.
+// run as different commands within the same product image. Providers that ship
+// their own upstream image (OwnImageProvider, e.g. oauth2-proxy) are skipped —
+// filling their empty config.Image with the product image would silently run
+// the product entrypoint in place of the sidecar.
 func (m *SidecarManager) SetProductImage(image string, pullPolicy corev1.PullPolicy) error {
 	if image == "" {
 		return fmt.Errorf("product image must not be empty")
 	}
-	for _, config := range m.configs {
+	for name, config := range m.configs {
 		if !config.Enabled {
 			continue
+		}
+		if provider, ok := m.providers[name]; ok {
+			if own, ok := provider.(OwnImageProvider); ok && own.OwnsImage() {
+				continue
+			}
 		}
 		if config.Image == "" {
 			config.Image = image
@@ -238,21 +256,53 @@ func AddVolumeMounts(container *corev1.Container, mounts []corev1.VolumeMount) {
 	}
 }
 
-// AddEnvVars adds environment variables to a container.
+// AddEnvVars adds environment variables to a container. Env vars whose names are already
+// present are left untouched ("additional" semantics); use AddOrReplaceEnvVars for override
+// semantics. Names are applied in sorted order — map iteration is randomized, and a
+// nondeterministic env order would re-render the pod template on every reconcile.
 func AddEnvVars(container *corev1.Container, envVars map[string]string) {
 	existingEnv := make(map[string]bool)
 	for _, e := range container.Env {
 		existingEnv[e.Name] = true
 	}
 
-	for name, value := range envVars {
+	for _, name := range sortedKeys(envVars) {
 		if !existingEnv[name] {
 			container.Env = append(container.Env, corev1.EnvVar{
 				Name:  name,
-				Value: value,
+				Value: envVars[name],
 			})
 		}
 	}
+}
+
+// AddOrReplaceEnvVars sets environment variables on a container with override semantics:
+// a same-named existing env var is replaced in place, new names are appended in sorted
+// order. Providers whose entire configuration surface is env vars (e.g. oauth2-proxy) use
+// this so SidecarConfig.EnvVars can actually change their built-in defaults.
+func AddOrReplaceEnvVars(container *corev1.Container, envVars map[string]string) {
+	index := make(map[string]int, len(container.Env))
+	for i, e := range container.Env {
+		index[e.Name] = i
+	}
+
+	for _, name := range sortedKeys(envVars) {
+		if i, ok := index[name]; ok {
+			container.Env[i] = corev1.EnvVar{Name: name, Value: envVars[name]}
+		} else {
+			container.Env = append(container.Env, corev1.EnvVar{Name: name, Value: envVars[name]})
+		}
+	}
+}
+
+// sortedKeys returns the map's keys in sorted order, for deterministic env rendering.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // AddPorts adds ports to a container.

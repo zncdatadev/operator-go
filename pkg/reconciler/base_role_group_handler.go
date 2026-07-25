@@ -171,8 +171,9 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// container. When the framework default is in effect, this is
 	// security.NewPodSecurityBuilder().BuildDefaultSecurityContext(). Products override it via
 	// WithSecurityContext (or disable it via WithoutDefaultSecurityContext). Per-role-group
-	// customization goes through MergedConfig.PodOverrides, which REPLACES the security context
-	// (no deep merge — a product overriding must restate any fields it wants to keep).
+	// customization goes through MergedConfig.PodOverrides, which strategic-merges per field —
+	// an override must explicitly restate any default field it wants to CHANGE (e.g.
+	// runAsNonRoot: false alongside runAsUser: 0), while unmentioned fields keep the default.
 	containerSecurityContext *corev1.SecurityContext
 
 	// podSecurityContext is the pod-level security context applied to the pod spec. See
@@ -205,9 +206,9 @@ func (h *BaseRoleGroupHandler[CR]) WithSidecarManager(m *sidecar.SidecarManager)
 // WithSecurityContext overrides the framework's default pod/container security context for the
 // role group's StatefulSet. Passing nil for either argument removes that level's security
 // context entirely (the framework default is no longer applied). For per-role-group overrides,
-// prefer MergedConfig.PodOverrides instead of this handler-wide override; note that PodOverrides
-// REPLACES the security context (no deep merge), so an override must restate any fields it wants
-// to keep.
+// prefer MergedConfig.PodOverrides instead of this handler-wide override; PodOverrides
+// strategic-merges the security context per field, so an override must explicitly restate any
+// default field it wants to change (unmentioned fields keep the default).
 func (h *BaseRoleGroupHandler[CR]) WithSecurityContext(
 	containerCtx *corev1.SecurityContext,
 	podCtx *corev1.PodSecurityContext,
@@ -733,16 +734,19 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		}
 	}
 
+	// Name the primary container when the product needs a significant name (e.g. to match its
+	// per-container logging key). This must reach the builder BEFORE Build(): podOverrides are
+	// strategic-merged by container name inside Build(), so an override addressing the
+	// user-facing name (e.g. "node") must find the primary container already carrying it — a
+	// post-build rename would leave the override appended as a phantom, image-less container.
+	// Sidecar injection below also sees the final name (the Vector provider RW-mounts the
+	// shared log volume on the producer containers by name).
+	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" {
+		stsBuilder.WithMainContainerName(mainName)
+	}
+
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
-
-	// Rename the primary container when the product needs a significant name (e.g. to match
-	// its per-container logging key). The builder makes the primary container index 0. This runs
-	// before sidecar injection so the Vector provider (which RW-mounts the shared log volume on
-	// the producer containers by name) sees the final container names.
-	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" && len(sts.Spec.Template.Spec.Containers) > 0 {
-		sts.Spec.Template.Spec.Containers[0].Name = mainName
-	}
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager
@@ -752,6 +756,29 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	if sidecarMgr != nil {
 		if err := sidecarMgr.InjectAll(&sts.Spec.Template.Spec); err != nil {
 			return nil, fmt.Errorf("sidecar injection failed: %w", err)
+		}
+	}
+
+	// Fail loudly on image-less containers instead of shipping a StatefulSet the API server
+	// rejects (a silent Degraded loop). The typical cause: a podOverride container whose name
+	// matches nothing — a typo, or a sidecar name; sidecars are injected AFTER the overrides
+	// merge, so they cannot be addressed by podOverrides.
+	mainName := stsBuilder.MainContainerName
+	if mainName == "" {
+		mainName = buildCtx.ResourceName
+	}
+	for _, c := range sts.Spec.Template.Spec.Containers {
+		if c.Image == "" {
+			return nil, fmt.Errorf(
+				"container %q has no image: a podOverrides container must either address an existing container by name (main container: %q) or be fully specified; sidecar containers cannot be overridden via podOverrides",
+				c.Name, mainName)
+		}
+	}
+	for _, c := range sts.Spec.Template.Spec.InitContainers {
+		if c.Image == "" {
+			return nil, fmt.Errorf(
+				"init container %q has no image: a podOverrides container must either address an existing container by name or be fully specified",
+				c.Name)
 		}
 	}
 

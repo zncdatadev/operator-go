@@ -115,18 +115,20 @@ all kubedoop product images run as uid `1001`.
 | `capabilities.drop` | `[ALL]` | drop all Linux capabilities |
 | `seccompProfile.type` | `RuntimeDefault` | apply the runtime's default seccomp profile |
 
-### 3.3.2 Overriding via PodOverrides (REPLACE semantics)
+### 3.3.2 Overriding via PodOverrides (strategic-merge semantics)
 
-Products customize the security context through `MergedConfig.PodOverrides`. **The override
-REPLACES the whole `SecurityContext` object — there is NO deep merge.** A pod/container
-`SecurityContext` supplied via `PodOverrides` takes precedence over the framework default and
-wipes it; any default fields the product still wants (e.g. the hardening fields) must be
-**restated** in the override.
+Products customize the security context through `MergedConfig.PodOverrides`, which is applied
+as a Kubernetes **Strategic Merge Patch** (the merge strategy `docs/architecture.md` §2.6
+documents for the whole pod template). **Security contexts deep-merge per field**: an override
+stating only `runAsUser` keeps the framework-hardened remainder (`runAsNonRoot`,
+`capabilities.drop`, `seccompProfile`, …).
 
-This replace behavior is intentional: special images that cannot use uid 1001 override the
-**whole** SecurityContext via `PodOverrides`, restating the full set of fields appropriate for
-that image. The handler-wide `WithoutDefaultSecurityContext()` escape hatch disables the default
-entirely (the StatefulSet is then built with no SecurityContext unless `PodOverrides` supplies one).
+A field the override does not mention keeps its default, so an override must **explicitly
+restate** any default it wants to change — e.g. an image that must run as root sets both
+`runAsUser: 0` **and** `runAsNonRoot: false`; setting only `runAsUser: 0` inherits
+`runAsNonRoot: true` and the kubelet refuses to start the container. The handler-wide
+`WithoutDefaultSecurityContext()` escape hatch disables the default entirely (the StatefulSet
+is then built with no SecurityContext unless `PodOverrides` supplies one).
 
 ## 3.4 Security Benefits Summary
 

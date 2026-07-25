@@ -19,6 +19,7 @@ Core packages for the operator framework, including CRD definitions, resource bu
 | `listener/` | Listener service and volume builders |
 | `sidecar/` | Sidecar injection logic |
 | `security/` | Security-related utilities |
+| `s3/` | S3 connection/bucket resolution and credential wiring |
 | `testutil/` | Testing helpers |
 
 ## Subdirectories
@@ -33,6 +34,7 @@ Core packages for the operator framework, including CRD definitions, resource bu
 - `listener/` - Listener builders
 - `sidecar/` - Sidecar logic
 - `security/` - Security utilities
+- `s3/` - S3 resolution and credentials
 - `testutil/` - Test helpers
 
 ## Working Instructions

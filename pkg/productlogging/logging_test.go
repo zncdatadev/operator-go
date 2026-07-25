@@ -103,6 +103,35 @@ var _ = Describe("RenderConfigFile file path", func() {
 		Expect(productlogging.ContainerLogDir("Main")).To(Equal("/kubedoop/log/main"))
 	})
 
+	It("honors a LogFileName override that keeps the framework suffix", func() {
+		_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework:   productlogging.LoggingFrameworkLog4j2,
+			Container:   "node",
+			LogFileName: "spark.log4j2.xml",
+		}, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(content).To(ContainSubstring("/kubedoop/log/node/spark.log4j2.xml"))
+		Expect(content).NotTo(ContainSubstring("node.log4j2.xml"))
+	})
+
+	It("rejects a LogFileName override that drops the framework suffix", func() {
+		_, _, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework:   productlogging.LoggingFrameworkLog4j2,
+			Container:   "node",
+			LogFileName: "spark.log",
+		}, true)
+		Expect(err).To(MatchError(ContainSubstring("must keep the framework suffix")))
+	})
+
+	It("rejects a LogFileName override containing a path separator", func() {
+		_, _, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework:   productlogging.LoggingFrameworkLog4j2,
+			Container:   "node",
+			LogFileName: "../escape/spark.log4j2.xml",
+		}, true)
+		Expect(err).To(MatchError(ContainSubstring("must be a bare file name")))
+	})
+
 	It("omits the file appender when withFileAppender is false (console-only)", func() {
 		_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
 			Framework: productlogging.LoggingFrameworkLogback,
