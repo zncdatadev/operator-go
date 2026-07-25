@@ -315,6 +315,39 @@ var _ = Describe("Mocks", func() {
 		})
 	})
 
+	Context("MockRoleGroupHandlerFor", func() {
+		It("should satisfy RoleGroupHandler for a CR type other than the testutil wrapper", func() {
+			var handler reconciler.RoleGroupHandler[common.ClusterInterface] = testutil.NewMockRoleGroupHandlerFor[common.ClusterInterface]()
+
+			buildCtx := &reconciler.RoleGroupBuildContext{
+				ResourceName:     testName,
+				ClusterNamespace: testNamespace,
+				RoleGroupName:    "default",
+				RoleGroupSpec:    v1alpha1.RoleGroupSpec{},
+			}
+			wrapper := testutil.WrapMockCluster(testutil.NewMockCluster(testName, testNamespace))
+
+			resources, err := handler.BuildResources(context.Background(), k8sClient, wrapper, buildCtx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resources.StatefulSet).NotTo(BeNil())
+		})
+
+		It("should use a BuildResourcesFunc typed to the product CR", func() {
+			var seen string
+			handler := testutil.NewMockRoleGroupHandlerFor[common.ClusterInterface]().
+				WithBuildResourcesFunc(func(ctx context.Context, k8sClient client.Client, cr common.ClusterInterface, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+					seen = cr.GetName()
+					return &reconciler.RoleGroupResources{}, nil
+				})
+
+			wrapper := testutil.WrapMockCluster(testutil.NewMockCluster(testName, testNamespace))
+
+			_, err := handler.BuildResources(context.Background(), k8sClient, wrapper, &reconciler.RoleGroupBuildContext{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(seen).To(Equal(testName))
+		})
+	})
+
 	Context("MockExtension", func() {
 		It("should create a new MockExtension", func() {
 			ext := testutil.NewMockExtension("test-extension")

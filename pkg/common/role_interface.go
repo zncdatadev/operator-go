@@ -17,6 +17,9 @@ limitations under the License.
 package common
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -102,11 +105,23 @@ func (r *RoleGroupInfo) GetOverrides() *v1alpha1.OverridesSpec {
 	return r.Spec.GetOverrides()
 }
 
-// GetAffinity returns the affinity configuration.
-func (r *RoleGroupInfo) GetAffinity() *corev1.Affinity {
-	// Affinity is stored in RoleGroupConfigSpec as RawExtension
-	// This will be parsed by the reconciler
-	return nil
+// GetAffinity decodes the affinity configuration of the role group.
+// The CRD carries affinity as a schema-free RawExtension holding a corev1.Affinity, so
+// invalid JSON is reported instead of dropped: silently discarding scheduling constraints
+// could place pods on nodes the user explicitly excluded.
+// Returns (nil, nil) when the role group declares no affinity.
+func (r *RoleGroupInfo) GetAffinity() (*corev1.Affinity, error) {
+	config := r.Spec.GetConfig()
+	if config == nil || config.Affinity == nil || len(config.Affinity.Raw) == 0 {
+		return nil, nil
+	}
+
+	affinity := &corev1.Affinity{}
+	if err := json.Unmarshal(config.Affinity.Raw, affinity); err != nil {
+		return nil, fmt.Errorf("invalid affinity in role group config (role %q, group %q): %w",
+			r.RoleName, r.RoleGroupName, err)
+	}
+	return affinity, nil
 }
 
 // GetResources returns the resource requirements.

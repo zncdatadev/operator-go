@@ -32,12 +32,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// MockClusterStatus mirrors the shape a real product CR's status has: the SDK's generic status
+// embedded alongside product-owned fields. ClusterInterface only exposes the embedded part, so a
+// mock whose status IS the generic struct cannot observe whether the framework preserves the
+// product's own fields across a status write.
+type MockClusterStatus struct {
+	v1alpha1.GenericClusterStatus `json:",inline"`
+
+	// ProductField stands in for a product-computed status field (e.g. a Trino cluster's
+	// CatalogsReady), typically written by an extension hook during reconciliation.
+	ProductField string `json:"productField,omitempty"`
+}
+
+// DeepCopy creates a deep copy of MockClusterStatus.
+func (s *MockClusterStatus) DeepCopy() *MockClusterStatus {
+	if s == nil {
+		return nil
+	}
+	out := new(MockClusterStatus)
+	*out = *s
+	out.GenericClusterStatus = *s.GenericClusterStatus.DeepCopy()
+	return out
+}
+
 // MockCluster is a test CR that embeds ObjectMeta for client.Object compatibility.
 type MockCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              v1alpha1.GenericClusterSpec   `json:"spec,omitempty"`
-	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
+	Spec              v1alpha1.GenericClusterSpec `json:"spec,omitempty"`
+	Status            MockClusterStatus           `json:"status,omitempty"`
 }
 
 // NewMockCluster creates a new MockCluster with default values.
@@ -173,12 +196,12 @@ func (w *ClusterWrapper) GetSpec() *v1alpha1.GenericClusterSpec {
 
 // GetStatus implements common.ClusterInterface.
 func (w *ClusterWrapper) GetStatus() *v1alpha1.GenericClusterStatus {
-	return &w.Status
+	return &w.Status.GenericClusterStatus
 }
 
 // SetStatus implements common.ClusterInterface.
 func (w *ClusterWrapper) SetStatus(status *v1alpha1.GenericClusterStatus) {
-	w.Status = *status
+	w.Status.GenericClusterStatus = *status
 }
 
 // GetScheme implements common.ClusterInterface.
@@ -211,37 +234,47 @@ func (w *ClusterWrapper) GetRuntimeObject() runtime.Object {
 	return w.MockCluster
 }
 
-// MockRoleGroupHandler is a test implementation of RoleGroupHandler.
-type MockRoleGroupHandler struct {
-	BuildResourcesFunc func(ctx context.Context, k8sClient client.Client, cr *ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error)
+// MockRoleGroupHandlerFor is a test implementation of reconciler.RoleGroupHandler for an
+// arbitrary product CR type, so a product can substitute it wherever its own
+// RoleGroupHandler[*MyCluster] is expected.
+type MockRoleGroupHandlerFor[CR common.ClusterInterface] struct {
+	BuildResourcesFunc func(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error)
 	Image              string
 	ContainerPorts     map[string][]corev1.ContainerPort
 	ServicePorts       map[string][]corev1.ServicePort
 }
 
-// NewMockRoleGroupHandler creates a new MockRoleGroupHandler.
-func NewMockRoleGroupHandler() *MockRoleGroupHandler {
-	return &MockRoleGroupHandler{
+// MockRoleGroupHandler is the mock handler bound to the testutil CR wrapper.
+type MockRoleGroupHandler = MockRoleGroupHandlerFor[*ClusterWrapper]
+
+// NewMockRoleGroupHandlerFor creates a new MockRoleGroupHandlerFor for a product CR type.
+func NewMockRoleGroupHandlerFor[CR common.ClusterInterface]() *MockRoleGroupHandlerFor[CR] {
+	return &MockRoleGroupHandlerFor[CR]{
 		Image:          "test-image:latest",
 		ContainerPorts: make(map[string][]corev1.ContainerPort),
 		ServicePorts:   make(map[string][]corev1.ServicePort),
 	}
 }
 
-// WithImage sets the image on the MockRoleGroupHandler.
-func (h *MockRoleGroupHandler) WithImage(image string) *MockRoleGroupHandler {
+// NewMockRoleGroupHandler creates a new MockRoleGroupHandler for the testutil CR wrapper.
+func NewMockRoleGroupHandler() *MockRoleGroupHandler {
+	return NewMockRoleGroupHandlerFor[*ClusterWrapper]()
+}
+
+// WithImage sets the image on the mock handler.
+func (h *MockRoleGroupHandlerFor[CR]) WithImage(image string) *MockRoleGroupHandlerFor[CR] {
 	h.Image = image
 	return h
 }
 
 // WithBuildResourcesFunc sets the BuildResourcesFunc.
-func (h *MockRoleGroupHandler) WithBuildResourcesFunc(fn func(ctx context.Context, k8sClient client.Client, cr *ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error)) *MockRoleGroupHandler {
+func (h *MockRoleGroupHandlerFor[CR]) WithBuildResourcesFunc(fn func(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error)) *MockRoleGroupHandlerFor[CR] {
 	h.BuildResourcesFunc = fn
 	return h
 }
 
 // BuildResources builds resources using the mock handler.
-func (h *MockRoleGroupHandler) BuildResources(ctx context.Context, k8sClient client.Client, cr *ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+func (h *MockRoleGroupHandlerFor[CR]) BuildResources(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
 	if h.BuildResourcesFunc != nil {
 		return h.BuildResourcesFunc(ctx, k8sClient, cr, buildCtx)
 	}
@@ -268,7 +301,10 @@ func (h *MockRoleGroupHandler) BuildResources(ctx context.Context, k8sClient cli
 	}, nil
 }
 
-// MockExtension is a test implementation of ClusterExtension.
+// MockExtension records cluster-level extension hook invocations.
+// Its method set (ClusterPreReconcile/ClusterPostReconcile/ClusterOnError plus the Name
+// field) does not satisfy common.ClusterExtension, so it cannot be registered in an
+// ExtensionRegistry — drive its hooks directly.
 type MockExtension struct {
 	PreReconcileFunc  func(ctx context.Context, client client.Client, cr common.ClusterInterface) error
 	PostReconcileFunc func(ctx context.Context, client client.Client, cr common.ClusterInterface) error
@@ -351,6 +387,7 @@ func DefaultRoleGroupResources(name, namespace, image string) *reconciler.RoleGr
 
 // Verify interface implementations
 var _ common.ClusterInterface = &ClusterWrapper{}
+var _ reconciler.RoleGroupHandler[*ClusterWrapper] = &MockRoleGroupHandler{}
 
 // SchemeBuilder for MockCluster
 var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
