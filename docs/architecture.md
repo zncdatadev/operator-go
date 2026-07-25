@@ -173,8 +173,8 @@ Defines core interfaces and extension contracts. It only depends on the API laye
 - **Business Interfaces**:
     - `ClusterInterface`: The cluster-level contract a product CR satisfies. It embeds controller-runtime's `client.Object` — so name, namespace, UID, labels, annotations and GVK come from the CR's embedded `metav1.ObjectMeta`/`TypeMeta`, not from product-written accessors — and adds exactly two SDK-specific methods: `GetSpec() *v1alpha1.GenericClusterSpec` and `GetStatus() *v1alpha1.GenericClusterStatus`, which project the product's own spec and status onto the generic shapes the framework reconciles against. There is no status setter: `GetStatus` returns a pointer into the CR and the framework writes conditions, `observedGeneration` and role group state through it, which is why a product's own status fields survive a cycle untouched.
     - `ClusterResource[T ClusterInterface]`: `ClusterInterface` plus `DeepCopy() T`, the method controller-gen already generates for every root API type. It exists because a type parameter cannot be allocated with `new(T)` when `T` is a pointer type, so the reconciler materialises the object it reads into by copying a prototype; going through `runtime.Object` would hand back an interface and reintroduce a runtime assertion. Hold a CR as `ClusterInterface`; parameterise over one as `ClusterResource[CR]`.
-    - `RoleInterface`: Role-level descriptor exposing `GetRoleName()`, `GetRoleSpec()`, `GetRoleGroups()` and `GetOverrides()`, with the default implementations `RoleInfo`/`RoleGroupInfo`. It carries no port defaults and no configuration extenders. **Not required for integration**: the `GenericReconciler` iterates `GenericClusterSpec.Roles` directly and never calls this interface, so it is an optional convenience for product code.
     - `RoleGroupHandler`: The primary implementation extension point for product operators. Each product implements this interface to define the specific Kubernetes resources (StatefulSet, Services, ConfigMaps) built for each RoleGroup. The `GenericReconciler` calls `BuildResources()` on this handler during reconciliation.
+    - **There is no role-level interface.** Role and role group configuration reaches a handler as *data*, through the `reconciler.RoleGroupBuildContext` value the reconciler builds per role group and passes to `BuildResources`: it carries `RoleName`, `RoleSpec`, `RoleGroupName`, `RoleGroupSpec` (with the role-level `config` already folded in, group winning per field) and `MergedConfig` (the folded product-config/role/role-group override stack). The reconciler iterates `GenericClusterSpec.Roles` directly, so a product declares roles in its CRD and never implements an accessor for them.
 
 - **Extension Interfaces**:
     - `ClusterExtension[CR]/RoleExtension[CR]/RoleGroupExtension[CR]`: Extension point interfaces, defining custom logic before and after reconciliation at each level. Each is generic over the product's own CR type, so a hook receives that type directly. Role-level customization of `role.config` is done here (a `RoleExtension.PreReconcile` hook), not through a separate extender interface.
@@ -205,7 +205,7 @@ Provides non-intrusive common utility functions for the Core Component Layer to 
 Implements product-specific logic based on SDK abstract interfaces without modifying SDK core code, relying only on the API Layer and Abstract Interface Layer.
 
 - **Implementation Points**:
-    - **CR structs implement `ClusterInterface` — `GetSpec` and `GetStatus`, the rest comes from the embedded object metadata and generated deep-copy code — and provide a `RoleGroupHandler` to define product-specific resources.** (`RoleInterface` is optional — see §3.2.2.)
+    - **CR structs implement `ClusterInterface` — `GetSpec` and `GetStatus`, the rest comes from the embedded object metadata and generated deep-copy code — and provide a `RoleGroupHandler` to define product-specific resources.** The handler reads everything it needs about the role and the role group from the `RoleGroupBuildContext` it is handed; there is no role-level interface to implement (see §3.2.2).
     - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
     - Integrate Webhook specific validation and default value population logic.
 
@@ -290,7 +290,10 @@ reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster
 The reconciler iterates through the registry's entries in **priority order (highest first)**, and per-hook fault tolerance decides whether a failure skips the entries behind it.
 
 - **Normal Execution**: Extensions execute sequentially. Each extension receives the reconcile context, the client, and the CR.
-- **CR Mutation**: Hooks are **observe-and-act**, not mutate-in-place. Mutations to the in-memory CR are never persisted by the framework, and `reconcile()` snapshots `spec := cr.GetSpec()` *before* the cluster `PreReconcile` hooks run, so role iteration, cleanup and health evaluation may not observe a spec a hook changed. A hook that must change the CR writes through the client and lets the resulting watch event drive the next reconcile.
+- **CR Mutation — spec and status are not symmetric**:
+  - **Spec: observe, do not mutate.** The framework's only write to the CR is `Status().Update`, which the API server applies to the status subresource alone, so an in-memory spec edit is never persisted. It is not reliably *observed* either: `reconcile()` takes `spec := cr.GetSpec()` once, *before* the cluster `PreReconcile` hooks run, and role iteration, cleanup and health evaluation all read that value — a `GetSpec()` that materialises a fresh struct per call (legal but discouraged, §5.1.4) hands them a snapshot no later edit can reach. A hook that must change the spec writes it through the client and lets the resulting watch event drive the next reconcile.
+  - **Status: mutate in place — the framework persists it.** A hook writes status through the pointer `cr.GetStatus()` returns, or straight onto the product's own status fields, and the cycle's final `updateStatus` carries both to the API server. That is by design, not incidental: the write is issued from the in-memory object precisely so a hook's status contribution survives (`ClusterInterface` exposes only the embedded generic status, so re-fetching first would reload the stored value over a product's own fields; see §4.13.2). The guarantee is covered by a regression test, `persists product-specific status fields written by an extension hook`.
+  - A hook that writes *neither* — one whose whole job is an external side effect — still gets its failure reported on the CR through the `Degraded` condition (see Error Handling below).
 - **Error Handling**:
   - Every hook failure is wrapped in an `*ExtensionError` naming the extension.
   - `PreReconcile`/`PostReconcile` **stop on the first failure by default** and return it, which aborts the reconcile and maps to the `Degraded` condition. An extension registered with `common.WithStopOnError(false)` does not stop the loop; its failure is logged, the remaining extensions still run, and the collected failures are joined and returned so they still reach the CR status.
@@ -341,39 +344,52 @@ Automatically generate TLS certificates via cert-manager, and Webhook configurat
 
 Adopts a hybrid scheme of "Spec vs Status comparison as primary, cluster resource query as secondary," which improves efficiency while avoiding accidental deletion.
 
+Deletion is a **state machine driven across several reconciles**, not a single pass. An orphaned role group holds pods that a stateful product expects to retire the way its own rolling update would, so the cleaner scales the workload to zero, waits for the StatefulSet controller's ordered reverse-ordinal drain, and only then deletes — and every step confirms its effect before the next one is issued. Nothing blocks a reconcile worker: a step still in flight ends the pass for that role group and returns a requeue delay, and the next cycle resumes from the first step that has not settled. Every step is a Get-then-act, so re-entering is idempotent.
+
 ### 4.4.2 Execution Process
 
 1. Get the desired role group list (`desiredGroups`) of roles from Spec. Each role group reconciled in this cycle is recorded in `Status.RoleGroups`.
 2. Get the historical actual role group list (`oldActualGroups`) from `Status.RoleGroups`.
 3. Calculate orphaned role groups: `orphanedGroups = oldActualGroups - desiredGroups`.
-4. For each orphaned role group, Get-then-Delete its resources in a single pass, in the order "PDB → StatefulSet → ConfigMap → Service → headless Service → metrics Service".
-5. Remove from `Status.RoleGroups` **only those role groups whose deletion pass actually ran**. A group still inside its gray-delete grace period, or one whose primary resource belongs to another cluster, stays in the status snapshot and is retried on the next reconcile instead of being silently forgotten. The pruned map is persisted by the reconcile's final status update (step 7 of the loop).
-6. Return the earliest remaining gray-delete deadline so the reconcile loop can requeue exactly when the next deferred deletion becomes due (see §4.8.4).
+4. Reclaim the **role-level PDBs of roles that vanished from the Spec entirely** (see "Removed roles" below). This runs before — and independently of — the group loop, which returns early when `orphanedGroups` is empty: a role's groups are pruned from the status snapshot as they are deleted, so by the time its PDB needs a retry there may be no orphaned group left to carry the pass.
+5. For each orphaned role group — roles in sorted order, so the sequence of events is reproducible across the several cycles a deletion spans — advance the deletion state machine one pass: gray-delete gate, then `PDB → StatefulSet (scale to zero → drain → delete) → ConfigMap → Service → headless Service → metrics Service`, stopping at the first step that is still in flight.
+6. Remove from `Status.RoleGroups` **only those role groups whose resources were really deleted** — every step settled in this pass. A group still inside its gray-delete grace period, one whose drain is still running, and one whose pass failed all stay in the status snapshot and are retried on the next reconcile instead of being silently forgotten. The pruned map is persisted by the reconcile's final status update (step 7 of the loop).
+7. Return the earliest wakeup the cleanup needs — a remaining gray-delete deadline, or the poll interval of a deletion in flight; `0` when nothing is pending — so the reconcile loop requeues exactly when the pending work becomes due (see §4.8.4).
 
 ### 4.4.3 Safety Protection Mechanisms
 
 - **Pre-Delete Validation**:
   - Every resource is fetched before deletion; `NotFound` is treated as "already gone" and short-circuits to success.
   - Ownership is confirmed through the **ownerReferences** — the resource must carry a reference whose UID matches the CR and whose `controller` flag is true. (An empty owner UID disables the check, for callers that drive the cleaner directly.)
-  - Resources not owned by this cluster are **NOT deleted** — this prevents a name collision with a manually created or foreign resource from destroying it.
+  - Resources not owned by this cluster are **NOT deleted** — this prevents a name collision with a manually created or foreign resource from destroying it. A foreign resource counts as *settled*, not as pending: this cluster will never delete it, so waiting for it would pin the role group in `Status.RoleGroups` forever.
+  - The headless (`<resource>-headless`) and metrics (`<resource>-metrics`) Services are addressed by **derived name**, and a role group may legitimately be called `<group>-headless` or `<group>-metrics` — making its own Service collide with the orphan's derived name under the same controller owner reference, which ownership alone cannot separate. A derived name that belongs to a role group the Spec still declares is therefore skipped.
 
-- **Deletion Order**:
-  - Resources are deleted in dependency order to avoid orphaned references:
-    1. **PDB** (PodDisruptionBudget) — removed first so it cannot block pod eviction.
-    2. **StatefulSet** — when `replicas > 0` the cleaner first patches `spec.replicas = 0`, then issues the Delete.
+- **Deletion Order** — the order only means anything because each step is **confirmed gone** before the next is issued:
+    1. **PDB** (PodDisruptionBudget) — removed first so it cannot block the eviction of the pods that follow.
+    2. **StatefulSet** — the ordered drain, below.
     3. **ConfigMap**.
-    4. **Service**, **headless Service** (`<resource>-headless`) and **metrics Service** (`<resource>-metrics`) — the metrics Service is a framework slot like the other two, so it is reclaimed here instead of outliving its role group.
+    4. **Service**, then **headless Service** and **metrics Service** — the Services go last so the terminating pods can still resolve each other. The metrics Service is a framework slot like the other two, so it is reclaimed here instead of outliving its role group.
 
-- **Best-effort, single-pass semantics** (important):
-  - The scale-to-0 Update is **best effort**: a failure is logged at V(1) and the Delete is issued anyway.
-  - **No deletion waits for the previous one to be observed gone**, and the cleaner does not wait for the StatefulSet to finish scaling down. Pods terminate through the normal cascade garbage collection with their `terminationGracePeriodSeconds`; there is no ordered reverse-ordinal drain.
-  - A failed delete aborts the pass for that cluster and is returned to the reconcile loop, which logs it and continues (cleanup failures are non-fatal); the group stays in `Status.RoleGroups` and is retried next cycle.
+- **Ordered drain of the StatefulSet** (`deleteStatefulSet`): deleting the object outright leaves its pods to cascade garbage collection, which removes them in arbitrary order. Instead:
+    1. `spec.replicas` is set to `0` (a nil replica count means the API server default of `1`, so it is a scale-down like any other). The write is wrapped in `retry.RetryOnConflict`: the same object is written by the apply path and by any autoscaler pointed at it, and a routine 409 must not leave the role group half-deleted. A `NotFound` here means the StatefulSet vanished mid-scale-down — nothing left to drain.
+    2. The pass ends and requeues. The StatefulSet controller retires the pods in reverse-ordinal order, each honouring its `terminationGracePeriodSeconds`.
+    3. Later passes wait while `.status.replicas > 0`. Deleting before that reaches zero would cancel the ordered shutdown the scale-down was for.
+    4. Only then is the StatefulSet deleted, and the deletion confirmed.
+
+- **Deletion confirmation** (`confirmDeleted`): acceptance is not removal. An object held by a finalizer keeps answering `Get` until the finalizer clears, and a cached client lags behind its own writes. Treating "`Delete` returned nil" as "gone" is exactly what would make the deletion order meaningless, so every accepted `Delete` is followed by a re-read; an object still present yields *in flight*, and the pass resumes on a later reconcile.
+
+- **Per-group error isolation**: a failure is confined to its own role group. The error is collected, that group keeps its status entry and its requeue, and the **remaining groups still make progress** — otherwise one wedged role group would keep every other orphan alive indefinitely. The collected failures are joined and returned to the reconcile loop, which logs them and continues; cleanup failures are non-fatal for the cycle (the exception is a 429, below).
+
+- **Poll interval**: a step in flight asks the caller to wait `DefaultDrainPollInterval` (5 s), overridable with `RoleGroupCleaner.WithDrainPollInterval` (a non-positive value keeps the default). It paces the state machine, not the pod termination itself — the cycle it schedules only re-reads the resources it is waiting on — so products with a long `terminationGracePeriodSeconds` can raise it to avoid polling.
+
+- **Removed roles**: role *group* orphans are found by diffing `Status.RoleGroups`, but a role deleted from the Spec outright leaves nothing to diff against, and its role-level PDB (applied only while the role is declared) would survive with a selector matching pods that no longer exist. Those PDBs are found by **listing on the label `pdb.kubedoop.dev/role`**, which carries the role name, rather than by derived name: a product may ship its own PDB through `RoleGroupResources.PodDisruptionBudget` under the same controller owner reference, so ownership alone cannot identify the framework's slot. An empty owner UID disables this reclaim entirely — with no owner to match, every labelled PDB in the namespace (including a sibling cluster's) would look like this cluster's.
 
 - **Gray Deletion (opt-in grace period)**:
   - With `GenericReconcilerConfig.GrayDeleteGracePeriod > 0`, an orphaned role group is not deleted on first detection. The cleaner stamps `orphan.zncdata.dev/pending-deletion` (an RFC3339 timestamp) on the group's primary resource — its StatefulSet, falling back to its ConfigMap — and defers.
   - Deletion proceeds on a later reconcile once the grace period has elapsed. The remaining time is returned to the reconcile loop and turned into a `RequeueAfter`, so the deletion happens on schedule rather than waiting for an unrelated watch event.
   - If the role group is re-added to the Spec before the deadline, the annotation is cleared, so a future re-orphaning gets a full grace period again.
-  - With the default value `0` the annotation is never written and orphans are deleted immediately.
+  - A primary resource owned by **another** cluster is never annotated (that would mutate an unrelated object on a name collision), which also leaves no timestamp to run a grace period from. The pass proceeds instead of deferring: each deletion is ownership-checked on its own, so the foreign objects are skipped and whatever this cluster does own under that name is reclaimed. Deferring would keep the role group in `Status.RoleGroups` for as long as the foreign object exists.
+  - With the default value `0` the annotation is never written and the deletion state machine starts on first detection.
 
 - **PVC Handling**:
   - By default, **PVCs are PRESERVED** during orphaned resource cleanup to protect data.
@@ -383,8 +399,8 @@ Adopts a hybrid scheme of "Spec vs Status comparison as primary, cluster resourc
 ### 4.4.4 Concurrency Conflict Handling
 
 - **404 Not Found**: treated as success — the resource was already deleted by another process.
-- **409 Conflict**: the annotate/scale-down path is Get-then-Update, so it carries a `resourceVersion` and a concurrent modification surfaces as a conflict. The cleaner does **not** retry internally: the error is returned, cleanup for that cycle stops, and the next reconcile re-evaluates. (`retry.RetryOnConflict` is applied on the *status write* path via `K8sUtil.UpdateStatusWithRetry`, not inside the cleaner.)
-- **429 Too Many Requests**: there is **no** 429-specific handling on the cleanup path. Only the *apply* path maps a 429 to a fixed `RequeueAfter` (`GenericReconcilerConfig.RateLimitRetryAfter`, default 10s) — it is a flat delay, not exponential backoff.
+- **409 Conflict**: the annotate and scale-down paths are Get-then-Update, so they carry a `resourceVersion` and a concurrent modification surfaces as a conflict. The **scale-down retries internally** under `retry.RetryOnConflict` (`scaleToZero` re-reads the live StatefulSet on each attempt): the apply path and any autoscaler write the same object, so a routine 409 must not turn into a failed pass that leaves the role group half-deleted. The gray-delete annotate does not retry — its conflict is returned, that group's pass ends, and the next reconcile re-evaluates.
+- **429 Too Many Requests**: mapped to a `*reconciler.RateLimitError` carrying `GenericReconcilerConfig.RateLimitRetryAfter` (default 10 s; `RoleGroupCleaner.WithRateLimitRetryAfter` sets it, and a cleaner built directly by a product falls back to the same 10 s). Unlike every other cleanup failure a 429 **aborts the whole pass immediately** — the remaining groups would only add to the requests the API server is already rejecting — and it propagates out of the reconcile loop as a rate-limit error rather than a cleanup error: throttling says nothing about the cluster's state, so it produces a plain `RequeueAfter` backoff instead of marking a healthy cluster `Degraded` (§4.8.4). It is a flat delay, not exponential backoff.
 - **Status Synchronization**: cleanup and the CR Status are not updated atomically. The cleaner prunes the in-memory `Status.RoleGroups` for the groups it really deleted, and the reconcile's final status update persists it. If that write fails, the next reconciliation re-evaluates the same orphans — deletion is idempotent, so a repeated pass is safe.
 - **Events**: when an `EventManager` is wired (`RoleGroupCleaner.WithEventManager`), each removed resource emits a `Normal`/`Deleted` event; without it deletions are recorded only in the operator log.
 
@@ -444,7 +460,12 @@ Operations such as log collection (Vector), metric monitoring (JMX Exporter), an
 - **Standard Implementations**:
   - `VectorSidecarProvider` (in `pkg/vector/`): The **single owner of the shared log pipeline**. It creates the size-limited shared log `emptyDir`, RW-mounts it on the declared producer containers (so the product writes its log files there), mounts it on the Vector agent container (read-write: the agent is a native init container that starts before the producers and pre-creates each producer's per-container log directory, since log4j 1.x and Python's file handlers do not create parent directories), and injects the agent. Config generation (`RenderVectorConfig`) and aggregator discovery (`DiscoverAggregatorAddress`) are separate pure functions in the same package. It declares `SidecarPhasePipeline`, so it is always injected after the producer containers exist, and its `Validate` requires the target ConfigMap to exist **and to carry the `vector.yaml` key** — an agent mounted on a ConfigMap without its config would otherwise start and immediately fail.
   - `JmxExporterSidecarProvider` (in `pkg/sidecar/`): Injects Prometheus JMX Exporter agent and exposes metric ports.
-- **Workflow**: The `GenericReconciler` registers the Vector provider — configured with the producer container names (from the handler's `LoggingProducers`) and the shared log volume size — only when the agent is enabled **and** at least one producer is declared (otherwise it warns and skips, so an agent that has nothing to collect can never yield an invalid Pod). The `BaseRoleGroupHandler` then invokes the `SidecarManager` after StatefulSet construction, and the manager injects Containers, Volumes, and VolumeMounts. For CRs that expose the aggregator ConfigMap (via `VectorAggregatorProvider`), the framework also generates `vector.yaml` into the role group ConfigMap — keeping producer, consumer, and config in lockstep in one place rather than spread across product operators.
+- **Workflow**: The `GenericReconciler` registers the Vector provider — configured with the producer container names (from the handler's `LoggingProducers`) and the shared log volume size — only when **all three** gates pass. Any one of them failing means the sidecar could not do its job, so the provider is not registered and the rest of the cluster keeps converging:
+    1. **The agent is enabled** for the role group (`logging.enableVectorAgent`, after the role/role-group logging merge).
+    2. **At least one producer is declared** by the handler's `LoggingProducers`. An agent with nothing to collect would mount an empty pipeline; the reconciler logs the mismatch and skips, so enablement and producer declaration stay consistent in one place.
+    3. **Something supplies `vector.yaml`.** The sidecar runs `vector --config <mount>/vector.yaml`, so it is only injected when that key will actually be written into the role group ConfigMap: either the **CR** implements `reconciler.VectorAggregatorProvider` (the framework then renders the file itself) or the **role group handler** implements `reconciler.VectorConfigProvider` and answers `ProvidesVectorConfig(roleName) == true` (the product writes it). With neither, registering the provider would fail sidecar validation (§4.6.2, Dependency Validation) on every cycle and abort the whole cluster's reconcile over a product that is simply not wired for Vector. It is reported as the product-configuration mistake it is: a `Warning`/`VectorSidecarSkipped` event on the CR naming the role group and both interfaces, and the reconcile continues.
+
+  The `BaseRoleGroupHandler` then invokes the `SidecarManager` after StatefulSet construction, and the manager injects Containers, Volumes, and VolumeMounts. Gate 3's first branch is the one the framework owns end to end: for a CR exposing the aggregator ConfigMap the reconciler resolves the aggregator address and generates `vector.yaml` into the role group ConfigMap — keeping producer, consumer, and config in lockstep in one place rather than spread across product operators. Within that branch, an empty `VectorAggregatorConfigMapName()` or an address that cannot be discovered is a hard error rather than a skip: the CR claimed the framework would supply the config, so shipping a Vector sidecar with no aggregator to send to would be worse than failing loudly.
 
 ### 4.6.3 Core Value
 
@@ -474,7 +495,7 @@ Big Data systems often have strict startup dependency orders (e.g., Zookeeper ->
   - Supported kinds: `DependencyConfigMap` and `DependencySecret`. An empty `Dependency.Namespace` defaults to the CR's namespace; an empty `Name` is itself an error.
   - When the hook is nil (the default), **no dependency checking happens at all**.
 - **Placement in the loop**: the check runs after the cluster `PreReconcile` extensions and **before any role is reconciled**, so a missing object aborts the cycle with a `DependencyValidation` reconcile error, which maps to the `Degraded` condition and a `Warning` event. No Pods are created for that cycle.
-- **DependencyResolver**: the helper behind the hook. Its exported methods — `ValidateConfigMap`, `ValidateSecret`, `ValidateS3Connection`, `ValidateDatabaseConnection`, `ValidateZKConnection`, `ValidateEndpointFormat`, `ParseConnectionStrings` — are also usable directly from product code (e.g. from a `ClusterExtension.PreReconcile`) for checks richer than existence. Failures are `*DependencyError`, which products map to their own conditions.
+- **DependencyResolver**: the helper behind the hook. Its exported methods — `ValidateConfigMap`, `ValidateSecret`, `ValidateS3Connection`, `ValidateDatabaseConnection`, `ValidateZKConfig` (`ValidateZKConnection` is a deprecated alias that forwards to it), `ValidateEndpointFormat`, `ParseConnectionStrings` — are also usable directly from product code (e.g. from a `ClusterExtension.PreReconcile`) for checks richer than existence. Failures are `*DependencyError`, which products map to their own conditions.
   - `DependencyResolver.Validate(ctx, spec)` is a stable **no-op** kept for source compatibility; the reconcile flow no longer calls it. Do not rely on it to check anything.
 
 ### 4.7.3 Core Value
@@ -522,9 +543,9 @@ Watches only cover the resource kinds the framework owns (`StatefulSet`, `Config
 
 - On the **success path**, `Reconcile` returns `ctrl.Result{RequeueAfter: d}` where `d` is the **earliest strictly-positive** of:
   1. `HealthCheckInterval` (default 120 s) — the periodic health cadence;
-  2. the earliest pending **gray-delete deadline** returned by the cleaner (§4.4.3), i.e. the time until the next orphaned role group becomes deletable.
+  2. the earliest pending wakeup returned by the cleaner (§4.4.2 step 7) — either a remaining **gray-delete deadline** (the time until the next orphaned role group becomes deletable) or the **drain poll interval** of a deletion already in flight, whichever comes first.
 
-  A gray-delete deadline sooner than the health cadence wins, so a deferred deletion runs on time. When both are non-positive (`HealthCheckInterval` set negative and nothing pending), `d` is `0` — no periodic wakeup, purely watch-driven.
+  A cleanup deadline sooner than the health cadence wins, so a deferred deletion runs on time and the multi-pass drain advances on its own clock rather than waiting for an unrelated watch event. When both are non-positive (`HealthCheckInterval` set negative and nothing pending), `d` is `0` — no periodic wakeup, purely watch-driven.
 - On the **429 rate-limit path**, `Reconcile` returns `RequeueAfter: RateLimitRetryAfter` (default 10 s) with a nil error, so no `Degraded` condition and no error event are produced for throttling.
 - On the **error path** (including a recovered panic), `Reconcile` returns the error and lets controller-runtime's rate limiter apply exponential backoff. No `RequeueAfter` is set — setting both is meaningless.
 - On the **paused path** (`reconciliationPaused: true`), the loop returns `ctrl.Result{}` with no requeue: nothing will change until the user edits the CR, which produces a watch event anyway.
@@ -639,7 +660,7 @@ Distributed systems and Kubernetes Controllers face unpredictable failures: netw
   - **Malformed `podOverrides`**: a layer that cannot be decoded or patched is recorded on `MergedConfig.PodOverrideErrors` and surfaced as a `Warning` event; the layer is skipped rather than silently dropped without trace.
 
 - **Concurrency Control**:
-  - **Optimistic Locking on status writes**: the status write is issued from the in-memory CR without re-fetching it first, because a re-fetch would replace the whole status stanza and discard the product-specific fields an extension hook computed during this cycle (`ClusterInterface` exposes only the embedded generic status, which the framework mutates through the pointer `GetStatus` returns — there is no setter that could replace the stanza wholesale). On a 409 only the `resourceVersion` is refreshed — through the uncached `APIReader` when one is configured, since the informer cache has by definition not seen the competing write — and the write is retried with this cycle's status unchanged. That is last-writer-wins: it is correct because the controller is the sole writer of its own CR's status, and it does mean a status field written by a *different* actor between the read and the write is overwritten. A `NotFound` (the CR was deleted mid-cycle) is treated as success. Note that the *cleaner* does not retry on conflict — see §4.4.4.
+  - **Optimistic Locking on status writes**: the status write is issued from the in-memory CR without re-fetching it first, because a re-fetch would replace the whole status stanza and discard the product-specific fields an extension hook computed during this cycle (`ClusterInterface` exposes only the embedded generic status, which the framework mutates through the pointer `GetStatus` returns — there is no setter that could replace the stanza wholesale). On a 409 only the `resourceVersion` is refreshed — through the uncached `APIReader` when one is configured, since the informer cache has by definition not seen the competing write — and the write is retried with this cycle's status unchanged. That is last-writer-wins: it is correct because the controller is the sole writer of its own CR's status, and it does mean a status field written by a *different* actor between the read and the write is overwritten. A `NotFound` (the CR was deleted mid-cycle) is treated as success. The *cleaner* applies the same `RetryOnConflict` treatment to its own contended write, the scale-to-zero of an orphaned StatefulSet — see §4.4.4.
   - **Idempotency**: All side-effect operations (Create/Update/Delete) are designed to be idempotent. A retry after a partial failure is safe and will not result in duplicated resources.
 
 - **Extension Fault Tolerance**:
@@ -750,8 +771,7 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 
 - **`ClusterInterface`**: `client.Object` plus two methods — `GetSpec()` and `GetStatus()`. Everything a Kubernetes object already answers is inherited from the embedded `client.Object`; the only thing the SDK asks a product to write is the projection of its spec and status onto the framework's generic shapes.
 - **`ClusterResource[T ClusterInterface]`**: `ClusterInterface` plus `DeepCopy() T`. It is a *constraint*, used only as `GenericReconciler`'s type parameter, and it is satisfied by controller-gen's generated code rather than by anything hand-written.
-- **`RoleInterface`**: Optional role-level descriptor (GetRoleName, GetRoleSpec, GetRoleGroups, GetOverrides). The reconciler does not consume it.
-- **`RoleGroupHandler`**: Defines the `BuildResources()` contract that product operators implement to produce RoleGroup-specific Kubernetes resources.
+- **`RoleGroupHandler`**: Defines the `BuildResources()` contract that product operators implement to produce RoleGroup-specific Kubernetes resources. Role-level information is *passed in* through `RoleGroupBuildContext` rather than pulled through a role interface the product would have to implement — segregation taken to its limit: the role level costs a product zero methods.
 - **`RoleExtension` / `RoleGroupExtension`**: Define the Pre/PostReconcile hooks products use to customize behavior at role and role group level.
 - **`ServiceHealthCheck`**: Defines health check contract for business-level readiness.
 
@@ -875,12 +895,12 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 │     │   ├── Build/Apply Resources (ordered, see below)      │
 │     │   └── RoleGroup PostReconcile Extensions (Hook)       │
 │     └── Role PostReconcile Extensions (Hook)                │
-│  4. Cleanup Orphans (-> gray-delete deadline)               │
+│  4. Cleanup Orphans (one pass -> pending wakeup)            │
 │  5. Health Check -> Status Conditions                       │
 │  6. PostReconcile Extensions (Hook)                         │
 │     └── Product-specific post-processing                    │
 │  7. Final Status Update (skipped if deep-equal)             │
-│  8. Requeue = min(health cadence, gray deadline)            │
+│  8. Requeue = min(health cadence, cleanup wakeup)           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -1074,8 +1094,8 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
   - **Core Advantage**: Compile-time type safety, reduced boilerplate code, improved development efficiency.
 
 - **Residual orphaned resources after role group deletion**
-  - **Solution**: Compare Spec against the Status snapshot, verify ownership through ownerReferences, and delete the orphans in a fixed order; an optional gray-delete grace period defers the deletion and requeues for it.
-  - **Core Advantage**: Efficient and precise, avoiding accidental deletion, ensuring state convergence.
+  - **Solution**: Compare Spec against the Status snapshot, verify ownership through ownerReferences, and retire the orphans through a multi-pass state machine — scale to zero, ordered drain, then deletion in a fixed order with each step confirmed gone before the next; an optional gray-delete grace period defers the whole sequence, and the reconcile loop requeues for whatever is pending.
+  - **Core Advantage**: Efficient and precise, avoiding accidental deletion and abrupt pod termination, ensuring state convergence.
 
 - **Repetitive multi-product configuration validation/default value logic**
   - **Solution**: Webhook divided into common and specific logic; SDK provides common tools, product side implements specific interfaces.
@@ -1118,7 +1138,5 @@ The following are **not yet implemented**; they describe intended direction, not
 
 - Support **ConversionWebhook** to achieve smooth CRD version upgrades.
 - Add monitoring metrics for extension execution time, resource cleanup counts, etc., facilitating troubleshooting.
-- Ordered drain on orphan cleanup: wait for the StatefulSet to reach zero ready replicas, and confirm each deletion before issuing the next (today's cleanup is single-pass and best effort, §4.4.3).
-- Conflict/throttling resilience inside the cleaner (`RetryOnConflict`, 429 → backoff), which today exists only on the status-write and apply paths.
 - A `pkg/database` resolver mirroring `pkg/s3` (JDBC URL construction plus a credentials volume).
 - Opt-in finalizer support so cluster deletion — not just role group orphaning — can run SDK cleanup such as PVC removal.

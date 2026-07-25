@@ -173,8 +173,8 @@ SDK 采用分层架构设计，自上而下分为 API 层、抽象接口层、�
 - **业务接口**：
     - `ClusterInterface`：产品 CR 需要满足的集群级契约。它内嵌 controller-runtime 的 `client.Object`——名称、命名空间、UID、标签、注解与 GVK 都来自 CR 内嵌的 `metav1.ObjectMeta`/`TypeMeta`，无需产品自己编写访问器——在此之上只声明两个 SDK 专有方法：`GetSpec() *v1alpha1.GenericClusterSpec` 与 `GetStatus() *v1alpha1.GenericClusterStatus`，把产品自己的 spec 与 status 投影成框架调和所依据的通用结构。没有 status setter：`GetStatus` 返回指向 CR 内部的指针，框架通过该指针写入 conditions、`observedGeneration` 与 role group 状态，这也是产品自有 status 字段能原样熬过一轮调和的原因。
     - `ClusterResource[T ClusterInterface]`：`ClusterInterface` 再加上 `DeepCopy() T`——controller-gen 已为每个根 API 类型生成的方法。它之所以存在，是因为当 `T` 是指针类型时无法用 `new(T)` 分配类型参数，调和器只能靠拷贝一份原型来得到要读入的空对象；走 `runtime.Object` 会拿回一个接口，从而重新引入运行时断言。持有 CR 时用 `ClusterInterface`，做类型参数时用 `ClusterResource[CR]`。
-    - `RoleInterface`：Role 级描述接口，仅提供 `GetRoleName()`、`GetRoleSpec()`、`GetRoleGroups()`、`GetOverrides()`，并附带默认实现 `RoleInfo`/`RoleGroupInfo`。它不包含默认端口，也没有配置扩展器。**接入 SDK 并不需要实现它**：`GenericReconciler` 直接遍历 `GenericClusterSpec.Roles`，从不调用该接口，它只是产品代码的可选便利封装。
     - `RoleGroupHandler`：产品算子的核心实现扩展点。每个产品实现此接口，定义针对每个 RoleGroup 所构建的具体 Kubernetes 资源（StatefulSet、Service、ConfigMap）。`GenericReconciler` 在调和流程中为每个 RoleGroup 调用其 `BuildResources()` 方法。
+    - **不存在 Role 级接口。** Role 与 RoleGroup 的配置以**数据**形式抵达 handler：调和器为每个 role group 构建 `reconciler.RoleGroupBuildContext` 并传给 `BuildResources`，其中携带 `RoleName`、`RoleSpec`、`RoleGroupName`、`RoleGroupSpec`（Role 级 `config` 已按字段折叠进来，group 优先）以及 `MergedConfig`（产品配置/Role/RoleGroup override 折叠后的结果）。调和器直接遍历 `GenericClusterSpec.Roles`，因此产品只需在 CRD 中声明 role，无需为其实现任何访问器。
 
 - **扩展接口**：
     - `ClusterExtension[CR]/RoleExtension[CR]/RoleGroupExtension[CR]`：扩展点接口，定义各级别调和前后的自定义逻辑。三者都以产品自身的 CR 类型为泛型参数，钩子因此直接拿到该类型。对 `role.config` 的 Role 级定制在此完成（`RoleExtension.PreReconcile` 钩子），SDK 中没有单独的扩展器接口。
@@ -205,7 +205,7 @@ SDK 采用分层架构设计，自上而下分为 API 层、抽象接口层、�
 基于 SDK 抽象接口实现产品特定逻辑，无需修改 SDK 核心代码，仅依赖 API 层和抽象接口层。
 
 - **实现要点**：
-    - CR 结构体实现 `ClusterInterface`——只需 `GetSpec` 与 `GetStatus`，其余由内嵌的对象元数据和生成的深拷贝代码提供——并提供 `RoleGroupHandler` 定义产品特定资源。（`RoleInterface` 是可选的，见 §3.2.2。）
+    - CR 结构体实现 `ClusterInterface`——只需 `GetSpec` 与 `GetStatus`，其余由内嵌的对象元数据和生成的深拷贝代码提供——并提供 `RoleGroupHandler` 定义产品特定资源。handler 所需的 role/role group 信息全部来自传入的 `RoleGroupBuildContext`，无需实现任何 role 级接口（见 §3.2.2）。
     - 通过扩展接口实现特定逻辑（如 HDFS ZK 连通性检查、Namenode 堆大小配置）。
     - 集成 Webhook 特定验证和默认值填充逻辑。
 
@@ -290,7 +290,10 @@ reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster
 调和器按**优先级降序**遍历注册表条目，由每个钩子的容错策略决定失败是否跳过其后的条目。
 
 - **正常执行**：扩展按顺序执行，每个扩展接收调和上下文、client 和 CR。
-- **对 CR 的修改**：钩子的定位是「观察并行动」，而不是就地修改。框架从不持久化对内存中 CR 的修改；而且 `reconcile()` 在执行 cluster 级 `PreReconcile` **之前**就已快照 `spec := cr.GetSpec()`，因此 role 遍历、清理和健康评估未必能看到钩子改动后的 spec。确需修改 CR 的钩子应通过 client 写回，由随之产生的 watch 事件驱动下一轮调和。
+- **对 CR 的修改——spec 与 status 并不对称**：
+  - **spec：只观察，不就地改。** 框架对 CR 的唯一写入是 `Status().Update`，API server 只把它作用于 status 子资源，因此内存中对 spec 的修改永远不会被持久化。它也未必能被**观察**到：`reconcile()` 在 cluster 级 `PreReconcile` **之前**只取一次 `spec := cr.GetSpec()`，role 遍历、清理与健康评估读的都是这个值——若 `GetSpec()` 每次调用都新建结构体（语法合法但不推荐，见 §5.1.4），它们拿到的就是一份此后任何修改都触及不到的快照。确需修改 spec 的钩子应通过 client 写回，由随之产生的 watch 事件驱动下一轮调和。
+  - **status：就地修改即可——框架会持久化。** 钩子通过 `cr.GetStatus()` 返回的指针写入，或直接写产品自有的 status 字段，本轮末尾的 `updateStatus` 会把两者一并提交到 API server。这是刻意设计而非巧合：写入之所以直接从内存对象发出，正是为了让钩子写下的 status 存活（`ClusterInterface` 只暴露内嵌的通用 status，先重新拉取会用存储中的值覆盖产品自有字段，见 §4.13.2）。该保证由回归用例 `persists product-specific status fields written by an extension hook` 覆盖。
+  - 两者都不写的钩子——职责纯粹是外部副作用的那种——其失败仍会通过 `Degraded` 条件反映到 CR 上（见下面的错误处理）。
 - **错误处理**：
   - 任何钩子失败都会被包装成标明扩展名的 `*ExtensionError`。
   - `PreReconcile`/`PostReconcile` **默认在首个失败处中断**并返回该错误，从而终止本轮调和并映射到 `Degraded` 条件。以 `common.WithStopOnError(false)` 注册的扩展不会中断循环：其失败会被记录日志，后续扩展继续执行，最终把收集到的失败合并返回，仍会进入 CR status。
@@ -341,39 +344,52 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 采用"Spec 与 Status 比较为主，集群资源查询为辅"的混合方案，提高效率的同时避免误删。
 
+删除是**跨多轮调和推进的状态机**，而不是一趟走完。孤儿 role group 上仍跑着 Pod，有状态产品期望它们像自身滚动更新那样退场，因此 cleaner 先把工作负载缩容到 0，等待 StatefulSet 控制器按序号逆序排空，然后才删除；并且每一步都要先确认生效，下一步才会发出。整个过程不阻塞调和 worker：某一步仍在进行中就结束该 role group 本轮的处理并返回重新入队的等待时长，下一轮从第一个尚未落定的步骤继续。每一步都是 Get-then-act，因此重入是幂等的。
+
 ### 4.4.2 执行流程
 
 1. 从 Spec 获取 roles 的期望 role group 列表（`desiredGroups`）。本轮调和过的每个 role group 都会记入 `Status.RoleGroups`。
 2. 从 `Status.RoleGroups` 获取历史实际 role group 列表（`oldActualGroups`）。
 3. 计算孤儿 role groups：`orphanedGroups = oldActualGroups - desiredGroups`。
-4. 对每个孤儿 role group，按"PDB → StatefulSet → ConfigMap → Service → headless Service → metrics Service"的顺序，在**一趟**内逐个 Get-then-Delete。
-5. **只有真正执行了删除的 role group** 才从 `Status.RoleGroups` 中移除。仍处于灰度删除宽限期内、或主资源属于其他集群的 role group 会保留在状态快照里，等下一轮调和重试，而不是被悄悄遗忘。裁剪后的映射由调和流程末尾的 status 更新（循环第 7 步）持久化。
-6. 返回最近的一个待生效灰度删除截止时间，供调和循环精确地安排重新入队（见 §4.8.4）。
+4. 回收**已从 Spec 中整体消失的 role 的 role 级 PDB**（见下文"被移除的 role"）。它排在 role group 循环之前，且与之无关：当 `orphanedGroups` 为空时循环会提前返回，而某个 role 的各 group 会随着删除完成被逐个从状态快照中裁剪掉——等到它的 PDB 需要重试时，可能已经没有孤儿 group 能把这一趟带起来了。
+5. 对每个孤儿 role group——role 按名称排序遍历，使得跨多轮的事件序列可复现——推进一趟删除状态机：先过灰度删除闸门，再按 `PDB → StatefulSet（缩容到 0 → 排空 → 删除）→ ConfigMap → Service → headless Service → metrics Service` 执行，在第一个仍在进行中的步骤处停下。
+6. **只有资源确实被删除干净**（本轮所有步骤都已落定）的 role group 才从 `Status.RoleGroups` 中移除。仍处于灰度删除宽限期内、排空尚未结束、以及本轮失败的 role group 都保留在状态快照里，等下一轮调和重试，而不是被悄悄遗忘。裁剪后的映射由调和流程末尾的 status 更新（循环第 7 步）持久化。
+7. 返回清理所需的最近一次唤醒时间——尚未走完的灰度删除截止时间，或进行中删除的轮询间隔；没有待办时为 `0`——供调和循环精确地安排重新入队（见 §4.8.4）。
 
 ### 4.4.3 安全保护机制
 
 - **删除前验证**：
   - 每个资源在删除前都会先 Get；`NotFound` 视为"已经不存在"并直接按成功短路。
   - 所有权通过 **ownerReferences** 确认：资源必须带有 UID 与 CR 匹配、且 `controller` 为 true 的引用。（owner UID 为空时跳过该检查，供直接驱动 cleaner 的调用方使用。）
-  - 不属于本集群的资源**不会被删除**——这可以避免同名的手工资源或外部资源被误删。
+  - 不属于本集群的资源**不会被删除**——这可以避免同名的手工资源或外部资源被误删。外部资源计为**已落定**而非待办：本集群永远不会删除它，继续等待只会把该 role group 永久钉在 `Status.RoleGroups` 里。
+  - headless（`<resource>-headless`）与 metrics（`<resource>-metrics`）Service 是按**派生名**定位的，而一个 role group 完全可以就叫 `<group>-headless` 或 `<group>-metrics`，它自己的 Service 会与孤儿的派生名撞名，且两者带着同一个 controller owner reference，所有权无法区分。因此，凡是仍被 Spec 声明的 role group 所占用的派生名，一律跳过。
 
-- **删除顺序**：
-  - 资源按依赖顺序删除以避免孤儿引用：
-    1. **PDB**（PodDisruptionBudget）——最先删除，以免阻塞 Pod 驱逐。
-    2. **StatefulSet**——当 `replicas > 0` 时，cleaner 先把 `spec.replicas` 改为 0，然后再发起 Delete。
+- **删除顺序**——顺序之所以有意义，正是因为每一步都**确认消失**后才发出下一步：
+    1. **PDB**（PodDisruptionBudget）——最先删除，以免阻塞随后 Pod 的驱逐。
+    2. **StatefulSet**——见下文的有序排空。
     3. **ConfigMap**。
-    4. **Service**、**headless Service**（`<resource>-headless`）与 **metrics Service**（`<resource>-metrics`）——metrics Service 与另外两个一样是框架槽位，因此必须在此回收，否则它会比所属的 role group 活得更久。
+    4. **Service**，然后是 **headless Service** 与 **metrics Service**——Service 放在最后，好让正在终止的 Pod 仍能相互解析。metrics Service 与另外两个一样是框架槽位，因此在此回收，否则它会比所属的 role group 活得更久。
 
-- **尽力而为的单趟语义**（重要）：
-  - 缩容到 0 的 Update 是**尽力而为**的：失败只按 V(1) 记录日志，随后仍然发起 Delete。
-  - **任何一次删除都不会等待上一次被观察到已消失**，cleaner 也不会等待 StatefulSet 缩容完成。Pod 通过常规的级联垃圾回收按其 `terminationGracePeriodSeconds` 终止，没有按序号逆序排空的过程。
-  - 一次删除失败会中止该集群本轮的清理并把错误返回给调和循环；循环记录日志后继续（清理失败不致命），该 role group 留在 `Status.RoleGroups` 中，下一轮重试。
+- **StatefulSet 的有序排空**（`deleteStatefulSet`）：直接删除对象会把 Pod 交给级联垃圾回收，其顺序是任意的。取而代之：
+    1. 把 `spec.replicas` 置 0（replicas 为 nil 意味着 API server 默认值 1，因此同样是一次缩容）。该写入包在 `retry.RetryOnConflict` 中：同一对象也会被 apply 路径以及任何指向它的 autoscaler 写入，一次常规 409 不该让 role group 停在删了一半的状态。此处的 `NotFound` 表示 StatefulSet 在缩容途中消失了——已无可排空。
+    2. 本轮结束并重新入队。StatefulSet 控制器按序号逆序退役 Pod，每个 Pod 遵守自己的 `terminationGracePeriodSeconds`。
+    3. 后续各轮在 `.status.replicas > 0` 期间继续等待。在它归零前就删除，等于取消了缩容所要换取的有序停机。
+    4. 到此才删除 StatefulSet，并确认删除生效。
+
+- **删除确认**（`confirmDeleted`）：被接受不等于已移除。被 finalizer 挂住的对象在 finalizer 清除前仍会响应 `Get`，带缓存的 client 也会落后于自己的写入。把"`Delete` 返回 nil"当作"已消失"，恰恰会让删除顺序失去意义，因此每次被接受的 `Delete` 之后都会重新读取一次；对象仍在则判为**进行中**，留待后续调和继续。
+
+- **按 role group 隔离错误**：失败被限制在其所属的 role group 内。错误被收集起来，该组保留状态条目与重新入队，**其余各组照常推进**——否则一个卡住的 role group 会让其他所有孤儿无限期存活。收集到的失败合并后返回给调和循环，循环记录日志并继续；清理失败对本轮不致命（例外是 429，见下）。
+
+- **轮询间隔**：进行中的步骤要求调用方等待 `DefaultDrainPollInterval`（5 秒），可用 `RoleGroupCleaner.WithDrainPollInterval` 覆盖（非正值保持默认）。它调度的是状态机的节奏，而非 Pod 终止本身——被安排的那一轮只重新读取它正在等待的资源——因此 `terminationGracePeriodSeconds` 很长的产品可以调大它以减少轮询。
+
+- **被移除的 role**：role *group* 级孤儿靠 diff `Status.RoleGroups` 找出，但从 Spec 中整体删掉的 role 没有任何可 diff 的对象，其 role 级 PDB（仅在该 role 被声明期间才会写入）会遗留下来，选择器匹配的是已不存在的 Pod。这类 PDB 通过 **label `pdb.kubedoop.dev/role`（其值即 role 名）列出**，而不是按派生名查找：产品可以通过 `RoleGroupResources.PodDisruptionBudget` 交付自己的 PDB，它带着同一个 controller owner reference，仅凭所有权无法认出框架的槽位。owner UID 为空时该回收整体禁用——没有 owner 可比对，命名空间内每个带此 label 的 PDB（包括兄弟集群的）都会像是本集群的。
 
 - **灰度删除（可选的宽限期）**：
   - 当 `GenericReconcilerConfig.GrayDeleteGracePeriod > 0` 时，首次发现孤儿 role group 并不会立即删除。cleaner 会在该 role group 的主资源（StatefulSet，回退到 ConfigMap）上打上 `orphan.zncdata.dev/pending-deletion` 注解（RFC3339 时间戳）并推迟删除。
   - 宽限期结束后的某一轮调和才真正执行删除。剩余时间会返回给调和循环并转换为 `RequeueAfter`，因此删除按时发生，而不必等待无关的 watch 事件。
   - 若该 role group 在截止时间前被重新加回 Spec，注解会被清除，下次再次成为孤儿时可重新获得完整宽限期。
-  - 默认值 `0` 表示不写注解，孤儿资源立即删除。
+  - 属于**其他**集群的主资源永远不会被打注解（撞名时那会去修改一个无关对象），因而也没有时间戳可用来计算宽限期。此时本轮直接放行而不是推迟：每次删除各自都会做所有权检查，外部对象会被跳过，本集群在该名字下真正拥有的资源则被回收。推迟只会让该 role group 在外部对象存在期间一直留在 `Status.RoleGroups` 中。
+  - 默认值 `0` 表示不写注解，删除状态机在首次发现时即启动。
 
 - **PVC 处理**：
   - 默认情况下，**PVC 在孤儿资源清理期间被保留**以保护数据。
@@ -383,8 +399,8 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 ### 4.4.4 并发冲突处理
 
 - **404 Not Found**：视为成功——资源已被其他进程删除。
-- **409 Conflict**：打注解 / 缩容路径是 Get-then-Update，会携带 `resourceVersion`，并发修改因此表现为冲突。cleaner **不会**在内部重试：错误被返回，本轮清理停止，由下一轮调和重新评估。（`retry.RetryOnConflict` 用在 *status 写入* 路径上的 `K8sUtil.UpdateStatusWithRetry`，而不是 cleaner 内部。）
-- **429 Too Many Requests**：清理路径上**没有**针对 429 的处理。只有*应用（apply）*路径会把 429 映射为固定的 `RequeueAfter`（`GenericReconcilerConfig.RateLimitRetryAfter`，默认 10s）——这是固定延迟，不是指数退避。
+- **409 Conflict**：打注解与缩容路径都是 Get-then-Update，会携带 `resourceVersion`，并发修改因此表现为冲突。**缩容会在内部重试**，包在 `retry.RetryOnConflict` 中（`scaleToZero` 每次尝试都重新读取活动的 StatefulSet）：apply 路径与 autoscaler 写的是同一个对象，一次常规 409 不该变成失败的一趟、把 role group 留在删了一半的状态。灰度删除的打注解不重试：其冲突被返回，该组本轮结束，由下一轮调和重新评估。
+- **429 Too Many Requests**：被映射为携带 `GenericReconcilerConfig.RateLimitRetryAfter`（默认 10 秒；由 `RoleGroupCleaner.WithRateLimitRetryAfter` 设置，产品自行构造的 cleaner 回退到同样的 10 秒）的 `*reconciler.RateLimitError`。与其他清理失败不同，429 会**立即中止整趟清理**——继续处理剩余各组只会给正在拒绝请求的 API server 火上浇油——并作为限流错误（而非清理错误）向上传出调和循环：限流不说明集群状态，因此它只产生一次 `RequeueAfter` 退避，而不会把健康集群标记为 `Degraded`（见 §4.8.4）。这是固定延迟，不是指数退避。
 - **状态同步**：清理与 CR Status 并非原子更新。cleaner 只在内存中裁剪真正删除掉的 `Status.RoleGroups` 条目，由调和末尾的 status 更新持久化。若该写入失败，下一轮调和会重新评估同一批孤儿——删除是幂等的，重复执行是安全的。
 - **事件**：接线了 `EventManager`（`RoleGroupCleaner.WithEventManager`）时，每个被删除的资源都会发出 `Normal`/`Deleted` 事件；否则删除只体现在 operator 日志中。
 
@@ -444,7 +460,12 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 - **标准实现**：
   - `VectorSidecarProvider`（位于 `pkg/vector/`）：**共享日志管道的唯一所有者**。它创建有大小限制的共享日志 `emptyDir`，以读写方式挂载到声明的生产者容器（产品在此写入日志文件），同样以读写方式挂载到 Vector agent 容器（agent 是先于生产者启动的 native init container，会预创建每个生产者的容器级日志目录——log4j 1.x 与 Python 的文件 handler 不会创建父目录），并注入 agent。配置生成（`RenderVectorConfig`）与聚合器发现（`DiscoverAggregatorAddress`）是同包内独立的纯函数。它声明 `SidecarPhasePipeline`，因此总在生产者容器就位之后注入；其 `Validate` 要求目标 ConfigMap 存在**且带有 `vector.yaml` 键**——否则 agent 会挂上一个没有配置的 ConfigMap 并立即失败。
   - `JmxExporterSidecarProvider`（位于 `pkg/sidecar/`）：注入 Prometheus JMX Exporter agent 并暴露指标端口。
-- **工作流程**：`GenericReconciler` 仅在启用 agent **且**至少声明了一个生产者时才注册 Vector provider（配置生产者容器名与日志卷大小）；否则告警并跳过，因此无内容可采集的 agent 永远不会产生非法 Pod。随后 `BaseRoleGroupHandler` 在 StatefulSet 构建后调用 `SidecarManager` 注入 Containers、Volumes 和 VolumeMounts。对于通过 `VectorAggregatorProvider` 暴露聚合器 ConfigMap 的 CR，框架还会将 `vector.yaml` 生成到角色组 ConfigMap 中——使生产者、消费者与配置在同一处保持一致，而非分散在各产品 operator 中。
+- **工作流程**：`GenericReconciler` 仅在**三道闸门全部通过**时才注册 Vector provider（配置生产者容器名与日志卷大小）。任一闸门不通过都意味着该 sidecar 无法完成本职工作，于是不注册 provider，集群其余部分继续收敛：
+    1. **该 role group 启用了 agent**（`logging.enableVectorAgent`，取 role/role group 合并后的结果）。
+    2. **handler 的 `LoggingProducers` 至少声明了一个生产者**。无内容可采集的 agent 只会挂上一条空管道；调和器记录这一不一致并跳过，使"启用"与"生产者声明"在同一处保持一致。
+    3. **确实有一方提供 `vector.yaml`。** sidecar 运行的是 `vector --config <mount>/vector.yaml`，因此只有当该键确实会被写进角色组 ConfigMap 时才注入：要么 **CR** 实现 `reconciler.VectorAggregatorProvider`（由框架渲染该文件），要么 **role group handler** 实现 `reconciler.VectorConfigProvider` 且 `ProvidesVectorConfig(roleName)` 返回 true（由产品自行写入）。两者皆无时，注册 provider 会导致 sidecar 校验（见本节"依赖校验"）每轮失败，仅仅因为某个产品没有接入 Vector 就中止整个集群的调和。因此它被当作真正的产品配置错误来上报：在 CR 上发出 `Warning`/`VectorSidecarSkipped` 事件，指明 role group 与这两个接口，然后调和继续。
+
+  随后 `BaseRoleGroupHandler` 在 StatefulSet 构建后调用 `SidecarManager` 注入 Containers、Volumes 和 VolumeMounts。第 3 道闸门的第一个分支是框架端到端拥有的那条路径：对于暴露聚合器 ConfigMap 的 CR，调和器解析聚合器地址并把 `vector.yaml` 生成到角色组 ConfigMap 中——使生产者、消费者与配置在同一处保持一致，而非分散在各产品 operator 中。在该分支内部，`VectorAggregatorConfigMapName()` 为空、或地址无法发现，都是硬错误而非跳过：CR 既已声明由框架提供配置，那么交付一个无处投递的 Vector sidecar，还不如大声失败。
 
 ### 4.6.3 核心价值
 
@@ -474,7 +495,7 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
   - 支持的 Kind：`DependencyConfigMap` 与 `DependencySecret`。`Dependency.Namespace` 为空时默认取 CR 所在命名空间；`Name` 为空本身即为错误。
   - 钩子为 nil（默认）时，**完全不做任何依赖检查**。
 - **在调和循环中的位置**：该检查在 cluster 级 `PreReconcile` 扩展之后、**任何 role 被调和之前**执行，因此缺失对象会以 `DependencyValidation` 调和错误中止本轮，映射为 `Degraded` 条件与 `Warning` 事件，本轮不会创建任何 Pod。
-- **DependencyResolver**：钩子背后的辅助组件。它导出的方法——`ValidateConfigMap`、`ValidateSecret`、`ValidateS3Connection`、`ValidateDatabaseConnection`、`ValidateZKConnection`、`ValidateEndpointFormat`、`ParseConnectionStrings`——也可由产品代码直接调用（例如在 `ClusterExtension.PreReconcile` 中）做比"存在性"更丰富的检查。失败返回 `*DependencyError`，由产品映射到自己的条件上。
+- **DependencyResolver**：钩子背后的辅助组件。它导出的方法——`ValidateConfigMap`、`ValidateSecret`、`ValidateS3Connection`、`ValidateDatabaseConnection`、`ValidateZKConfig`（`ValidateZKConnection` 是转发到它的过时别名）、`ValidateEndpointFormat`、`ParseConnectionStrings`——也可由产品代码直接调用（例如在 `ClusterExtension.PreReconcile` 中）做比"存在性"更丰富的检查。失败返回 `*DependencyError`，由产品映射到自己的条件上。
   - `DependencyResolver.Validate(ctx, spec)` 是为源码兼容保留的稳定 **no-op**，调和流程已不再调用它，请不要依赖它做任何检查。
 
 ### 4.7.3 核心价值
@@ -522,9 +543,9 @@ watch 只覆盖框架自身拥有的资源类型（`StatefulSet`、`ConfigMap`�
 
 - **成功路径**上，`Reconcile` 返回 `ctrl.Result{RequeueAfter: d}`，其中 `d` 取以下两者中**最早的正值**：
   1. `HealthCheckInterval`（默认 120 秒）——周期性健康检查节奏；
-  2. cleaner 返回的最近一个待生效**灰度删除截止时间**（§4.4.3），即距下一个孤儿 role group 可删除的剩余时间。
+  2. cleaner 返回的最近一次待办唤醒（§4.4.2 第 7 步）——尚未走完的**灰度删除截止时间**（距下一个孤儿 role group 可删除的剩余时间），或已在进行中的删除的**排空轮询间隔**，取更早者。
 
-  当灰度删除截止时间早于健康检查节奏时以前者为准，从而保证延迟删除按时执行。若两者都非正（`HealthCheckInterval` 设为负值且没有待处理项），`d` 为 `0`——不做周期性唤醒，完全由 watch 驱动。
+  当清理的截止时间早于健康检查节奏时以前者为准，从而保证延迟删除按时执行、多趟排空按自己的时钟推进，而不必等待无关的 watch 事件。若两者都非正（`HealthCheckInterval` 设为负值且没有待处理项），`d` 为 `0`——不做周期性唤醒，完全由 watch 驱动。
 - **429 限流路径**上，`Reconcile` 返回 `RequeueAfter: RateLimitRetryAfter`（默认 10 秒）且 error 为 nil，因此限流不会产生 `Degraded` 条件和错误事件。
 - **错误路径**上（含被捕获的 panic），`Reconcile` 返回错误，由 controller-runtime 的限速器施加指数退避，不设置 `RequeueAfter`——两者同时设置没有意义。
 - **暂停路径**上（`reconciliationPaused: true`），循环返回 `ctrl.Result{}` 且不重新入队：在用户改动 CR 之前不会有任何变化，而改动本身就会产生 watch 事件。
@@ -639,7 +660,7 @@ Day-2 运维（维护、调试、紧急停止）需要对 Operator 行为进行�
   - **非法的 `podOverrides`**：无法解析或 patch 失败的层会被记录到 `MergedConfig.PodOverrideErrors` 并以 `Warning` 事件暴露；该层被跳过，但不会毫无痕迹地消失。
 
 - **并发控制**：
-  - **status 写入上的乐观锁**：status 写入直接使用内存中的 CR，不先重新获取——重取会替换整个 status 段，把扩展钩子在本轮算出的产品自有字段一并丢弃（`ClusterInterface` 只暴露内嵌的通用 status，框架经由 `GetStatus` 返回的指针原地修改它——不存在能整体替换该段的 setter）。遇到 409 时只刷新 `resourceVersion`（配置了未缓存的 `APIReader` 时走它，因为 informer 缓存按定义还没看到那次竞争写入），随后带着本轮的 status 原样重试。这是 last-writer-wins：因为控制器是自身 CR status 的唯一写者，所以它是正确的；代价是**其他**写者在读与写之间写入的 status 字段会被覆盖。`NotFound`（CR 在本轮中途被删除）按成功处理。注意 *cleaner* 不做冲突重试——见 §4.4.4。
+  - **status 写入上的乐观锁**：status 写入直接使用内存中的 CR，不先重新获取——重取会替换整个 status 段，把扩展钩子在本轮算出的产品自有字段一并丢弃（`ClusterInterface` 只暴露内嵌的通用 status，框架经由 `GetStatus` 返回的指针原地修改它——不存在能整体替换该段的 setter）。遇到 409 时只刷新 `resourceVersion`（配置了未缓存的 `APIReader` 时走它，因为 informer 缓存按定义还没看到那次竞争写入），随后带着本轮的 status 原样重试。这是 last-writer-wins：因为控制器是自身 CR status 的唯一写者，所以它是正确的；代价是**其他**写者在读与写之间写入的 status 字段会被覆盖。`NotFound`（CR 在本轮中途被删除）按成功处理。*cleaner* 对自己那次会被竞争的写入——孤儿 StatefulSet 的缩容到 0——采用同样的 `RetryOnConflict` 处理，见 §4.4.4。
   - **幂等性**：所有副作用操作（Create/Update/Delete）设计为幂等的。部分失败后的重试是安全的，不会导致重复资源。
 
 - **扩展容错**：
@@ -750,8 +771,7 @@ SDK 的核心设计复用了多种经典设计模式，以增强架构的灵活�
 
 - **`ClusterInterface`**：`client.Object` 加两个方法——`GetSpec()` 与 `GetStatus()`。凡是 Kubernetes 对象本就能回答的，都由内嵌的 `client.Object` 提供；SDK 唯一要求产品编写的，是把自己的 spec 与 status 投影到框架通用结构上的那两个方法。
 - **`ClusterResource[T ClusterInterface]`**：`ClusterInterface` 加 `DeepCopy() T`。它是*约束*，只用作 `GenericReconciler` 的类型参数，且由 controller-gen 生成的代码满足，无需任何手写实现。
-- **`RoleInterface`**：可选的 role 级描述接口（GetRoleName、GetRoleSpec、GetRoleGroups、GetOverrides）。调和器并不使用它。
-- **`RoleGroupHandler`**：定义产品算子实现的 `BuildResources()` 契约，用于生成 RoleGroup 特定的 Kubernetes 资源。
+- **`RoleGroupHandler`**：定义产品算子实现的 `BuildResources()` 契约，用于生成 RoleGroup 特定的 Kubernetes 资源。Role 级信息由 `RoleGroupBuildContext` **传入**，而不是通过一个产品必须实现的 role 接口拉取——这是接口隔离的极限：role 这一层对产品的方法开销为零。
 - **`RoleExtension` / `RoleGroupExtension`**：定义产品在 role 与 role group 级别定制行为所用的 Pre/PostReconcile 钩子。
 - **`ServiceHealthCheck`**：定义用于业务级就绪状态的健康检查契约。
 
@@ -875,12 +895,12 @@ type ConfigGenerator struct {
 │     │   ├── Build/Apply Resources (ordered, see below)      │
 │     │   └── RoleGroup PostReconcile Extensions (Hook)       │
 │     └── Role PostReconcile Extensions (Hook)                │
-│  4. Cleanup Orphans (-> gray-delete deadline)               │
+│  4. Cleanup Orphans (one pass -> pending wakeup)            │
 │  5. Health Check -> Status Conditions                       │
 │  6. PostReconcile Extensions (Hook)                         │
 │     └── Product-specific post-processing                    │
 │  7. Final Status Update (skipped if deep-equal)             │
-│  8. Requeue = min(health cadence, gray deadline)            │
+│  8. Requeue = min(health cadence, cleanup wakeup)           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -1073,8 +1093,8 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
   - **核心优势**：编译时类型安全，减少样板代码，提高开发效率。
 
 - **删除 role group 后残留孤儿资源**
-  - **解决方案**：对比 Spec 与 Status 快照，通过 ownerReferences 校验归属，并按固定顺序删除孤儿资源；可选的灰度删除宽限期会推迟删除并安排重新入队。
-  - **核心优势**：高效精确，避免误删，确保状态收敛。
+  - **解决方案**：对比 Spec 与 Status 快照，通过 ownerReferences 校验归属，再用跨多轮的状态机退役孤儿资源——缩容到 0、有序排空，然后按固定顺序删除，且每一步确认消失后才发起下一步；可选的灰度删除宽限期会推迟整个序列，调和循环则为待办项安排重新入队。
+  - **核心优势**：高效精确，避免误删与 Pod 粗暴终止，确保状态收敛。
 
 - **多产品重复的配置验证/默认值逻辑**
   - **解决方案**：Webhook 分为通用和特定逻辑；SDK 提供通用工具，产品侧实现特定接口。
@@ -1117,7 +1137,5 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 
 - 支持 **ConversionWebhook** 实现平滑的 CRD 版本升级。
 - 添加监控指标统计扩展执行时间、资源清理次数等，便于故障排除。
-- 孤儿清理的有序排空：等待 StatefulSet 就绪副本降为 0，并在发起下一次删除前确认上一次已完成（当前清理是尽力而为的单趟流程，§4.4.3）。
-- cleaner 内部的冲突/限流韧性（`RetryOnConflict`、429 退避），目前这类处理只存在于 status 写入与资源应用路径上。
 - 对标 `pkg/s3` 的 `pkg/database` 解析器（构造 JDBC URL 并提供凭据卷）。
 - 可选的 finalizer 支持，使集群删除（而不仅是 role group 变成孤儿）也能执行 SDK 的清理逻辑，例如删除 PVC。
