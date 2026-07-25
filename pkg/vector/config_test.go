@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 )
 
 func defaultConfigData() VectorConfigData {
@@ -107,6 +109,100 @@ func TestRenderVectorConfig_LogDirTrailingSlash(t *testing.T) {
 	}
 	if strings.Contains(result, "/var/log/app*/") {
 		t.Errorf("RenderVectorConfig() rendered an unnormalized glob (missing slash)")
+	}
+}
+
+// TestRenderVectorConfig_EscapesInterpolatedValues asserts that a value carrying a quote or a
+// line break stays inside its scalar: unescaped, it would close the YAML string (or the VRL
+// statement) and emit a config Vector cannot load.
+func TestRenderVectorConfig_EscapesInterpolatedValues(t *testing.T) {
+	data := defaultConfigData()
+	data.AggregatorAddress = "agg\":9000\nplayground: true"
+	data.Namespace = `ns"; .injected = "yes`
+	data.ClusterName = "cluster\nname"
+	data.RoleName = `role\path`
+
+	result, err := RenderVectorConfig(data)
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	checks := []string{
+		`address: "agg\":9000\nplayground: true"`,
+		`.namespace = "ns\"; .injected = \"yes"`,
+		`.cluster = "cluster\nname"`,
+		`.role = "role\\path"`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(result, check) {
+			t.Errorf("RenderVectorConfig() missing escaped value %q, got:\n%s", check, result)
+		}
+	}
+
+	// Every rendered line must still belong to the document: an unescaped break would have
+	// produced a top-level "playground: true" line of its own.
+	for _, line := range strings.Split(result, "\n") {
+		if line == "playground: true" {
+			t.Error("RenderVectorConfig() let an interpolated value escape into a config line")
+		}
+	}
+}
+
+// TestRenderVectorConfig_RejectsUnquotableLogDir asserts LogDir is refused rather than emitted
+// into the source globs and the VRL raw-string regex, neither of which can escape these.
+func TestRenderVectorConfig_RejectsUnquotableLogDir(t *testing.T) {
+	for _, logDir := range []string{"/var/log\n", "/var/'log'/", `/var/"log"/`} {
+		data := defaultConfigData()
+		data.LogDir = logDir
+		if _, err := RenderVectorConfig(data); err == nil {
+			t.Errorf("RenderVectorConfig() expected error for LogDir %q, got nil", logDir)
+		}
+	}
+}
+
+// TestRenderVectorConfig_RegexQuotesLogDir asserts the container/file extraction regex treats
+// LogDir literally: an unquoted metacharacter would widen the match beyond the log directory.
+func TestRenderVectorConfig_RegexQuotesLogDir(t *testing.T) {
+	data := defaultConfigData()
+	data.LogDir = "/var/log.d/"
+
+	result, err := RenderVectorConfig(data)
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	want := `parse_regex!(.file, r'^/var/log\.d/(?P<container>.*?)/(?P<file>.*?)$')`
+	if !strings.Contains(result, want) {
+		t.Errorf("RenderVectorConfig() missing regex-quoted LogDir %q, got:\n%s", want, result)
+	}
+}
+
+// TestRenderVectorConfig_SourceGlobsMatchLogFileSuffixes is the guard that keeps the collector
+// and the producers in sync: the file appenders name their files from
+// productlogging.LogFileSuffix, so every supported framework must have a source glob for that
+// exact suffix. Adding a framework without a source fails here instead of silently shipping no
+// logs for it.
+func TestRenderVectorConfig_SourceGlobsMatchLogFileSuffixes(t *testing.T) {
+	result, err := RenderVectorConfig(defaultConfigData())
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	frameworks := []productlogging.LoggingFramework{
+		productlogging.LoggingFrameworkLog4j,
+		productlogging.LoggingFrameworkLogback,
+		productlogging.LoggingFrameworkLog4j2,
+		productlogging.LoggingFrameworkPython,
+	}
+	for _, framework := range frameworks {
+		suffix := productlogging.LogFileSuffix(framework)
+		if suffix == "" {
+			t.Fatalf("productlogging.LogFileSuffix(%q) is empty", framework)
+		}
+		glob := "/kubedoop/log/*/*" + suffix
+		if !strings.Contains(result, glob) {
+			t.Errorf("RenderVectorConfig() has no source glob %q for framework %q", glob, framework)
+		}
 	}
 }
 

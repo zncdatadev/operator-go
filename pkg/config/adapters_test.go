@@ -170,10 +170,6 @@ var _ = Describe("unescapeProperties", func() {
 	})
 
 	Describe("Key unescaping", func() {
-		// Note: Properties adapter finds separator before unescaping,
-		// so keys with escaped separators are not fully supported in parsing.
-		// The unescapeProperties function still handles them when called directly.
-
 		It("should unescape special characters in keys", func() {
 			// Test via marshal/unmarshal round-trip which handles this correctly
 			adapter := config.NewPropertiesAdapter()
@@ -248,10 +244,40 @@ var _ = Describe("unescapeProperties", func() {
 			Expect(unmarshaled).To(Equal(original))
 		})
 
-		// Note: Keys with special characters (spaces, equals, colons) are escaped
-		// during marshaling, but the parser finds separators before unescaping,
-		// so round-trip for such keys is not fully supported.
-		// Values with special characters round-trip correctly.
+		// Keys carrying a separator are escaped on the way out ("a\=b"), so the parser must skip
+		// escaped separators to find the real split point; a value ending in a backslash is
+		// escaped to an even count, which must not read as a line continuation.
+		DescribeTable("should round-trip keys and values a naive parser splits or drops",
+			func(key, value string) {
+				adapter := config.NewPropertiesAdapter()
+				original := map[string]string{
+					key:      value,
+					"plain":  "kept",
+					"second": "also kept",
+				}
+				marshaled, err := adapter.Marshal(original)
+				Expect(err).ToNot(HaveOccurred())
+
+				unmarshaled, err := adapter.Unmarshal(marshaled)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(unmarshaled).To(Equal(original))
+			},
+			Entry("equals sign in key", "a=b", "v1"),
+			Entry("colon in key", "a:b", "v1"),
+			Entry("space in key", "a b", "v1"),
+			Entry("all separators in key", "a=b:c d", "v1"),
+			Entry("value ending in a backslash", "zlast", `C:\`),
+			Entry("value ending in two backslashes", "zlast", `C:\\`),
+			Entry("empty value", "zlast", ""),
+		)
+
+		It("should keep an entry whose value ends the input on a continuation", func() {
+			adapter := config.NewPropertiesAdapter()
+			// The input ends mid-continuation (no terminating line); the entry is still real.
+			result, err := adapter.Unmarshal("key=value\\")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("key", "value"))
+		})
 
 		It("should round-trip values with mixed escapes", func() {
 			adapter := config.NewPropertiesAdapter()
@@ -524,6 +550,23 @@ var _ = Describe("XMLAdapter", func() {
 })
 
 var _ = Describe("YAMLAdapter", func() {
+	Describe("scalar typing", func() {
+		It("emits values that resolve to another YAML type without quotes", func() {
+			// configOverrides is map[string]map[string]string, but the generated file is read by
+			// the product: `port: 8080` has to stay a number there.
+			out, err := config.NewYAMLAdapter().Marshal(map[string]string{"port": "8080", "debug": "true"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring("port: 8080"))
+			Expect(out).To(ContainSubstring("debug: true"))
+		})
+
+		It("still quotes an empty value, which would otherwise read back as null", func() {
+			out, err := config.NewYAMLAdapter().Marshal(map[string]string{"empty": ""})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring(`empty: ""`))
+		})
+	})
+
 	var adapter *config.YAMLAdapter
 
 	BeforeEach(func() {
@@ -554,13 +597,16 @@ var _ = Describe("YAMLAdapter", func() {
 			Expect(result).To(BeEmpty())
 		})
 
-		It("should quote values with special characters", func() {
+		It("should keep values with special characters parseable", func() {
 			data := map[string]string{
 				"key": "value:with:colons",
 			}
 			result, err := adapter.Marshal(data)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(result).To(ContainSubstring(`"`))
+
+			recovered, err := adapter.Unmarshal(result)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(recovered).To(Equal(data))
 		})
 
 		It("should handle empty values", func() {
@@ -571,6 +617,40 @@ var _ = Describe("YAMLAdapter", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring(`key: ""`))
 		})
+
+		It("should sort keys alphabetically", func() {
+			data := map[string]string{
+				"zebra":  "z",
+				"alpha":  "a",
+				"middle": "m",
+			}
+			result, err := adapter.Marshal(data)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal("alpha: a\nmiddle: m\nzebra: z\n"))
+		})
+
+		// The emitted document must survive a real YAML parser: a hand-rolled quoting pass
+		// leaves invalid escapes ("C:\data"), raw newlines inside quotes and unquoted keys.
+		DescribeTable("round-trips values a naive quoter corrupts",
+			func(key, value string) {
+				data := map[string]string{key: value}
+				marshaled, err := adapter.Marshal(data)
+				Expect(err).ToNot(HaveOccurred())
+
+				recovered, err := adapter.Unmarshal(marshaled)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(recovered).To(Equal(data))
+			},
+			Entry("backslash in value", "win", `C:\data:x`),
+			Entry("newline in value", "multi", "a\nb"),
+			Entry("double quote in value", "quoted", `say "hi"`),
+			Entry("surrounding spaces in value", "padded", "  pad  "),
+			Entry("boolean-looking value", "flag", "true"),
+			Entry("integer-looking value", "num", "123"),
+			Entry("null-looking value", "nothing", "null"),
+			Entry("separator characters in key", "k e:y", "v"),
+			Entry("hash in value", "commented", "a # b"),
+		)
 	})
 
 	Describe("Unmarshal", func() {
@@ -608,6 +688,19 @@ var _ = Describe("YAMLAdapter", func() {
 			result, err := adapter.Unmarshal(content)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "quoted value"))
+		})
+
+		It("should reject nested structures instead of flattening them", func() {
+			content := "outer:\n  inner: value\n"
+			_, err := adapter.Unmarshal(content)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("only flat key-value documents are supported"))
+		})
+
+		It("should reject a document that is not a mapping", func() {
+			_, err := adapter.Unmarshal("- a\n- b\n")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("expected a key-value mapping"))
 		})
 	})
 })
@@ -880,6 +973,37 @@ var _ = Describe("EnvAdapter", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(ContainSubstring(`KEY=""`))
 		})
+
+		// A double-quoted shell value still expands parameters and runs command substitutions,
+		// so a config value must not reach the file with an active '$' or backtick.
+		DescribeTable("should neutralize shell expansion in values",
+			func(value, expected string) {
+				adapter.ExportPrefix = true
+				result, err := adapter.Marshal(map[string]string{"KEY": value})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).To(Equal("export KEY=" + expected + "\n"))
+
+				recovered, err := adapter.Unmarshal(result)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(recovered).To(HaveKeyWithValue("KEY", value))
+			},
+			Entry("parameter reference", "pa$word", `"pa\$word"`),
+			Entry("command substitution", "$(id)", `"\$(id)"`),
+			Entry("backtick substitution", "x`id`y", "\"x\\`id\\`y\""),
+		)
+
+		DescribeTable("should reject keys that are not shell variable names",
+			func(key string) {
+				_, err := adapter.Marshal(map[string]string{key: "value"})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("invalid environment variable name"))
+			},
+			Entry("dot", "my.key"),
+			Entry("dash", "my-key"),
+			Entry("leading digit", "1KEY"),
+			Entry("space", "MY KEY"),
+			Entry("empty", ""),
+		)
 	})
 
 	Describe("Unmarshal", func() {
@@ -951,6 +1075,24 @@ var _ = Describe("INIAdapter", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(Equal("apple = first\nzebra = last\n"))
 		})
+
+		// INI has no escape syntax, so an entry that cannot be written unambiguously must fail
+		// rather than produce a file that reads back as different (or extra) entries.
+		DescribeTable("should reject entries INI cannot represent",
+			func(key, value, wantMessage string) {
+				_, err := adapter.Marshal(map[string]string{key: value})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring(wantMessage))
+			},
+			Entry("newline in value injects an entry", "k", "v\ninjected = evil", "line breaks cannot be represented"),
+			Entry("carriage return in value", "k", "v\rx", "line breaks cannot be represented"),
+			Entry("newline in key", "k\nx", "v", "line breaks cannot be represented"),
+			Entry("equals in key moves the split", "a=b", "v", "separator characters"),
+			Entry("colon in key moves the split", "a:b", "v", "separator characters"),
+			Entry("key reads as a section header", "[section]", "v", "section header or a comment"),
+			Entry("key reads as a # comment", "#k", "v", "section header or a comment"),
+			Entry("key reads as a ; comment", ";k", "v", "section header or a comment"),
+		)
 	})
 
 	Describe("Unmarshal", func() {

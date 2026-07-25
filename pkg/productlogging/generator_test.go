@@ -124,7 +124,7 @@ var _ = Describe("LoggingGenerator", func() {
 				}
 				content, err := generator.Generate(configs)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(content).To(ContainSubstring("loggers=com.example"))
+				Expect(content).To(ContainSubstring("loggers=com_example"))
 				Expect(content).To(ContainSubstring("logger.com_example.name=com.example"))
 				Expect(content).To(ContainSubstring("logger.com_example.level=DEBUG"))
 			})
@@ -388,9 +388,23 @@ var _ = Describe("GenerateLog4j2", func() {
 		Expect(content).To(ContainSubstring("appenders=console"))
 		Expect(content).To(ContainSubstring("appender.console.type=Console"))
 		Expect(content).To(ContainSubstring("appender.console.layout.type=PatternLayout"))
-		Expect(content).To(ContainSubstring("loggers=com.example.app"))
+		Expect(content).To(ContainSubstring("loggers=com_example_app"))
 		Expect(content).To(ContainSubstring("logger.com_example_app.name=com.example.app"))
 		Expect(content).To(ContainSubstring("logger.com_example_app.level=INFO"))
+	})
+
+	It("lists the sanitized ids in loggers=, matching the logger.<id>.* keys", func() {
+		configs := map[string]productlogging.LoggerConfig{
+			"com.example-app": {Name: "com.example-app", Level: productlogging.LogLevelDebug},
+			"org$apache":      {Name: "org$apache", Level: productlogging.LogLevelWarn},
+		}
+		content, err := productlogging.GenerateLog4j2(configs)
+		Expect(err).ToNot(HaveOccurred())
+		// A pre-2.6 property parser discovers loggers from this list, so every entry must be the
+		// id the per-logger keys use; the raw name would resolve to nothing.
+		Expect(content).To(ContainSubstring("loggers=com_example_app,org_apache"))
+		Expect(content).To(ContainSubstring("logger.com_example_app.name=com.example-app"))
+		Expect(content).To(ContainSubstring("logger.org_apache.name=org$apache"))
 	})
 
 	It("binds both stdout and file appenderRefs to the root logger when file output is enabled", func() {
@@ -521,7 +535,47 @@ var _ = Describe("GeneratePythonLogging", func() {
 		Expect(content).To(ContainSubstring("'middle'"))
 		Expect(content).To(ContainSubstring("'zebra'"))
 	})
+
+	// A named logger that carries the root handlers AND propagates emits every record twice:
+	// once through its own handlers, once more through the root's.
+	DescribeTable("keeps the handlers on the root logger only",
+		func(opts productlogging.RenderOptions, rootHandlers string) {
+			gen, err := productlogging.GeneratorFor(productlogging.LoggingFrameworkPython)
+			Expect(err).ToNot(HaveOccurred())
+			content, err := gen.Render(
+				productlogging.LogConfig{Loggers: map[string]productlogging.LogLevel{
+					"com.example.app": productlogging.LogLevelDebug,
+				}},
+				opts,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			loggersBlock := pythonLoggersBlock(content)
+			Expect(loggersBlock).To(ContainSubstring("'com.example.app'"))
+			Expect(loggersBlock).To(ContainSubstring("'level': 'DEBUG'"))
+			Expect(loggersBlock).To(ContainSubstring("'propagate': True"))
+			Expect(loggersBlock).ToNot(ContainSubstring("'handlers'"))
+
+			Expect(content).To(ContainSubstring("'root': {\n        'level': 'INFO',\n        'handlers': " + rootHandlers))
+		},
+		Entry("console only", productlogging.RenderOptions{}, "['console']"),
+		Entry("with file appender",
+			productlogging.RenderOptions{FileOutputPath: "/kubedoop/log/app/app.py.json"},
+			"['console', 'file']"),
+	)
 })
+
+// pythonLoggersBlock returns the 'loggers' section of a rendered python dictConfig, i.e. the
+// per-logger entries without the 'handlers' / 'root' sections around them.
+func pythonLoggersBlock(content string) string {
+	const marker = "    'loggers': {\n"
+	start := strings.Index(content, marker)
+	Expect(start).ToNot(Equal(-1), "rendered config has no 'loggers' section")
+	rest := content[start+len(marker):]
+	end := strings.Index(rest, "    'root': {")
+	Expect(end).ToNot(Equal(-1), "rendered config has no 'root' section")
+	return rest[:end]
+}
 
 var _ = Describe("LogLevel constants", func() {
 	It("should have correct LogLevelTrace value", func() {

@@ -84,19 +84,24 @@ func (a *PropertiesAdapter) Marshal(data map[string]string) (string, error) {
 // - key value
 // - Comments starting with # or !
 // - Line continuations with backslash
+//
+// It parses the output of Marshal back into the original map, including keys holding a
+// separator character and values ending in a backslash. Unescaped surrounding whitespace is
+// not preserved: a value written with a leading or trailing space is read back trimmed.
 func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	scanner := bufio.NewScanner(strings.NewReader(data))
-	var line string
 	var continuedLine string
 
 	for scanner.Scan() {
-		line = scanner.Text()
+		line := scanner.Text()
 
-		// Handle line continuation
-		if strings.HasSuffix(line, "\\") {
-			continuedLine += strings.TrimSuffix(line, "\\")
+		// A trailing backslash continues the line only when it is not itself escaped: an even
+		// count ends in an escaped backslash (e.g. the value "C:\" is written as "C:\\"), which
+		// terminates the entry.
+		if trailingBackslashes(line)%2 == 1 {
+			continuedLine += line[:len(line)-1]
 			continue
 		}
 
@@ -105,43 +110,73 @@ func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 			continuedLine = ""
 		}
 
-		// Skip empty lines and comments
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
-			continue
-		}
-
-		// Find the separator
-		sepIndex := -1
-		for i, c := range line {
-			if c == '=' || c == ':' || (c == ' ' && i > 0) {
-				sepIndex = i
-				break
-			}
-		}
-
-		if sepIndex == -1 {
-			// Key with no value
-			result[unescapeProperties(line)] = ""
-			continue
-		}
-
-		key := strings.TrimSpace(line[:sepIndex])
-		value := strings.TrimSpace(line[sepIndex+1:])
-
-		// Don't trim the value - preserve leading spaces if escaped
-		if len(value) > 0 && value[0] == ' ' {
-			value = value[1:]
-		}
-
-		result[unescapeProperties(key)] = unescapeProperties(value)
+		parsePropertiesLine(line, result)
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, common.ConfigParseError("properties", fmt.Errorf("failed to scan properties: %w", err))
 	}
 
+	// A continuation that is never terminated (the input ends on a backslash) still carries an
+	// entry; dropping it would silently lose the last key.
+	if continuedLine != "" {
+		parsePropertiesLine(continuedLine, result)
+	}
+
 	return result, nil
+}
+
+// parsePropertiesLine parses one logical (continuation-joined) line into result. Empty lines
+// and comments contribute nothing.
+func parsePropertiesLine(line string, result map[string]string) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+		return
+	}
+
+	sepIndex := propertiesSeparatorIndex(line)
+	if sepIndex == -1 {
+		// Key with no value
+		result[unescapeProperties(line)] = ""
+		return
+	}
+
+	key := strings.TrimSpace(line[:sepIndex])
+	value := strings.TrimSpace(line[sepIndex+1:])
+	result[unescapeProperties(key)] = unescapeProperties(value)
+}
+
+// propertiesSeparatorIndex returns the byte index of the first UNESCAPED key/value separator,
+// or -1 when the line carries a key only. Escaped separators belong to the key (Marshal writes
+// "a\=b=v" for the key "a=b"), so skipping them is what makes the round trip work.
+func propertiesSeparatorIndex(line string) int {
+	escaped := false
+	for i, c := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch c {
+		case '\\':
+			escaped = true
+		case '=', ':':
+			return i
+		case ' ':
+			if i > 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// trailingBackslashes counts the consecutive backslashes at the end of s.
+func trailingBackslashes(s string) int {
+	n := 0
+	for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
+		n++
+	}
+	return n
 }
 
 // escapePropertiesKey escapes special characters in property keys.

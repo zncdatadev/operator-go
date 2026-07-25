@@ -18,8 +18,11 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 // EnvAdapter converts between map and environment variable format.
@@ -39,6 +42,9 @@ func NewEnvAdapter() *EnvAdapter {
 // The output format is:
 // KEY1=value1
 // KEY2=value2
+//
+// The output is meant to be sourced by a POSIX shell, so a key that is not a valid shell
+// variable name is an error rather than a line the shell would choke on (see validateEnvKey).
 func (a *EnvAdapter) Marshal(data map[string]string) (string, error) {
 	if len(data) == 0 {
 		return "", nil
@@ -55,10 +61,13 @@ func (a *EnvAdapter) Marshal(data map[string]string) (string, error) {
 
 	for _, key := range keys {
 		value := data[key]
+		if err := validateEnvKey(key); err != nil {
+			return "", err
+		}
 		if a.ExportPrefix {
 			sb.WriteString("export ")
 		}
-		sb.WriteString(escapeEnvKey(key))
+		sb.WriteString(key)
 		sb.WriteString("=")
 		sb.WriteString(escapeEnvValue(value))
 		sb.WriteString("\n")
@@ -111,19 +120,36 @@ func (a *EnvAdapter) Unmarshal(data string) (map[string]string, error) {
 	return result, nil
 }
 
-// escapeEnvKey escapes special characters in environment variable keys.
-func escapeEnvKey(s string) string {
-	// Environment variable keys typically don't need escaping
-	// but we ensure they're valid shell variable names
-	return s
+// envKeyPattern is the POSIX-portable shell variable name.
+var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateEnvKey rejects keys that are not valid shell variable names. Keys are never quoted or
+// escaped (the shell has no syntax for it), so an invalid name would produce a file that a
+// `source` of the output rejects with a syntax error — or, worse, that the shell reads as a
+// command.
+func validateEnvKey(s string) error {
+	if !envKeyPattern.MatchString(s) {
+		return common.ConfigParseError("env", fmt.Errorf(
+			"invalid environment variable name %q: must match %s", s, envKeyPattern))
+	}
+	return nil
 }
 
 // escapeEnvValue escapes special characters in environment variable values.
+//
+// The quoted form is double quotes, where a POSIX shell still performs parameter expansion
+// ("$VAR"), command substitution ("$(...)" and backticks) and line continuation. Every
+// character carrying that meaning is therefore backslash-escaped, so sourcing the output can
+// never expand or execute a config value. "\n", "\r" and "\t" are dotenv-style escapes rather
+// than literal bytes (unescapeEnvValue reverses them); a shell reads them back as the two
+// characters, not as the control character.
 func escapeEnvValue(s string) string {
 	// If value contains spaces, special chars, or is empty, wrap in quotes
 	if s == "" || strings.ContainsAny(s, " \t\n\r\"'$`\\") {
 		escaped := strings.ReplaceAll(s, "\\", "\\\\")
 		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+		escaped = strings.ReplaceAll(escaped, "$", "\\$")
+		escaped = strings.ReplaceAll(escaped, "`", "\\`")
 		escaped = strings.ReplaceAll(escaped, "\n", "\\n")
 		escaped = strings.ReplaceAll(escaped, "\r", "\\r")
 		escaped = strings.ReplaceAll(escaped, "\t", "\\t")

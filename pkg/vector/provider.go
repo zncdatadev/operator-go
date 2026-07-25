@@ -19,12 +19,13 @@ package vector
 import (
 	"context"
 	"fmt"
-	"path"
 	"strings"
 
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -99,10 +100,26 @@ func (p *VectorSidecarProvider) Name() string {
 	return p.name
 }
 
-// Validate validates that the Vector ConfigMap exists.
+// Phase implements sidecar.PhasedProvider. Vector mounts the shared log volume onto producer
+// containers that must already be present in the PodSpec, so it always injects after the
+// producer phase regardless of how it was registered.
+func (p *VectorSidecarProvider) Phase() int {
+	return sidecar.SidecarPhasePipeline
+}
+
+// Validate checks that the mounted ConfigMap exists and actually carries vector.yaml. Existence
+// alone is not enough: the framework only generates vector.yaml when the CR exposes an aggregator
+// address, otherwise the product is expected to supply it. Without the key the agent starts with
+// no configuration and crash-loops, so the missing file is reported here — at build time, against
+// the CR — rather than as an opaque pod failure.
 func (p *VectorSidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
-	if err := sidecar.ValidateConfigMapExists(ctx, c, namespace, p.configMapName); err != nil {
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: p.configMapName}, cm); err != nil {
 		return fmt.Errorf("vector config map %q not found: %w", p.configMapName, err)
+	}
+	if _, ok := cm.Data[VectorConfigFileName]; !ok {
+		return fmt.Errorf("vector config map %q has no %q key: the framework generates it only for CRs implementing VectorAggregatorProvider, otherwise the product must supply it",
+			p.configMapName, VectorConfigFileName)
 	}
 	return nil
 }
@@ -175,6 +192,12 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 
 	if len(config.VolumeMounts) > 0 {
 		sidecar.AddVolumeMounts(container, config.VolumeMounts)
+	}
+
+	// Caller-supplied mounts need backing volumes, otherwise the mount references a volume name
+	// that exists nowhere in the PodSpec and the API server rejects the whole workload.
+	if len(config.Volumes) > 0 {
+		sidecar.AddVolumes(podSpec, config.Volumes)
 	}
 
 	// Vector is a long-running sidecar: inject it as a native sidecar (init container with
@@ -255,9 +278,10 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 
 // vectorCommand builds the Vector container command. Vector runs as a native init container
 // (restartPolicy Always) so the kubelet starts it BEFORE the producer containers; that makes
-// it the right place to pre-create each declared producer's log directory
-// ("<LogDir>/<lowercased container>", the stable path convention from
-// productlogging.RenderConfigFile). log4j 1.x's RollingFileAppender and Python's FileHandler
+// it the right place to pre-create each declared producer's log directory. The directory comes
+// from productlogging.ContainerLogDir — the same function the file appenders are configured
+// from — so the pre-created path is the path the producer writes to. log4j 1.x's
+// RollingFileAppender and Python's FileHandler
 // do not create parent directories, so without this step their file appenders would fail to
 // open on startup. With no producers declared the command execs vector directly.
 func vectorCommand(producers []string) []string {
@@ -270,7 +294,7 @@ func vectorCommand(producers []string) []string {
 	}
 	dirs := make([]string, 0, len(producers))
 	for _, name := range producers {
-		dirs = append(dirs, path.Join(VectorLogMountPath, strings.ToLower(name)))
+		dirs = append(dirs, productlogging.ContainerLogDir(name))
 	}
 	script := "mkdir -p " + strings.Join(dirs, " ") +
 		" && exec " + VectorSidecarName + " --config " + VectorConfigMountPath + "/" + VectorConfigFileName

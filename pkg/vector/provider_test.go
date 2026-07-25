@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -97,14 +98,18 @@ func TestNewVectorSidecarProvider_WithDataVolumeSize(t *testing.T) {
 	}
 }
 
-func TestProvider_Validate_Success(t *testing.T) {
-	cm := &corev1.ConfigMap{
+func vectorConfigMap(namespace, name string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "test-ns",
-			Name:      "vector-config",
+			Namespace: namespace,
+			Name:      name,
 		},
+		Data: map[string]string{VectorConfigFileName: "sources: {}\n"},
 	}
-	c := newTestFakeClient(cm)
+}
+
+func TestProvider_Validate_Success(t *testing.T) {
+	c := newTestFakeClient(vectorConfigMap("test-ns", "vector-config"))
 	p := NewVectorSidecarProvider("test-product:latest")
 	if err := p.Validate(context.Background(), c, "test-ns"); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -119,17 +124,73 @@ func TestProvider_Validate_MissingConfigMap(t *testing.T) {
 	}
 }
 
-func TestProvider_Validate_CustomConfigMap(t *testing.T) {
+// A ConfigMap without vector.yaml would start the agent with no configuration, so it must fail
+// validation just like a missing ConfigMap.
+func TestProvider_Validate_MissingConfigKey(t *testing.T) {
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "test-ns",
-			Name:      "custom-config",
-		},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test-ns", Name: "vector-config"},
+		Data:       map[string]string{"other.yaml": "irrelevant"},
 	}
 	c := newTestFakeClient(cm)
+	p := NewVectorSidecarProvider("test-product:latest")
+	if err := p.Validate(context.Background(), c, "test-ns"); err == nil {
+		t.Fatal("Validate() expected error for ConfigMap without vector.yaml, got nil")
+	}
+}
+
+func TestProvider_Validate_CustomConfigMap(t *testing.T) {
+	c := newTestFakeClient(vectorConfigMap("test-ns", "custom-config"))
 	p := NewVectorSidecarProvider("test-product:latest", WithConfigMapName("custom-config"))
 	if err := p.Validate(context.Background(), c, "test-ns"); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestProvider_Phase(t *testing.T) {
+	if got := NewVectorSidecarProvider("test-product:latest").Phase(); got != sidecar.SidecarPhasePipeline {
+		t.Errorf("Phase() = %d, want %d (Vector must inject after its producers)", got, sidecar.SidecarPhasePipeline)
+	}
+}
+
+// A caller-supplied VolumeMount is useless — and makes the whole workload invalid — unless the
+// backing Volume reaches the PodSpec too.
+func TestProvider_Inject_CallerVolumes(t *testing.T) {
+	p := NewVectorSidecarProvider("test-product:latest")
+	podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "main-image"}}}
+	cfg := &sidecar.SidecarConfig{
+		Enabled:      true,
+		Volumes:      []corev1.Volume{{Name: "extra", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
+		VolumeMounts: []corev1.VolumeMount{{Name: "extra", MountPath: "/extra"}},
+	}
+
+	if err := p.Inject(podSpec, cfg); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	var found bool
+	for _, v := range podSpec.Volumes {
+		if v.Name == "extra" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("caller-supplied volume missing from the PodSpec; its VolumeMount would dangle")
+	}
+
+	c := vectorInitContainer(podSpec)
+	if c == nil {
+		t.Fatal("vector init container not injected")
+	}
+	var mounted bool
+	for _, m := range c.VolumeMounts {
+		if m.Name == "extra" {
+			mounted = true
+			break
+		}
+	}
+	if !mounted {
+		t.Error("caller-supplied volume mount missing from the vector container")
 	}
 }
 
@@ -335,6 +396,12 @@ func TestProvider_Inject_CommandPreCreatesProducerLogDirs(t *testing.T) {
 	script := cmd[2]
 	if !strings.Contains(script, "mkdir -p /kubedoop/log/main /kubedoop/log/sidekick") {
 		t.Errorf("script must pre-create lowercased per-producer log dirs, got %q", script)
+	}
+	// The pre-created directories must be the ones the file appenders are configured with, so
+	// they are derived from the same function rather than re-implemented here.
+	wantDirs := "mkdir -p " + productlogging.ContainerLogDir("Main") + " " + productlogging.ContainerLogDir("sidekick")
+	if !strings.Contains(script, wantDirs) {
+		t.Errorf("script must pre-create productlogging.ContainerLogDir paths %q, got %q", wantDirs, script)
 	}
 	if !strings.Contains(script, "exec vector --config "+VectorConfigMountPath+"/"+VectorConfigFileName) {
 		t.Errorf("script must exec vector with the mounted config, got %q", script)

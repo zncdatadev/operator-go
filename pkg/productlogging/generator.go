@@ -145,9 +145,9 @@ func GenerateLog4j(configs map[string]LoggerConfig) (string, error) {
 // appender.console.name=STDOUT
 // appender.console.layout.type=PatternLayout
 // appender.console.layout.pattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
-// loggers=com.example,org.apache
-// logger.com.example.name=com.example
-// logger.com.example.level=DEBUG
+// loggers=com_example,org_apache
+// logger.com_example.name=com.example
+// logger.com_example.level=DEBUG
 func GenerateLog4j2(configs map[string]LoggerConfig) (string, error) {
 	return renderLog4j2(LogConfig{Loggers: loggerConfigsToLevels(configs)}, RenderOptions{})
 }
@@ -499,12 +499,19 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 		return sb.String(), nil
 	}
 	names := sortedLoggerNames(cfg.Loggers)
+	// The "loggers" list names the property identifiers, not the logger names: each entry must
+	// be the same id the "logger.<id>.*" keys below use, otherwise a property parser that reads
+	// the list (log4j2 < 2.6) finds no matching keys and drops every configured logger.
+	ids := make([]string, 0, len(names))
+	for _, name := range names {
+		ids = append(ids, escapeLoggerName(name))
+	}
 	sb.WriteString("# Loggers\n")
 	sb.WriteString("loggers=")
-	sb.WriteString(strings.Join(names, ","))
+	sb.WriteString(strings.Join(ids, ","))
 	sb.WriteString("\n\n")
-	for _, name := range names {
-		safeName := escapeLoggerName(name)
+	for i, name := range names {
+		safeName := ids[i]
 		fmt.Fprintf(&sb, "logger.%s.name=%s\n", safeName, name)
 		fmt.Fprintf(&sb, "logger.%s.level=%s\n\n", safeName, cfg.Loggers[name])
 	}
@@ -571,10 +578,12 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 	if hasFile {
 		rootHandlers = "['console', 'file']"
 	}
+	// A named logger only carries its level: it propagates to the root logger, which owns the
+	// handlers. Attaching the root handlers here as well would emit every record twice (once
+	// per handler on the logger, once more after propagation).
 	for _, name := range sortedLoggerNames(cfg.Loggers) {
 		fmt.Fprintf(&sb, "        '%s': {\n", name)
 		fmt.Fprintf(&sb, "            'level': '%s',\n", toPythonLogLevel(cfg.Loggers[name]))
-		fmt.Fprintf(&sb, "            'handlers': %s,\n", rootHandlers)
 		sb.WriteString("            'propagate': True,\n")
 		sb.WriteString("        },\n")
 	}

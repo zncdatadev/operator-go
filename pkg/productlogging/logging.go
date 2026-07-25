@@ -54,8 +54,10 @@ type ContainerLogging struct {
 }
 
 // LogFileSuffix returns the framework-owned rolling log-file suffix for a producer container.
-// The suffix selects the Vector source that parses the file at the edge (the stable pipeline
-// globs "<LogDir>*/*.<suffix>"):
+// The suffix selects the Vector source that parses the file at the edge: pkg/vector renders its
+// source globs ("<LogDir>*/*<suffix>") from this function, so adding a framework here without a
+// matching source fails the vector render.
+//
 //   - log4j and logback write log4j 1.x XMLLayout events -> ".log4j.xml" (files_log4j),
 //   - log4j2 writes log4j2 XMLLayout events -> ".log4j2.xml" (files_log4j2),
 //   - python writes JSON lines -> ".py.json" (files_py).
@@ -89,7 +91,8 @@ func ContainerLogFileName(framework LoggingFramework, container string) string {
 
 // ContainerLogDir returns the per-container log directory ("<KubedoopLogDir>/<lowercased
 // container>") under which the container's rolling log file is written. The Vector sidecar
-// pre-creates this directory (it starts first) and extracts the .container field from it.
+// calls it too, to pre-create the directory (it starts first), and extracts the .container
+// field from the same path.
 func ContainerLogDir(container string) string {
 	return path.Join(constant.KubedoopLogDir, strings.ToLower(container))
 }
