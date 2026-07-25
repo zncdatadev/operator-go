@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var _ = Describe("ServiceAccountBuilder", func() {
@@ -101,5 +102,71 @@ var _ = Describe("ClusterRoleBindingBuilder", func() {
 		Expect(crb.RoleRef.Kind).To(Equal("ClusterRole"))
 		Expect(crb.RoleRef.Name).To(Equal("cluster-reader"))
 		Expect(crb.Subjects).To(HaveLen(1))
+	})
+})
+
+var _ = Describe("RBAC and ServiceAccount builder label semantics", func() {
+	// WithLabels used to replace the map and alias the caller's, unlike every other builder,
+	// so a second call silently dropped the first set of labels.
+	It("accumulates labels across calls on the ServiceAccount builder", func() {
+		input := map[string]string{"app": "test"}
+		b := builder.NewServiceAccountBuilder("sa", "ns").
+			WithLabels(input).
+			WithLabels(map[string]string{"team": "platform"}).
+			WithAnnotations(map[string]string{"a": "1"}).
+			WithAnnotations(map[string]string{"b": "2"})
+
+		sa := b.Build()
+		Expect(sa.Labels).To(HaveKeyWithValue("app", "test"))
+		Expect(sa.Labels).To(HaveKeyWithValue("team", "platform"))
+		Expect(sa.Annotations).To(HaveKeyWithValue("a", "1"))
+		Expect(sa.Annotations).To(HaveKeyWithValue("b", "2"))
+
+		// The caller's map is never aliased, so mutating the built object cannot reach it.
+		sa.Labels["injected"] = "true"
+		Expect(input).NotTo(HaveKey("injected"))
+		Expect(input).NotTo(HaveKey("team"))
+	})
+
+	It("accumulates labels across calls on the RBAC builders", func() {
+		role := builder.NewRoleBuilder("role", "ns").
+			WithLabels(map[string]string{"app": "test"}).
+			WithLabels(map[string]string{"team": "platform"}).
+			Build()
+		Expect(role.Labels).To(HaveKeyWithValue("app", "test"))
+		Expect(role.Labels).To(HaveKeyWithValue("team", "platform"))
+
+		rb := builder.NewRoleBindingBuilder("rb", "ns").
+			WithLabels(map[string]string{"app": "test"}).
+			WithLabels(map[string]string{"team": "platform"}).
+			Build()
+		Expect(rb.Labels).To(HaveLen(2))
+
+		cr := builder.NewClusterRoleBuilder("cr").
+			WithLabels(map[string]string{"app": "test"}).
+			WithLabels(map[string]string{"team": "platform"}).
+			Build()
+		Expect(cr.Labels).To(HaveLen(2))
+
+		crb := builder.NewClusterRoleBindingBuilder("crb").
+			WithLabels(map[string]string{"app": "test"}).
+			WithLabels(map[string]string{"team": "platform"}).
+			Build()
+		Expect(crb.Labels).To(HaveLen(2))
+	})
+
+	It("exposes a NamespacedName like the other builders", func() {
+		Expect(builder.NewServiceAccountBuilder("sa", "ns").NamespacedName()).To(Equal(
+			types.NamespacedName{Name: "sa", Namespace: "ns"}))
+		Expect(builder.NewRoleBuilder("role", "ns").NamespacedName()).To(Equal(
+			types.NamespacedName{Name: "role", Namespace: "ns"}))
+		Expect(builder.NewRoleBindingBuilder("rb", "ns").NamespacedName()).To(Equal(
+			types.NamespacedName{Name: "rb", Namespace: "ns"}))
+
+		// Cluster-scoped resources have no namespace.
+		Expect(builder.NewClusterRoleBuilder("cr").NamespacedName()).To(Equal(
+			types.NamespacedName{Name: "cr"}))
+		Expect(builder.NewClusterRoleBindingBuilder("crb").NamespacedName()).To(Equal(
+			types.NamespacedName{Name: "crb"}))
 	})
 })

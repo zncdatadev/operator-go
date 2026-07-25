@@ -267,5 +267,64 @@ var _ = Describe("HeadlessServiceBuilder", func() {
 			Expect(svc).NotTo(BeNil())
 			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
 		})
+
+		It("should publish not-ready addresses when requested", func() {
+			// Quorum systems need peer DNS before readiness; without it the members can never
+			// reach each other to become ready in the first place.
+			svc := headlessBuilder.
+				WithSelector(map[string]string{"app": "test"}).
+				WithPublishNotReadyAddresses(true).
+				Build()
+
+			Expect(svc.Spec.PublishNotReadyAddresses).To(BeTrue())
+		})
+
+		It("should not publish not-ready addresses by default", func() {
+			svc := headlessBuilder.WithSelector(map[string]string{"app": "test"}).Build()
+			Expect(svc.Spec.PublishNotReadyAddresses).To(BeFalse())
+		})
+	})
+})
+
+var _ = Describe("ServiceBuilder port fidelity and Build isolation", func() {
+	const (
+		name      = "isolation-svc"
+		namespace = "test-namespace"
+	)
+
+	It("preserves every field of a fully specified service port", func() {
+		appProtocol := "http"
+		svc := builder.NewServiceBuilder(name, namespace).
+			WithPorts([]corev1.ServicePort{{
+				Name:        "http",
+				Port:        8080,
+				TargetPort:  intstr.FromString("http"),
+				NodePort:    31234,
+				Protocol:    corev1.ProtocolTCP,
+				AppProtocol: &appProtocol,
+			}}).
+			Build()
+
+		Expect(svc.Spec.Ports).To(HaveLen(1))
+		Expect(svc.Spec.Ports[0].NodePort).To(Equal(int32(31234)))
+		Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromString("http")))
+		Expect(svc.Spec.Ports[0].AppProtocol).To(HaveValue(Equal("http")))
+	})
+
+	It("does not let a mutation of the built Service reach a second Build", func() {
+		b := builder.NewServiceBuilder(name, namespace).
+			WithLabels(map[string]string{"app": "test"}).
+			WithSelector(map[string]string{"app": "test"}).
+			AddPortSimple("http", 8080, corev1.ProtocolTCP)
+
+		first := b.Build()
+		first.Labels["extra"] = "true"
+		first.Spec.Selector["extra"] = "true"
+		first.Spec.Ports[0].Port = 9999
+
+		second := b.Build()
+		Expect(second.Labels).NotTo(HaveKey("extra"))
+		Expect(second.Spec.Selector).NotTo(HaveKey("extra"))
+		Expect(second.Spec.Ports[0].Port).To(Equal(int32(8080)))
 	})
 })

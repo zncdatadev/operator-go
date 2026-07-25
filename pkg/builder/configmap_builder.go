@@ -18,6 +18,7 @@ package builder
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/zncdatadev/operator-go/pkg/config"
 	corev1 "k8s.io/api/core/v1"
@@ -102,23 +103,24 @@ func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator 
 	return b, nil
 }
 
-// Build creates the ConfigMap.
+// Build creates the ConfigMap. Like the other builders, the returned object shares no map with
+// the builder, so mutating it (or building twice) cannot corrupt the builder's state.
 func (b *ConfigMapBuilder) Build() *corev1.ConfigMap {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      b.Labels,
-			Annotations: b.Annotations,
+			Labels:      maps.Clone(b.Labels),
+			Annotations: maps.Clone(b.Annotations),
 		},
 	}
 
 	if len(b.Data) > 0 {
-		cm.Data = b.Data
+		cm.Data = maps.Clone(b.Data)
 	}
 
 	if len(b.BinaryData) > 0 {
-		cm.BinaryData = b.BinaryData
+		cm.BinaryData = maps.Clone(b.BinaryData)
 	}
 
 	return cm

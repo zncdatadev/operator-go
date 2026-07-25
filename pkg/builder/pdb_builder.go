@@ -17,6 +17,8 @@ limitations under the License.
 package builder
 
 import (
+	"maps"
+
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -101,18 +103,19 @@ func (b *PDBBuilder) WithEnabled(enabled bool) *PDBBuilder {
 	return b
 }
 
-// Build creates the PodDisruptionBudget.
+// Build creates the PodDisruptionBudget. Like the other builders, the returned object shares no
+// map with the builder, so mutating it (or building twice) cannot corrupt the builder's state.
 func (b *PDBBuilder) Build() *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      b.Labels,
-			Annotations: b.Annotations,
+			Labels:      maps.Clone(b.Labels),
+			Annotations: maps.Clone(b.Annotations),
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: b.Selector,
+				MatchLabels: maps.Clone(b.Selector),
 			},
 		},
 	}

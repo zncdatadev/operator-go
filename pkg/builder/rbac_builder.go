@@ -17,8 +17,11 @@ limitations under the License.
 package builder
 
 import (
+	"maps"
+
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // RoleBuilder builds a Kubernetes Role.
@@ -34,12 +37,16 @@ func NewRoleBuilder(name, namespace string) *RoleBuilder {
 	return &RoleBuilder{
 		Name:      name,
 		Namespace: namespace,
+		Labels:    make(map[string]string),
 	}
 }
 
-// WithLabels sets the labels on the Role.
+// WithLabels merges the given labels into the builder-owned label map, like every other builder's
+// WithLabels: repeated calls accumulate and the caller's map is never aliased.
 func (b *RoleBuilder) WithLabels(labels map[string]string) *RoleBuilder {
-	b.Labels = labels
+	for k, v := range labels {
+		b.Labels[k] = v
+	}
 	return b
 }
 
@@ -55,9 +62,17 @@ func (b *RoleBuilder) Build() *rbacv1.Role {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      b.Name,
 			Namespace: b.Namespace,
-			Labels:    b.Labels,
+			Labels:    maps.Clone(b.Labels),
 		},
-		Rules: b.Rules,
+		Rules: cloneSlice(b.Rules),
+	}
+}
+
+// NamespacedName returns the NamespacedName for the Role.
+func (b *RoleBuilder) NamespacedName() types.NamespacedName {
+	return types.NamespacedName{
+		Name:      b.Name,
+		Namespace: b.Namespace,
 	}
 }
 
@@ -75,12 +90,15 @@ func NewRoleBindingBuilder(name, namespace string) *RoleBindingBuilder {
 	return &RoleBindingBuilder{
 		Name:      name,
 		Namespace: namespace,
+		Labels:    make(map[string]string),
 	}
 }
 
-// WithLabels sets the labels on the RoleBinding.
+// WithLabels merges the given labels into the builder-owned label map.
 func (b *RoleBindingBuilder) WithLabels(labels map[string]string) *RoleBindingBuilder {
-	b.Labels = labels
+	for k, v := range labels {
+		b.Labels[k] = v
+	}
 	return b
 }
 
@@ -111,14 +129,22 @@ func (b *RoleBindingBuilder) Build() *rbacv1.RoleBinding {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      b.Name,
 			Namespace: b.Namespace,
-			Labels:    b.Labels,
+			Labels:    maps.Clone(b.Labels),
 		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "Role",
 			Name:     b.RoleName,
 		},
-		Subjects: b.Subjects,
+		Subjects: cloneSlice(b.Subjects),
+	}
+}
+
+// NamespacedName returns the NamespacedName for the RoleBinding.
+func (b *RoleBindingBuilder) NamespacedName() types.NamespacedName {
+	return types.NamespacedName{
+		Name:      b.Name,
+		Namespace: b.Namespace,
 	}
 }
 
@@ -131,12 +157,14 @@ type ClusterRoleBuilder struct {
 
 // NewClusterRoleBuilder creates a new ClusterRoleBuilder.
 func NewClusterRoleBuilder(name string) *ClusterRoleBuilder {
-	return &ClusterRoleBuilder{Name: name}
+	return &ClusterRoleBuilder{Name: name, Labels: make(map[string]string)}
 }
 
-// WithLabels sets the labels on the ClusterRole.
+// WithLabels merges the given labels into the builder-owned label map.
 func (b *ClusterRoleBuilder) WithLabels(labels map[string]string) *ClusterRoleBuilder {
-	b.Labels = labels
+	for k, v := range labels {
+		b.Labels[k] = v
+	}
 	return b
 }
 
@@ -151,10 +179,16 @@ func (b *ClusterRoleBuilder) Build() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   b.Name,
-			Labels: b.Labels,
+			Labels: maps.Clone(b.Labels),
 		},
-		Rules: b.Rules,
+		Rules: cloneSlice(b.Rules),
 	}
+}
+
+// NamespacedName returns the NamespacedName for the ClusterRole. A ClusterRole is cluster-scoped,
+// so the Namespace is always empty.
+func (b *ClusterRoleBuilder) NamespacedName() types.NamespacedName {
+	return types.NamespacedName{Name: b.Name}
 }
 
 // ClusterRoleBindingBuilder builds a Kubernetes ClusterRoleBinding.
@@ -167,12 +201,14 @@ type ClusterRoleBindingBuilder struct {
 
 // NewClusterRoleBindingBuilder creates a new ClusterRoleBindingBuilder.
 func NewClusterRoleBindingBuilder(name string) *ClusterRoleBindingBuilder {
-	return &ClusterRoleBindingBuilder{Name: name}
+	return &ClusterRoleBindingBuilder{Name: name, Labels: make(map[string]string)}
 }
 
-// WithLabels sets the labels on the ClusterRoleBinding.
+// WithLabels merges the given labels into the builder-owned label map.
 func (b *ClusterRoleBindingBuilder) WithLabels(labels map[string]string) *ClusterRoleBindingBuilder {
-	b.Labels = labels
+	for k, v := range labels {
+		b.Labels[k] = v
+	}
 	return b
 }
 
@@ -202,13 +238,19 @@ func (b *ClusterRoleBindingBuilder) Build() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   b.Name,
-			Labels: b.Labels,
+			Labels: maps.Clone(b.Labels),
 		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
 			Name:     b.ClusterRoleName,
 		},
-		Subjects: b.Subjects,
+		Subjects: cloneSlice(b.Subjects),
 	}
+}
+
+// NamespacedName returns the NamespacedName for the ClusterRoleBinding. A ClusterRoleBinding is
+// cluster-scoped, so the Namespace is always empty.
+func (b *ClusterRoleBindingBuilder) NamespacedName() types.NamespacedName {
+	return types.NamespacedName{Name: b.Name}
 }

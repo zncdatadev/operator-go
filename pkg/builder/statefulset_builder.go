@@ -18,6 +18,8 @@ package builder
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -28,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/utils/ptr"
 )
 
 // StatefulSetBuilder constructs StatefulSet resources.
@@ -230,9 +233,10 @@ func (b *StatefulSetBuilder) WithResources(resources *v1alpha1.ResourcesSpec) *S
 	return b
 }
 
-// WithPorts sets the container ports.
+// WithPorts sets the container ports. The slice is copied, so a later AddPort cannot append into
+// the caller's backing array (callers commonly pass a slice they keep, e.g. a per-role port list).
 func (b *StatefulSetBuilder) WithPorts(ports []corev1.ContainerPort) *StatefulSetBuilder {
-	b.Ports = ports
+	b.Ports = cloneSlice(ports)
 	return b
 }
 
@@ -285,9 +289,10 @@ func (b *StatefulSetBuilder) AddInitContainer(container corev1.Container) *State
 	return b
 }
 
-// WithInitContainers replaces the init containers.
+// WithInitContainers replaces the init containers. The slice is copied for the same reason as
+// WithPorts.
 func (b *StatefulSetBuilder) WithInitContainers(containers []corev1.Container) *StatefulSetBuilder {
-	b.InitContainers = containers
+	b.InitContainers = cloneSlice(containers)
 	return b
 }
 
@@ -460,25 +465,31 @@ func (b *StatefulSetBuilder) DisableStartupProbe() *StatefulSetBuilder {
 }
 
 // Build creates the StatefulSet.
+//
+// The returned object shares no mutable state with the builder: every map and slice is copied,
+// and ObjectMeta gets a copy independent of the pod template's. Callers mutate the result (the
+// reconciler injects sidecar containers and volumes into the pod template, and Build itself
+// rewrites the template when pod overrides are applied), so sharing would let a pod-level change
+// contaminate ObjectMeta, the immutable .spec.selector, or a second Build() from the same builder.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      b.Labels,
-			Annotations: b.Annotations,
+			Labels:      maps.Clone(b.Labels),
+			Annotations: maps.Clone(b.Annotations),
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:            &b.Replicas,
+			Replicas:            ptr.To(b.Replicas),
 			ServiceName:         b.Name + "-headless",
 			PodManagementPolicy: appsv1.ParallelPodManagement,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: b.selectorMatchLabels(),
+				MatchLabels: maps.Clone(b.selectorMatchLabels()),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      b.Labels,
-					Annotations: b.Annotations,
+					Labels:      maps.Clone(b.Labels),
+					Annotations: maps.Clone(b.Annotations),
 				},
 				Spec: b.buildPodSpec(),
 			},
@@ -487,7 +498,7 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 
 	// Add volume claim templates if storage is configured
 	if b.StorageConfig != nil {
-		sts.Spec.VolumeClaimTemplates = b.StorageConfig.VolumeClaimTemplates
+		sts.Spec.VolumeClaimTemplates = cloneSlice(b.StorageConfig.VolumeClaimTemplates)
 	}
 
 	// Apply pod overrides
@@ -503,10 +514,10 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	spec := corev1.PodSpec{
 		ServiceAccountName:            b.ServiceAccountName,
 		TerminationGracePeriodSeconds: b.TerminationGracePeriodSeconds,
-		SecurityContext:               b.PodSecurityContext,
-		Affinity:                      b.Affinity,
-		Volumes:                       b.Volumes,
-		InitContainers:                b.InitContainers,
+		SecurityContext:               b.PodSecurityContext.DeepCopy(),
+		Affinity:                      b.Affinity.DeepCopy(),
+		Volumes:                       cloneSlice(b.Volumes),
+		InitContainers:                cloneSlice(b.InitContainers),
 		Containers: []corev1.Container{
 			b.buildContainer(),
 		},
@@ -527,22 +538,22 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 		Name:            b.primaryContainerName(),
 		Image:           b.Image,
 		ImagePullPolicy: b.ImagePullPolicy,
-		Ports:           b.Ports,
-		VolumeMounts:    b.VolumeMounts,
-		SecurityContext: b.SecurityContext,
+		Ports:           cloneSlice(b.Ports),
+		VolumeMounts:    cloneSlice(b.VolumeMounts),
+		SecurityContext: b.SecurityContext.DeepCopy(),
 	}
 
 	// Set resources if provided
 	if b.Resources != nil {
-		container.Resources = *b.Resources
+		container.Resources = *b.Resources.DeepCopy()
 	}
 
 	// Set command and args
 	if len(b.Command) > 0 {
-		container.Command = b.Command
+		container.Command = slices.Clone(b.Command)
 	}
 	if len(b.Args) > 0 {
-		container.Args = b.Args
+		container.Args = slices.Clone(b.Args)
 	}
 
 	// Add environment variables from merged config. Iterate in sorted key order: EnvVars is a
@@ -569,11 +580,11 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 	}
 
 	// Add explicit env vars (these override config env vars)
-	container.Env = append(container.Env, b.EnvVars...)
+	container.Env = append(container.Env, cloneSlice(b.EnvVars)...)
 
 	// Apply lifecycle hooks
 	if b.lifecycle != nil {
-		container.Lifecycle = b.lifecycle
+		container.Lifecycle = b.lifecycle.DeepCopy()
 	}
 
 	// Setup probes
@@ -590,7 +601,7 @@ func (b *StatefulSetBuilder) buildLivenessProbe() *corev1.Probe {
 		return nil
 	}
 	if b.livenessProbe != nil {
-		return b.livenessProbe
+		return b.livenessProbe.DeepCopy()
 	}
 	return b.buildDefaultTCPLivenessProbe()
 }
@@ -620,7 +631,7 @@ func (b *StatefulSetBuilder) buildReadinessProbe() *corev1.Probe {
 		return nil
 	}
 	if b.readinessProbe != nil {
-		return b.readinessProbe
+		return b.readinessProbe.DeepCopy()
 	}
 	return b.buildDefaultTCPReadinessProbe()
 }
@@ -651,7 +662,7 @@ func (b *StatefulSetBuilder) buildStartupProbe() *corev1.Probe {
 		return nil
 	}
 	if b.startupProbe != nil {
-		return b.startupProbe
+		return b.startupProbe.DeepCopy()
 	}
 	return nil
 }

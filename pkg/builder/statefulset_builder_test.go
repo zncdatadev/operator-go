@@ -1239,3 +1239,97 @@ var _ = Describe("StatefulSetBuilder", func() {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+var _ = Describe("StatefulSetBuilder Build isolation", func() {
+	const (
+		name      = "isolation-sts"
+		namespace = "test-namespace"
+	)
+
+	newBuilder := func() *builder.StatefulSetBuilder {
+		return builder.NewStatefulSetBuilder(name, namespace).
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithLabels(map[string]string{"app": "test"}).
+			WithSelectorLabels(map[string]string{"app.kubernetes.io/instance": "test"}).
+			WithAnnotations(map[string]string{"note": "test"}).
+			WithPorts([]corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}).
+			AddVolume(corev1.Volume{Name: "config"}).
+			AddVolumeMount(corev1.VolumeMount{Name: "config", MountPath: "/etc/config"}).
+			AddEnvVar("KEY", "value")
+	}
+
+	It("does not let a pod template mutation reach ObjectMeta or the selector", func() {
+		// The reconciler mutates the built pod template (sidecar injection), and .spec.selector is
+		// immutable once the StatefulSet exists.
+		sts := newBuilder().Build()
+
+		sts.Spec.Template.Labels["injected"] = "true"
+
+		Expect(sts.Labels).NotTo(HaveKey("injected"))
+		Expect(sts.Spec.Selector.MatchLabels).NotTo(HaveKey("injected"))
+	})
+
+	It("does not let a mutation of the built object reach a second Build", func() {
+		b := newBuilder()
+		first := b.Build()
+
+		first.Labels["extra"] = "true"
+		first.Spec.Template.Annotations["extra"] = "true"
+		first.Spec.Template.Spec.Volumes[0].Name = "renamed"
+		first.Spec.Template.Spec.Volumes = append(first.Spec.Template.Spec.Volumes,
+			corev1.Volume{Name: "sidecar-volume"})
+		first.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort = 9999
+		first.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath = "/elsewhere"
+		first.Spec.Template.Spec.Containers[0].Env[0].Value = "mutated"
+		*first.Spec.Replicas = 42
+
+		second := b.Build()
+
+		Expect(second.Labels).NotTo(HaveKey("extra"))
+		Expect(second.Spec.Template.Annotations).NotTo(HaveKey("extra"))
+		Expect(second.Spec.Template.Spec.Volumes).To(HaveLen(1))
+		Expect(second.Spec.Template.Spec.Volumes[0].Name).To(Equal("config"))
+		Expect(second.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(8080)))
+		Expect(second.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/etc/config"))
+		Expect(second.Spec.Template.Spec.Containers[0].Env[0].Value).To(Equal("value"))
+		Expect(*second.Spec.Replicas).To(Equal(int32(1)))
+	})
+
+	It("does not append into the caller's port slice", func() {
+		ports := make([]corev1.ContainerPort, 1, 4)
+		ports[0] = corev1.ContainerPort{Name: "http", ContainerPort: 8080}
+
+		builder.NewStatefulSetBuilder(name, namespace).
+			WithPorts(ports).
+			AddPort("metrics", 9090, corev1.ProtocolTCP)
+
+		Expect(ports[:cap(ports)]).To(HaveLen(4))
+		Expect(ports[:cap(ports)][1].Name).To(BeEmpty())
+	})
+})
+
+var _ = Describe("StatefulSetBuilder pointer isolation", func() {
+	It("does not share pointer fields between the builder and the built object", func() {
+		// A handler keeps one builder-configured SecurityContext for the process lifetime and
+		// builds every role group from it; a per-role-group mutation of the built object (e.g.
+		// applying podOverrides) must not reach the next role group.
+		securityContext := &corev1.SecurityContext{RunAsUser: ptr.To(int64(1000))}
+		probe := &corev1.Probe{InitialDelaySeconds: 5}
+
+		b := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("product:latest", corev1.PullIfNotPresent).
+			WithSecurityContext(securityContext, nil).
+			WithLivenessProbe(probe)
+
+		first := b.Build()
+		first.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser = ptr.To(int64(2000))
+		first.Spec.Template.Spec.Containers[0].LivenessProbe.InitialDelaySeconds = 99
+
+		Expect(*securityContext.RunAsUser).To(Equal(int64(1000)))
+		Expect(probe.InitialDelaySeconds).To(Equal(int32(5)))
+
+		second := b.Build()
+		Expect(*second.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(int64(1000)))
+		Expect(second.Spec.Template.Spec.Containers[0].LivenessProbe.InitialDelaySeconds).To(Equal(int32(5)))
+	})
+})
