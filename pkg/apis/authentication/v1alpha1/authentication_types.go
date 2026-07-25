@@ -22,13 +22,6 @@ import (
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
-type ResponseType string
-
-const (
-	ResponseTypeCode  ResponseType = "code"
-	ResponseTypeToken ResponseType = "id_token"
-)
-
 // AuthenticationClassSpec defines the desired state of AuthenticationClass
 type AuthenticationClassSpec struct {
 	// +kubebuilder:validation:Required

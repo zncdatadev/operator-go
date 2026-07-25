@@ -29,9 +29,11 @@ API type definitions and Custom Resource Definitions (CRDs) for the operator fra
 | `credentials.go` | `Credentials`, `CredentialsScope` (`node`, `pod`, `services`, `listenerVolumes`) |
 | `pdb_types.go` | `PodDisruptionBudgetSpec` |
 | `tls.go` | TLS spec building blocks |
-| `graceful_shutdown.go`, `zk_config.go` | **Deprecated** — no CRD embeds `GracefulShutdownSpec`, and nothing consumes `ZKConfig`; retained only so downstream compilation does not break |
 
-`resource_types.go` also carries a deprecated `StorageResourceSpec`; use `ResourcesSpec.Storage`.
+Graceful shutdown is expressed as `RoleGroupConfigSpec.GracefulShutdownTimeout` (a duration
+string), not as a nested spec type, and a single data volume request is
+`ResourcesSpec.Storage`. The orphaned `GracefulShutdownSpec`, `ZKConfig` and
+`StorageResourceSpec` types that used to sit beside them were removed; no CRD embedded them.
 
 ## Status Conventions
 
