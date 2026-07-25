@@ -562,7 +562,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			result, err := r.Reconcile(ctx, req)
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			// Verify status was updated
 			fetchedCR := &testutil.MockCluster{}
@@ -746,7 +746,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			result, err := r.Reconcile(ctx, req)
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			resName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
 
@@ -801,17 +801,17 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			// First reconcile
 			result1, err1 := r.Reconcile(ctx, req)
 			Expect(err1).NotTo(HaveOccurred())
-			Expect(result1).To(Equal(ctrl.Result{}))
+			Expect(result1).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			// Second reconcile
 			result2, err2 := r.Reconcile(ctx, req)
 			Expect(err2).NotTo(HaveOccurred())
-			Expect(result2).To(Equal(ctrl.Result{}))
+			Expect(result2).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			// Third reconcile
 			result3, err3 := r.Reconcile(ctx, req)
 			Expect(err3).NotTo(HaveOccurred())
-			Expect(result3).To(Equal(ctrl.Result{}))
+			Expect(result3).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			// Verify only one StatefulSet exists (by direct name lookup)
 			sts := &appsv1.StatefulSet{}
@@ -858,7 +858,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			result, err := r.Reconcile(ctx, req)
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			// Verify custom image was used
 			sts := &appsv1.StatefulSet{}
@@ -990,7 +990,7 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 
 			result, err := r.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			Expect(saLookup()).To(Succeed(), "ServiceAccount should be created for an un-paused cluster")
 		})
@@ -1046,7 +1046,7 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 
 			result, err := r.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 			// The ServiceAccount IS provisioned (stopped runs the full reconcile).
 			Expect(saLookup()).To(Succeed(), "ServiceAccount should be created for a stopped cluster under the new design")
@@ -1393,7 +1393,7 @@ var _ = Describe("GenericReconciler stopped scales the StatefulSet to zero", fun
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+		Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 		fetched := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, fetched)).To(Succeed())
@@ -1412,7 +1412,7 @@ var _ = Describe("GenericReconciler stopped scales the StatefulSet to zero", fun
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+		Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 
 		fetched := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, fetched)).To(Succeed())
@@ -1557,7 +1557,7 @@ var _ = Describe("GenericReconciler applyResources errors", func() {
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+		Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 	})
 
 	It("should handle resources with all nil fields", func() {
@@ -1570,7 +1570,7 @@ var _ = Describe("GenericReconciler applyResources errors", func() {
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+		Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 	})
 
 	It("should handle resources with PDB", func() {
@@ -1595,7 +1595,7 @@ var _ = Describe("GenericReconciler applyResources errors", func() {
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		result, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+		Expect(result).To(Equal(ctrl.Result{RequeueAfter: reconciler.DefaultHealthCheckInterval}))
 	})
 })
 
@@ -1637,7 +1637,7 @@ var _ = Describe("GenericReconciler cleanupRoleGroup errors", func() {
 		cancel()
 
 		// Cleanup - may or may not error depending on timing
-		_ = cleaner.Cleanup(canceledCtx, namespace, "cleanup-error", spec, status, "", nil)
+		_, _ = cleaner.Cleanup(canceledCtx, namespace, "cleanup-error", spec, status, "", nil)
 	})
 })
 
@@ -2125,6 +2125,34 @@ var _ = Describe("GenericReconciler update propagation (issue #526)", func() {
 		Expect(svc.Spec.Ports).To(HaveLen(1))
 		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(9093)), "port change must reach the live Service")
 		Expect(svc.Spec.Ports[0].NodePort).To(Equal(allocatedNodePort), "allocated NodePort must survive the update")
+		Expect(svc.Spec.ClusterIP).To(Equal(clusterIP), "allocated ClusterIP must never be touched")
+	})
+
+	It("propagates Service fields outside the historical copy list", func() {
+		distribution := ""
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			svc := testutil.NewTestService(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			if distribution != "" {
+				svc.Spec.TrafficDistribution = ptr.To(distribution)
+			}
+			return &reconciler.RoleGroupResources{Service: svc}
+		})
+
+		reconcile(r)
+		svc := &corev1.Service{}
+		key := types.NamespacedName{Namespace: namespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		Expect(svc.Spec.TrafficDistribution).To(BeNil())
+		clusterIP := svc.Spec.ClusterIP
+		Expect(clusterIP).NotTo(BeEmpty())
+
+		// TrafficDistribution is mutable but was never part of the copied field list, so the
+		// desired value used to be dropped on every update.
+		distribution = corev1.ServiceTrafficDistributionPreferClose
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		Expect(svc.Spec.TrafficDistribution).To(HaveValue(Equal(corev1.ServiceTrafficDistributionPreferClose)))
 		Expect(svc.Spec.ClusterIP).To(Equal(clusterIP), "allocated ClusterIP must never be touched")
 	})
 

@@ -38,6 +38,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8slabels "k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -1966,5 +1967,291 @@ var _ = Describe("Sidecar product image propagation", func() {
 			}
 		}
 		Expect(vectorImage).To(Equal("product-image:1.2.3"))
+	})
+})
+
+var _ = Describe("Selector label stability", func() {
+	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
+	var mockCR *testutil.ClusterWrapper
+
+	newBuildCtx := func(clusterLabels map[string]string) *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			ClusterLabels:    clusterLabels,
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+		}
+	}
+
+	BeforeEach(func() {
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.ExtraLabels["team"] = "platform"
+		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+	})
+
+	It("builds the selector from framework-owned labels only", func() {
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(map[string]string{"env": "prod"}))
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(Equal(map[string]string{
+			"app.kubernetes.io/instance":   "test-cluster",
+			"app.kubernetes.io/component":  "server",
+			"app.kubernetes.io/managed-by": "operator-go",
+			"test-cluster-default":         "true",
+		}))
+
+		// The CR and extra labels stay on the pod template: StatefulSets created before the
+		// selector was narrowed froze them into their immutable selector, so dropping them from
+		// the template would leave those objects unmatchable.
+		Expect(resources.StatefulSet.Spec.Template.Labels).To(HaveKeyWithValue("env", "prod"))
+		Expect(resources.StatefulSet.Spec.Template.Labels).To(HaveKeyWithValue("team", "platform"))
+	})
+
+	It("keeps a pod template built after a CR label change matching the frozen selector", func() {
+		before, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(map[string]string{"env": "prod"}))
+		Expect(err).NotTo(HaveOccurred())
+		frozenSelector := before.StatefulSet.Spec.Selector.MatchLabels
+
+		// The user edits the cluster CR's labels; the next reconcile builds with the new set.
+		after, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(map[string]string{"env": "staging"}))
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(after.StatefulSet.Spec.Selector.MatchLabels).To(Equal(frozenSelector))
+		Expect(k8slabels.SelectorFromSet(frozenSelector).
+			Matches(k8slabels.Set(after.StatefulSet.Spec.Template.Labels))).To(BeTrue())
+		Expect(after.HeadlessService.Spec.Selector).To(Equal(frozenSelector))
+	})
+})
+
+var _ = Describe("Role group Services", func() {
+	It("preserves every field of a declared service port on both Services", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.SetRoleServicePorts("server", []corev1.ServicePort{{
+			Name:       "http",
+			Port:       8080,
+			TargetPort: intstr.FromString("http"),
+			NodePort:   31234,
+			Protocol:   corev1.ProtocolTCP,
+		}})
+
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient,
+			testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default")), buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		for _, svc := range []*corev1.Service{resources.Service, resources.HeadlessService} {
+			Expect(svc.Spec.Ports).To(HaveLen(1))
+			Expect(svc.Spec.Ports[0].NodePort).To(Equal(int32(31234)))
+			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromString("http")))
+		}
+	})
+})
+
+var _ = Describe("Role group ConfigMap rendering", func() {
+	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
+	var mockCR *testutil.ClusterWrapper
+
+	// Enough keys that a randomized map iteration order practically never matches the sorted one.
+	configFile := map[string]string{
+		"alpha": "1", "bravo": "2", "charlie": "3", "delta": "4", "echo": "5",
+		"foxtrot": "6", "golf": "7", "hotel": "8", "india": "9", "juliett": "10",
+	}
+
+	newBuildCtx := func() *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig: &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{"custom.conf": configFile},
+			},
+			ResourceName: "test-cluster-server-default",
+		}
+	}
+
+	BeforeEach(func() {
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+	})
+
+	It("renders a config file with no registered generator in sorted key order", func() {
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.ConfigMap.Data["custom.conf"]).To(Equal(
+			"alpha=1\nbravo=2\ncharlie=3\ndelta=4\necho=5\nfoxtrot=6\ngolf=7\nhotel=8\nindia=9\njuliett=10\n"))
+	})
+
+	It("produces byte-identical data on every build", func() {
+		// Non-deterministic rendering makes every reconcile rewrite ConfigMap.Data, which the
+		// reconciler's own ConfigMap watch turns straight back into another reconcile.
+		first, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx())
+		Expect(err).NotTo(HaveOccurred())
+		for range 20 {
+			again, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(again.ConfigMap.Data).To(Equal(first.ConfigMap.Data))
+		}
+	})
+})
+
+var _ = Describe("Container image resolution", func() {
+	var mockCR *testutil.ClusterWrapper
+
+	newBuildCtx := func(image *v1alpha1.ImageSpec) *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			ClusterSpec:      &v1alpha1.GenericClusterSpec{Image: image},
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+		}
+	}
+
+	crImage := &v1alpha1.ImageSpec{
+		Repo:            "quay.io/kubedoop",
+		ProductVersion:  "4.7.0",
+		KubedoopVersion: "0.1.0",
+		PullPolicy:      corev1.PullAlways,
+	}
+
+	BeforeEach(func() {
+		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+	})
+
+	It("resolves the main container image from the CR spec.image when ProductName is set", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.SetRoleImage("server", "role-image:1")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(crImage))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("quay.io/kubedoop/trino:4.7.0-kubedoop0.1.0"))
+		Expect(container.ImagePullPolicy).To(Equal(corev1.PullAlways))
+	})
+
+	It("keeps the static image when the product declares no ProductName", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(crImage))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
+	})
+
+	It("falls back to the per-role image when the CR carries no resolvable image", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.SetRoleImage("server", "role-image:1")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("role-image:1"))
+	})
+
+	It("gives the sidecars the same CR-resolved image as the main container", func() {
+		// The Vector agent ships inside the product image, so a product that patches the main
+		// container after BuildResources leaves the sidecar behind on the stale image.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.LoggingContainers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
+
+		mgr := sidecar.NewSidecarManager()
+		mgr.Register(
+			vector.NewVectorSidecarProvider("",
+				vector.WithConfigMapName("test-cluster-server-default"),
+				vector.WithProducers([]string{"main"})),
+			&sidecar.SidecarConfig{Enabled: true},
+		)
+
+		buildCtx := newBuildCtx(crImage)
+		buildCtx.SidecarManager = mgr
+		buildCtx.MergedConfig = &config.MergedConfig{
+			Logging: &v1alpha1.LoggingSpec{
+				EnableVectorAgent: ptr.To(true),
+				Containers:        map[string]v1alpha1.LoggingConfigSpec{"main": {}},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		podSpec := resources.StatefulSet.Spec.Template.Spec
+		var vectorImage string
+		for _, c := range append(podSpec.InitContainers, podSpec.Containers...) {
+			if c.Name == vector.VectorSidecarName {
+				vectorImage = c.Image
+			}
+		}
+		Expect(vectorImage).To(Equal("quay.io/kubedoop/trino:4.7.0-kubedoop0.1.0"))
+	})
+})
+
+var _ = Describe("ConfiguredRoleNames", func() {
+	It("returns the sorted union of every per-role configuration key", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.SetRoleImage("workers", "img:2")
+		handler.SetRoleContainerPorts("coordinators", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
+		handler.SetRoleServicePorts("coordinators", []corev1.ServicePort{{Name: "http", Port: 8080}})
+		handler.SetRoleMainContainerName("workers", "trino")
+		handler.SetRoleLoggingContainers("gateways", nil)
+
+		Expect(handler.ConfiguredRoleNames()).To(Equal([]string{"coordinators", "gateways", "workers"}))
+	})
+
+	It("returns an empty list for a handler with no per-role configuration", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		Expect(handler.ConfiguredRoleNames()).To(BeEmpty())
+	})
+})
+
+var _ = Describe("BaseRoleGroupHandler ConfigMap data", func() {
+	It("always returns a non-nil Data map so products can add files to it", func() {
+		// The documented extension pattern is to call BuildResources and then customize the
+		// returned objects; `resources.ConfigMap.Data[k] = v` panics on a nil map.
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.ClusterWrapper]("product:latest", testScheme)
+		cr := testutil.WrapMockCluster(testutil.NewMockCluster("cm-nil", testNamespace))
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, cr, &reconciler.RoleGroupBuildContext{
+			ClusterName:      "cm-nil",
+			ClusterNamespace: testNamespace,
+			RoleName:         "broker",
+			RoleGroupName:    "default",
+			ResourceName:     "cm-nil-broker-default",
+			ClusterSpec:      cr.GetSpec(),
+			MergedConfig:     &config.MergedConfig{},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.ConfigMap).NotTo(BeNil())
+		Expect(resources.ConfigMap.Data).NotTo(BeNil())
 	})
 })
