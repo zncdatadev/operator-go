@@ -179,20 +179,19 @@ func TestRenderVectorConfig_RegexQuotesLogDir(t *testing.T) {
 
 // TestRenderVectorConfig_SourceGlobsMatchLogFileSuffixes is the guard that keeps the collector
 // and the producers in sync: the file appenders name their files from
-// productlogging.LogFileSuffix, so every supported framework must have a source glob for that
-// exact suffix. Adding a framework without a source fails here instead of silently shipping no
-// logs for it.
+// productlogging.LogFileSuffix, so every framework productlogging can render must have a source
+// glob for that exact suffix. The list is productlogging's own enumeration rather than a copy of
+// it, so a framework registered there without a source here fails this test instead of silently
+// shipping no logs for it.
 func TestRenderVectorConfig_SourceGlobsMatchLogFileSuffixes(t *testing.T) {
 	result, err := RenderVectorConfig(defaultConfigData())
 	if err != nil {
 		t.Fatalf("RenderVectorConfig() error = %v", err)
 	}
 
-	frameworks := []productlogging.LoggingFramework{
-		productlogging.LoggingFrameworkLog4j,
-		productlogging.LoggingFrameworkLogback,
-		productlogging.LoggingFrameworkLog4j2,
-		productlogging.LoggingFrameworkPython,
+	frameworks := productlogging.SupportedLoggingFrameworks()
+	if len(frameworks) == 0 {
+		t.Fatal("productlogging.SupportedLoggingFrameworks() is empty")
 	}
 	for _, framework := range frameworks {
 		suffix := productlogging.LogFileSuffix(framework)

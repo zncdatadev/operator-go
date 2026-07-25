@@ -17,6 +17,9 @@ limitations under the License.
 package config_test
 
 import (
+	"math/rand"
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/config"
@@ -269,6 +272,16 @@ var _ = Describe("unescapeProperties", func() {
 			Entry("value ending in a backslash", "zlast", `C:\`),
 			Entry("value ending in two backslashes", "zlast", `C:\\`),
 			Entry("empty value", "zlast", ""),
+			Entry("trailing space in key", "a ", "v1"),
+			Entry("leading space in key", " a", "v1"),
+			Entry("key of spaces only", "  ", "v1"),
+			Entry("comment marker starting the key", "#a", "v1"),
+			Entry("bang marker starting the key", "!a", "v1"),
+			Entry("trailing space in value", "akey", "v1 "),
+			Entry("leading space in value", "akey", " v1"),
+			Entry("value of spaces only", "akey", " "),
+			Entry("backslash before the value's trailing space", "akey", `v1\ `),
+			Entry("tab at both value edges", "akey", "\tv1\t"),
 		)
 
 		It("should keep an entry whose value ends the input on a continuation", func() {
@@ -293,6 +306,74 @@ var _ = Describe("unescapeProperties", func() {
 		})
 	})
 })
+
+// propertiesGrammarChars are the characters the .properties grammar reacts to: the two
+// separators, the escape character, the comment markers and whitespace (layout unless escaped),
+// plus one ordinary letter to build mixed tokens with.
+var propertiesGrammarChars = []string{"=", ":", " ", "\\", "#", "!", "\n", "\r", "\t", "a"}
+
+var _ = Describe("PropertiesAdapter round-trip over adversarial keys and values", func() {
+	var adapter *config.PropertiesAdapter
+
+	BeforeEach(func() {
+		adapter = config.NewPropertiesAdapter()
+	})
+
+	// Two ordinary entries travel with every generated one, so an entry that is dropped, split
+	// into a second key or turned into a comment fails as loudly as a corrupted value.
+	roundTrip := func(key, value string) {
+		GinkgoHelper()
+		original := map[string]string{key: value, "plain": "kept", "second": "also kept"}
+		marshaled, err := adapter.Marshal(original)
+		Expect(err).ToNot(HaveOccurred())
+		unmarshaled, err := adapter.Unmarshal(marshaled)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(unmarshaled).To(Equal(original), "key %q value %q marshaled to %q", key, value, marshaled)
+	}
+
+	It("holds for every key/value pair of up to two grammar characters", func() {
+		tokens := propertiesTokens(2)
+		for _, key := range tokens {
+			for _, value := range tokens {
+				roundTrip(key, value)
+			}
+		}
+	})
+
+	It("holds for longer randomly assembled keys and values", func() {
+		// Fixed seed: a failure names the offending pair and is reproducible from the report.
+		rng := rand.New(rand.NewSource(1))
+		for i := 0; i < 2000; i++ {
+			roundTrip(randomPropertiesToken(rng, 6), randomPropertiesToken(rng, 6))
+		}
+	})
+})
+
+// propertiesTokens returns the empty string plus every string of length 1..maxLen over the
+// grammar characters.
+func propertiesTokens(maxLen int) []string {
+	current := []string{""}
+	all := []string{""}
+	for i := 0; i < maxLen; i++ {
+		next := make([]string, 0, len(current)*len(propertiesGrammarChars))
+		for _, token := range current {
+			for _, c := range propertiesGrammarChars {
+				next = append(next, token+c)
+			}
+		}
+		all = append(all, next...)
+		current = next
+	}
+	return all
+}
+
+func randomPropertiesToken(rng *rand.Rand, maxLen int) string {
+	var sb strings.Builder
+	for n := rng.Intn(maxLen + 1); n > 0; n-- {
+		sb.WriteString(propertiesGrammarChars[rng.Intn(len(propertiesGrammarChars))])
+	}
+	return sb.String()
+}
 
 var _ = Describe("PropertiesAdapter", func() {
 	var adapter *config.PropertiesAdapter

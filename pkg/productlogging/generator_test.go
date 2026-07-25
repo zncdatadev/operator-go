@@ -17,10 +17,12 @@ limitations under the License.
 package productlogging_test
 
 import (
+	"encoding/xml"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 )
 
@@ -575,6 +577,261 @@ func pythonLoggersBlock(content string) string {
 	end := strings.Index(rest, "    'root': {")
 	Expect(end).ToNot(Equal(-1), "rendered config has no 'root' section")
 	return rest[:end]
+}
+
+// javaProperties reads a rendered log4j / log4j2 file the way both configurators do — through
+// java.util.Properties semantics, which is what pkg/config's properties adapter implements — so
+// the assertions below are about the entries a product actually ends up with, not about the
+// characters on the line.
+func javaProperties(content string) map[string]string {
+	GinkgoHelper()
+	props, err := config.NewPropertiesAdapter().Unmarshal(content)
+	Expect(err).ToNot(HaveOccurred())
+	return props
+}
+
+// log4j2Loggers resolves the rendered log4j2 file the way a property configuration is resolved:
+// the "loggers" list selects the identifiers, and each identifier carries its logger through
+// "logger.<id>.name" / "logger.<id>.level". A dangling id, a missing key or two ids collapsing
+// onto one logger name shows up here as a failure rather than as a logger that is silently
+// never configured.
+func log4j2Loggers(content string) map[string]string {
+	GinkgoHelper()
+	props := javaProperties(content)
+	loggers := map[string]string{}
+	list, ok := props["loggers"]
+	if !ok || list == "" {
+		return loggers
+	}
+	for _, id := range strings.Split(list, ",") {
+		name, ok := props["logger."+id+".name"]
+		Expect(ok).To(BeTrue(), "loggers list declares id %q but there is no logger.%s.name", id, id)
+		level, ok := props["logger."+id+".level"]
+		Expect(ok).To(BeTrue(), "loggers list declares id %q but there is no logger.%s.level", id, id)
+		Expect(loggers).ToNot(HaveKey(name), "two identifiers configure the logger %q", name)
+		loggers[name] = level
+	}
+	return loggers
+}
+
+// logbackConfiguration is the shape the generated logback XML is asserted against; unmarshalling
+// it also proves the document is well-formed, which an unescaped name or level would break.
+type logbackConfiguration struct {
+	XMLName   xml.Name `xml:"configuration"`
+	Appenders []struct {
+		Name  string `xml:"name,attr"`
+		Class string `xml:"class,attr"`
+		File  string `xml:"file"`
+	} `xml:"appender"`
+	Root struct {
+		Level        string `xml:"level,attr"`
+		AppenderRefs []struct {
+			Ref string `xml:"ref,attr"`
+		} `xml:"appender-ref"`
+	} `xml:"root"`
+	Loggers []struct {
+		Name  string `xml:"name,attr"`
+		Level string `xml:"level,attr"`
+	} `xml:"logger"`
+}
+
+func parseLogback(content string) logbackConfiguration {
+	GinkgoHelper()
+	var parsed logbackConfiguration
+	Expect(xml.Unmarshal([]byte(content), &parsed)).To(Succeed(), "rendered logback config is not well-formed XML:\n%s", content)
+	return parsed
+}
+
+// Logger names are CRD map keys, so they carry whatever the user wrote. Each generator has to
+// hand them to its own reader intact: properties keys and values are escaped for
+// java.util.Properties, XML attributes for the XML parser and dict keys for the Python parser.
+var _ = Describe("logger names the target format treats as structure", func() {
+	adversarialNames := map[string]productlogging.LogLevel{
+		"com.example app":  productlogging.LogLevelWarn,
+		"com.example=app":  productlogging.LogLevelDebug,
+		"com.example:app":  productlogging.LogLevelError,
+		`com.example\app`:  productlogging.LogLevelInfo,
+		"#com.example.app": productlogging.LogLevelTrace,
+	}
+
+	It("keeps them addressable in log4j properties", func() {
+		content, err := productlogging.GenerateLog4j(loggerConfigsOf(adversarialNames))
+		Expect(err).ToNot(HaveOccurred())
+
+		props := javaProperties(content)
+		for name, level := range adversarialNames {
+			Expect(props).To(HaveKeyWithValue("log4j.logger."+name, string(level)))
+		}
+		// The escape a naive writer omits: without it the key ends at the space and the level
+		// becomes part of a "log4j.logger.com.example" value.
+		Expect(content).To(ContainSubstring(`log4j.logger.com.example\ app=WARN`))
+	})
+
+	It("keeps them addressable in log4j2 properties", func() {
+		content, err := productlogging.GenerateLog4j2(loggerConfigsOf(adversarialNames))
+		Expect(err).ToNot(HaveOccurred())
+
+		expected := map[string]string{}
+		for name, level := range adversarialNames {
+			expected[name] = string(level)
+		}
+		Expect(log4j2Loggers(content)).To(Equal(expected))
+	})
+
+	It("keeps them addressable in logback XML", func() {
+		content, err := productlogging.GenerateLogback(loggerConfigsOf(adversarialNames))
+		Expect(err).ToNot(HaveOccurred())
+
+		parsed := parseLogback(content)
+		Expect(parsed.Loggers).To(HaveLen(len(adversarialNames)))
+		for _, logger := range parsed.Loggers {
+			Expect(adversarialNames).To(HaveKeyWithValue(logger.Name, productlogging.LogLevel(logger.Level)))
+		}
+	})
+
+	// Levels are enum-constrained in the CRD but not in this package's API, and they land in an
+	// XML attribute / a properties value just like the names do.
+	It("keeps a level that carries XML syntax inside its attribute", func() {
+		level := productlogging.LogLevel(`DEBUG"/><appender-ref ref="FILE`)
+		content, err := productlogging.GenerateLogback(map[string]productlogging.LoggerConfig{
+			"com.example": {Name: "com.example", Level: level},
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		parsed := parseLogback(content)
+		Expect(parsed.Loggers).To(HaveLen(1))
+		Expect(parsed.Loggers[0].Level).To(Equal(string(level)))
+	})
+
+	// The conversion pattern is product-supplied (ContainerLogging.Pattern) and is written as a
+	// properties value; a line break in it would start a new property.
+	It("keeps a product pattern from opening a second property", func() {
+		gen, err := productlogging.GeneratorFor(productlogging.LoggingFrameworkLog4j)
+		Expect(err).ToNot(HaveOccurred())
+		pattern := "%m%n\nlog4j.rootLogger=OFF"
+		content, err := gen.Render(productlogging.LogConfig{}, productlogging.RenderOptions{Pattern: pattern})
+		Expect(err).ToNot(HaveOccurred())
+
+		props := javaProperties(content)
+		Expect(props).To(HaveKeyWithValue("log4j.appender.CONSOLE.layout.ConversionPattern", pattern))
+		Expect(props).To(HaveKeyWithValue("log4j.rootLogger", "INFO, CONSOLE"))
+	})
+
+	DescribeTable("quotes them into Python string literals",
+		func(name, literal string) {
+			content, err := productlogging.GeneratePythonLogging(map[string]productlogging.LoggerConfig{
+				name: {Name: name, Level: productlogging.LogLevelDebug},
+			})
+			Expect(err).ToNot(HaveOccurred())
+			// An unescaped quote or line break here ends the literal and turns the whole module
+			// into a SyntaxError, leaving the product with no logging configuration.
+			Expect(pythonLoggersBlock(content)).To(ContainSubstring(literal + ": {"))
+		},
+		Entry("apostrophe", "it's.logger", `'it\'s.logger'`),
+		Entry("backslash", `com\example`, `'com\\example'`),
+		Entry("line break", "com\nexample", `'com\nexample'`),
+		Entry("tab", "com\texample", `'com\texample'`),
+	)
+
+	// The rolling file path is derived from the container name, which this package's API does not
+	// constrain either; it lands in the same kind of literal.
+	It("quotes the rolling file path into a Python string literal", func() {
+		gen, err := productlogging.GeneratorFor(productlogging.LoggingFrameworkPython)
+		Expect(err).ToNot(HaveOccurred())
+		content, err := gen.Render(productlogging.LogConfig{}, productlogging.RenderOptions{
+			FileOutputPath: `/kubedoop/log/it's/app.py.json`,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(content).To(ContainSubstring(`'filename': '/kubedoop/log/it\'s/app.py.json',`))
+	})
+})
+
+var _ = Describe("logback document structure", func() {
+	It("wires both appenders to the root logger and keeps the named logger separate", func() {
+		content, err := productlogging.GenerateLogbackWithOptions(
+			map[string]productlogging.LoggerConfig{
+				"org.apache.zookeeper": {Name: "org.apache.zookeeper", Level: productlogging.LogLevelDebug},
+			},
+			productlogging.LogbackOptions{
+				FileOutputPath: "/kubedoop/log/zookeeper/zookeeper.log4j.xml",
+				RootLevel:      productlogging.LogLevelWarn,
+			},
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		parsed := parseLogback(content)
+		appenders := map[string]string{}
+		files := map[string]string{}
+		for _, appender := range parsed.Appenders {
+			appenders[appender.Name] = appender.Class
+			files[appender.Name] = appender.File
+		}
+		Expect(appenders).To(Equal(map[string]string{
+			"STDOUT": "ch.qos.logback.core.ConsoleAppender",
+			"FILE":   "ch.qos.logback.core.rolling.RollingFileAppender",
+		}))
+		Expect(files["FILE"]).To(Equal("/kubedoop/log/zookeeper/zookeeper.log4j.xml"))
+
+		refs := make([]string, 0, len(parsed.Root.AppenderRefs))
+		for _, ref := range parsed.Root.AppenderRefs {
+			refs = append(refs, ref.Ref)
+		}
+		Expect(refs).To(ConsistOf("STDOUT", "FILE"))
+		Expect(parsed.Root.Level).To(Equal("WARN"))
+		Expect(parsed.Loggers).To(HaveLen(1))
+		Expect(parsed.Loggers[0].Name).To(Equal("org.apache.zookeeper"))
+		Expect(parsed.Loggers[0].Level).To(Equal("DEBUG"))
+	})
+})
+
+var _ = Describe("python module name", func() {
+	// The file is mounted into the product's config directory. A product that puts that
+	// directory on sys.path — the usual way a Python app loads its config — would shadow the
+	// standard library's logging module with a file named logging.py.
+	It("cannot shadow the standard library logging module", func() {
+		gen, err := productlogging.GeneratorFor(productlogging.LoggingFrameworkPython)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(gen.DefaultFileName()).To(Equal("log_config.py"))
+	})
+})
+
+var _ = Describe("log4j2 logger identifiers", func() {
+	// Sanitizing collapses these two names onto one identifier; unless the collision is broken,
+	// the second "logger.<id>.name" overwrites the first and one logger is never configured.
+	It("keeps loggers distinct when their names sanitize to the same identifier", func() {
+		content, err := productlogging.GenerateLog4j2(loggerConfigsOf(map[string]productlogging.LogLevel{
+			"com.example": productlogging.LogLevelDebug,
+			"com-example": productlogging.LogLevelWarn,
+		}))
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(log4j2Loggers(content)).To(Equal(map[string]string{
+			"com.example": "DEBUG",
+			"com-example": "WARN",
+		}))
+		Expect(content).To(ContainSubstring("loggers=com_example,com_example_2"))
+	})
+
+	It("emits identifiers that are bare property key segments", func() {
+		content, err := productlogging.GenerateLog4j2(loggerConfigsOf(map[string]productlogging.LogLevel{
+			"com.example app": productlogging.LogLevelInfo,
+			"":                productlogging.LogLevelInfo,
+		}))
+		Expect(err).ToNot(HaveOccurred())
+
+		props := javaProperties(content)
+		for _, id := range strings.Split(props["loggers"], ",") {
+			Expect(id).To(MatchRegexp(`^[A-Za-z0-9_]+$`))
+		}
+	})
+})
+
+func loggerConfigsOf(levels map[string]productlogging.LogLevel) map[string]productlogging.LoggerConfig {
+	configs := make(map[string]productlogging.LoggerConfig, len(levels))
+	for name, level := range levels {
+		configs[name] = productlogging.LoggerConfig{Name: name, Level: level}
+	}
+	return configs
 }
 
 var _ = Describe("LogLevel constants", func() {

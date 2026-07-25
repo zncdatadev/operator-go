@@ -41,8 +41,11 @@ would misread:
   POSIX shell sources the file; `$` and backticks are escaped in quoted values.
 - **INI** rejects a key or value containing a line break, a key containing `=` or `:`, and a key
   starting with `[`, `#` or `;`.
-- **Properties** escapes separators on write and parses escaped separators on read; a value ending
-  in an escaped backslash does not swallow the following line.
+- **Properties** round-trips exactly. Separators, comment markers and the edge whitespace of a key
+  or value are escaped on write and honoured on read, so keys such as `a ` or `#a` come back
+  unchanged; a value ending in an escaped backslash does not swallow the following line.
+  Whitespace that is *not* escaped is layout (indentation, padding around the separator) and is
+  dropped, as a hand-written file expects.
 
 ## Merge Semantics
 
