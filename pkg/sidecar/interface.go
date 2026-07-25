@@ -51,10 +51,6 @@ type SidecarConfig struct {
 
 	// SecurityContext defines the security context for the sidecar container.
 	SecurityContext *corev1.SecurityContext
-
-	// MainContainerName specifies which container to target for shared volume mounts.
-	// If empty, defaults to the first container in the pod spec.
-	MainContainerName string
 }
 
 // SidecarProvider defines the interface for sidecar injection.
@@ -68,6 +64,30 @@ type SidecarProvider interface {
 
 	// Validate validates the provider's dependencies (e.g., required ConfigMaps).
 	Validate(ctx context.Context, c client.Client, namespace string) error
+}
+
+// Injection phases order the providers SidecarManager.InjectAll runs. A provider that another
+// provider depends on — e.g. a container whose logs Vector collects, which Vector can only
+// RW-mount the shared log volume onto once that container is in the PodSpec — must run in an
+// earlier phase. Within a phase providers are injected in name order, so injection stays
+// deterministic and a pod template does not re-render across reconciles.
+const (
+	// SidecarPhaseProducer runs first: containers that produce data a later provider consumes.
+	SidecarPhaseProducer = 10
+	// SidecarPhaseDefault is the phase of providers that declare none.
+	SidecarPhaseDefault = 50
+	// SidecarPhasePipeline runs last: providers that wire up containers injected by earlier
+	// phases, such as a log-collection pipeline mounting its shared volume on its producers.
+	SidecarPhasePipeline = 90
+)
+
+// PhasedProvider is optionally implemented by sidecar providers that must be injected at a
+// specific phase regardless of how they are registered. SidecarManager.InjectAll uses the
+// phase returned here unless the provider was registered via RegisterWithPhase, whose explicit
+// phase wins. Providers that implement neither run at SidecarPhaseDefault.
+type PhasedProvider interface {
+	// Phase returns the injection phase, e.g. SidecarPhaseProducer.
+	Phase() int
 }
 
 // OwnImageProvider is optionally implemented by sidecar providers that ship their own

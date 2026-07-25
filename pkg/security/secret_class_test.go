@@ -68,3 +68,15 @@ var _ = Describe("CredentialsVolume", func() {
 		Expect(annotations).To(HaveKeyWithValue(security.SecretClassScopeAnnotation, "node,pod"))
 	})
 })
+
+// Scope lists come from a CR, where an empty list item is legal input rather than a programmer
+// error; a nameless "service=" entry is not resolvable and must not reach the annotation.
+var _ = Describe("ScopeString with empty list entries", func() {
+	It("skips empty service and listener-volume names", func() {
+		Expect(security.ScopeString(&commonsv1alpha1.CredentialsScope{
+			Pod:             true,
+			Services:        []string{"", "trino"},
+			ListenerVolumes: []string{""},
+		})).To(Equal("pod,service=trino"))
+	})
+})

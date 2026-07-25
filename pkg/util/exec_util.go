@@ -117,18 +117,22 @@ func (e *ExecUtil) ExecuteWithTimeout(ctx context.Context, namespace, podName, c
 		Stderr: &stderr,
 	})
 
-	result := &ExecuteResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
-	}
-
+	result := newExecuteResult(stdout.String(), stderr.String(), err)
 	if err != nil {
-		result.ExitCode = 1 // Non-zero exit code on error
 		return result, fmt.Errorf("command execution failed: %w", err)
 	}
-
-	result.ExitCode = 0
 	return result, nil
+}
+
+// newExecuteResult assembles the result of a finished stream. The exit code is the command's
+// own exit status when the stream error carries one; transport and timeout failures have no
+// exit status, and ExtractExitCode reports 1 for them and 0 for success.
+func newExecuteResult(stdout, stderr string, err error) *ExecuteResult {
+	return &ExecuteResult{
+		Stdout:   stdout,
+		Stderr:   stderr,
+		ExitCode: ExtractExitCode(err),
+	}
 }
 
 // ExecuteSimple runs a command and returns only stdout.
@@ -147,14 +151,14 @@ func (e *ExecUtil) ExecuteSimple(ctx context.Context, namespace, podName, contai
 	return result.Stdout, nil
 }
 
-// ExecuteInPod finds the first pod matching labels and executes a command.
+// ExecuteInPod finds the first running pod matching labels and executes a command in it.
+// Pod selection always goes through the client, including when a custom Executor is set —
+// the Executor replaces the exec transport, not the pod lookup.
 func (e *ExecUtil) ExecuteInPod(ctx context.Context, namespace string, labels map[string]string, containerName string, command []string) (*ExecuteResult, error) {
-	if e.Executor != nil {
-		result, err := e.Executor.ExecuteWithTimeout(ctx, namespace, "test-pod", containerName, command, 30*time.Second)
-		if err != nil && result == nil {
-			return nil, err
-		}
-		return result, err
+	// Executor can be supplied on its own (it is an exported field), but pod selection needs the
+	// API: report that plainly instead of dereferencing a nil client.
+	if e.Client == nil {
+		return nil, fmt.Errorf("ExecuteInPod requires a Kubernetes client; construct with NewExecUtil")
 	}
 
 	podList := &corev1.PodList{}

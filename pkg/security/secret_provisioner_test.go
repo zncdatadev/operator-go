@@ -322,23 +322,70 @@ var _ = Describe("SecretProvisioner", func() {
 			mounts := prov.VolumeMounts()
 			Expect(mounts[0].MountPath).To(Equal("/custom/mount/my-tls"))
 		})
+
+		It("should keep the default when given empty string", func() {
+			prov := security.NewSecretProvisioner().WithMountBasePath("")
+			prov.Register(security.TLS("my-tls", "my-class"))
+
+			mounts := prov.VolumeMounts()
+			Expect(mounts[0].MountPath).To(Equal("/kubedoop/mount/my-tls"))
+		})
+
+		It("should panic on a relative base path", func() {
+			Expect(func() {
+				security.NewSecretProvisioner().WithMountBasePath("relative/mount")
+			}).To(PanicWith(ContainSubstring("must be absolute")))
+		})
 	})
 
 	Describe("ListenerVolume", func() {
-		It("should build a volume with listener-volume scope", func() {
+		It("should build a volume scoped to the named listener volume", func() {
 			prov := security.NewSecretProvisioner()
-			prov.Register(security.ListenerVolume("listener-vol", "tls-class", security.Kerberos))
+			prov.Register(security.ListenerVolume("listener-vol", "tls-class", "listener", security.Kerberos))
 
 			vols := prov.Volumes()
 			Expect(vols).To(HaveLen(1))
 
 			annotations := vols[0].Ephemeral.VolumeClaimTemplate.Annotations
-			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("listener-volume"))
+			Expect(annotations[security.SecretClassScopeAnnotation]).To(Equal("listener-volume=listener"))
 			Expect(annotations[security.AnnotationSecretsFormat]).To(Equal("kerberos"))
 
 			mounts := prov.VolumeMounts()
 			Expect(mounts).To(HaveLen(1))
 			Expect(mounts[0].MountPath).To(Equal("/kubedoop/mount/listener-vol"))
+		})
+
+		It("should panic when the listener volume name is empty", func() {
+			Expect(func() {
+				security.ListenerVolume("listener-vol", "tls-class", "", security.TLSP12)
+			}).To(PanicWith(ContainSubstring("listenerVolumeName is required")))
+		})
+	})
+
+	Describe("Scope validation", func() {
+		It("should reject a bare listener-volume scope", func() {
+			Expect(func() {
+				security.CredentialsVolume("creds", "class").WithScope("pod,listener-volume")
+			}).To(PanicWith(ContainSubstring("must be listener-volume=<name>")))
+		})
+
+		It("should reject a service scope without a name", func() {
+			Expect(func() {
+				security.CredentialsVolume("creds", "class").WithScope("service=")
+			}).To(PanicWith(ContainSubstring("must be service=<name>")))
+		})
+
+		It("should reject an empty scope entry", func() {
+			Expect(func() {
+				security.CredentialsVolume("creds", "class").WithScope("pod,,node")
+			}).To(PanicWith(ContainSubstring("empty entry")))
+		})
+
+		It("should accept node, pod and named scopes", func() {
+			Expect(func() {
+				security.CredentialsVolume("creds", "class").
+					WithScope("node,pod,service=zk-server,listener-volume=listener")
+			}).NotTo(Panic())
 		})
 	})
 })

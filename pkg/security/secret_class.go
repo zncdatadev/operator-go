@@ -94,10 +94,20 @@ func ScopeString(scope *commonsv1alpha1.CredentialsScope) string {
 	if scope.Pod {
 		entries = append(entries, string(PodScope))
 	}
+	// Entries come straight out of a CR, where a list can legally contain an empty string. A
+	// nameless "service=" entry is not a scope the secret-operator can resolve, so it is dropped
+	// here rather than rejected downstream: this is user data, and the alternative is failing a
+	// whole cluster's reconcile over an empty list item.
 	for _, svc := range scope.Services {
+		if svc == "" {
+			continue
+		}
 		entries = append(entries, string(ServiceScope)+"="+svc)
 	}
 	for _, lv := range scope.ListenerVolumes {
+		if lv == "" {
+			continue
+		}
 		entries = append(entries, string(ListenerVolumeScope)+"="+lv)
 	}
 	return strings.Join(entries, CommonDelimiter)

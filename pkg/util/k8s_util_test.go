@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -267,7 +268,7 @@ var _ = Describe("K8sUtil", func() {
 	})
 
 	Describe("SetOwnerReference", func() {
-		It("should set owner reference", func() {
+		It("should set an owner reference the API server accepts", func() {
 			// Create owner
 			owner := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
@@ -288,6 +289,28 @@ var _ = Describe("K8sUtil", func() {
 			err := k8sUtil.SetOwnerReference(owner, owned)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(owned.OwnerReferences).To(HaveLen(1))
+			// A typed in-memory owner carries no TypeMeta, so the GVK must come from the scheme.
+			Expect(owned.OwnerReferences[0].APIVersion).To(Equal("v1"))
+			Expect(owned.OwnerReferences[0].Kind).To(Equal("ConfigMap"))
+			Expect(owned.OwnerReferences[0].Name).To(Equal("owner-ref-cm"))
+			Expect(owned.OwnerReferences[0].UID).To(Equal(owner.UID))
+
+			// The API server validates ownerReferences on write.
+			Expect(k8sClient.Create(ctx, owned)).To(Succeed())
+		})
+
+		It("should return an error when the owner type is not in the scheme", func() {
+			owner := &unregisteredOwner{
+				ObjectMeta: metav1.ObjectMeta{Name: "unregistered", Namespace: "default"},
+			}
+			owned := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "owned-unregistered-cm", Namespace: "default"},
+			}
+
+			err := k8sUtil.SetOwnerReference(owner, owned)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to set owner reference"))
+			Expect(owned.OwnerReferences).To(BeEmpty())
 		})
 
 		It("should not add duplicate owner reference", func() {
@@ -689,3 +712,16 @@ var _ = Describe("K8sUtil", func() {
 		})
 	})
 })
+
+// unregisteredOwner is a client.Object whose type is absent from the test scheme, exercising
+// the scheme lookup SetOwnerReference performs to resolve the owner's GroupVersionKind.
+type unregisteredOwner struct {
+	metav1.TypeMeta
+	metav1.ObjectMeta
+}
+
+func (o *unregisteredOwner) DeepCopyObject() runtime.Object {
+	clone := &unregisteredOwner{TypeMeta: o.TypeMeta}
+	o.DeepCopyInto(&clone.ObjectMeta)
+	return clone
+}

@@ -274,6 +274,8 @@ var _ = Describe("ExecUtil", func() {
 	})
 
 	Describe("ExecuteInPod", func() {
+		var runningPod *corev1.Pod
+
 		BeforeEach(func() {
 			config := testEnv.GetConfig()
 			var err error
@@ -281,26 +283,59 @@ var _ = Describe("ExecUtil", func() {
 			Expect(err).NotTo(HaveOccurred())
 			mockExecutor = &MockPodExecutor{}
 			execUtil.WithExecutor(mockExecutor)
+
+			runningPod = &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "exec-in-pod-target",
+					Namespace: "default",
+					Labels:    map[string]string{"app": "exec-in-pod"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "cnt", Image: "nginx"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, runningPod)).To(Succeed())
+			runningPod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, runningPod)).To(Succeed())
 		})
 
-		It("should execute command using mock executor", func() {
+		AfterEach(func() {
+			_ = k8sClient.Delete(ctx, runningPod)
+		})
+
+		// A custom Executor replaces the exec transport only; the pod must still be selected by
+		// label from the API server, never substituted with a fixed name.
+		It("should execute in the pod selected by labels", func() {
 			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
 				return &util.ExecuteResult{Stdout: "in-pod output", Stderr: "", ExitCode: 0}, nil
 			}
 
-			result, err := execUtil.ExecuteInPod(ctx, "ns", map[string]string{"app": "test"}, "cnt", []string{"ls"})
+			result, err := execUtil.ExecuteInPod(ctx, "default", map[string]string{"app": "exec-in-pod"}, "cnt", []string{"ls"})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Stdout).To(Equal("in-pod output"))
+			Expect(mockExecutor.LastPodName).To(Equal("exec-in-pod-target"))
+			Expect(mockExecutor.LastNamespace).To(Equal("default"))
+			Expect(mockExecutor.LastContainerName).To(Equal("cnt"))
 		})
 
 		It("should return error when mock executor fails", func() {
 			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return nil, errors.New("pod not found")
+				return nil, errors.New("exec stream failed")
 			}
 
-			result, err := execUtil.ExecuteInPod(ctx, "ns", map[string]string{"app": "test"}, "cnt", []string{"ls"})
+			result, err := execUtil.ExecuteInPod(ctx, "default", map[string]string{"app": "exec-in-pod"}, "cnt", []string{"ls"})
 			Expect(err).To(HaveOccurred())
 			Expect(result).To(BeNil())
+		})
+
+		It("should not reach the executor when no pod matches the labels", func() {
+			result, err := execUtil.ExecuteInPod(ctx, "default", map[string]string{"app": "no-such-app"}, "cnt", []string{"ls"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no pods found"))
+			Expect(result).To(BeNil())
+			Expect(mockExecutor.ExecuteWithTimeoutCalled).To(BeFalse())
 		})
 	})
 

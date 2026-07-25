@@ -159,6 +159,76 @@ var _ = Describe("SidecarManager", func() {
 		})
 	})
 
+	Describe("InjectAll phase ordering", func() {
+		// The producer name sorts after the pipeline owner's, so name order alone would run the
+		// pipeline first and leave the producer without the shared mount.
+		const producerName = "z-producer"
+
+		It("should inject a producer registered at the producer phase before a later provider", func() {
+			manager.RegisterWithPhase(
+				&mockProducerProvider{name: producerName},
+				&sidecar.SidecarConfig{Enabled: true},
+				sidecar.SidecarPhaseProducer,
+			)
+			manager.Register(
+				&mockPipelineProvider{name: "m-pipeline", producers: []string{producerName}},
+				&sidecar.SidecarConfig{Enabled: true},
+			)
+
+			podSpec := &corev1.PodSpec{}
+			Expect(manager.InjectAll(podSpec)).To(Succeed())
+
+			producer := sidecar.FindInitContainer(podSpec, producerName)
+			Expect(producer).NotTo(BeNil())
+			Expect(producer.VolumeMounts).To(HaveLen(1))
+			Expect(producer.VolumeMounts[0].Name).To(Equal("shared"))
+		})
+
+		It("should honor a phase the provider declares itself", func() {
+			manager.Register(
+				&mockPhasedPipelineProvider{
+					mockPipelineProvider: mockPipelineProvider{name: "a-pipeline", producers: []string{producerName}},
+				},
+				&sidecar.SidecarConfig{Enabled: true},
+			)
+			manager.Register(&mockProducerProvider{name: producerName}, &sidecar.SidecarConfig{Enabled: true})
+
+			podSpec := &corev1.PodSpec{}
+			Expect(manager.InjectAll(podSpec)).To(Succeed())
+
+			producer := sidecar.FindInitContainer(podSpec, producerName)
+			Expect(producer).NotTo(BeNil())
+			Expect(producer.VolumeMounts).To(HaveLen(1))
+		})
+
+		It("should let an explicit registration phase win over the declared one", func() {
+			provider := &mockPhasedPipelineProvider{
+				mockPipelineProvider: mockPipelineProvider{name: "a-pipeline"},
+			}
+			manager.RegisterWithPhase(provider, &sidecar.SidecarConfig{Enabled: true}, sidecar.SidecarPhaseProducer)
+			Expect(manager.Phase("a-pipeline")).To(Equal(sidecar.SidecarPhaseProducer))
+
+			manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
+			Expect(manager.Phase("a-pipeline")).To(Equal(sidecar.SidecarPhasePipeline))
+		})
+
+		It("should report the default phase for undeclared and unregistered providers", func() {
+			manager.Register(&mockSidecarProvider{name: "plain"}, &sidecar.SidecarConfig{Enabled: true})
+			Expect(manager.Phase("plain")).To(Equal(sidecar.SidecarPhaseDefault))
+			Expect(manager.Phase("absent")).To(Equal(sidecar.SidecarPhaseDefault))
+		})
+
+		It("should keep name order within a phase", func() {
+			manager.RegisterWithPhase(&mockSidecarProvider{name: "z-sidecar"}, &sidecar.SidecarConfig{Enabled: true}, sidecar.SidecarPhaseProducer)
+			manager.RegisterWithPhase(&mockSidecarProvider{name: "a-sidecar"}, &sidecar.SidecarConfig{Enabled: true}, sidecar.SidecarPhaseProducer)
+
+			podSpec := &corev1.PodSpec{}
+			Expect(manager.InjectAll(podSpec)).To(Succeed())
+			Expect(podSpec.Containers[0].Name).To(Equal("a-sidecar"))
+			Expect(podSpec.Containers[1].Name).To(Equal("z-sidecar"))
+		})
+	})
+
 	Describe("Inject", func() {
 		It("should inject a specific sidecar", func() {
 			provider := &mockSidecarProvider{name: "test-sidecar"}
@@ -387,6 +457,7 @@ var _ = Describe("SidecarManager", func() {
 					Name:      "vector-config",
 					Namespace: "test-namespace",
 				},
+				Data: map[string]string{vector.VectorConfigFileName: "sources: {}\n"},
 			}
 			fakeClient := testutil.NewFakeClientWithObjects(vectorCM)
 			manager.WithClient(fakeClient, "test-namespace")
@@ -447,6 +518,7 @@ var _ = Describe("SidecarManager", func() {
 					Name:      "vector-config",
 					Namespace: "test-namespace",
 				},
+				Data: map[string]string{vector.VectorConfigFileName: "sources: {}\n"},
 			}
 			jmxCm := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
@@ -474,6 +546,7 @@ var _ = Describe("SidecarManager", func() {
 					Name:      "my-custom-vector-config",
 					Namespace: "test-namespace",
 				},
+				Data: map[string]string{vector.VectorConfigFileName: "sources: {}\n"},
 			}
 			fakeClient := testutil.NewFakeClientWithObjects(customCM)
 			manager.WithClient(fakeClient, "test-namespace")
@@ -721,6 +794,55 @@ func (p *mockSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.Si
 func (p *mockSidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
 	return nil
 }
+
+// mockProducerProvider stands in for a product-supplied init container whose output a later
+// provider consumes.
+type mockProducerProvider struct {
+	name string
+}
+
+func (p *mockProducerProvider) Name() string { return p.name }
+
+func (p *mockProducerProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.SidecarConfig) error {
+	sidecar.AddOrReplaceInitContainer(podSpec, &corev1.Container{Name: p.name, Image: "producer"})
+	return nil
+}
+
+func (p *mockProducerProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
+	return nil
+}
+
+// mockPipelineProvider stands in for a pipeline owner such as Vector: it mounts a shared
+// volume onto the producer containers it finds, so it only works once they are in the PodSpec.
+type mockPipelineProvider struct {
+	name      string
+	producers []string
+}
+
+func (p *mockPipelineProvider) Name() string { return p.name }
+
+func (p *mockPipelineProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.SidecarConfig) error {
+	sidecar.AddOrReplaceInitContainer(podSpec, &corev1.Container{Name: p.name, Image: "pipeline"})
+	mount := []corev1.VolumeMount{{Name: "shared", MountPath: "/shared"}}
+	for _, name := range p.producers {
+		if c := sidecar.FindInitContainer(podSpec, name); c != nil {
+			sidecar.AddVolumeMounts(c, mount)
+		}
+	}
+	return nil
+}
+
+func (p *mockPipelineProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
+	return nil
+}
+
+// mockPhasedPipelineProvider declares its own injection phase instead of relying on the
+// registration site to pass one.
+type mockPhasedPipelineProvider struct {
+	mockPipelineProvider
+}
+
+func (p *mockPhasedPipelineProvider) Phase() int { return sidecar.SidecarPhasePipeline }
 
 var _ = Describe("Native-sidecar container injection", func() {
 	var podSpec *corev1.PodSpec

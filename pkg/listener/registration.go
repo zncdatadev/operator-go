@@ -27,7 +27,6 @@ import (
 type VolumeRegistration struct {
 	volumeName    string
 	listenerClass ListenerClass
-	scope         *ListenerScope
 	listenerName  string
 }
 
@@ -40,12 +39,6 @@ func NewVolume(name string, class ListenerClass) *VolumeRegistration {
 		volumeName:    name,
 		listenerClass: class,
 	}
-}
-
-// WithScope sets the listener scope annotation on the PVC template.
-func (r *VolumeRegistration) WithScope(scope ListenerScope) *VolumeRegistration {
-	r.scope = &scope
-	return r
 }
 
 // WithListenerName sets the listener name annotation on the PVC template.
@@ -63,10 +56,6 @@ func (r *VolumeRegistration) buildAnnotations() map[string]string {
 
 	if r.listenerClass != "" {
 		annotations[ListenerClassAnnotation] = string(r.listenerClass)
-	}
-
-	if r.scope != nil {
-		annotations[ListenerScopeAnnotation] = string(*r.scope)
 	}
 
 	if r.listenerName != "" {

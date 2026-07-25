@@ -54,25 +54,16 @@ var _ = Describe("ListenerProvisioner", func() {
 			))
 		})
 
-		It("should set scope annotation when WithScope is used", func() {
+		It("should only emit annotations the listener-operator CSI driver reads", func() {
 			provisioner.RegisterVolume(
 				listener.NewVolume("listener", listener.ListenerClassClusterInternal).
-					WithScope(listener.ListenerScopeCluster),
+					WithListenerName("my-listener"),
 			)
 			volumes := provisioner.Volumes()
 			annotations := volumes[0].Ephemeral.VolumeClaimTemplate.Annotations
-			Expect(annotations).To(HaveKeyWithValue(
-				listener.ListenerScopeAnnotation, "Cluster",
-			))
-		})
-
-		It("should not set scope annotation when WithScope is not used", func() {
-			provisioner.RegisterVolume(
-				listener.NewVolume("listener", listener.ListenerClassClusterInternal),
-			)
-			volumes := provisioner.Volumes()
-			annotations := volumes[0].Ephemeral.VolumeClaimTemplate.Annotations
-			Expect(annotations).NotTo(HaveKey(listener.ListenerScopeAnnotation))
+			Expect(annotations).To(HaveLen(2))
+			Expect(annotations).To(HaveKey(listener.ListenerClassAnnotation))
+			Expect(annotations).To(HaveKey(listener.AnnotationListenerName))
 		})
 
 		It("should set listener name annotation when WithListenerName is used", func() {
@@ -208,6 +199,12 @@ var _ = Describe("ListenerProvisioner", func() {
 			mounts := p.VolumeMounts()
 			Expect(mounts[0].MountPath).To(Equal("/kubedoop/listener/my-vol"))
 		})
+
+		It("should panic on a relative base path", func() {
+			Expect(func() {
+				listener.NewProvisioner().WithMountBasePath("relative/listener")
+			}).To(PanicWith(ContainSubstring("must be absolute")))
+		})
 	})
 
 	Describe("AutoInject", func() {
@@ -283,10 +280,6 @@ var _ = Describe("ListenerProvisioner", func() {
 
 		It("should have correct listener class annotation", func() {
 			Expect(listener.ListenerClassAnnotation).To(Equal("listeners.kubedoop.dev/class"))
-		})
-
-		It("should have correct scope annotation", func() {
-			Expect(listener.ListenerScopeAnnotation).To(Equal("listeners.kubedoop.dev/scope"))
 		})
 
 		It("should have correct listener name annotation", func() {
