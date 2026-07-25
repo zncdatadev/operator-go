@@ -22,21 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// HealthCheckResult represents the result of a health check.
-//
-// Deprecated: no SDK API produces or consumes this struct — ServiceHealthCheck.CheckHealthy
-// reports its outcome as (bool, error). It will be removed in a future release.
-type HealthCheckResult struct {
-	// Healthy indicates whether the health check passed.
-	Healthy bool
-
-	// Message provides additional information about the health check result.
-	Message string
-
-	// Error contains any error that occurred during the health check.
-	Error error
-}
-
 // ServiceHealthCheck defines the contract for business-level health checks.
 // Products implement this interface to provide custom health verification logic.
 //

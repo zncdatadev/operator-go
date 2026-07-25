@@ -77,7 +77,8 @@ type RoleGroupExtension[CR ClusterInterface] interface {
 	PostReconcile(ctx context.Context, client client.Client, cr CR, roleName, roleGroupName string) error
 }
 
-// ExtensionPriority defines the execution order of extensions.
+// ExtensionPriority defines the execution order of extensions. It is supplied at registration
+// time through WithPriority; the registry never asks the extension itself for a priority.
 type ExtensionPriority int
 
 const (
@@ -93,13 +94,6 @@ const (
 	PriorityHighest ExtensionPriority = 100
 )
 
-// PrioritizedExtension wraps an extension with a priority for ordering.
-type PrioritizedExtension interface {
-	Extension
-	// Priority returns the extension priority.
-	Priority() ExtensionPriority
-}
-
 // BaseExtension provides a base implementation for extensions.
 type BaseExtension struct {
 	name string
@@ -113,32 +107,6 @@ func NewBaseExtension(name string) BaseExtension {
 // Name returns the extension name.
 func (e BaseExtension) Name() string {
 	return e.name
-}
-
-// NoOpExtension is an extension that does nothing.
-// Useful for testing or as a placeholder.
-type NoOpExtension struct {
-	BaseExtension
-}
-
-// NewNoOpExtension creates a new NoOpExtension.
-func NewNoOpExtension(name string) *NoOpExtension {
-	return &NoOpExtension{BaseExtension: NewBaseExtension(name)}
-}
-
-// PreReconcile does nothing.
-func (e *NoOpExtension) PreReconcile(ctx context.Context, client client.Client, cr ClusterInterface) error {
-	return nil
-}
-
-// PostReconcile does nothing.
-func (e *NoOpExtension) PostReconcile(ctx context.Context, client client.Client, cr ClusterInterface) error {
-	return nil
-}
-
-// OnReconcileError does nothing.
-func (e *NoOpExtension) OnReconcileError(ctx context.Context, client client.Client, cr ClusterInterface, err error) error {
-	return nil
 }
 
 // ExtensionError wraps an error with extension context.
