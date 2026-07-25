@@ -17,7 +17,6 @@ limitations under the License.
 package builder
 
 import (
-	"encoding/json"
 	"maps"
 	"slices"
 	"sort"
@@ -29,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 )
 
@@ -359,7 +357,8 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 	}
 
 	if storage.StorageClass != "" {
-		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = &storage.StorageClass
+		// Copy rather than point into the caller's spec, which the caller still owns.
+		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = ptr.To(storage.StorageClass)
 	}
 
 	// Add volume mount for data
@@ -513,7 +512,7 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	spec := corev1.PodSpec{
 		ServiceAccountName:            b.ServiceAccountName,
-		TerminationGracePeriodSeconds: b.TerminationGracePeriodSeconds,
+		TerminationGracePeriodSeconds: clonePtr(b.TerminationGracePeriodSeconds),
 		SecurityContext:               b.PodSecurityContext.DeepCopy(),
 		Affinity:                      b.Affinity.DeepCopy(),
 		Volumes:                       cloneSlice(b.Volumes),
@@ -526,7 +525,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	// Only set EnableServiceLinks when explicitly configured, so direct builder users that never
 	// call WithEnableServiceLinks are unaffected (k8s applies its own default of true).
 	if b.EnableServiceLinks != nil {
-		spec.EnableServiceLinks = b.EnableServiceLinks
+		spec.EnableServiceLinks = clonePtr(b.EnableServiceLinks)
 	}
 
 	return spec
@@ -678,9 +677,14 @@ func (b *StatefulSetBuilder) buildStartupProbe() *corev1.Probe {
 // config-declared gracefulShutdownTimeout, and enableServiceLinks still wins over the framework
 // default, only when actually set).
 //
-// Security contexts now deep-merge per field rather than being replaced wholesale: an override
+// Security contexts deep-merge per field rather than being replaced wholesale: an override
 // stating only runAsUser keeps the framework-hardened remainder. Overrides that need to unset a
 // field must state it explicitly.
+//
+// Kubernetes' mutually exclusive ("one of") structs are the exception: an override that states a
+// different volume source, probe handler, lifecycle handler or env var source than the framework
+// replaces it wholesale instead of merging into it (see clearSupersededUnions), because a merged
+// object with two members set is rejected by the API server.
 //
 // After the merge the selector labels are re-asserted on the pod template, so an override can
 // never break the invariant that the immutable .spec.selector matches the template labels.
@@ -706,7 +710,14 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 		}
 	}
 
-	merged, err := strategicMergePodTemplate(&sts.Spec.Template, override)
+	// Resolve on a copy the one-of collisions the patch format cannot express, so an override
+	// naming a framework-owned volume (or probe handler, or env var source) replaces it instead of
+	// producing an object with two members set. The copy keeps the fallback below meaningful: a
+	// failed merge must fall back to the fully built template, not to a stripped one.
+	base := sts.Spec.Template.DeepCopy()
+	clearSupersededUnions(base, override)
+
+	merged, err := strategicMergePodTemplate(base, override)
 	if err != nil {
 		// Structurally valid templates cannot realistically fail to marshal or patch; if it ever
 		// happens, keep the built template rather than emitting a half-merged one.
@@ -722,32 +733,6 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	for k, v := range b.selectorMatchLabels() {
 		sts.Spec.Template.Labels[k] = v
 	}
-}
-
-// strategicMergePodTemplate merges the override pod template onto the base using the same
-// strategic-merge-patch machinery Kubernetes applies to pod templates.
-func strategicMergePodTemplate(base, override *corev1.PodTemplateSpec) (*corev1.PodTemplateSpec, error) {
-	baseBytes, err := json.Marshal(base)
-	if err != nil {
-		return nil, err
-	}
-	overrideBytes, err := json.Marshal(override)
-	if err != nil {
-		return nil, err
-	}
-	patchMeta, err := strategicpatch.NewPatchMetaFromStruct(corev1.PodTemplateSpec{})
-	if err != nil {
-		return nil, err
-	}
-	mergedBytes, err := strategicpatch.StrategicMergePatchUsingLookupPatchMeta(baseBytes, overrideBytes, patchMeta)
-	if err != nil {
-		return nil, err
-	}
-	var merged corev1.PodTemplateSpec
-	if err := json.Unmarshal(mergedBytes, &merged); err != nil {
-		return nil, err
-	}
-	return &merged, nil
 }
 
 // NamespacedName returns the NamespacedName for the StatefulSet.

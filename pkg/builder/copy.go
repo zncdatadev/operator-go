@@ -37,3 +37,15 @@ func cloneSlice[T any, PT interface {
 	}
 	return out
 }
+
+// clonePtr returns an independent copy of a scalar pointer field, for the same reason cloneSlice
+// copies slices: an optional Kubernetes field is a pointer, and handing the builder's own pointer
+// to the built object lets a caller writing through it change the builder and every other object
+// the builder has produced. A nil source stays nil so "unset" survives the copy.
+func clonePtr[T any](src *T) *T {
+	if src == nil {
+		return nil
+	}
+	value := *src
+	return &value
+}
