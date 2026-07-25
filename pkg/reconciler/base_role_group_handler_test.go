@@ -48,7 +48,7 @@ import (
 var _ = Describe("BaseRoleGroupHandler", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
 	var ctx context.Context
-	var mockCR *testutil.ClusterWrapper
+	var mockCR *testutil.MockCluster
 	var buildCtx *reconciler.RoleGroupBuildContext
 
 	BeforeEach(func() {
@@ -56,7 +56,7 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 
 		mockCluster := testutil.NewMockCluster("test-cluster", "default")
-		mockCR = testutil.WrapMockCluster(mockCluster)
+		mockCR = mockCluster
 
 		buildCtx = &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
@@ -1267,7 +1267,7 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 
 var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 	var ctx context.Context
-	var mockCR *testutil.ClusterWrapper
+	var mockCR *testutil.MockCluster
 
 	newBuildCtx := func(storage *v1alpha1.StorageResource) *reconciler.RoleGroupBuildContext {
 		cfg := &v1alpha1.RoleGroupConfigSpec{}
@@ -1290,7 +1290,7 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR = testutil.NewMockCluster("test-cluster", "default")
 		buildCtx = newBuildCtx(&v1alpha1.StorageResource{Capacity: resource.MustParse("10Gi")})
 	})
 
@@ -1364,7 +1364,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			Pattern:   "%d [myid:%X{myid}] %m%n",
 		}}
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1409,7 +1409,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			Framework: productlogging.LoggingFrameworkLogback,
 		}}
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1442,7 +1442,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			Framework: productlogging.LoggingFrameworkLogback,
 		}}
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1498,7 +1498,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1590,7 +1590,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1627,7 +1627,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			Framework: productlogging.LoggingFrameworkLogback,
 		}}
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1651,7 +1651,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			Framework: productlogging.LoggingFrameworkLogback, // default file name logback.xml
 		}}
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1681,7 +1681,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
 		// No LoggingContainers declared.
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1710,7 +1710,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			Framework: productlogging.LoggingFrameworkLogback,
 		}}
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1938,7 +1938,7 @@ var _ = Describe("Sidecar product image propagation", func() {
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
-		mockCR := testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
@@ -1972,7 +1972,7 @@ var _ = Describe("Sidecar product image propagation", func() {
 
 var _ = Describe("Selector label stability", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
-	var mockCR *testutil.ClusterWrapper
+	var mockCR *testutil.MockCluster
 
 	newBuildCtx := func(clusterLabels map[string]string) *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
@@ -1991,7 +1991,7 @@ var _ = Describe("Selector label stability", func() {
 	BeforeEach(func() {
 		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
 		handler.ExtraLabels["team"] = "platform"
-		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR = testutil.NewMockCluster("test-cluster", "default")
 	})
 
 	It("builds the selector from framework-owned labels only", func() {
@@ -2054,7 +2054,7 @@ var _ = Describe("Role group Services", func() {
 		}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient,
-			testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default")), buildCtx)
+			testutil.NewMockCluster("test-cluster", "default"), buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 
 		for _, svc := range []*corev1.Service{resources.Service, resources.HeadlessService} {
@@ -2067,7 +2067,7 @@ var _ = Describe("Role group Services", func() {
 
 var _ = Describe("Role group ConfigMap rendering", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
-	var mockCR *testutil.ClusterWrapper
+	var mockCR *testutil.MockCluster
 
 	// Enough keys that a randomized map iteration order practically never matches the sorted one.
 	configFile := map[string]string{
@@ -2092,7 +2092,7 @@ var _ = Describe("Role group ConfigMap rendering", func() {
 
 	BeforeEach(func() {
 		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR = testutil.NewMockCluster("test-cluster", "default")
 	})
 
 	It("renders a config file with no registered generator in sorted key order", func() {
@@ -2116,7 +2116,7 @@ var _ = Describe("Role group ConfigMap rendering", func() {
 })
 
 var _ = Describe("Container image resolution", func() {
-	var mockCR *testutil.ClusterWrapper
+	var mockCR *testutil.MockCluster
 
 	newBuildCtx := func(image *v1alpha1.ImageSpec) *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
@@ -2140,7 +2140,7 @@ var _ = Describe("Container image resolution", func() {
 	}
 
 	BeforeEach(func() {
-		mockCR = testutil.WrapMockCluster(testutil.NewMockCluster("test-cluster", "default"))
+		mockCR = testutil.NewMockCluster("test-cluster", "default")
 	})
 
 	It("resolves the main container image from the CR spec.image when ProductName is set", func() {
@@ -2238,8 +2238,8 @@ var _ = Describe("BaseRoleGroupHandler ConfigMap data", func() {
 	It("always returns a non-nil Data map so products can add files to it", func() {
 		// The documented extension pattern is to call BuildResources and then customize the
 		// returned objects; `resources.ConfigMap.Data[k] = v` panics on a nil map.
-		handler := reconciler.NewBaseRoleGroupHandler[*testutil.ClusterWrapper]("product:latest", testScheme)
-		cr := testutil.WrapMockCluster(testutil.NewMockCluster("cm-nil", testNamespace))
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:latest", testScheme)
+		cr := testutil.NewMockCluster("cm-nil", testNamespace)
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, cr, &reconciler.RoleGroupBuildContext{
 			ClusterName:      "cm-nil",

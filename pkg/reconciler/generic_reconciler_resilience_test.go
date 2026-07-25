@@ -105,17 +105,17 @@ var _ = Describe("GenericReconciler panic recovery", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("panic-cr"))
 
 		fakeRecorder := record.NewFakeRecorder(100)
-		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
-			BuildResourcesFunc: func(context.Context, client.Client, *testutil.ClusterWrapper, *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.MockCluster]{
+			BuildResourcesFunc: func(context.Context, client.Client, *testutil.MockCluster, *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
 				panic("handler exploded")
 			},
 		}
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         fakeRecorder,
 			RoleGroupHandler: handler,
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -142,11 +142,11 @@ var _ = Describe("GenericReconciler requeue aggregation", func() {
 		ctx = context.Background()
 	})
 
-	newReconciler := func(cfg *reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
+	newReconciler := func(cfg *reconciler.GenericReconcilerConfig[*testutil.MockCluster]) *reconciler.GenericReconciler[*testutil.MockCluster] {
 		cfg.Client = k8sClient
 		cfg.Scheme = testScheme
 		cfg.Recorder = recorder
-		cfg.Prototype = testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace))
+		cfg.Prototype = testutil.NewMockCluster("proto", testNamespace)
 		if cfg.RoleGroupHandler == nil {
 			cfg.RoleGroupHandler = &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()}
 		}
@@ -157,7 +157,7 @@ var _ = Describe("GenericReconciler requeue aggregation", func() {
 
 	It("requeues on the health check interval", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("requeue-health"))
-		r := newReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r := newReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			HealthCheckInterval: 45 * time.Second,
 		})
 
@@ -170,7 +170,7 @@ var _ = Describe("GenericReconciler requeue aggregation", func() {
 
 	It("does not requeue when the health check interval is disabled", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("requeue-off"))
-		r := newReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r := newReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			HealthCheckInterval: -1,
 		})
 
@@ -194,7 +194,7 @@ var _ = Describe("GenericReconciler requeue aggregation", func() {
 			_ = k8sClient.Delete(ctx, orphan)
 		})
 
-		r := newReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r := newReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			HealthCheckInterval:   time.Hour,
 			GrayDeleteGracePeriod: 30 * time.Second,
 		})
@@ -226,13 +226,13 @@ var _ = Describe("GenericReconciler dependency validation", func() {
 		cr, resourceName := newResilienceCR(ctx, crName)
 		dependencyName := crName + "-external"
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
-			Dependencies: func(*testutil.ClusterWrapper) []reconciler.Dependency {
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+			Dependencies: func(*testutil.MockCluster) []reconciler.Dependency {
 				return []reconciler.Dependency{{Kind: reconciler.DependencyConfigMap, Name: dependencyName}}
 			},
 		})
@@ -289,8 +289,8 @@ var _ = Describe("GenericReconciler sidecar validation", func() {
 		crName := uniqueCRName("sidecar-validation")
 		cr, resourceName := newResilienceCR(ctx, crName)
 
-		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
-			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.MockCluster]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.MockCluster, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
 				buildCtx.SidecarManager.Register(&failingSidecarProvider{}, &sidecar.SidecarConfig{Enabled: true})
 				return &reconciler.RoleGroupResources{
 					ConfigMap:   testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
@@ -298,12 +298,12 @@ var _ = Describe("GenericReconciler sidecar validation", func() {
 				}, nil
 			},
 		}
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -355,12 +355,12 @@ var _ = Describe("GenericReconciler status write conflicts", func() {
 		cr, _ := newResilienceCR(ctx, crName)
 
 		conflicting := &conflictingStatusClient{Client: k8sClient, conflicts: 2}
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           conflicting,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -391,8 +391,8 @@ var _ = Describe("GenericReconciler metrics Service reclaim", func() {
 		metricsName := resourceName + "-metrics"
 
 		withMetrics := true
-		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.ClusterWrapper]{
-			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.MockCluster]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.MockCluster, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
 				resources := &reconciler.RoleGroupResources{
 					ConfigMap: testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
 				}
@@ -402,12 +402,12 @@ var _ = Describe("GenericReconciler metrics Service reclaim", func() {
 				return resources, nil
 			},
 		}
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -437,7 +437,7 @@ type secretExtraHandler struct {
 func (h *secretExtraHandler) BuildResources(
 	_ context.Context,
 	_ client.Client,
-	_ *testutil.ClusterWrapper,
+	_ *testutil.MockCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 ) (*reconciler.RoleGroupResources, error) {
 	h.mu.Lock()
@@ -484,14 +484,14 @@ var _ = Describe("GenericReconciler controller setup", func() {
 		})
 
 		handler := &secretExtraHandler{token: "desired"}
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			// No periodic requeue: the repair below can only be triggered by a watch event.
 			HealthCheckInterval: -1,
-			Prototype:           testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace.Name)),
+			Prototype:           testutil.NewMockCluster("proto", namespace.Name),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -569,13 +569,13 @@ var _ = Describe("GenericReconciler rate limiting", func() {
 		crName := uniqueCRName("throttled")
 		cr, resourceName := newResilienceCR(ctx, crName)
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:              &throttlingCreateClient{Client: k8sClient},
 			Scheme:              testScheme,
 			Recorder:            recorder,
 			RoleGroupHandler:    &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			RateLimitRetryAfter: 3 * time.Second,
-			Prototype:           testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:           testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -616,7 +616,7 @@ func (h *vectorTestHandler) ProvidesVectorConfig(string) bool { return h.provide
 func (h *vectorTestHandler) BuildResources(
 	_ context.Context,
 	_ client.Client,
-	_ *testutil.ClusterWrapper,
+	_ *testutil.MockCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 ) (*reconciler.RoleGroupResources, error) {
 	sts := testutil.NewTestStatefulSet(buildCtx.ResourceName, buildCtx.ClusterNamespace)
@@ -689,13 +689,13 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		return cr, resourceName
 	}
 
-	newReconciler := func(handler reconciler.RoleGroupHandler[*testutil.ClusterWrapper], rec record.EventRecorder) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+	newReconciler := func(handler reconciler.RoleGroupHandler[*testutil.MockCluster], rec record.EventRecorder) *reconciler.GenericReconciler[*testutil.MockCluster] {
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         rec,
 			RoleGroupHandler: handler,
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 		return r
@@ -782,12 +782,12 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget lifecycle", func() 
 			}
 		})
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
-			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.ClusterWrapper]("test-image:latest", testScheme),
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("test-image:latest", testScheme),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 

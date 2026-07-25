@@ -18,11 +18,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 // TrinoClusterSpec defines the desired state of TrinoCluster
@@ -141,7 +138,9 @@ type TrinoClusterList struct {
 }
 
 // ==================== ClusterInterface Implementation ====================
-// This is the key to using operator-go SDK: implement ClusterInterface
+// This is the key to using operator-go SDK: implement ClusterInterface. Everything else it
+// requires — the metadata accessors, the object kind, DeepCopyObject, DeepCopy — comes from the
+// embedded TypeMeta/ObjectMeta and controller-gen's generated deep-copy code.
 
 // GetSpec builds and returns a GenericClusterSpec from the typed role fields.
 // This bridges the type-safe coordinators/workers fields to the SDK framework's
@@ -172,39 +171,11 @@ func (t *TrinoCluster) VectorAggregatorConfigMapName() string {
 	return *t.Spec.ClusterConfig.VectorAggregatorConfigMapName
 }
 
-// GetStatus returns the generic cluster status
+// GetStatus returns the generic cluster status the framework writes conditions and role group
+// state into. It is a pointer into the CR, so RegisteredWorkers and CatalogsReady survive a
+// reconcile cycle untouched.
 func (t *TrinoCluster) GetStatus() *commonsv1alpha1.GenericClusterStatus {
 	return &t.Status.GenericClusterStatus
-}
-
-// SetStatus sets the generic cluster status
-func (t *TrinoCluster) SetStatus(status *commonsv1alpha1.GenericClusterStatus) {
-	t.Status.GenericClusterStatus = *status
-}
-
-// DeepCopyCluster creates a deep copy of the cluster
-func (t *TrinoCluster) DeepCopyCluster() common.ClusterInterface {
-	return t.DeepCopy()
-}
-
-// GetRuntimeObject returns the runtime object
-func (t *TrinoCluster) GetRuntimeObject() runtime.Object {
-	return t
-}
-
-// GetObjectMeta returns the object metadata
-func (t *TrinoCluster) GetObjectMeta() *metav1.ObjectMeta {
-	return &t.ObjectMeta
-}
-
-// GetScheme returns the runtime scheme
-func (t *TrinoCluster) GetScheme() *runtime.Scheme {
-	return nil // Scheme is set by the manager
-}
-
-// GetUID returns the cluster UID
-func (t *TrinoCluster) GetUID() types.UID {
-	return t.UID
 }
 
 func init() {

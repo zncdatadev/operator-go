@@ -124,15 +124,6 @@ func EnsureDiscoveryConfigMap(
 	if name == "" {
 		return fmt.Errorf("discovery configmap name must not be empty")
 	}
-	// SetControllerReference needs a client.Object; every real CR is one, so the runtime
-	// object of a ClusterInterface is expected to be too (same contract the reconciler's
-	// own apply path relies on).
-	runtimeObj := owner.GetRuntimeObject()
-	ownerObj, ok := runtimeObj.(client.Object)
-	if !ok {
-		return fmt.Errorf("discovery configmap owner %q: runtime object %T is not a client.Object", owner.GetName(), runtimeObj)
-	}
-
 	options := &DiscoveryConfigMapOptions{}
 	for _, opt := range opts {
 		opt(options)
@@ -165,7 +156,7 @@ func EnsureDiscoveryConfigMap(
 			cm.Annotations[k] = v
 		}
 		cm.Data = data
-		return controllerutil.SetControllerReference(ownerObj, cm, scheme)
+		return controllerutil.SetControllerReference(owner, cm, scheme)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to ensure discovery configmap %s/%s: %w", owner.GetNamespace(), name, err)

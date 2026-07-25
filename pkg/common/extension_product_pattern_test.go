@@ -33,7 +33,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -72,34 +71,13 @@ type HdfsCluster struct {
 	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
 }
 
-// Implement common.ClusterInterface so HdfsCluster can be used with GenericReconciler.
+// Everything ClusterInterface needs beyond client.Object, which the embedded TypeMeta and
+// ObjectMeta already supply.
 
-func (h *HdfsCluster) GetName() string      { return h.Name }
-func (h *HdfsCluster) GetNamespace() string { return h.Namespace }
-func (h *HdfsCluster) GetUID() types.UID    { return h.UID }
-func (h *HdfsCluster) GetLabels() map[string]string {
-	if h.Labels == nil {
-		return map[string]string{}
-	}
-	return h.Labels
-}
-func (h *HdfsCluster) GetAnnotations() map[string]string {
-	if h.Annotations == nil {
-		return map[string]string{}
-	}
-	return h.Annotations
-}
-func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec           { return &h.Spec.GenericClusterSpec }
-func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus       { return &h.Status }
-func (h *HdfsCluster) SetStatus(status *v1alpha1.GenericClusterStatus) { h.Status = *status }
-func (h *HdfsCluster) GetObjectMeta() *metav1.ObjectMeta               { return &h.ObjectMeta }
-func (h *HdfsCluster) GetScheme() *runtime.Scheme                      { return nil }
-func (h *HdfsCluster) GetRuntimeObject() runtime.Object                { return nil }
-func (h *HdfsCluster) DeepCopyObject() runtime.Object                  { c := *h; return &c }
-func (h *HdfsCluster) DeepCopyCluster() common.ClusterInterface {
-	copy := *h
-	return &copy
-}
+func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec     { return &h.Spec.GenericClusterSpec }
+func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus { return &h.Status }
+func (h *HdfsCluster) DeepCopy() *HdfsCluster                    { c := *h; return &c }
+func (h *HdfsCluster) DeepCopyObject() runtime.Object            { return h.DeepCopy() }
 
 // ---------------------------------------------------------------------------
 // Product extension: JvmArgumentsExtension
@@ -256,22 +234,13 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 // MockClusterForProductTest is a minimal ClusterInterface standing in for a second product's CR,
 // so specs can exercise two registries typed for different products.
 type MockClusterForProductTest struct {
-	name string
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              v1alpha1.GenericClusterSpec   `json:"spec,omitempty"`
+	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
 }
 
-func (m *MockClusterForProductTest) GetName() string                   { return m.name }
-func (m *MockClusterForProductTest) GetNamespace() string              { return "default" }
-func (m *MockClusterForProductTest) GetUID() types.UID                 { return "uid-123" }
-func (m *MockClusterForProductTest) GetLabels() map[string]string      { return nil }
-func (m *MockClusterForProductTest) GetAnnotations() map[string]string { return nil }
-func (m *MockClusterForProductTest) GetSpec() *v1alpha1.GenericClusterSpec {
-	return &v1alpha1.GenericClusterSpec{}
-}
-func (m *MockClusterForProductTest) GetStatus() *v1alpha1.GenericClusterStatus {
-	return &v1alpha1.GenericClusterStatus{}
-}
-func (m *MockClusterForProductTest) SetStatus(_ *v1alpha1.GenericClusterStatus) {}
-func (m *MockClusterForProductTest) GetObjectMeta() *metav1.ObjectMeta          { return &metav1.ObjectMeta{} }
-func (m *MockClusterForProductTest) GetScheme() *runtime.Scheme                 { return nil }
-func (m *MockClusterForProductTest) GetRuntimeObject() runtime.Object           { return nil }
-func (m *MockClusterForProductTest) DeepCopyCluster() common.ClusterInterface   { c := *m; return &c }
+func (m *MockClusterForProductTest) GetSpec() *v1alpha1.GenericClusterSpec     { return &m.Spec }
+func (m *MockClusterForProductTest) GetStatus() *v1alpha1.GenericClusterStatus { return &m.Status }
+func (m *MockClusterForProductTest) DeepCopy() *MockClusterForProductTest      { c := *m; return &c }
+func (m *MockClusterForProductTest) DeepCopyObject() runtime.Object            { return m.DeepCopy() }

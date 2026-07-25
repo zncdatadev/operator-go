@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -131,135 +130,22 @@ var _ = Describe("Mocks", func() {
 		})
 	})
 
-	Context("ClusterWrapper", func() {
-		It("should wrap MockCluster", func() {
+	Context("MockCluster as a ClusterInterface", func() {
+		It("should project the spec the framework reconciles against", func() {
+			cluster := testutil.NewMockCluster(testName, testNamespace).
+				WithRoles(map[string]v1alpha1.RoleSpec{"broker": {}})
+
+			Expect(cluster.GetSpec().Roles).To(HaveKey("broker"))
+		})
+
+		It("should hand out the embedded generic status, leaving product fields alone", func() {
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			Expect(wrapper).NotTo(BeNil())
-		})
+			cluster.Status.ProductField = "product-owned"
 
-		It("should wrap MockCluster with scheme", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			scheme := runtime.NewScheme()
-			wrapper := testutil.WrapMockCluster(cluster, scheme)
-			Expect(wrapper).NotTo(BeNil())
-			Expect(wrapper.GetScheme()).To(Equal(scheme))
-		})
+			cluster.GetStatus().Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}
 
-		It("should return nil scheme when not provided", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			Expect(wrapper.GetScheme()).To(BeNil())
-		})
-
-		It("should implement GetObjectMeta", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			meta := wrapper.GetObjectMeta()
-			Expect(meta).NotTo(BeNil())
-			Expect(meta.Name).To(Equal(testName))
-		})
-
-		It("should implement GetUID", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			cluster.UID = types.UID("test-uid")
-			wrapper := testutil.WrapMockCluster(cluster)
-			Expect(wrapper.GetUID()).To(Equal(types.UID("test-uid")))
-		})
-
-		It("should implement GetName", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			Expect(wrapper.GetName()).To(Equal(testName))
-		})
-
-		It("should implement GetNamespace", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			Expect(wrapper.GetNamespace()).To(Equal(testNamespace))
-		})
-
-		It("should implement GetLabels", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			labels := wrapper.GetLabels()
-			Expect(labels).NotTo(BeNil())
-			Expect(labels["app.kubernetes.io/name"]).To(Equal(testName))
-		})
-
-		It("should return empty map for nil labels", func() {
-			cluster := &testutil.MockCluster{}
-			wrapper := testutil.WrapMockCluster(cluster)
-			labels := wrapper.GetLabels()
-			Expect(labels).NotTo(BeNil())
-			Expect(labels).To(BeEmpty())
-		})
-
-		It("should implement GetAnnotations", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			cluster.WithAnnotations(map[string]string{"test": "value"})
-			wrapper := testutil.WrapMockCluster(cluster)
-			annotations := wrapper.GetAnnotations()
-			Expect(annotations).NotTo(BeNil())
-			Expect(annotations["test"]).To(Equal("value"))
-		})
-
-		It("should return empty map for nil annotations", func() {
-			cluster := &testutil.MockCluster{}
-			wrapper := testutil.WrapMockCluster(cluster)
-			annotations := wrapper.GetAnnotations()
-			Expect(annotations).NotTo(BeNil())
-			Expect(annotations).To(BeEmpty())
-		})
-
-		It("should implement GetSpec", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			spec := wrapper.GetSpec()
-			Expect(spec).NotTo(BeNil())
-		})
-
-		It("should implement GetStatus", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			status := wrapper.GetStatus()
-			Expect(status).NotTo(BeNil())
-		})
-
-		It("should implement SetStatus", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			newStatus := &v1alpha1.GenericClusterStatus{
-				Conditions: []metav1.Condition{
-					{
-						Type:   "Ready",
-						Status: metav1.ConditionTrue,
-					},
-				},
-			}
-			wrapper.SetStatus(newStatus)
-			Expect(wrapper.GetStatus().Conditions).To(HaveLen(1))
-		})
-
-		It("should implement DeepCopyCluster", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			copied := wrapper.DeepCopyCluster()
-			Expect(copied).NotTo(BeNil())
-			Expect(copied.GetName()).To(Equal(testName))
-		})
-
-		It("should handle nil DeepCopyCluster", func() {
-			var wrapper *testutil.ClusterWrapper
-			copied := wrapper.DeepCopyCluster()
-			Expect(copied).NotTo(BeNil())
-		})
-
-		It("should implement GetRuntimeObject", func() {
-			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			obj := wrapper.GetRuntimeObject()
-			Expect(obj).NotTo(BeNil())
+			Expect(cluster.Status.Conditions).To(HaveLen(1))
+			Expect(cluster.Status.ProductField).To(Equal("product-owned"))
 		})
 	})
 
@@ -285,9 +171,8 @@ var _ = Describe("Mocks", func() {
 				RoleGroupSpec:    v1alpha1.RoleGroupSpec{},
 			}
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
 
-			resources, err := handler.BuildResources(context.Background(), k8sClient, wrapper, buildCtx)
+			resources, err := handler.BuildResources(context.Background(), k8sClient, cluster, buildCtx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(resources).NotTo(BeNil())
 			Expect(resources.ConfigMap).NotTo(BeNil())
@@ -298,7 +183,7 @@ var _ = Describe("Mocks", func() {
 		It("should use custom BuildResourcesFunc", func() {
 			handler := testutil.NewMockRoleGroupHandler()
 			customError := "custom error"
-			handler.WithBuildResourcesFunc(func(ctx context.Context, k8sClient client.Client, cr *testutil.ClusterWrapper, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+			handler.WithBuildResourcesFunc(func(ctx context.Context, k8sClient client.Client, cr *testutil.MockCluster, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
 				return nil, errors.New(customError)
 			})
 
@@ -307,16 +192,15 @@ var _ = Describe("Mocks", func() {
 				ClusterNamespace: testNamespace,
 			}
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
 
-			_, err := handler.BuildResources(context.Background(), k8sClient, wrapper, buildCtx)
+			_, err := handler.BuildResources(context.Background(), k8sClient, cluster, buildCtx)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(customError))
 		})
 	})
 
 	Context("MockRoleGroupHandlerFor", func() {
-		It("should satisfy RoleGroupHandler for a CR type other than the testutil wrapper", func() {
+		It("should satisfy RoleGroupHandler for a CR type other than the testutil mock", func() {
 			var handler reconciler.RoleGroupHandler[common.ClusterInterface] = testutil.NewMockRoleGroupHandlerFor[common.ClusterInterface]()
 
 			buildCtx := &reconciler.RoleGroupBuildContext{
@@ -325,9 +209,9 @@ var _ = Describe("Mocks", func() {
 				RoleGroupName:    "default",
 				RoleGroupSpec:    v1alpha1.RoleGroupSpec{},
 			}
-			wrapper := testutil.WrapMockCluster(testutil.NewMockCluster(testName, testNamespace))
+			cluster := testutil.NewMockCluster(testName, testNamespace)
 
-			resources, err := handler.BuildResources(context.Background(), k8sClient, wrapper, buildCtx)
+			resources, err := handler.BuildResources(context.Background(), k8sClient, cluster, buildCtx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(resources.StatefulSet).NotTo(BeNil())
 		})
@@ -340,9 +224,9 @@ var _ = Describe("Mocks", func() {
 					return &reconciler.RoleGroupResources{}, nil
 				})
 
-			wrapper := testutil.WrapMockCluster(testutil.NewMockCluster(testName, testNamespace))
+			cluster := testutil.NewMockCluster(testName, testNamespace)
 
-			_, err := handler.BuildResources(context.Background(), k8sClient, wrapper, &reconciler.RoleGroupBuildContext{})
+			_, err := handler.BuildResources(context.Background(), k8sClient, cluster, &reconciler.RoleGroupBuildContext{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(seen).To(Equal(testName))
 		})
@@ -363,8 +247,7 @@ var _ = Describe("Mocks", func() {
 		It("should implement ClusterPreReconcile with nil func", func() {
 			ext := testutil.NewMockExtension("test-extension")
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterPreReconcile(context.Background(), k8sClient, wrapper)
+			err := ext.ClusterPreReconcile(context.Background(), k8sClient, cluster)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -376,8 +259,7 @@ var _ = Describe("Mocks", func() {
 				return nil
 			})
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterPreReconcile(context.Background(), k8sClient, wrapper)
+			err := ext.ClusterPreReconcile(context.Background(), k8sClient, cluster)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
@@ -385,8 +267,7 @@ var _ = Describe("Mocks", func() {
 		It("should implement ClusterPostReconcile with nil func", func() {
 			ext := testutil.NewMockExtension("test-extension")
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterPostReconcile(context.Background(), k8sClient, wrapper)
+			err := ext.ClusterPostReconcile(context.Background(), k8sClient, cluster)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -398,8 +279,7 @@ var _ = Describe("Mocks", func() {
 				return nil
 			})
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterPostReconcile(context.Background(), k8sClient, wrapper)
+			err := ext.ClusterPostReconcile(context.Background(), k8sClient, cluster)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
@@ -407,8 +287,7 @@ var _ = Describe("Mocks", func() {
 		It("should implement ClusterOnError with nil func", func() {
 			ext := testutil.NewMockExtension("test-extension")
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterOnError(context.Background(), k8sClient, wrapper, errors.New("test error"))
+			err := ext.ClusterOnError(context.Background(), k8sClient, cluster, errors.New("test error"))
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -420,8 +299,7 @@ var _ = Describe("Mocks", func() {
 				return nil
 			})
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterOnError(context.Background(), k8sClient, wrapper, errors.New("test error"))
+			err := ext.ClusterOnError(context.Background(), k8sClient, cluster, errors.New("test error"))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(called).To(BeTrue())
 		})
@@ -432,8 +310,7 @@ var _ = Describe("Mocks", func() {
 				return errors.New("pre-reconcile error")
 			})
 			cluster := testutil.NewMockCluster(testName, testNamespace)
-			wrapper := testutil.WrapMockCluster(cluster)
-			err := ext.ClusterPreReconcile(context.Background(), k8sClient, wrapper)
+			err := ext.ClusterPreReconcile(context.Background(), k8sClient, cluster)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("pre-reconcile error"))
 		})

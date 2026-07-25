@@ -300,7 +300,7 @@ var _ = Describe("ExtensionRegistry", func() {
 			Expect(hdfsRegistry.ExecuteClusterPreReconcile(context.Background(), nil, hdfs)).To(Succeed())
 			Expect(ran).To(Equal([]string{"hdfs"}))
 
-			other := &MockClusterForProductTest{name: "other-isolated"}
+			other := &MockClusterForProductTest{ObjectMeta: metav1.ObjectMeta{Name: "other-isolated"}}
 			Expect(otherRegistry.ExecuteClusterPreReconcile(context.Background(), nil, other)).To(Succeed())
 			Expect(ran).To(Equal([]string{"hdfs", "other"}))
 

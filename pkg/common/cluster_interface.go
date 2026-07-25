@@ -18,92 +18,51 @@ package common
 
 import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ClusterInterface defines cluster-level operations that all product CRs must implement.
-// This interface enables the SDK to work with any product-specific cluster type.
+// ClusterInterface is the cluster-level contract a product CR must satisfy to be driven by the
+// SDK.
+//
+// The embedded client.Object carries everything the framework needs from the object itself —
+// name, namespace, UID, labels, annotations, generation, resourceVersion, GVK — and, more
+// importantly, makes the CR usable directly wherever controller-runtime expects an object
+// (client.Get, Status().Update, SetControllerReference, event recording). A CR that embeds
+// metav1.TypeMeta and metav1.ObjectMeta and is registered with a scheme already satisfies it,
+// so none of those accessors are product-written code.
+//
+// The two remaining methods are the whole SDK-specific surface: they project the product's own
+// spec and status onto the generic shapes the framework reconciles against. GetStatus returns a
+// pointer into the CR — the framework mutates the generic status through it, which is why no
+// setter exists and why a product's own status fields survive a reconcile cycle untouched.
 type ClusterInterface interface {
-	// GetName returns the cluster name (from ObjectMeta.Name).
-	GetName() string
+	client.Object
 
-	// GetNamespace returns the cluster namespace (from ObjectMeta.Namespace).
-	GetNamespace() string
-
-	// GetUID returns the cluster UID (from ObjectMeta.UID).
-	GetUID() types.UID
-
-	// GetLabels returns the cluster labels (from ObjectMeta.Labels).
-	GetLabels() map[string]string
-
-	// GetAnnotations returns the cluster annotations (from ObjectMeta.Annotations).
-	GetAnnotations() map[string]string
-
-	// GetSpec returns the cluster spec as GenericClusterSpec.
+	// GetSpec returns the cluster spec projected onto the framework's generic shape. A CR that
+	// keeps its roles in typed fields (spec.coordinators, spec.workers) assembles the Roles map
+	// here rather than carrying a redundant spec.roles in its CRD.
 	GetSpec() *v1alpha1.GenericClusterSpec
 
-	// GetStatus returns the cluster status as GenericClusterStatus.
+	// GetStatus returns a pointer to the generic status embedded in the CR. Writes through the
+	// returned pointer must be visible on the CR, because that is how the framework records
+	// conditions, observedGeneration and role group state.
 	GetStatus() *v1alpha1.GenericClusterStatus
-
-	// SetStatus updates the cluster status.
-	SetStatus(status *v1alpha1.GenericClusterStatus)
-
-	// GetObjectMeta returns the object metadata.
-	GetObjectMeta() *metav1.ObjectMeta
-
-	// GetScheme returns the runtime scheme.
-	GetScheme() *runtime.Scheme
-
-	// DeepCopy creates a deep copy of the cluster.
-	DeepCopyCluster() ClusterInterface
-
-	// GetRuntimeObject returns the underlying runtime.Object.
-	GetRuntimeObject() runtime.Object
 }
 
-// ClusterObject is a helper struct that can be embedded in product-specific CRs
-// to provide default implementations of ClusterInterface methods.
-// Note: Product CRs must still implement GetSpec() and GetStatus() to return
-// the embedded GenericClusterSpec and GenericClusterStatus.
-type ClusterObject struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-}
+// ClusterResource binds a product CR to its own concrete type. It exists because a type
+// parameter cannot be allocated with new(T) when T is a pointer type, so the reconciler
+// materialises the empty object it reads into by copying a prototype; going through
+// runtime.Object (client.Object's DeepCopyObject) would hand back an interface and force the
+// runtime assertion this SDK does not allow.
+//
+// DeepCopy is the method controller-gen already generates for every root API type, so a product
+// satisfies this constraint without writing anything.
+//
+// This is a constraint, not a value type: hold a CR as ClusterInterface, parameterise over one
+// as ClusterResource[CR].
+type ClusterResource[T ClusterInterface] interface {
+	ClusterInterface
 
-// GetName returns the cluster name.
-func (c *ClusterObject) GetName() string {
-	return c.Name
-}
-
-// GetNamespace returns the cluster namespace.
-func (c *ClusterObject) GetNamespace() string {
-	return c.Namespace
-}
-
-// GetUID returns the cluster UID.
-func (c *ClusterObject) GetUID() types.UID {
-	return c.UID
-}
-
-// GetLabels returns the cluster labels.
-func (c *ClusterObject) GetLabels() map[string]string {
-	if c.Labels == nil {
-		return make(map[string]string)
-	}
-	return c.Labels
-}
-
-// GetAnnotations returns the cluster annotations.
-func (c *ClusterObject) GetAnnotations() map[string]string {
-	if c.Annotations == nil {
-		return make(map[string]string)
-	}
-	return c.Annotations
-}
-
-// GetObjectMeta returns the object metadata.
-func (c *ClusterObject) GetObjectMeta() *metav1.ObjectMeta {
-	return &c.ObjectMeta
+	// DeepCopy returns a deep copy of the receiver, typed as the concrete CR.
+	DeepCopy() T
 }

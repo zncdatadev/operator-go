@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -135,103 +134,15 @@ func (m *MockCluster) DeepCopyObject() runtime.Object {
 	return m.DeepCopy()
 }
 
-// ClusterWrapper wraps MockCluster to implement common.ClusterInterface.
-// This is needed because common.ClusterInterface expects GetUID() string,
-// but client.Object expects GetUID() types.UID.
-type ClusterWrapper struct {
-	*MockCluster
-	scheme *runtime.Scheme
-}
-
-// WrapMockCluster wraps a MockCluster to implement common.ClusterInterface.
-// An optional scheme can be provided for tests that require scheme access.
-func WrapMockCluster(m *MockCluster, scheme ...*runtime.Scheme) *ClusterWrapper {
-	var s *runtime.Scheme
-	if len(scheme) > 0 {
-		s = scheme[0]
-	}
-	return &ClusterWrapper{MockCluster: m, scheme: s}
-}
-
-// GetObjectMeta implements common.ClusterInterface.
-func (w *ClusterWrapper) GetObjectMeta() *metav1.ObjectMeta {
-	return &w.ObjectMeta
-}
-
-// GetUID returns the UID for common.ClusterInterface compatibility.
-func (w *ClusterWrapper) GetUID() types.UID {
-	return w.UID
-}
-
-// GetName implements common.ClusterInterface.
-func (w *ClusterWrapper) GetName() string {
-	return w.Name
-}
-
-// GetNamespace implements common.ClusterInterface.
-func (w *ClusterWrapper) GetNamespace() string {
-	return w.Namespace
-}
-
-// GetLabels implements common.ClusterInterface.
-func (w *ClusterWrapper) GetLabels() map[string]string {
-	if w.Labels == nil {
-		return make(map[string]string)
-	}
-	return w.Labels
-}
-
-// GetAnnotations implements common.ClusterInterface.
-func (w *ClusterWrapper) GetAnnotations() map[string]string {
-	if w.Annotations == nil {
-		return make(map[string]string)
-	}
-	return w.Annotations
-}
-
 // GetSpec implements common.ClusterInterface.
-func (w *ClusterWrapper) GetSpec() *v1alpha1.GenericClusterSpec {
-	return &w.Spec
+func (m *MockCluster) GetSpec() *v1alpha1.GenericClusterSpec {
+	return &m.Spec
 }
 
-// GetStatus implements common.ClusterInterface.
-func (w *ClusterWrapper) GetStatus() *v1alpha1.GenericClusterStatus {
-	return &w.Status.GenericClusterStatus
-}
-
-// SetStatus implements common.ClusterInterface.
-func (w *ClusterWrapper) SetStatus(status *v1alpha1.GenericClusterStatus) {
-	w.Status.GenericClusterStatus = *status
-}
-
-// GetScheme implements common.ClusterInterface.
-// Returns the scheme if one was provided during wrapping, nil otherwise.
-func (w *ClusterWrapper) GetScheme() *runtime.Scheme {
-	return w.scheme
-}
-
-// DeepCopyCluster implements common.ClusterInterface.
-// Handles nil receiver to support generic reconciler's fetchCR pattern.
-func (w *ClusterWrapper) DeepCopyCluster() common.ClusterInterface {
-	if w == nil || w.MockCluster == nil {
-		// Return a new empty wrapper with properly initialized TypeMeta
-		// This is needed because fetchCR in generic_reconciler.go calls
-		// DeepCopyCluster() on a zero value to create an instance for client.Get
-		return &ClusterWrapper{
-			MockCluster: &MockCluster{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "MockCluster",
-					APIVersion: "test.zncdata.dev/v1alpha1",
-				},
-			},
-		}
-	}
-	return WrapMockCluster(w.DeepCopy())
-}
-
-// GetRuntimeObject implements common.ClusterInterface.
-func (w *ClusterWrapper) GetRuntimeObject() runtime.Object {
-	return w.MockCluster
+// GetStatus implements common.ClusterInterface. It hands out the embedded generic status, so a
+// framework write through the pointer leaves ProductField alone.
+func (m *MockCluster) GetStatus() *v1alpha1.GenericClusterStatus {
+	return &m.Status.GenericClusterStatus
 }
 
 // MockRoleGroupHandlerFor is a test implementation of reconciler.RoleGroupHandler for an
@@ -244,8 +155,8 @@ type MockRoleGroupHandlerFor[CR common.ClusterInterface] struct {
 	ServicePorts       map[string][]corev1.ServicePort
 }
 
-// MockRoleGroupHandler is the mock handler bound to the testutil CR wrapper.
-type MockRoleGroupHandler = MockRoleGroupHandlerFor[*ClusterWrapper]
+// MockRoleGroupHandler is the mock handler bound to the testutil CR.
+type MockRoleGroupHandler = MockRoleGroupHandlerFor[*MockCluster]
 
 // NewMockRoleGroupHandlerFor creates a new MockRoleGroupHandlerFor for a product CR type.
 func NewMockRoleGroupHandlerFor[CR common.ClusterInterface]() *MockRoleGroupHandlerFor[CR] {
@@ -256,9 +167,9 @@ func NewMockRoleGroupHandlerFor[CR common.ClusterInterface]() *MockRoleGroupHand
 	}
 }
 
-// NewMockRoleGroupHandler creates a new MockRoleGroupHandler for the testutil CR wrapper.
+// NewMockRoleGroupHandler creates a new MockRoleGroupHandler for the testutil CR.
 func NewMockRoleGroupHandler() *MockRoleGroupHandler {
-	return NewMockRoleGroupHandlerFor[*ClusterWrapper]()
+	return NewMockRoleGroupHandlerFor[*MockCluster]()
 }
 
 // WithImage sets the image on the mock handler.
@@ -386,8 +297,9 @@ func DefaultRoleGroupResources(name, namespace, image string) *reconciler.RoleGr
 }
 
 // Verify interface implementations
-var _ common.ClusterInterface = &ClusterWrapper{}
-var _ reconciler.RoleGroupHandler[*ClusterWrapper] = &MockRoleGroupHandler{}
+var _ common.ClusterInterface = &MockCluster{}
+var _ common.ClusterResource[*MockCluster] = &MockCluster{}
+var _ reconciler.RoleGroupHandler[*MockCluster] = &MockRoleGroupHandler{}
 
 // SchemeBuilder for MockCluster
 var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)

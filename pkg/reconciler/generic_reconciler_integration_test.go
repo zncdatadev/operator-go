@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -45,16 +46,16 @@ type productStatusExtension struct {
 
 func (e *productStatusExtension) Name() string { return "product-status" }
 
-func (e *productStatusExtension) PreReconcile(context.Context, client.Client, *testutil.ClusterWrapper) error {
+func (e *productStatusExtension) PreReconcile(context.Context, client.Client, *testutil.MockCluster) error {
 	return nil
 }
 
-func (e *productStatusExtension) PostReconcile(_ context.Context, _ client.Client, cr *testutil.ClusterWrapper) error {
+func (e *productStatusExtension) PostReconcile(_ context.Context, _ client.Client, cr *testutil.MockCluster) error {
 	cr.Status.ProductField = e.value
 	return nil
 }
 
-func (e *productStatusExtension) OnReconcileError(context.Context, client.Client, *testutil.ClusterWrapper, error) error {
+func (e *productStatusExtension) OnReconcileError(context.Context, client.Client, *testutil.MockCluster, error) error {
 	return nil
 }
 
@@ -85,13 +86,13 @@ var _ = Describe("GenericReconciler steady-state status writes", func() {
 		ctx = context.Background()
 	})
 
-	newReconcilerWithClient := func(c client.Client) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+	newReconcilerWithClient := func(c client.Client) *reconciler.GenericReconciler[*testutil.MockCluster] {
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           c,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 		return r
@@ -126,16 +127,16 @@ var _ = Describe("GenericReconciler steady-state status writes", func() {
 		// Products compute their own status fields in a hook; ClusterInterface only exposes the
 		// embedded generic status, so a write path that re-fetches the CR before updating would
 		// silently reload and re-persist the stored value instead.
-		registry := common.NewExtensionRegistry[*testutil.ClusterWrapper]()
+		registry := common.NewExtensionRegistry[*testutil.MockCluster]()
 		registry.RegisterClusterExtension(&productStatusExtension{value: "ready-42"})
 		DeferCleanup(registry.Clear)
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
 			Recorder:          recorder,
 			RoleGroupHandler:  &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:         testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:         testutil.NewMockCluster("proto", testNamespace),
 			ExtensionRegistry: registry,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -201,12 +202,12 @@ var _ = Describe("GenericReconciler configuration warnings", func() {
 		})
 
 		fakeRecorder := record.NewFakeRecorder(100)
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         fakeRecorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -224,18 +225,18 @@ var _ = Describe("GenericReconciler configuration warnings", func() {
 	It("emits a Warning when the handler is configured for a role the cluster does not declare", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("role-typo"))
 
-		handler := reconciler.NewBaseRoleGroupHandler[*testutil.ClusterWrapper]("product:latest", testScheme)
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:latest", testScheme)
 		// "brokers" vs the CR's "broker": every per-role lookup returns nil, so the role group
 		// silently comes up with no ports and no Service.
 		handler.SetRoleContainerPorts("brokers", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
 
 		fakeRecorder := record.NewFakeRecorder(100)
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         fakeRecorder,
 			RoleGroupHandler: handler,
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -282,12 +283,12 @@ var _ = Describe("GenericReconciler metrics Service reclaim", func() {
 			}
 		})
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -322,12 +323,12 @@ var _ = Describe("GenericReconciler status stability under a failing service hea
 	It("stops writing once an unhealthy-but-stable cluster has been reported", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("svc-unhealthy"))
 		counting := &countingStatusClient{Client: k8sClient}
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:             counting,
 			Scheme:             testScheme,
 			Recorder:           recorder,
 			RoleGroupHandler:   &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:          testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:          testutil.NewMockCluster("proto", testNamespace),
 			ServiceHealthCheck: common.AlwaysUnhealthy,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -363,16 +364,16 @@ var _ = Describe("GenericReconciler status on failure and non-running states", f
 	It("falsifies ReconcileComplete when the cycle fails", func() {
 		cr, _ := newResilienceCR(ctx, uniqueCRName("reconcile-failed"))
 
-		registry := common.NewExtensionRegistry[*testutil.ClusterWrapper]()
+		registry := common.NewExtensionRegistry[*testutil.MockCluster]()
 		registry.RegisterClusterExtension(&failingPostReconcileExtension{})
 		DeferCleanup(registry.Clear)
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
 			Recorder:          recorder,
 			RoleGroupHandler:  &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:         testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:         testutil.NewMockCluster("proto", testNamespace),
 			ExtensionRegistry: registry,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -395,12 +396,12 @@ var _ = Describe("GenericReconciler status on failure and non-running states", f
 		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -414,19 +415,129 @@ var _ = Describe("GenericReconciler status on failure and non-running states", f
 	})
 })
 
-// altClusterWrapper is a second CR type over the same stored object, standing in for another
-// product's cluster resource. A manager process hosting two products runs one GenericReconciler
-// per CR type, so this is what lets a spec put two of them side by side.
-type altClusterWrapper struct {
-	*testutil.ClusterWrapper
+// altMockClusterGVK identifies the second mock product CR (CRD in
+// config/crd/bases/test.zncdata.dev_altmockclusters.yaml).
+var altMockClusterGVK = schema.GroupVersionKind{Group: "test.zncdata.dev", Version: "v1alpha1", Kind: "AltMockCluster"}
+
+// addAltMockClusterToScheme registers the alt product CR. Every scheme a client or reconciler is
+// built with needs it, since a ClusterInterface is read and owned as itself.
+func addAltMockClusterToScheme(s *k8sruntime.Scheme) {
+	s.AddKnownTypeWithName(altMockClusterGVK, &altMockCluster{})
+	metav1.AddToGroupVersion(s, altMockClusterGVK.GroupVersion())
 }
 
-// DeepCopyCluster has to return an *altClusterWrapper: the reconciler materialises each fetched
-// CR by deep-copying its prototype, and the copy must be of the reconciler's own CR type.
-// DeepCopy is the wrapped MockCluster's, promoted through the embedded ClusterWrapper.
-func (w *altClusterWrapper) DeepCopyCluster() common.ClusterInterface {
-	return &altClusterWrapper{ClusterWrapper: testutil.WrapMockCluster(w.DeepCopy())}
+// altMockCluster is a second product's cluster resource, standing beside MockCluster. A manager
+// process hosting two products runs one GenericReconciler per CR type, so this is what lets a
+// spec put two of them side by side.
+//
+// It is also the minimum a product CR can be: TypeMeta and ObjectMeta for client.Object, the
+// deep copy controller-gen would generate, and the two accessors that project spec and status.
+// Nothing here bridges the CR to the framework — the CR IS the object the framework reads,
+// owns resources with and writes status to.
+type altMockCluster struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              v1alpha1.GenericClusterSpec   `json:"spec,omitempty"`
+	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
 }
+
+func (c *altMockCluster) DeepCopy() *altMockCluster {
+	if c == nil {
+		return nil
+	}
+	out := new(altMockCluster)
+	*out = *c
+	out.ObjectMeta = *c.ObjectMeta.DeepCopy()
+	out.Spec = *c.Spec.DeepCopy()
+	out.Status = *c.Status.DeepCopy()
+	return out
+}
+
+func (c *altMockCluster) DeepCopyObject() k8sruntime.Object { return c.DeepCopy() }
+
+func (c *altMockCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &c.Spec }
+
+func (c *altMockCluster) GetStatus() *v1alpha1.GenericClusterStatus { return &c.Status }
+
+// newAltCR creates a single-role-group alt-product cluster CR in the API server and registers
+// its teardown, returning the CR and the role group's resource name.
+func newAltCR(ctx context.Context, name string) (*altMockCluster, string) {
+	cr := &altMockCluster{
+		TypeMeta:   metav1.TypeMeta{Kind: altMockClusterGVK.Kind, APIVersion: altMockClusterGVK.GroupVersion().String()},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		Spec: v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				"broker": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(1))},
+					},
+				},
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+	resourceName := reconciler.RoleGroupResourceName(name, "broker", "default")
+	DeferCleanup(func() {
+		_ = k8sClient.Delete(ctx, cr)
+		meta := metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace}
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: meta})
+		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-metrics", Namespace: testNamespace}})
+	})
+	return cr, resourceName
+}
+
+// newAltReconciler builds a GenericReconciler for the minimal CR type.
+func newAltReconciler(registry *common.ExtensionRegistry[*altMockCluster]) *reconciler.GenericReconciler[*altMockCluster] {
+	r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*altMockCluster]{
+		Client:            k8sClient,
+		Scheme:            testScheme,
+		Recorder:          recorder,
+		RoleGroupHandler:  testutil.NewMockRoleGroupHandlerFor[*altMockCluster](),
+		Prototype:         &altMockCluster{},
+		ExtensionRegistry: registry,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	return r
+}
+
+// A product CR owes the framework its metadata (through client.Object), its spec and its status,
+// and nothing else. Everything the reconciler does with the cluster object — read it, own the
+// resources it builds, write its status back — goes through the CR itself, so a CR that adds no
+// framework plumbing at all has to complete a full cycle.
+var _ = Describe("GenericReconciler minimal cluster contract", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("reconciles a CR whose only SDK-specific methods are GetSpec and GetStatus", func() {
+		cr, resourceName := newAltCR(ctx, uniqueCRName("minimal"))
+		r := newAltReconciler(nil)
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The role group ConfigMap is owned by the CR itself: the reconciler passed the fetched
+		// cluster object straight to SetControllerReference.
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, cm)).To(Succeed())
+		owner := metav1.GetControllerOf(cm)
+		Expect(owner).NotTo(BeNil())
+		Expect(owner.Kind).To(Equal(altMockClusterGVK.Kind))
+		Expect(owner.Name).To(Equal(cr.Name))
+		Expect(owner.UID).To(Equal(cr.UID))
+
+		// The status landed on the stored CR, which is only possible if the object the reconciler
+		// fetched into and the object it wrote back are the same one.
+		persisted := &altMockCluster{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, persisted)).To(Succeed())
+		Expect(persisted.Status.ObservedGeneration).To(Equal(cr.Generation))
+		Expect(persisted.Status.RoleGroups).To(HaveKey("broker"))
+	})
+})
 
 // namingExtension records the clusters whose hooks it ran for, per CR type.
 type namingExtension[CR common.ClusterInterface] struct {
@@ -460,37 +571,29 @@ var _ = Describe("GenericReconciler extension registry ownership", func() {
 		var ran []string
 
 		mainCR, _ := newResilienceCR(ctx, uniqueCRName("registry-main"))
-		altCR, _ := newResilienceCR(ctx, uniqueCRName("registry-alt"))
+		altCR, _ := newAltCR(ctx, uniqueCRName("registry-alt"))
 
-		mainRegistry := common.NewExtensionRegistry[*testutil.ClusterWrapper]()
-		mainRegistry.RegisterClusterExtension(&namingExtension[*testutil.ClusterWrapper]{
+		mainRegistry := common.NewExtensionRegistry[*testutil.MockCluster]()
+		mainRegistry.RegisterClusterExtension(&namingExtension[*testutil.MockCluster]{
 			BaseExtension: common.NewBaseExtension("main"), seen: &ran,
 		})
 
-		altRegistry := common.NewExtensionRegistry[*altClusterWrapper]()
-		altRegistry.RegisterClusterExtension(&namingExtension[*altClusterWrapper]{
+		altRegistry := common.NewExtensionRegistry[*altMockCluster]()
+		altRegistry.RegisterClusterExtension(&namingExtension[*altMockCluster]{
 			BaseExtension: common.NewBaseExtension("alt"), seen: &ran,
 		})
 
-		mainReconciler, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		mainReconciler, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
 			Recorder:          recorder,
 			RoleGroupHandler:  &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:         testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:         testutil.NewMockCluster("proto", testNamespace),
 			ExtensionRegistry: mainRegistry,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		altReconciler, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*altClusterWrapper]{
-			Client:            k8sClient,
-			Scheme:            testScheme,
-			Recorder:          recorder,
-			RoleGroupHandler:  testutil.NewMockRoleGroupHandlerFor[*altClusterWrapper](),
-			Prototype:         &altClusterWrapper{ClusterWrapper: testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace))},
-			ExtensionRegistry: altRegistry,
-		})
-		Expect(err).NotTo(HaveOccurred())
+		altReconciler := newAltReconciler(altRegistry)
 
 		_, err = mainReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: mainCR.Name}})
 		Expect(err).NotTo(HaveOccurred())
@@ -506,12 +609,12 @@ var _ = Describe("GenericReconciler extension registry ownership", func() {
 		// There is no process-wide registry left to fall back on, so an unconfigured reconciler
 		// has to substitute an empty one: the hook call sites invoke the registry unconditionally
 		// on every cycle, at cluster, role and role group level.
-		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -525,14 +628,14 @@ type failingPostReconcileExtension struct{}
 
 func (e *failingPostReconcileExtension) Name() string { return "failing-post-reconcile" }
 
-func (e *failingPostReconcileExtension) PreReconcile(context.Context, client.Client, *testutil.ClusterWrapper) error {
+func (e *failingPostReconcileExtension) PreReconcile(context.Context, client.Client, *testutil.MockCluster) error {
 	return nil
 }
 
-func (e *failingPostReconcileExtension) PostReconcile(context.Context, client.Client, *testutil.ClusterWrapper) error {
+func (e *failingPostReconcileExtension) PostReconcile(context.Context, client.Client, *testutil.MockCluster) error {
 	return fmt.Errorf("post reconcile exploded")
 }
 
-func (e *failingPostReconcileExtension) OnReconcileError(context.Context, client.Client, *testutil.ClusterWrapper, error) error {
+func (e *failingPostReconcileExtension) OnReconcileError(context.Context, client.Client, *testutil.MockCluster, error) error {
 	return nil
 }
