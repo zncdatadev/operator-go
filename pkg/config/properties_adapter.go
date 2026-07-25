@@ -30,6 +30,8 @@ const (
 	escapeEqual     = "\\="
 	escapeColon     = "\\:"
 	escapeSpace     = "\\ "
+	escapeHash      = "\\#"
+	escapeBang      = "\\!"
 	escapeN         = "\\n"
 	escapeR         = "\\r"
 	escapeT         = "\\t"
@@ -85,9 +87,10 @@ func (a *PropertiesAdapter) Marshal(data map[string]string) (string, error) {
 // - Comments starting with # or !
 // - Line continuations with backslash
 //
-// It parses the output of Marshal back into the original map, including keys holding a
-// separator character and values ending in a backslash. Unescaped surrounding whitespace is
-// not preserved: a value written with a leading or trailing space is read back trimmed.
+// It parses the output of Marshal back into the original map, including keys and values holding
+// a separator character, an edge space or a trailing backslash. Whitespace that is not escaped
+// is layout (indentation, padding around the separator) and is dropped, which is what a
+// hand-written file expects.
 func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 	result := make(map[string]string)
 
@@ -129,7 +132,7 @@ func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 // parsePropertiesLine parses one logical (continuation-joined) line into result. Empty lines
 // and comments contribute nothing.
 func parsePropertiesLine(line string, result map[string]string) {
-	line = strings.TrimSpace(line)
+	line = trimPropertiesSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
 		return
 	}
@@ -141,9 +144,33 @@ func parsePropertiesLine(line string, result map[string]string) {
 		return
 	}
 
-	key := strings.TrimSpace(line[:sepIndex])
-	value := strings.TrimSpace(line[sepIndex+1:])
+	key := trimPropertiesSpace(line[:sepIndex])
+	value := trimPropertiesSpace(line[sepIndex+1:])
 	result[unescapeProperties(key)] = unescapeProperties(value)
+}
+
+// trimPropertiesSpace removes the whitespace .properties treats as layout — indentation before
+// the key and the padding around the separator — while keeping whitespace that belongs to the
+// token. An edge space is written escaped ("a\ =v" for the key "a "), so a trailing space
+// preceded by an odd number of backslashes terminates the trim instead of being stripped along
+// with its escape.
+func trimPropertiesSpace(s string) string {
+	start := 0
+	for start < len(s) && isPropertiesSpace(s[start]) {
+		start++
+	}
+	end := len(s)
+	for end > start && isPropertiesSpace(s[end-1]) {
+		if trailingBackslashes(s[start:end-1])%2 == 1 {
+			break
+		}
+		end--
+	}
+	return s[start:end]
+}
+
+func isPropertiesSpace(c byte) bool {
+	return c == ' ' || c == '\t'
 }
 
 // propertiesSeparatorIndex returns the byte index of the first UNESCAPED key/value separator,
@@ -179,25 +206,48 @@ func trailingBackslashes(s string) int {
 	return n
 }
 
-// escapePropertiesKey escapes special characters in property keys.
+// escapePropertiesKey escapes special characters in property keys. The comment markers are
+// escaped too: a key starting with '#' or '!' would otherwise turn its whole entry into a
+// comment and disappear on the way back in.
 func escapePropertiesKey(s string) string {
 	s = strings.ReplaceAll(s, "\\", escapeBackslash)
 	s = strings.ReplaceAll(s, "=", escapeEqual)
 	s = strings.ReplaceAll(s, ":", escapeColon)
 	s = strings.ReplaceAll(s, " ", escapeSpace)
+	s = strings.ReplaceAll(s, "#", escapeHash)
+	s = strings.ReplaceAll(s, "!", escapeBang)
 	s = strings.ReplaceAll(s, "\n", escapeN)
 	s = strings.ReplaceAll(s, "\r", escapeR)
 	s = strings.ReplaceAll(s, "\t", escapeT)
 	return s
 }
 
-// escapePropertiesValue escapes special characters in property values.
+// escapePropertiesValue escapes special characters in property values. Only the value's edge
+// spaces need escaping (a reader strips the padding around the separator); interior spaces are
+// left readable, which matters for the values products actually write (JVM argument lists).
 func escapePropertiesValue(s string) string {
 	s = strings.ReplaceAll(s, "\\", escapeBackslash)
 	s = strings.ReplaceAll(s, "\n", escapeN)
 	s = strings.ReplaceAll(s, "\r", escapeR)
 	s = strings.ReplaceAll(s, "\t", escapeT)
-	return s
+	return escapeEdgeSpaces(s)
+}
+
+// escapeEdgeSpaces escapes the leading and trailing spaces of an already-escaped value (tabs are
+// escape sequences by then, so only spaces can still sit raw at an edge).
+func escapeEdgeSpaces(s string) string {
+	lead := 0
+	for lead < len(s) && s[lead] == ' ' {
+		lead++
+	}
+	trail := len(s)
+	for trail > lead && s[trail-1] == ' ' {
+		trail--
+	}
+	if lead == 0 && trail == len(s) {
+		return s
+	}
+	return strings.Repeat(escapeSpace, lead) + s[lead:trail] + strings.Repeat(escapeSpace, len(s)-trail)
 }
 
 // unescapeProperties unescapes a properties key or value.
