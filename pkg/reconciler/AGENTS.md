@@ -11,10 +11,10 @@ Every non-test file in this package:
 | File | Purpose |
 |------|---------|
 | `generic_reconciler.go` | `GenericReconcilerConfig` / `GenericReconciler` — the reconcile loop, panic recovery, ServiceAccount provisioning, dependency checks, role/role-group iteration, sidecar validation, status write, `SetupWithManager*` |
-| `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
+| `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
 | `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters |
 | `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
-| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup (PDB → StatefulSet → ConfigMap → Service → headless → metrics), gray-delete grace period, status pruning, `WithEventManager`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` |
+| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs`, `LabelRolePodDisruptionBudget`, `DefaultDrainPollInterval` |
 | `health.go` | `HealthManager` — role group aggregation into Available/Progressing/Degraded plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
 | `dependency.go` | `Dependency` / `DependencyKind` / `DependencyResolver` — declarative existence checks for referenced ConfigMaps and Secrets, plus the explicit `ValidateS3Connection` / `ValidateDatabaseConnection` / `ValidateZKConfig` helpers |
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
@@ -68,9 +68,10 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    `ControllerBuilder`), otherwise out-of-band changes to them produce no reconcile event.
 7. **Requeue cadence:** a successful reconcile requeues after
    `GenericReconcilerConfig.HealthCheckInterval` (default `DefaultHealthCheckInterval` = 120s,
-   negative disables), or earlier when a gray-delete grace period is still pending —
-   `Cleanup` returns the earliest pending deadline and `earliestRequeue` picks the sooner of the
-   two. Products with a `ServiceHealthCheck` depend on it: a probe result produces no watch event.
+   negative disables), or earlier when orphan cleanup has work pending — a gray-delete grace period
+   that has not elapsed, or a deletion in flight (`DefaultDrainPollInterval` = 5s). `Cleanup`
+   returns the earliest of those and `earliestRequeue` picks the sooner of the two. Products with a
+   `ServiceHealthCheck` depend on it: a probe result produces no watch event.
 8. **Per-product extensions:** pass `GenericReconcilerConfig.ExtensionRegistry` to isolate a
    product's hooks; the default is the process-wide singleton shared by every reconciler.
 9. **Pre-apply validation:** registered, enabled sidecar providers are validated via
@@ -83,6 +84,20 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     a handler may be configured for optional roles). A `podOverrides` layer that fails to decode is
     recorded on `config.MergedConfig.PodOverrideErrors` and re-emitted as a `PodOverrideIgnored`
     Warning event, so a dropped override is visible on the CR.
+11. **Orphan cleanup is a state machine, not a single pass:** each role group advances one step per
+    reconcile — the orphaned StatefulSet is scaled to zero, then left to the StatefulSet
+    controller's ordered drain (`.status.replicas` back to 0), then deleted; every deletion is
+    confirmed absent before the next resource type is touched, and the pass requeues itself
+    (`WithDrainPollInterval`) until the group is fully reclaimed. A failure is confined to its role
+    group (the others still progress, errors are joined), and a 429 anywhere in the cleanup surfaces
+    as a `*RateLimitError` that `Reconcile` turns into a plain backoff. A role removed from
+    `spec.roles` wholesale has its role PDB reclaimed by label (`LabelRolePodDisruptionBudget`,
+    stamped by the apply path) — no role group is left to diff it out of the status snapshot.
+12. **Vector sidecar gating:** the framework injects the Vector sidecar only when something supplies
+    `vector.yaml` — the CR implements `VectorAggregatorProvider` (the framework then renders it) or
+    the handler implements `VectorConfigProvider` and claims the role. Otherwise it logs, emits a
+    `VectorSidecarSkipped` Warning and skips the sidecar: registering it would fail the provider's
+    own validation on every cycle and abort the whole cluster's reconcile.
 
 ## Reconcile Flow
 
@@ -99,8 +114,9 @@ recovery that turns a recovered panic into a returned error plus a `ReconcilePan
    `BuildResources` → apply `ConfigMap → HeadlessService → Service → ExtraResources →
    [sidecar validation] → StatefulSet → per-group PDB → MetricsService` → status tracking →
    `PostReconcile`) → role-level PDB → role `PostReconcile`.
-5. Orphan cleanup (returns the earliest pending gray-delete deadline; errors are logged,
-   not fatal).
+5. Orphan cleanup (returns the earliest pending wakeup — a gray-delete deadline or a deletion in
+   flight; errors are logged and non-fatal, except a `*RateLimitError`, which aborts the cycle into
+   a backoff).
 6. Health aggregation (errors logged, not fatal).
 7. Cluster `PostReconcile` extensions.
 8. Final status update, then `ctrl.Result{RequeueAfter: earliestRequeue(...)}`.

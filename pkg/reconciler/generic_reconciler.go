@@ -272,15 +272,18 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 
 	eventManager := NewEventManager(cfg.Recorder)
 
-	cleaner := NewRoleGroupCleaner(cfg.Client, cfg.Scheme)
-	cleaner.WithEventManager(eventManager)
-	if cfg.GrayDeleteGracePeriod > 0 {
-		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
-	}
-
 	rateLimitRetryAfter := cfg.RateLimitRetryAfter
 	if rateLimitRetryAfter == 0 {
 		rateLimitRetryAfter = 10 * time.Second
+	}
+
+	cleaner := NewRoleGroupCleaner(cfg.Client, cfg.Scheme)
+	cleaner.WithEventManager(eventManager)
+	// The cleanup path issues API writes like the apply path does, so it backs off on a 429 with
+	// the same delay instead of inventing its own.
+	cleaner.WithRateLimitRetryAfter(rateLimitRetryAfter)
+	if cfg.GrayDeleteGracePeriod > 0 {
+		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
 	}
 
 	extensionRegistry := cfg.ExtensionRegistry
@@ -479,13 +482,20 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 		}
 	}
 
-	// 4. Cleanup orphaned resources. The returned duration is the earliest pending gray-delete
-	// deadline; it feeds the wakeup aggregation below so a deferred deletion runs on time.
+	// 4. Cleanup orphaned resources. The returned duration is the earliest wakeup the cleanup needs
+	// (a pending gray-delete deadline, or the next poll of a deletion in flight); it feeds the
+	// wakeup aggregation below so the deletion state machine advances on time.
 	owner := r.getAsClientObject(cr)
 	cleanupRequeue, err := r.cleaner.Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status, owner.GetUID(), owner.GetAnnotations())
 	if err != nil {
+		// Throttling is not a cleanup problem: the API server is rejecting this operator's
+		// requests, so the whole cycle has to back off rather than push the remaining writes
+		// through. Every other cleanup failure stays non-fatal — the cluster's own resources are
+		// reconciled, only the leftovers of a removed role group are not.
+		if IsRateLimitError(err) {
+			return ctrl.Result{}, err
+		}
 		logger.Error(err, "Failed to cleanup orphaned resources")
-		// Don't fail reconciliation for cleanup errors
 	}
 
 	// 5. Update health status
@@ -638,6 +648,11 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 		return nil
 	}
 
+	// Stamp the role slot before applying. This branch only runs for roles the spec declares, so
+	// nothing here reclaims the PDB of a role that was deleted outright; the label is what lets
+	// the cleaner find it afterwards without confusing it with a product's own PDB.
+	markRolePodDisruptionBudget(pdb, roleName)
+
 	if err := r.applyResource(ctx, owner, pdb); err != nil {
 		return NewResourceApplyError("PodDisruptionBudget", cr.GetNamespace(), name, "failed to apply", err)
 	}
@@ -675,7 +690,7 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	// the registered sidecars by BaseRoleGroupHandler.BuildResources — after the product's
 	// BuildResources override has resolved the CR-driven image — so both plain and embedding
 	// handlers are covered without a concrete-type assertion here.
-	buildCtx.SidecarManager = r.buildSidecarManager(ctx, buildCtx)
+	buildCtx.SidecarManager = r.buildSidecarManager(ctx, cr, buildCtx)
 
 	// Delegate to handler for resource building
 	resources, err := r.roleGroupHandler.BuildResources(ctx, r.client, cr, buildCtx)
@@ -779,7 +794,7 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 // have a SidecarManager to register their own containers with (e.g. init containers via
 // StaticContainerProvider), so pod container injection always flows through the manager
 // rather than being mutated directly.
-func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
+func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
 	mgr := sidecar.NewSidecarManager()
 
 	// Logging was deep-merged once in buildRoleGroupContext.
@@ -810,6 +825,24 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 		return mgr
 	}
 
+	// The sidecar runs "vector --config <mount>/vector.yaml", so it is only injected when
+	// something actually writes that key into the role group ConfigMap: the framework does it for
+	// a CR implementing VectorAggregatorProvider, otherwise the handler must claim the file
+	// through VectorConfigProvider. With neither, registering the provider would fail sidecar
+	// validation on every cycle and abort the whole cluster's reconcile over a product that is
+	// simply not wired for Vector — so this is reported as the product-configuration mistake it
+	// is, and the rest of the cluster keeps converging.
+	if !r.vectorConfigIsProvided(cr, buildCtx.RoleName) {
+		message := fmt.Sprintf(
+			"role %s group %s enables the vector agent, but neither the cluster resource implements VectorAggregatorProvider "+
+				"nor the role group handler implements VectorConfigProvider; no vector.yaml would be generated, so the sidecar is skipped",
+			buildCtx.RoleName, buildCtx.RoleGroupName)
+		log.FromContext(ctx).Info("Skipping vector sidecar: no source for vector.yaml",
+			"role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
+		r.eventManager.EmitWarningEvent(r.getAsClientObject(cr), "VectorSidecarSkipped", message)
+		return mgr
+	}
+
 	// The role-group ConfigMap name (buildCtx.ResourceName) is passed at construction so the
 	// Vector container mounts the right config. The image is propagated later via
 	// SidecarManager.SetProductImage (Vector ships inside the product image), so an empty image
@@ -829,6 +862,21 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 	mgr.Register(vector.NewVectorSidecarProvider("", opts...), &sidecar.SidecarConfig{Enabled: true})
 
 	return mgr
+}
+
+// vectorConfigIsProvided reports whether anything will write vector.yaml into the role group
+// ConfigMap: the framework generates it for a CR exposing an aggregator ConfigMap
+// (VectorAggregatorProvider, see resolveVectorAggregatorAddress), and a product that builds the
+// file itself says so through VectorConfigProvider on its handler. It gates Vector sidecar
+// registration, so the two sides of the contract cannot drift apart.
+func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, roleName string) bool {
+	if _, ok := any(cr).(VectorAggregatorProvider); ok {
+		return true
+	}
+	if provider, ok := r.roleGroupHandler.(VectorConfigProvider); ok {
+		return provider.ProvidesVectorConfig(roleName)
+	}
+	return false
 }
 
 // producerContainerNames extracts the container names from a log-producer declaration list.
@@ -983,6 +1031,16 @@ func markMetricsService(svc *corev1.Service) {
 		svc.Labels = map[string]string{}
 	}
 	svc.Labels[LabelMetricsService] = valueTrue
+}
+
+// markRolePodDisruptionBudget stamps the role slot label, carrying the role the PDB covers, on a
+// handler-built role PodDisruptionBudget. See LabelRolePodDisruptionBudget and the cleaner's
+// cleanupOrphanedRolePDBs for why the role name has to travel on the object.
+func markRolePodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, roleName string) {
+	if pdb.Labels == nil {
+		pdb.Labels = map[string]string{}
+	}
+	pdb.Labels[LabelRolePodDisruptionBudget] = roleName
 }
 
 // reclaimMetricsService deletes the role group's metrics Service, but only when the live object

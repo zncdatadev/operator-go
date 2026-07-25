@@ -19,15 +19,20 @@ package reconciler_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
+	"github.com/zncdatadev/operator-go/pkg/vector"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -35,8 +40,10 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 // resilienceCRCounter keeps generated CR names unique within a suite run while staying short
@@ -419,17 +426,79 @@ var _ = Describe("GenericReconciler metrics Service reclaim", func() {
 	})
 })
 
-var _ = Describe("GenericReconciler controller setup", func() {
-	It("registers extra watches for product-owned GVKs", func() {
-		mgr, err := ctrl.NewManager(testEnv.GetConfig(), ctrl.Options{Scheme: testScheme})
-		Expect(err).NotTo(HaveOccurred())
+// secretExtraHandler emits a Secret as an ExtraResource and counts how often it was asked to
+// build, so a spec can tell whether an event actually reached the controller.
+type secretExtraHandler struct {
+	mu     sync.Mutex
+	builds int
+	token  string
+}
 
+func (h *secretExtraHandler) BuildResources(
+	_ context.Context,
+	_ client.Client,
+	_ *testutil.ClusterWrapper,
+	buildCtx *reconciler.RoleGroupBuildContext,
+) (*reconciler.RoleGroupResources, error) {
+	h.mu.Lock()
+	h.builds++
+	h.mu.Unlock()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ClusterName + "-extra", Namespace: buildCtx.ClusterNamespace},
+		Data:       map[string][]byte{"token": []byte(h.token)},
+	}
+	return &reconciler.RoleGroupResources{
+		ConfigMap:      testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
+		ExtraResources: []client.Object{secret},
+	}, nil
+}
+
+func (h *secretExtraHandler) buildCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.builds
+}
+
+var _ = Describe("GenericReconciler controller setup", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("reconciles when an owned object of an extra GVK is changed out of band", func() {
+		crName := uniqueCRName("extra-owns")
+		// A dedicated namespace keeps this controller — the only one in the suite that runs
+		// against a live manager — from reconciling the CRs of the other specs.
+		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: crName}}
+		Expect(k8sClient.Create(ctx, namespace)).To(Succeed())
+
+		cr := testutil.NewMockCluster(crName, namespace.Name).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"broker": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+			})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+		})
+
+		handler := &secretExtraHandler{token: "desired"}
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
 			Recorder:         recorder,
-			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
-			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+			RoleGroupHandler: handler,
+			// No periodic requeue: the repair below can only be triggered by a watch event.
+			HealthCheckInterval: -1,
+			Prototype:           testutil.WrapMockCluster(testutil.NewMockCluster("proto", namespace.Name)),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		mgr, err := ctrl.NewManager(testEnv.GetConfig(), ctrl.Options{
+			Scheme:  testScheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+			Cache:   cache.Options{DefaultNamespaces: map[string]cache.Config{namespace.Name: {}}},
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -438,5 +507,315 @@ var _ = Describe("GenericReconciler controller setup", func() {
 		Expect(r.SetupWithManagerOpts(mgr, reconciler.SetupWithManagerOptions{
 			ExtraOwns: []client.Object{&corev1.Secret{}},
 		})).To(Succeed())
+
+		mgrCtx, stopManager := context.WithCancel(ctx)
+		DeferCleanup(stopManager)
+		go func() {
+			defer GinkgoRecover()
+			Expect(mgr.Start(mgrCtx)).To(Succeed())
+		}()
+		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
+
+		secretKey := types.NamespacedName{Namespace: namespace.Name, Name: crName + "-extra"}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, secretKey, &corev1.Secret{})
+		}, "30s", "200ms").Should(Succeed())
+
+		// Wait until the cluster settles: two consecutive samples with the same build count mean
+		// nothing else is scheduling reconciles any more.
+		settled := -1
+		Eventually(func() bool {
+			current := handler.buildCount()
+			quiet := current == settled
+			settled = current
+			return quiet
+		}, "30s", "500ms").Should(BeTrue())
+		before := handler.buildCount()
+
+		live := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, secretKey, live)).To(Succeed())
+		live.Data = map[string][]byte{"token": []byte("tampered")}
+		Expect(k8sClient.Update(ctx, live)).To(Succeed())
+
+		Eventually(func() (string, error) {
+			current := &corev1.Secret{}
+			if err := k8sClient.Get(ctx, secretKey, current); err != nil {
+				return "", err
+			}
+			return string(current.Data["token"]), nil
+		}, "30s", "200ms").Should(Equal("desired"))
+		Expect(handler.buildCount()).To(BeNumerically(">", before))
+	})
+})
+
+// throttlingCreateClient answers every Create with a 429, as the API server does when the
+// operator exceeds its request budget.
+type throttlingCreateClient struct {
+	client.Client
+}
+
+func (c *throttlingCreateClient) Create(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+	return k8serrors.NewTooManyRequests("slow down", 1)
+}
+
+var _ = Describe("GenericReconciler rate limiting", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("backs off on a 429 instead of reporting the cluster as degraded", func() {
+		crName := uniqueCRName("throttled")
+		cr, resourceName := newResilienceCR(ctx, crName)
+
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:              &throttlingCreateClient{Client: k8sClient},
+			Scheme:              testScheme,
+			Recorder:            recorder,
+			RoleGroupHandler:    &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			RateLimitRetryAfter: 3 * time.Second,
+			Prototype:           testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}}
+		result, err := r.Reconcile(ctx, req)
+
+		// Throttling is the API server asking for a pause, not a broken cluster: returning the
+		// error would run the product's error hooks, emit a Warning and flip Degraded on a cluster
+		// whose state nobody could even read.
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(3 * time.Second))
+
+		fetched := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, fetched)).To(Succeed())
+		Expect(fetched.Status.GetCondition(v1alpha1.ConditionDegraded)).To(BeNil())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, &corev1.ConfigMap{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+	})
+})
+
+// vectorTestHandler builds the role group resources by hand and declares a log producer, which is
+// what makes the framework consider injecting the Vector sidecar. providesVectorConfig switches
+// the VectorConfigProvider answer: false is a product that neither generates vector.yaml itself
+// nor exposes a Vector aggregator on its CR.
+type vectorTestHandler struct {
+	providesVectorConfig bool
+	configMapData        map[string]string
+}
+
+func (h *vectorTestHandler) LoggingProducers(string) []productlogging.ContainerLogging {
+	return []productlogging.ContainerLogging{{Container: "app"}}
+}
+
+func (h *vectorTestHandler) LogVolumeSizeLimit() string { return "" }
+
+func (h *vectorTestHandler) ProvidesVectorConfig(string) bool { return h.providesVectorConfig }
+
+func (h *vectorTestHandler) BuildResources(
+	_ context.Context,
+	_ client.Client,
+	_ *testutil.ClusterWrapper,
+	buildCtx *reconciler.RoleGroupBuildContext,
+) (*reconciler.RoleGroupResources, error) {
+	sts := testutil.NewTestStatefulSet(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+	sts.Spec.Template.Spec.Containers[0].Name = "app"
+
+	if buildCtx.SidecarManager.HasSidecars() {
+		if err := buildCtx.SidecarManager.SetProductImage("test-image:latest", corev1.PullIfNotPresent); err != nil {
+			return nil, err
+		}
+		if err := buildCtx.SidecarManager.InjectAll(&sts.Spec.Template.Spec); err != nil {
+			return nil, err
+		}
+	}
+
+	return &reconciler.RoleGroupResources{
+		ConfigMap: &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ResourceName, Namespace: buildCtx.ClusterNamespace},
+			Data:       h.configMapData,
+		},
+		StatefulSet: sts,
+	}, nil
+}
+
+// hasVectorSidecar reports whether the Vector sidecar was injected (it is a native sidecar, i.e.
+// an init container with restartPolicy Always).
+func hasVectorSidecar(sts *appsv1.StatefulSet) bool {
+	for _, c := range sts.Spec.Template.Spec.InitContainers {
+		if c.Name == vector.VectorSidecarName {
+			return true
+		}
+	}
+	for _, c := range sts.Spec.Template.Spec.Containers {
+		if c.Name == vector.VectorSidecarName {
+			return true
+		}
+	}
+	return false
+}
+
+var _ = Describe("GenericReconciler vector sidecar gating", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	// newVectorCR creates a cluster whose single role group enables the Vector agent.
+	newVectorCR := func(name string) (*testutil.MockCluster, string) {
+		cr := testutil.NewMockCluster(name, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"broker": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {
+							Replicas: ptr.To(int32(1)),
+							Config: &v1alpha1.RoleGroupConfigSpec{
+								Logging: &v1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)},
+							},
+						},
+					},
+				},
+			})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		resourceName := reconciler.RoleGroupResourceName(name, "broker", "default")
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+			meta := metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace}
+			_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: meta})
+		})
+		return cr, resourceName
+	}
+
+	newReconciler := func(handler reconciler.RoleGroupHandler[*testutil.ClusterWrapper], rec record.EventRecorder) *reconciler.GenericReconciler[*testutil.ClusterWrapper] {
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         rec,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return r
+	}
+
+	It("skips the sidecar when nothing supplies vector.yaml", func() {
+		crName := uniqueCRName("vector-unwired")
+		cr, resourceName := newVectorCR(crName)
+
+		fakeRecorder := record.NewFakeRecorder(100)
+		r := newReconciler(&vectorTestHandler{}, fakeRecorder)
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
+		// The CR does not implement VectorAggregatorProvider and the handler does not write
+		// vector.yaml, so injecting the sidecar would fail its own dependency validation and abort
+		// the whole cluster's reconcile, every cycle, over a misconfigured logging flag.
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
+		Expect(hasVectorSidecar(sts)).To(BeFalse())
+		Expect(drainRecorder(fakeRecorder)).To(ContainElement(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("VectorSidecarSkipped"),
+		)))
+	})
+
+	It("injects the sidecar when the handler supplies vector.yaml itself", func() {
+		crName := uniqueCRName("vector-product")
+		cr, resourceName := newVectorCR(crName)
+
+		handler := &vectorTestHandler{
+			providesVectorConfig: true,
+			configMapData:        map[string]string{vector.VectorConfigFileName: "# product-owned vector config"},
+		}
+		r := newReconciler(handler, record.NewFakeRecorder(100))
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Gating on the CR interface alone would silently drop the sidecar from every product that
+		// builds its own vector.yaml — a supported case.
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
+		Expect(hasVectorSidecar(sts)).To(BeTrue())
+	})
+})
+
+var _ = Describe("GenericReconciler role PodDisruptionBudget lifecycle", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("reclaims the role PDB when the role is removed from the spec", func() {
+		crName := uniqueCRName("role-pdb-cr")
+		roleSpec := func() v1alpha1.RoleSpec {
+			return v1alpha1.RoleSpec{
+				RoleConfig: &v1alpha1.RoleConfigSpec{
+					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
+						Enabled:        true,
+						MaxUnavailable: ptr.To(int32(1)),
+					},
+				},
+				RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}},
+			}
+		}
+		cr := testutil.NewMockCluster(crName, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{"broker": roleSpec(), "worker": roleSpec()})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+			for _, role := range []string{"broker", "worker"} {
+				name := reconciler.RoleResourceName(crName, role)
+				_ = k8sClient.Delete(ctx, &policyv1.PodDisruptionBudget{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+				for _, suffix := range []string{"", "-headless"} {
+					meta := metav1.ObjectMeta{Name: reconciler.RoleGroupResourceName(crName, role, "default") + suffix, Namespace: testNamespace}
+					_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: meta})
+					_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+					_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: meta})
+				}
+			}
+		})
+
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.ClusterWrapper]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.ClusterWrapper]("test-image:latest", testScheme),
+			Prototype:        testutil.WrapMockCluster(testutil.NewMockCluster("proto", testNamespace)),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: crName}}
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		workerPDBKey := types.NamespacedName{Namespace: testNamespace, Name: reconciler.RoleResourceName(crName, "worker")}
+		brokerPDBKey := types.NamespacedName{Namespace: testNamespace, Name: reconciler.RoleResourceName(crName, "broker")}
+		workerPDB := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, workerPDBKey, workerPDB)).To(Succeed())
+		// The slot label carries the role, which is the only thing that survives the role's
+		// removal from the spec.
+		Expect(workerPDB.Labels).To(HaveKeyWithValue(reconciler.LabelRolePodDisruptionBudget, "worker"))
+		Expect(k8sClient.Get(ctx, brokerPDBKey, &policyv1.PodDisruptionBudget{})).To(Succeed())
+
+		fetched := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, fetched)).To(Succeed())
+		delete(fetched.Spec.Roles, "worker")
+		Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
+
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The role PDB is applied only for roles the spec declares, so removing the whole role
+		// leaves a budget guarding pods that no longer exist.
+		Expect(k8sClient.Get(ctx, workerPDBKey, &policyv1.PodDisruptionBudget{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+		Expect(k8sClient.Get(ctx, brokerPDBKey, &policyv1.PodDisruptionBudget{})).To(Succeed())
 	})
 })

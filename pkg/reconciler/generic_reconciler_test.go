@@ -706,9 +706,22 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}))
 
-			// Verify status shows degraded due to paused
 			fetchedCR := &testutil.MockCluster{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName}, fetchedCR)).To(Succeed())
+
+			// Surfacing the pause is the only thing this cycle does: without the status write the
+			// CR keeps advertising the last running cycle's state and nothing tells an operator
+			// why the cluster stopped converging.
+			degraded := fetchedCR.Status.GetCondition(v1alpha1.ConditionDegraded)
+			Expect(degraded).NotTo(BeNil())
+			Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
+			Expect(degraded.Reason).To(Equal(v1alpha1.ReasonReconciliationPaused))
+			Expect(fetchedCR.Status.ObservedGeneration).To(Equal(fetchedCR.Generation))
+
+			// The gate runs before any mutation, so nothing was applied for the declared role group.
+			resourceName := reconciler.RoleGroupResourceName(crName, "test-role", "default")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, &corev1.ConfigMap{})).
+				To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
 		})
 	})
 

@@ -177,6 +177,23 @@ type VectorAggregatorProvider interface {
 	VectorAggregatorConfigMapName() string
 }
 
+// VectorConfigProvider is optionally implemented by a RoleGroupHandler whose product writes the
+// Vector agent config ("vector.yaml") into the role group ConfigMap itself, instead of letting the
+// framework generate it from the CR's VectorAggregatorProvider.
+//
+// It exists because the Vector sidecar runs "vector --config <config mount>/vector.yaml": with
+// neither source that key is missing, the container cannot start, and the sidecar's own dependency
+// validation fails the cluster's reconcile every cycle. GenericReconciler therefore registers the
+// Vector provider only when the CR implements VectorAggregatorProvider or the handler answers true
+// here — implementing this interface is the product's assertion that its ConfigMap carries the key
+// for that role.
+type VectorConfigProvider interface {
+	// ProvidesVectorConfig reports whether the handler writes vector.yaml for the given role.
+	// roleName selects the declaration, mirroring LoggingProducers: a product may build the file
+	// for some roles and leave the rest to the framework.
+	ProvidesVectorConfig(roleName string) bool
+}
+
 // LoggingProducerProvider is implemented by handlers (e.g. BaseRoleGroupHandler) that declare
 // log-producer containers. GenericReconciler type-asserts its handler against this interface to
 // configure the Vector sidecar (the single owner of the shared log volume) without depending on a
