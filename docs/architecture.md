@@ -171,13 +171,14 @@ Defines the common data model, serving as the data exchange contract between the
 Defines core interfaces and extension contracts. It only depends on the API layer and is the core of SDK's "multi-product reuse," divided into business interfaces and extension interfaces.
 
 - **Business Interfaces**:
-    - `ClusterInterface`: Cluster-level interface, defining methods for cluster name, Spec/Status access, state updates, etc.
+    - `ClusterInterface`: The cluster-level contract a product CR satisfies. It embeds controller-runtime's `client.Object` — so name, namespace, UID, labels, annotations and GVK come from the CR's embedded `metav1.ObjectMeta`/`TypeMeta`, not from product-written accessors — and adds exactly two SDK-specific methods: `GetSpec() *v1alpha1.GenericClusterSpec` and `GetStatus() *v1alpha1.GenericClusterStatus`, which project the product's own spec and status onto the generic shapes the framework reconciles against. There is no status setter: `GetStatus` returns a pointer into the CR and the framework writes conditions, `observedGeneration` and role group state through it, which is why a product's own status fields survive a cycle untouched.
+    - `ClusterResource[T ClusterInterface]`: `ClusterInterface` plus `DeepCopy() T`, the method controller-gen already generates for every root API type. It exists because a type parameter cannot be allocated with `new(T)` when `T` is a pointer type, so the reconciler materialises the object it reads into by copying a prototype; going through `runtime.Object` would hand back an interface and reintroduce a runtime assertion. Hold a CR as `ClusterInterface`; parameterise over one as `ClusterResource[CR]`.
     - `RoleInterface`: Role-level descriptor exposing `GetRoleName()`, `GetRoleSpec()`, `GetRoleGroups()` and `GetOverrides()`, with the default implementations `RoleInfo`/`RoleGroupInfo`. It carries no port defaults and no configuration extenders. **Not required for integration**: the `GenericReconciler` iterates `GenericClusterSpec.Roles` directly and never calls this interface, so it is an optional convenience for product code.
     - `RoleGroupHandler`: The primary implementation extension point for product operators. Each product implements this interface to define the specific Kubernetes resources (StatefulSet, Services, ConfigMaps) built for each RoleGroup. The `GenericReconciler` calls `BuildResources()` on this handler during reconciliation.
 
 - **Extension Interfaces**:
-    - `ClusterExtension/RoleExtension/RoleGroupExtension`: Extension point interfaces, defining custom logic before and after reconciliation at each level. Role-level customization of `role.config` is done here (a `RoleExtension.PreReconcile` hook), not through a separate extender interface.
-    - `ExtensionRegistry`: Extension registry, managing the registration, priority-based ordering, and execution of all extensions.
+    - `ClusterExtension[CR]/RoleExtension[CR]/RoleGroupExtension[CR]`: Extension point interfaces, defining custom logic before and after reconciliation at each level. Each is generic over the product's own CR type, so a hook receives that type directly. Role-level customization of `role.config` is done here (a `RoleExtension.PreReconcile` hook), not through a separate extender interface.
+    - `ExtensionRegistry[CR ClusterInterface]`: Extension registry, managing the registration, priority-based ordering, and execution of the extensions of **one** CR type. A registry is owned by the reconciler it is passed to (§4.2.3); the package exposes no process-wide instance.
 
 ### 3.2.3 Core Component Layer (Common Logic Layer)
 
@@ -204,7 +205,7 @@ Provides non-intrusive common utility functions for the Core Component Layer to 
 Implements product-specific logic based on SDK abstract interfaces without modifying SDK core code, relying only on the API Layer and Abstract Interface Layer.
 
 - **Implementation Points**:
-    - **CR structs implement `ClusterInterface` and provide a `RoleGroupHandler` to define product-specific resources.** (`RoleInterface` is optional — see §3.2.2.)
+    - **CR structs implement `ClusterInterface` — `GetSpec` and `GetStatus`, the rest comes from the embedded object metadata and generated deep-copy code — and provide a `RoleGroupHandler` to define product-specific resources.** (`RoleInterface` is optional — see §3.2.2.)
     - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
     - Integrate Webhook specific validation and default value population logic.
 
@@ -231,14 +232,15 @@ Original interfaces relied on type assertions, presenting runtime error risks an
 
 ### 4.1.2 Core Implementation
 
-- **Generic Reconciler Skeleton**: `GenericReconciler[CR ClusterInterface]`, constraining CR type and reusing the reconciliation process.
-- **Generic Extension Interfaces**: `ClusterExtension[CR ClusterInterface]` (likewise `RoleExtension[CR]`, `RoleGroupExtension[CR]`), eliminating type assertions and directly receiving specific CR types.
+- **Generic Reconciler Skeleton**: `GenericReconciler[CR ClusterResource[CR]]` (likewise `GenericReconcilerConfig[CR]` and `NewGenericReconciler[CR]`), constraining CR type and reusing the reconciliation process. The constraint is `ClusterResource[CR]` rather than `ClusterInterface` because the reconciler has to produce an empty instance of the CR to read into; it copies `GenericReconcilerConfig.Prototype` through the generated `DeepCopy() CR`, which returns the concrete type instead of a `runtime.Object` the reconciler would have to assert.
+- **Generic Extension Interfaces**: `ClusterExtension[CR ClusterInterface]` (likewise `RoleExtension[CR]`, `RoleGroupExtension[CR]`), whose hooks receive the product's own CR type — a `PreReconcile` declared for `*TrinoCluster` is handed a `*TrinoCluster`.
 - **Generic Webhook Contracts**: `ProductDefaulter[CR]` / `ProductValidator[CR]`, which mirror controller-runtime's `admission.Defaulter[T]` / `admission.Validator[T]` so a typed implementation is passed straight to the webhook builder (§4.3).
-- **Erasure at the registry boundary**: `ExtensionRegistry` itself stores `ClusterExtension[ClusterInterface]` entries, so an extension written against a concrete CR type is registered through the `common.AsClusterExtension` / `AsRoleExtension` / `AsRoleGroupExtension` adapters, which perform the one remaining type assertion in a single place.
+- **Per-CR-type registry, no erasure**: `ExtensionRegistry[CR ClusterInterface]` stores `ClusterExtension[CR]` / `RoleExtension[CR]` / `RoleGroupExtension[CR]` entries at the product's own instantiation, and `GenericReconcilerConfig[CR].ExtensionRegistry` is typed `*ExtensionRegistry[CR]`. The type parameter is load-bearing rather than cosmetic: Go generic types are invariant, so a `ClusterExtension[*TrinoCluster]` does not satisfy `ClusterExtension[ClusterInterface]` — a registry erased to the wide interface could only hold extensions written against `ClusterInterface` and would force every hook to convert its CR on entry. Instantiating the registry for the product's CR type is what removes that conversion, so a product extension contains no type assertion at all.
+- **No process-global registry**: there is no package-level registry instance and no global accessor; a type parameter cannot be carried by a package-level variable, and every workaround reintroduces exactly the erasure this design removes. A registry is constructed with `common.NewExtensionRegistry[CR]()` and reaches the framework only through the reconciler config, which also means a binary hosting two products cannot run one product's hooks against the other's clusters — neither by construction (a foreign extension does not typecheck) nor by accident (there is no shared instance).
 
 ### 4.1.3 Core Value
 
-Compile-time type checking reduces reliance on runtime type assertions; new products only need to bind generic types, reducing boilerplate.
+Compile-time type checking removes runtime type assertions from the reconciler and from product extensions alike; new products only need to bind generic types, reducing boilerplate.
 
 ## 4.2 Extension Point Mechanism Module
 
@@ -254,11 +256,28 @@ Reserve extension points at key nodes in the reconciliation process to support e
 
 ### 4.2.3 Extension Registration
 
-- **Registration Timing**: Extensions must be registered during Operator initialization, specifically in the `main.go` setup phase before the Manager starts. This ensures all extensions are available when reconciliation begins.
-- **Registration Methods**: `RegisterClusterExtension`, `RegisterRoleExtension` and `RegisterRoleGroupExtension`, each with a `...WithPriority(ext, priority)` and a variadic `...WithOptions(ext, opts...)` form. There is no generic `Register()` method — the level is part of the method name because the registry keeps one ordered list per level.
-- **Registry Instance**: `common.GetExtensionRegistry()` returns a process-wide singleton, which every `GenericReconciler` in the process shares — an extension written for one CR type also runs (and can fail) for another product's clusters. Use `common.NewExtensionRegistry()` and pass it through `GenericReconcilerConfig.ExtensionRegistry` to give a controller its own isolated registry. `common.ResetExtensionRegistry()` empties the singleton in place (for tests) without replacing the pointer, so reconcilers that captured it observe the reset.
+- **Registry Instance**: `common.NewExtensionRegistry[CR]()` builds an empty registry for one product CR type; the type argument is explicit, since a no-argument call cannot infer it. The registry is a plain value the operator owns — there is no process-wide instance and no global accessor (§4.1.2).
+- **Registration Timing**: Extensions are registered during Operator initialization, in the `main.go` setup phase before the Manager starts, so all of them are present when the first reconcile runs. They go into the registry the operator constructed, not into a shared one.
+- **Wiring**: The registry reaches the framework only through `GenericReconcilerConfig[CR].ExtensionRegistry` (typed `*common.ExtensionRegistry[CR]`). **This field is what makes extensions run at all**: a reconciler constructed without it runs against an empty registry, so every hook is a silent no-op. A binary managing several CR types builds one registry per type — sharing one instance across two products is a compile error.
+- **Registration Methods**: `RegisterClusterExtension(ext, opts ...RegistrationOption)`, `RegisterRoleExtension(...)` and `RegisterRoleGroupExtension(...)`. These three are the entire registration surface: options are variadic, so there are no separate priority or options variants. There is no generic `Register()` method — the level is part of the method name because the registry keeps one ordered list per level.
 - **Registration Options**: `common.WithPriority(p)` sets the priority (Lowest=0, Low=25, Normal=50, High=75, Highest=100; default Normal); `common.WithStopOnError(bool)` overrides the hook's default fault tolerance for that one registration (see §4.2.5).
 - **Execution Order**: Extensions execute in **priority order (highest first)**. Same-priority extensions execute in **registration order** — each entry carries a registration sequence number, so the ordering is total and does not depend on sort stability.
+- **Clearing**: `Clear()` empties the registry **in place** and resets the sequence counter. Emptying rather than replacing matters because a constructed reconciler captured the registry pointer: handing out a fresh instance would leave it executing a stale one. This is what a test uses between cases instead of resetting global state.
+- **Introspection**: `GetClusterExtensions()` / `GetRoleExtensions()` / `GetRoleGroupExtensions()` return the registered extensions in execution order; `HasClusterExtensions()` and its siblings, plus `Count()`, report what is registered.
+
+```go
+// main.go, before mgr.Start(): build the registry, then hand it to the reconciler.
+registry := common.NewExtensionRegistry[*trinov1alpha1.TrinoCluster]()
+registry.RegisterClusterExtension(extensions.NewCatalogExtension())
+registry.RegisterRoleExtension(extensions.NewHealthExtension())
+registry.RegisterClusterExtension(extensions.NewDiscoveryExtension(mgr.GetScheme()),
+    common.WithPriority(common.PriorityLow))
+
+reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
+    // ... client, scheme, recorder, role group handler, prototype ...
+    ExtensionRegistry: registry, // omitting this field means no hook ever runs
+}
+```
 
 ### 4.2.4 Extension Lifecycle
 
@@ -383,14 +402,15 @@ Big data components often require configuration files in various formats (e.g., 
 
 ### 4.5.2 Core Implementation
 
-- **ConfigFormat Interface**: Defines the contract for configuration serialization. It is **round-trip**: an adapter must implement both directions.
-  - `Marshal(data map[string]string) (string, error)`
-  - `Unmarshal(data string) (map[string]string, error)`
-- **FormatAdapter**: Adapter pattern implementation supporting common formats, selected by `config.GetFormat(ConfigFormatType)` (`xml`, `properties`, `yaml`, `env`, `ini`; unknown types fall back to properties):
-  - `XMLAdapter`: Converts key-value pairs into Hadoop-style `<property><name>...</name><value>...</value></property>` XML structure.
-  - `PropertiesAdapter`: Converts key-value pairs into standard Java `.properties` format, escaping separators in keys and line continuations in values.
-  - `YAMLAdapter`: Emits a flat mapping through `gopkg.in/yaml.v3` (values that would otherwise parse as bool/number are quoted to stay strings); `Unmarshal` rejects a document that is not a flat mapping instead of returning partial data.
-  - `EnvAdapter`: Formats as shell environment variable exports or .env file content. Keys must be valid shell variable names (`^[A-Za-z_][A-Za-z0-9_]*$`) — anything else is an error rather than corrupt output. Newlines, carriage returns and tabs in values are written as dotenv-style `\n`/`\r`/`\t` escapes, so a multi-line value is not byte-faithful when a POSIX shell sources the file.
+- **Split format contract**: Emitting is the whole *required* contract; parsing is an optional capability layered on top.
+  - `ConfigMarshaler` (**required**) — `Marshal(data map[string]string) (string, error)`. This is what `config.NewConfigGenerator`, `MultiFormatConfigGenerator.RegisterFormat` and `config.GetFormat(ConfigFormatType)` take and return. The framework's write path — the generators, `BaseRoleGroupHandler` and `ConfigMapBuilder` — never reads a generated file back, so a format a product only needs to *write* is complete with `Marshal` alone.
+  - `ConfigUnmarshaler` (**optional**) — `Unmarshal(data string) (map[string]string, error)`. It is never required at registration: an emit-only adapter registers and generates like any other. The `Parse` paths upgrade the registered adapter to this interface at call time — the single place the package inspects a dynamic type — and a format that does not implement it fails with a `*config.UnsupportedParseError` naming the format (registered extension plus the adapter's Go type) and, where the caller knows one, the file. Matching that failure with `errors.As` is the stable check; a nil format instead yields the sentinel `config.ErrNoFormat`.
+  - Every adapter shipped with the SDK implements both, asserted at compile time in `format.go`, so in practice `GetFormat`'s result can always parse as well as emit — even though its static type promises only `Marshal`.
+- **FormatAdapter**: Adapter pattern implementation supporting common formats, selected by `config.GetFormat(ConfigFormatType)` (`xml`, `properties`, `yaml`, `env`, `ini`; unknown types fall back to properties). Adapters validate their input and return an error rather than emitting output the target parser would misread:
+  - `XMLAdapter`: Converts key-value pairs into Hadoop-style `<property><name>...</name><value>...</value></property>` XML structure. It rejects text XML 1.0 cannot carry — C0 control characters other than tab/newline/carriage return, and non-UTF-8 bytes — naming the offending key, and writes a carriage return as `&#13;` because a parser normalizes literal line endings in content.
+  - `PropertiesAdapter`: Converts key-value pairs into standard Java `.properties` format, escaping separators, comment markers and edge whitespace in keys and line continuations in values. On read it decodes `\uXXXX` escapes (surrogate pairs included) and drops layout whitespace that was not escaped, including the indentation of a continuation line.
+  - `YAMLAdapter`: Emits a flat mapping through `gopkg.in/yaml.v3` (values that would otherwise parse as bool/number are quoted to stay strings); `Unmarshal` rejects a document that is not a flat mapping — and a duplicate key, which is invalid YAML — instead of returning partial data.
+  - `EnvAdapter`: Formats as shell environment variable exports or .env file content. Keys must be valid shell variable names (`^[A-Za-z_][A-Za-z0-9_]*$`) — anything else is an error rather than corrupt output. A value is written bare only when every character is in the shell-inert allowlist `[A-Za-z0-9_@%+=:,./-]`; anything else — a command separator, a redirection, a subshell, a tilde, whitespace — is double-quoted with `$`, backticks, `\` and `"` escaped, so sourcing the file can never execute a config value. Newlines, carriage returns and tabs in values are written as dotenv-style `\n`/`\r`/`\t` escapes, so a multi-line value is not byte-faithful when a POSIX shell sources the file. On read, a single-quoted value is taken literally, as a POSIX shell does.
   - `INIAdapter`: Emits INI sections; rejects keys/values containing line breaks and keys containing `=`, `:` or a leading `[`, `#`, `;`.
 - **Product Logging Engine** (`pkg/productlogging`): A dedicated, product-agnostic logging engine (separate from the config-format adapters above).
   - **Input**: The deep-merged CRD logging spec (e.g., `containers.coordinator.loggers.ROOT.level: DEBUG`), converted once into a framework-neutral `LogConfig`.
@@ -398,11 +418,12 @@ Big data components often require configuration files in various formats (e.g., 
   - **Declaration**: Products declare per-container logging via `ContainerLogging` (container, framework, pattern). The framework owns the stable log file-path convention that the Vector sources glob — `<LogDir>/<lowercased container>/<container>.<framework suffix>`, where the suffix selects the edge parser (`.log4j.xml` for log4j/logback XMLLayout, `.log4j2.xml` for log4j2 XMLLayout, `.py.json` for python JSON lines) — so producers and the consumer cannot drift. Vector parses each format at the edge and normalizes every event to the stable schema (`.timestamp`/`.logger`/`.level`/`.message` + `.errors`, flat `.namespace`/`.cluster`/`.role`/`.roleGroup` metadata, and `.container`/`.file` extracted from the path).
   - **Vector coupling**: The rolling file appender is emitted only when the Vector agent is enabled — without a consumer there is no shared log volume to write to (see the Sidecar Injection module).
 - **Integration**: Config generation happens on the **ConfigMap** path, not in the StatefulSet builder. `BaseRoleGroupHandler.ConfigGenerator` (a `config.MultiFormatConfigGenerator`) renders `MergedConfig.ConfigFiles` into `map[filename]content`, which `builder.ConfigMapBuilder.WithMergedConfig(mergedConfig, generator)` turns into the role group ConfigMap's `Data`. When no generator is set, the handler falls back to a deterministic properties-style rendering (keys sorted, separators and line breaks escaped). The StatefulSet only *mounts* the resulting ConfigMap.
+- **Adapter selection**: `RegisterFormat` matches its string as a **file-name suffix**, so a whole file name (`server.properties`) is a legal registration. When several registrations match a name the **longest** wins, deterministically — selection must not depend on Go's map iteration order, or the same file renders differently between reconciles and the ConfigMap churns. A file matching nothing falls back to the properties adapter. Reading a file back through the same dispatch is `MultiFormatConfigGenerator.Parse(filename, content)`, which is the supported way to parse by file name rather than reaching into the adapter map.
 
 ### 4.5.3 Core Value
 
 - **Unified Logic**: Centralizes the complexity of file format generation, avoiding repetitive implementation in each product operator.
-- **Extensibility**: Easily supports new formats by implementing the `ConfigFormat` interface.
+- **Extensibility**: Easily supports new formats by implementing the `ConfigMarshaler` interface — one method, and only formats something actually reads back grow an `Unmarshal`.
 - **Consistency**: Ensures generated configuration files adhere to standard formats and escaping rules.
 
 ## 4.6 Sidecar Injection Module
@@ -618,7 +639,7 @@ Distributed systems and Kubernetes Controllers face unpredictable failures: netw
   - **Malformed `podOverrides`**: a layer that cannot be decoded or patched is recorded on `MergedConfig.PodOverrideErrors` and surfaced as a `Warning` event; the layer is skipped rather than silently dropped without trace.
 
 - **Concurrency Control**:
-  - **Optimistic Locking on status writes**: the status write is issued from the in-memory CR without re-fetching it first, because a re-fetch would replace the whole status stanza and discard the product-specific fields an extension hook computed during this cycle (`ClusterInterface` exposes only the embedded generic status). On a 409 only the `resourceVersion` is refreshed — through the uncached `APIReader` when one is configured, since the informer cache has by definition not seen the competing write — and the write is retried with this cycle's status unchanged. That is last-writer-wins: it is correct because the controller is the sole writer of its own CR's status, and it does mean a status field written by a *different* actor between the read and the write is overwritten. A `NotFound` (the CR was deleted mid-cycle) is treated as success. Note that the *cleaner* does not retry on conflict — see §4.4.4.
+  - **Optimistic Locking on status writes**: the status write is issued from the in-memory CR without re-fetching it first, because a re-fetch would replace the whole status stanza and discard the product-specific fields an extension hook computed during this cycle (`ClusterInterface` exposes only the embedded generic status, which the framework mutates through the pointer `GetStatus` returns — there is no setter that could replace the stanza wholesale). On a 409 only the `resourceVersion` is refreshed — through the uncached `APIReader` when one is configured, since the informer cache has by definition not seen the competing write — and the write is retried with this cycle's status unchanged. That is last-writer-wins: it is correct because the controller is the sole writer of its own CR's status, and it does mean a status field written by a *different* actor between the read and the write is overwritten. A `NotFound` (the CR was deleted mid-cycle) is treated as success. Note that the *cleaner* does not retry on conflict — see §4.4.4.
   - **Idempotency**: All side-effect operations (Create/Update/Delete) are designed to be idempotent. A retry after a partial failure is safe and will not result in duplicated resources.
 
 - **Extension Fault Tolerance**:
@@ -727,7 +748,8 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 
 ### 5.1.2 Application in SDK
 
-- **`ClusterInterface`**: Defines cluster-level operations (GetName, GetNamespace, GetSpec, GetStatus, SetStatus, GetRuntimeObject, DeepCopyCluster).
+- **`ClusterInterface`**: `client.Object` plus two methods — `GetSpec()` and `GetStatus()`. Everything a Kubernetes object already answers is inherited from the embedded `client.Object`; the only thing the SDK asks a product to write is the projection of its spec and status onto the framework's generic shapes.
+- **`ClusterResource[T ClusterInterface]`**: `ClusterInterface` plus `DeepCopy() T`. It is a *constraint*, used only as `GenericReconciler`'s type parameter, and it is satisfied by controller-gen's generated code rather than by anything hand-written.
 - **`RoleInterface`**: Optional role-level descriptor (GetRoleName, GetRoleSpec, GetRoleGroups, GetOverrides). The reconciler does not consume it.
 - **`RoleGroupHandler`**: Defines the `BuildResources()` contract that product operators implement to produce RoleGroup-specific Kubernetes resources.
 - **`RoleExtension` / `RoleGroupExtension`**: Define the Pre/PostReconcile hooks products use to customize behavior at role and role group level.
@@ -742,7 +764,23 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 ### 5.1.4 Example
 
 ```go
+// The SDK interface itself: client.Object, plus the two projections.
+type ClusterInterface interface {
+    client.Object
+
+    GetSpec() *v1alpha1.GenericClusterSpec
+    GetStatus() *v1alpha1.GenericClusterStatus
+}
+
+// The constraint GenericReconciler parameterises over.
+type ClusterResource[T ClusterInterface] interface {
+    ClusterInterface
+
+    DeepCopy() T
+}
+
 // A product CR implements ClusterInterface; the other interfaces are opt-in.
+// +kubebuilder:object:root=true
 type HdfsCluster struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -750,12 +788,16 @@ type HdfsCluster struct {
     Status            HdfsClusterStatus `json:"status,omitempty"`
 }
 
-// Embedding metav1.ObjectMeta (or common.ClusterObject) supplies the metadata accessors,
-// but embedding alone is NOT enough: the CR must still implement the SDK-specific methods
-// explicitly — GetSpec() *v1alpha1.GenericClusterSpec, GetStatus(), SetStatus(),
-// GetScheme(), GetRuntimeObject() and DeepCopyCluster().
+// Embedding metav1.TypeMeta and metav1.ObjectMeta supplies every metadata accessor, and
+// `make generate` emits DeepCopyObject() (completing client.Object) and DeepCopy()
+// *HdfsCluster (completing ClusterResource). So the CR writes exactly two methods:
 func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &h.Spec.GenericClusterSpec }
+func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus {
+    return &h.Status.GenericClusterStatus
+}
 ```
+
+> The CR must also be registered with the manager's scheme (`SchemeBuilder.Register(&HdfsCluster{}, &HdfsClusterList{})`): the reconciler reads the fetched object into the CR itself, so an unregistered type fails at `client.Get` with "no kind is registered for the type".
 
 > A `GetSpec()` implementation that builds a fresh `GenericClusterSpec` on every call is legal but subtle: the reconcile loop snapshots the spec once per cycle, so in-memory mutations made after that snapshot are not observed consistently (see §4.2.5). Returning a pointer into the CR is the simpler contract.
 
@@ -767,8 +809,8 @@ The Strategy Pattern defines a family of algorithms, encapsulates each one, and 
 
 ### 5.2.2 Application in SDK
 
-- **Extension Interfaces**: Products implement `ClusterExtension`, `RoleExtension`, or `RoleGroupExtension` to inject custom reconciliation logic.
-- **ConfigFormat Interface**: Different configuration serializers (XML, Properties, YAML, Env) implement the same interface.
+- **Extension Interfaces**: Products implement `ClusterExtension[CR]`, `RoleExtension[CR]`, or `RoleGroupExtension[CR]` to inject custom reconciliation logic.
+- **ConfigMarshaler Interface**: Different configuration serializers (XML, Properties, YAML, Env, INI) implement the same one-method interface.
 - **SidecarProvider Interface**: Different sidecar injectors (Vector, JMX Exporter) follow a common contract.
 
 ### 5.2.3 Benefits
@@ -780,22 +822,27 @@ The Strategy Pattern defines a family of algorithms, encapsulates each one, and 
 ### 5.2.4 Example
 
 ```go
-// ConfigFormat strategy interface (round-trip: both directions are required)
-type ConfigFormat interface {
+// The required half of the strategy: emitting is the whole contract of a format.
+type ConfigMarshaler interface {
     Marshal(data map[string]string) (string, error)
+}
+
+// The optional half, discovered by interface upgrade on the Parse paths only.
+type ConfigUnmarshaler interface {
     Unmarshal(data string) (map[string]string, error)
 }
 
-// Concrete strategies
+// Concrete strategies (all five implement both halves)
 type XMLAdapter struct{}        // Hadoop XML format
 type PropertiesAdapter struct{} // Java .properties format
 type YAMLAdapter struct{}       // YAML format
 type EnvAdapter struct{}        // shell / .env format
 type INIAdapter struct{}        // INI format
 
-// Context uses the strategy
+// Context uses the strategy. It stores only the required half; Parse upgrades the value
+// and returns *UnsupportedParseError when the format cannot read its own output back.
 type ConfigGenerator struct {
-    format ConfigFormat
+    format ConfigMarshaler
 }
 ```
 
@@ -873,20 +920,22 @@ Applying a resource is not create-only: when the resource already exists, `apply
 - **Controlled Extension**: Products can only extend at designated points.
 - **Maintainability**: Changes to the core flow affect all products uniformly.
 
-## 5.4 Singleton Pattern
+## 5.4 Owned Collaborator Pattern (Composition over Global State)
 
 ### 5.4.1 Pattern Overview
 
-The Singleton Pattern ensures a class has only one instance and provides a global point of access to it.
+Shared machinery is held as an explicitly constructed value, owned by whoever needs it and handed to its collaborators through their configuration, instead of living in a package-level variable reached through a global accessor. Ownership is visible in the type, and lifetime is visible in the wiring.
 
 ### 5.4.2 Application in SDK
 
-- **ExtensionRegistry**: A process-wide default registry that manages all extensions and executes them in a deterministic order. The singleton is a *default*, not a constraint: `common.NewExtensionRegistry()` creates an isolated instance, which a controller injects through `GenericReconcilerConfig.ExtensionRegistry` (§4.2.3).
-- **Scheme**: The Kubernetes scheme is registered once during operator initialization.
+- **`ExtensionRegistry[CR]`**: The registry of one product's extensions. The operator constructs it with `common.NewExtensionRegistry[CR]()`, registers into it, and passes it to exactly one reconciler through `GenericReconcilerConfig[CR].ExtensionRegistry` (§4.2.3). The SDK holds no registry of its own: no package-level instance, no accessor function. A binary managing several CR types builds one registry per type, and the type parameter makes sharing one across products a compile error rather than a runtime surprise.
+- **Scheme**: The `runtime.Scheme` is likewise built once in `main` (in practice the manager's, via `mgr.GetScheme()`) and passed explicitly — the reconciler takes it as `GenericReconcilerConfig.Scheme`. The SDK declares no global scheme.
 
 ### 5.4.3 Benefits
 
-- **Consistency**: Single point of truth for extension management.
+- **Isolation**: One product's hooks cannot execute against another product's clusters, because no object is reachable from both.
+- **Explicit Wiring**: The reconciler's dependencies are visible in its config, which also makes the failure mode of forgetting one a locally diagnosable "no hooks run" rather than a global-state mystery.
+- **Testability**: A test constructs its own registry, so cases neither leak registrations into each other nor need a global reset; per-test instances are safe to run in parallel.
 - **Deterministic Execution**: Extensions execute in priority order (highest first), with the registration sequence number as a total tiebreaker.
 - **Thread Safety**: The registry is guarded by a `sync.RWMutex`; hook execution runs against a snapshot of the entries.
 
@@ -894,9 +943,9 @@ The Singleton Pattern ensures a class has only one instance and provides a globa
 
 ```go
 // Registrations are wrapped in entries so priority, registration sequence and
-// per-registration fault tolerance travel with the extension. The extension
-// interfaces are generic, and the registry stores them at the ClusterInterface
-// instantiation.
+// per-registration fault tolerance travel with the extension. The registry is
+// instantiated for the product's own CR type, so the entries hold extensions
+// that already speak that type.
 type extensionEntry[T Extension] struct {
     extension   T
     priority    ExtensionPriority
@@ -904,27 +953,26 @@ type extensionEntry[T Extension] struct {
     stopOnError *bool  // nil = use the hook's default
 }
 
-type ExtensionRegistry struct {
-    clusterExtensions   []extensionEntry[ClusterExtension[ClusterInterface]]
-    roleExtensions      []extensionEntry[RoleExtension[ClusterInterface]]
-    roleGroupExtensions []extensionEntry[RoleGroupExtension[ClusterInterface]]
+type ExtensionRegistry[CR ClusterInterface] struct {
+    clusterExtensions   []extensionEntry[ClusterExtension[CR]]
+    roleExtensions      []extensionEntry[RoleExtension[CR]]
+    roleGroupExtensions []extensionEntry[RoleGroupExtension[CR]]
     nextSeq             uint64
     mu                  sync.RWMutex
 }
 
-// The process-wide default instance.
-var globalRegistry = NewExtensionRegistry()
-
-func GetExtensionRegistry() *ExtensionRegistry { return globalRegistry }
+func NewExtensionRegistry[CR ClusterInterface]() *ExtensionRegistry[CR]
 ```
 
-An extension written against a concrete CR type is registered through an adapter, which performs the type assertion in one place:
+An extension declares the CR it operates on and is registered directly — there is no adapter and no type assertion anywhere on the path:
 
 ```go
-registry.RegisterClusterExtensionWithOptions(
-    common.AsClusterExtension[*HdfsCluster](&SafeModeExtension{}),
-    common.WithPriority(common.PriorityHigh),
-)
+// func (e *SafeModeExtension) PreReconcile(
+//     ctx context.Context, c client.Client, cr *HdfsCluster) error
+var _ common.ClusterExtension[*HdfsCluster] = &SafeModeExtension{}
+
+registry := common.NewExtensionRegistry[*HdfsCluster]()
+registry.RegisterClusterExtension(&SafeModeExtension{}, common.WithPriority(common.PriorityHigh))
 ```
 
 ## 5.5 Builder Pattern
@@ -977,16 +1025,17 @@ The Adapter Pattern converts the interface of a class into another interface tha
 
 ### 5.6.2 Application in SDK
 
-- **ConfigFormat Adapters**: Convert internal configuration maps to various external formats:
+- **Config Format Adapters**: Convert internal configuration maps to various external formats:
   - `XMLAdapter`: Adapts to Hadoop XML format
   - `PropertiesAdapter`: Adapts to Java .properties format
   - `YAMLAdapter`: Adapts to YAML format
   - `EnvAdapter`: Adapts to environment variable format
+  - `INIAdapter`: Adapts to INI format
 
 ### 5.6.3 Benefits
 
 - **Format Independence**: SDK core works with internal map representation.
-- **Extensibility**: New formats can be added by implementing the adapter interface.
+- **Extensibility**: New formats can be added by implementing `ConfigMarshaler`; `ConfigUnmarshaler` is added only for a format that is read back.
 - **Reusability**: Same configuration source can produce multiple output formats.
 
 ## 5.7 Observer Pattern
@@ -1010,18 +1059,18 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 
 | Pattern | Primary Application | Key Benefit |
 |---------|---------------------|-------------|
-| Interface Segregation | `ClusterInterface`, `RoleGroupHandler` | Focused, implementable contracts |
-| Strategy | Extensions, ConfigFormat | Swappable behaviors |
+| Interface Segregation | `ClusterInterface` (`client.Object` + 2 methods), `RoleGroupHandler` | Focused, implementable contracts |
+| Strategy | Extensions, `ConfigMarshaler` | Swappable behaviors |
 | Template Method | Reconciliation flow | Consistent process with hooks |
-| Singleton | ExtensionRegistry | Global state management |
+| Owned Collaborator | `ExtensionRegistry[CR]`, Scheme | Explicit wiring, no global state |
 | Builder | StatefulSetBuilder | Complex object construction |
-| Adapter | ConfigFormat adapters | Format interoperability |
+| Adapter | Config format adapters | Format interoperability |
 | Observer | Event recording | Change notification |
 
 # 6. Key Problems and Solutions
 
 - **Runtime errors and code redundancy caused by type assertions**
-  - **Solution**: Introduce Go Generics for the reconciler, the extension interfaces and the webhook contracts, confining the remaining erasure to the registry adapters.
+  - **Solution**: Introduce Go Generics for the reconciler, the extension interfaces, the extension registry and the webhook contracts, so a product hook receives its own CR type and no adapter or assertion sits on the path.
   - **Core Advantage**: Compile-time type safety, reduced boilerplate code, improved development efficiency.
 
 - **Residual orphaned resources after role group deletion**
@@ -1046,13 +1095,16 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 
 ## 7.2 New Product Extension Steps
 
-1. Define the CRD struct, embedding the SDK Generic Spec/Status model.
-2. Implement `ClusterInterface` on the CR type to adapt to the SDK reconciliation process (see §5.1.4).
-3. Implement `RoleGroupHandler` — typically by embedding `BaseRoleGroupHandler` — to describe the Kubernetes resources of a role group.
-4. Wire a `GenericReconciler` with a `GenericReconcilerConfig`, declaring the optional hooks the product needs (`ProductConfig`, `Dependencies`, `ServiceHealthCheck`, `ExtensionRegistry`, gray-delete and health intervals).
-5. (Optional) Implement `ProductDefaulter`/`ProductValidator` interfaces to customize Webhook logic.
-6. (Optional) Register product-specific extensions to implement differentiated business logic.
-7. Generate Webhook and CRD configurations via Kubebuilder and deploy for verification.
+1. **Define the CRD struct.** Embed `metav1.TypeMeta` and `metav1.ObjectMeta`, mark the type `+kubebuilder:object:root=true`, and embed the SDK Generic Spec/Status model in the product's own Spec/Status.
+2. **Register it with the scheme.** `SchemeBuilder.Register(&YourCluster{}, &YourClusterList{})` — the reconciler reads the fetched object into the CR itself, so an unregistered type fails at `client.Get`.
+3. **Run `make generate`.** controller-gen emits `DeepCopyObject()` (completing `client.Object`) and `DeepCopy() *YourCluster` (completing `ClusterResource[*YourCluster]`). Neither is hand-written.
+4. **Write the two `ClusterInterface` methods**: `GetSpec() *v1alpha1.GenericClusterSpec` and `GetStatus() *v1alpha1.GenericClusterStatus` (see §5.1.4). That is the whole cluster-level contract.
+5. **Implement `RoleGroupHandler[*YourCluster]`** — typically by embedding `BaseRoleGroupHandler` — to describe the Kubernetes resources of a role group.
+6. **Wire a `GenericReconciler`** with a `GenericReconcilerConfig[*YourCluster]`, setting at least `Client`, `Scheme`, `Recorder`, `RoleGroupHandler` and `Prototype` (`&YourCluster{}`), plus the optional hooks the product needs (`APIReader`, `ProductConfig`, `Dependencies`, `ServiceHealthCheck`, gray-delete and health intervals). Call `SetupWithManager`.
+7. *(Optional)* **Add extensions**: implement `ClusterExtension[*YourCluster]` / `RoleExtension[*YourCluster]` / `RoleGroupExtension[*YourCluster]` (declaring the concrete CR in the hook signatures), build a registry with `common.NewExtensionRegistry[*YourCluster]()` in `main.go` before the manager starts, register them with `RegisterClusterExtension`/`RegisterRoleExtension`/`RegisterRoleGroupExtension` (with `common.WithPriority` / `common.WithStopOnError` where ordering or fault tolerance matters), and **set `GenericReconcilerConfig.ExtensionRegistry`** — without that field the hooks never run.
+8. *(Optional)* Implement `ProductDefaulter`/`ProductValidator` interfaces to customize Webhook logic.
+9. *(Optional)* Add product config formats: an adapter implementing `config.ConfigMarshaler`, registered on the handler's `MultiFormatConfigGenerator`.
+10. Generate Webhook and CRD configurations via Kubebuilder and deploy for verification.
 
 # 8. Summary and Outlook
 

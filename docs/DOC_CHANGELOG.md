@@ -4,6 +4,83 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-25] (second pass — three breaking redesigns)
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+Follow-up to the consistency pass below, covering three breaking API redesigns that landed after it.
+Every claim was re-verified against the working-tree code; both language versions were edited with
+identical section numbering.
+
+#### Generic, per-CR-type extension registry (no process-global instance)
+
+- §4.1.2: replaced the "Erasure at the registry boundary" bullet — the registry no longer stores
+  `ClusterExtension[ClusterInterface]` entries and the `AsClusterExtension`/`AsRoleExtension`/
+  `AsRoleGroupExtension` adapters no longer exist. It now describes `ExtensionRegistry[CR]`, why the
+  type parameter is load-bearing (Go generic types are invariant), and states plainly that there is
+  no process-global registry and no global accessor.
+- §4.2.3: rewritten to the real API surface — `common.NewExtensionRegistry[CR]()` (explicit type
+  argument), the three variadic `Register{Cluster,Role,RoleGroup}Extension(ext, opts...)` methods
+  (the nine `...WithPriority`/`...WithOptions` variants are gone), `WithPriority`/`WithStopOnError`,
+  `Clear()` (empties in place, since a constructed reconciler captured the pointer), the
+  introspection methods, and wiring through `GenericReconcilerConfig[CR].ExtensionRegistry`. Added a
+  `main.go` snippet and the warning that omitting the field makes every hook a silent no-op —
+  `GetExtensionRegistry()`/`ResetExtensionRegistry()` and the global fallback are removed.
+- §5.4: was "Singleton Pattern" with `ExtensionRegistry` as its exemplar. The pattern no longer
+  applies; the section is now **Owned Collaborator Pattern (Composition over Global State)**,
+  describing the registry (and the scheme) as explicitly constructed values passed through
+  configuration. The code snippet matches the generic declaration, and the registration example
+  shows a `*HdfsCluster` extension registered directly, with no adapter and no type assertion.
+- §5.8: the pattern table row `Singleton | ExtensionRegistry | Global state management` became
+  `Owned Collaborator | ExtensionRegistry[CR], Scheme | Explicit wiring, no global state`. The zh
+  table was also localized (it had remained in English).
+- §3.2.2, §6: extension interfaces and registry described as generic over the product CR; the
+  "confining the remaining erasure to the registry adapters" claim removed.
+
+#### Split configuration format contract
+
+- §4.5.2: `ConfigFormat` no longer exists. Documented `ConfigMarshaler` (**required**, `Marshal` —
+  what `NewConfigGenerator`, `RegisterFormat` and `GetFormat` take/return) and `ConfigUnmarshaler`
+  (**optional**, discovered by interface upgrade on the `Parse` paths). An emit-only format
+  registers and generates normally; only a parse attempt fails, with `*config.UnsupportedParseError`
+  naming the format and file (`errors.As` is the stable check; a nil format yields
+  `config.ErrNoFormat`).
+- §4.5.2 adapter bullets corrected to the shipped behavior: Env value quoting is an allowlist
+  (`[A-Za-z0-9_@%+=:,./-]`, everything else double-quoted) and single-quoted values read literally;
+  XML rejects C0 controls and non-UTF-8 and emits `&#13;` for CR; Properties decodes `\uXXXX` and
+  drops continuation indentation; YAML rejects duplicate keys.
+- §4.5.2: new **Adapter selection** bullet — registrations match as file-name suffixes, the longest
+  match wins deterministically, and `MultiFormatConfigGenerator.Parse(filename, content)` is the
+  supported parse-by-file-name entry point.
+- §4.5.3, §5.2.2, §5.2.4, §5.6.2, §5.6.3: `ConfigFormat` → `ConfigMarshaler`; the strategy snippet
+  shows both halves and `ConfigGenerator` holding only the required one. `INIAdapter` added to the
+  adapter lists.
+
+#### Shrunk `ClusterInterface`
+
+- §3.2.2, §5.1.2: `ClusterInterface` is `sigs.k8s.io/controller-runtime/pkg/client.Object` plus
+  exactly `GetSpec()` and `GetStatus()`. `SetStatus`, `GetObjectMeta`, `GetScheme`,
+  `GetRuntimeObject` and `DeepCopyCluster` are gone. Documented the companion constraint
+  `ClusterResource[T ClusterInterface]` (= `ClusterInterface` + `DeepCopy() T`) and why the
+  reconciler needs it.
+- §5.1.4: the example no longer claims embedding is "NOT enough" and no longer mentions
+  `common.ClusterObject` (the type is deleted). It shows the real interface, the constraint, and a
+  CR writing exactly two methods — `metav1.TypeMeta`/`ObjectMeta` plus controller-gen's
+  `DeepCopy`/`DeepCopyObject` cover the rest — with a note that the CR must be scheme-registered
+  because the reconciler reads into the CR itself.
+- §4.1.2, §3.2.5: the reconciler's type parameter is `[CR ClusterResource[CR]]`
+  (`GenericReconciler`, `GenericReconcilerConfig`, `NewGenericReconciler`), with the reason
+  (prototype `DeepCopy` returns the concrete type). `RoleGroupHandler[CR ClusterInterface]` and the
+  extension interfaces are unchanged and stay on `ClusterInterface`.
+- §4.13.2: the optimistic-locking bullet now says the framework mutates the status through the
+  pointer `GetStatus` returns, so no reader infers a setter.
+- §7.2: rewritten as a checklist a product author can follow today — CRD struct with
+  `TypeMeta`/`ObjectMeta` and the root marker, scheme registration, `make generate`, the two
+  interface methods, `RoleGroupHandler`, the required `GenericReconcilerConfig` fields, and an
+  optional extension step that ends in setting `ExtensionRegistry`.
+
+---
+
 ## [2026-07-25]
 
 ### Architecture Documentation (`architecture.md`, `architecture_zh.md`)

@@ -171,13 +171,14 @@ SDK 采用分层架构设计，自上而下分为 API 层、抽象接口层、�
 定义核心接口和扩展契约。它仅依赖于 API 层，是 SDK"多产品复用"的核心，分为业务接口和扩展接口。
 
 - **业务接口**：
-    - `ClusterInterface`：集群级接口，定义集群名称、Spec/Status 访问、状态更新等方法。
+    - `ClusterInterface`：产品 CR 需要满足的集群级契约。它内嵌 controller-runtime 的 `client.Object`——名称、命名空间、UID、标签、注解与 GVK 都来自 CR 内嵌的 `metav1.ObjectMeta`/`TypeMeta`，无需产品自己编写访问器——在此之上只声明两个 SDK 专有方法：`GetSpec() *v1alpha1.GenericClusterSpec` 与 `GetStatus() *v1alpha1.GenericClusterStatus`，把产品自己的 spec 与 status 投影成框架调和所依据的通用结构。没有 status setter：`GetStatus` 返回指向 CR 内部的指针，框架通过该指针写入 conditions、`observedGeneration` 与 role group 状态，这也是产品自有 status 字段能原样熬过一轮调和的原因。
+    - `ClusterResource[T ClusterInterface]`：`ClusterInterface` 再加上 `DeepCopy() T`——controller-gen 已为每个根 API 类型生成的方法。它之所以存在，是因为当 `T` 是指针类型时无法用 `new(T)` 分配类型参数，调和器只能靠拷贝一份原型来得到要读入的空对象；走 `runtime.Object` 会拿回一个接口，从而重新引入运行时断言。持有 CR 时用 `ClusterInterface`，做类型参数时用 `ClusterResource[CR]`。
     - `RoleInterface`：Role 级描述接口，仅提供 `GetRoleName()`、`GetRoleSpec()`、`GetRoleGroups()`、`GetOverrides()`，并附带默认实现 `RoleInfo`/`RoleGroupInfo`。它不包含默认端口，也没有配置扩展器。**接入 SDK 并不需要实现它**：`GenericReconciler` 直接遍历 `GenericClusterSpec.Roles`，从不调用该接口，它只是产品代码的可选便利封装。
     - `RoleGroupHandler`：产品算子的核心实现扩展点。每个产品实现此接口，定义针对每个 RoleGroup 所构建的具体 Kubernetes 资源（StatefulSet、Service、ConfigMap）。`GenericReconciler` 在调和流程中为每个 RoleGroup 调用其 `BuildResources()` 方法。
 
 - **扩展接口**：
-    - `ClusterExtension/RoleExtension/RoleGroupExtension`：扩展点接口，定义各级别调和前后的自定义逻辑。对 `role.config` 的 Role 级定制在此完成（`RoleExtension.PreReconcile` 钩子），SDK 中没有单独的扩展器接口。
-    - `ExtensionRegistry`：扩展注册表，管理所有扩展的注册、优先级排序和执行。
+    - `ClusterExtension[CR]/RoleExtension[CR]/RoleGroupExtension[CR]`：扩展点接口，定义各级别调和前后的自定义逻辑。三者都以产品自身的 CR 类型为泛型参数，钩子因此直接拿到该类型。对 `role.config` 的 Role 级定制在此完成（`RoleExtension.PreReconcile` 钩子），SDK 中没有单独的扩展器接口。
+    - `ExtensionRegistry[CR ClusterInterface]`：扩展注册表，管理**单一** CR 类型下所有扩展的注册、优先级排序和执行。注册表归接收它的调和器所有（见 §4.2.3）；包内不提供任何进程级实例。
 
 ### 3.2.3 核心组件层（通用逻辑层）
 
@@ -204,7 +205,7 @@ SDK 采用分层架构设计，自上而下分为 API 层、抽象接口层、�
 基于 SDK 抽象接口实现产品特定逻辑，无需修改 SDK 核心代码，仅依赖 API 层和抽象接口层。
 
 - **实现要点**：
-    - CR 结构体实现 `ClusterInterface`，并提供 `RoleGroupHandler` 定义产品特定资源。（`RoleInterface` 是可选的，见 §3.2.2。）
+    - CR 结构体实现 `ClusterInterface`——只需 `GetSpec` 与 `GetStatus`，其余由内嵌的对象元数据和生成的深拷贝代码提供——并提供 `RoleGroupHandler` 定义产品特定资源。（`RoleInterface` 是可选的，见 §3.2.2。）
     - 通过扩展接口实现特定逻辑（如 HDFS ZK 连通性检查、Namenode 堆大小配置）。
     - 集成 Webhook 特定验证和默认值填充逻辑。
 
@@ -231,14 +232,15 @@ SDK 采用分层架构设计，自上而下分为 API 层、抽象接口层、�
 
 ### 4.1.2 核心实现
 
-- **通用调和器骨架**：`GenericReconciler[CR ClusterInterface]`，约束 CR 类型，复用调和流程。
-- **通用扩展接口**：`ClusterExtension[CR ClusterInterface]`（以及 `RoleExtension[CR]`、`RoleGroupExtension[CR]`），消除类型断言，直接接收特定 CR 类型。
+- **通用调和器骨架**：`GenericReconciler[CR ClusterResource[CR]]`（`GenericReconcilerConfig[CR]` 与 `NewGenericReconciler[CR]` 同理），约束 CR 类型，复用调和流程。约束用的是 `ClusterResource[CR]` 而非 `ClusterInterface`，因为调和器必须先造出一个空的 CR 实例来读入对象：它通过生成的 `DeepCopy() CR` 拷贝 `GenericReconcilerConfig.Prototype`，拿回的是具体类型，而不是还需断言一次的 `runtime.Object`。
+- **通用扩展接口**：`ClusterExtension[CR ClusterInterface]`（以及 `RoleExtension[CR]`、`RoleGroupExtension[CR]`），钩子直接接收产品自身的 CR 类型——为 `*TrinoCluster` 声明的 `PreReconcile` 拿到的就是 `*TrinoCluster`。
 - **通用 Webhook 契约**：`ProductDefaulter[CR]` / `ProductValidator[CR]`，与 controller-runtime 的 `admission.Defaulter[T]` / `admission.Validator[T]` 同形，因此带类型的实现可直接传给 webhook builder（见 §4.3）。
-- **注册表边界上的类型擦除**：`ExtensionRegistry` 内部存放的是 `ClusterExtension[ClusterInterface]` 条目，因此针对具体 CR 类型编写的扩展需通过 `common.AsClusterExtension` / `AsRoleExtension` / `AsRoleGroupExtension` 适配器注册——仅剩的一次类型断言被收敛在这一处。
+- **按 CR 类型实例化的注册表，不做类型擦除**：`ExtensionRegistry[CR ClusterInterface]` 以产品自身的实例化形式存放 `ClusterExtension[CR]` / `RoleExtension[CR]` / `RoleGroupExtension[CR]` 条目，`GenericReconcilerConfig[CR].ExtensionRegistry` 的类型即 `*ExtensionRegistry[CR]`。这个类型参数是实打实起作用的，而非装饰：Go 的泛型类型是不变的（invariant），`ClusterExtension[*TrinoCluster]` 并不满足 `ClusterExtension[ClusterInterface]`——擦除到宽接口的注册表只能装下针对 `ClusterInterface` 编写的扩展，逼着每个钩子在入口处把 CR 转换一次。正是把注册表按产品的 CR 类型实例化，才消掉了这次转换，产品扩展里因此一处类型断言都没有。
+- **不存在进程级注册表**：包内既没有包级注册表实例，也没有全局访问函数——包级变量无法携带类型参数，而任何绕开的写法都会把这次重构要消除的类型擦除重新引回来。注册表用 `common.NewExtensionRegistry[CR]()` 构造，且只能经由调和器配置进入框架；这同时意味着同一进程内托管两个产品时，一个产品的钩子不可能作用到另一个产品的集群上——既无法构造（异类扩展通不过类型检查），也不会误连（不存在共享实例）。
 
 ### 4.1.3 核心价值
 
-编译时类型检查减少对运行时类型断言的依赖；新产品只需绑定泛型类型，减少样板代码。
+编译时类型检查把运行时类型断言从调和器和产品扩展中一并去掉；新产品只需绑定泛型类型，减少样板代码。
 
 ## 4.2 扩展点机制模块
 
@@ -254,11 +256,28 @@ SDK 采用分层架构设计，自上而下分为 API 层、抽象接口层、�
 
 ### 4.2.3 扩展注册
 
-- **注册时机**：扩展必须在 Operator 初始化期间注册，具体在 Manager 启动之前的 `main.go` 设置阶段。这确保在调和开始时所有扩展都可用。
-- **注册方法**：`RegisterClusterExtension`、`RegisterRoleExtension`、`RegisterRoleGroupExtension`，每个都另有 `...WithPriority(ext, priority)` 与变长参数的 `...WithOptions(ext, opts...)` 形式。没有统一的 `Register()` 方法——注册表为每个级别维护一份有序列表，级别因此写进了方法名。
-- **注册表实例**：`common.GetExtensionRegistry()` 返回进程级单例，进程内所有 `GenericReconciler` 共享它——为某个 CR 类型写的扩展也会在其他产品的集群上执行（并可能失败）。用 `common.NewExtensionRegistry()` 创建独立实例，并通过 `GenericReconcilerConfig.ExtensionRegistry` 注入，即可让某个控制器拥有自己的注册表。`common.ResetExtensionRegistry()` 原地清空单例（供测试使用）而不替换指针，因此已经持有该注册表的调和器能观察到重置结果。
+- **注册表实例**：`common.NewExtensionRegistry[CR]()` 为单个产品 CR 类型创建空注册表；类型实参必须显式写出，因为无参调用无法推导。注册表就是 operator 自己持有的一个普通值——不存在进程级实例，也没有全局访问函数（见 §4.1.2）。
+- **注册时机**：扩展在 Operator 初始化期间注册，具体在 Manager 启动之前的 `main.go` 设置阶段，这样第一轮调和开始时它们已全部就位。它们进入的是 operator 自己构造的那个注册表，而不是某个共享实例。
+- **接线方式**：注册表只能通过 `GenericReconcilerConfig[CR].ExtensionRegistry`（类型为 `*common.ExtensionRegistry[CR]`）进入框架。**扩展能否运行完全取决于这个字段**：未设置该字段构造出的调和器持有的是空注册表，所有钩子都会静默地成为空操作。管理多个 CR 类型的二进制需为每个类型建一个注册表——把同一个实例共享给两个产品会直接编译报错。
+- **注册方法**：`RegisterClusterExtension(ext, opts ...RegistrationOption)`、`RegisterRoleExtension(...)`、`RegisterRoleGroupExtension(...)`。注册接口就这三个：选项是变长参数，因此不再有单独的优先级或选项变体。也没有统一的 `Register()` 方法——注册表为每个级别维护一份有序列表，级别因此写进了方法名。
 - **注册选项**：`common.WithPriority(p)` 设置优先级（Lowest=0, Low=25, Normal=50, High=75, Highest=100，默认 Normal）；`common.WithStopOnError(bool)` 针对单次注册覆盖该钩子的默认容错策略（见 §4.2.5）。
 - **执行顺序**：扩展按**优先级降序执行（优先级高者先执行）**。相同优先级的扩展按**注册顺序**执行——每个条目携带注册序号，因此顺序是全序的，不依赖排序算法是否稳定。
+- **清空**：`Clear()` **原地**清空注册表并重置序号计数器。之所以是清空而非替换：调和器在构造时已经捕获了注册表指针，换一个新实例只会让它继续执行那个陈旧的注册表。测试在用例之间用的就是它，而不是重置全局状态。
+- **查询**：`GetClusterExtensions()` / `GetRoleExtensions()` / `GetRoleGroupExtensions()` 按执行顺序返回已注册的扩展；`HasClusterExtensions()` 等同族方法与 `Count()` 报告注册情况。
+
+```go
+// main.go，mgr.Start() 之前：先建注册表，再交给调和器。
+registry := common.NewExtensionRegistry[*trinov1alpha1.TrinoCluster]()
+registry.RegisterClusterExtension(extensions.NewCatalogExtension())
+registry.RegisterRoleExtension(extensions.NewHealthExtension())
+registry.RegisterClusterExtension(extensions.NewDiscoveryExtension(mgr.GetScheme()),
+    common.WithPriority(common.PriorityLow))
+
+reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
+    // ... client、scheme、recorder、role group handler、prototype ...
+    ExtensionRegistry: registry, // 漏掉此字段，任何钩子都不会执行
+}
+```
 
 ### 4.2.4 扩展生命周期
 
@@ -383,14 +402,15 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 ### 4.5.2 核心实现
 
-- **ConfigFormat 接口**：定义配置序列化的契约。它是**双向**的，适配器必须同时实现两个方法。
-  - `Marshal(data map[string]string) (string, error)`
-  - `Unmarshal(data string) (map[string]string, error)`
-- **FormatAdapter**：适配器模式实现，通过 `config.GetFormat(ConfigFormatType)` 选择（`xml`、`properties`、`yaml`、`env`、`ini`；未知类型回退到 properties）：
-  - `XMLAdapter`：将键值对转换为 Hadoop 风格的 `<property><name>...</name><value>...</value></property>` XML 结构。
-  - `PropertiesAdapter`：转换为标准 Java `.properties` 格式，并对键中的分隔符与值中的续行进行转义。
-  - `YAMLAdapter`：通过 `gopkg.in/yaml.v3` 输出扁平映射（会被解析为 bool/数字的值加引号以保持字符串语义）；`Unmarshal` 遇到非扁平映射的文档会直接报错，而不是返回残缺数据。
-  - `EnvAdapter`：格式化为 shell 环境变量导出或 .env 文件内容。键必须是合法的 shell 变量名（`^[A-Za-z_][A-Za-z0-9_]*$`），否则报错而不是输出损坏内容。值中的换行、回车与制表符写成 dotenv 风格的 `\n`/`\r`/`\t` 转义，因此多行值在 POSIX shell `source` 该文件时并非逐字节保真。
+- **拆分后的格式契约**：输出是唯一**必需**的契约，解析则是叠加在其上的可选能力。
+  - `ConfigMarshaler`（**必需**）——`Marshal(data map[string]string) (string, error)`。`config.NewConfigGenerator`、`MultiFormatConfigGenerator.RegisterFormat` 接收的以及 `config.GetFormat(ConfigFormatType)` 返回的都是它。框架的写路径——各生成器、`BaseRoleGroupHandler` 与 `ConfigMapBuilder`——从不回读已生成的文件，因此产品只需要*写出*的格式，光有 `Marshal` 就是完整的。
+  - `ConfigUnmarshaler`（**可选**）——`Unmarshal(data string) (map[string]string, error)`。注册时从不要求它：只输出的适配器和其他适配器一样能注册、能生成。`Parse` 路径在调用时把已注册的适配器向上升级到该接口——这是包内唯一检查动态类型的地方——未实现时返回 `*config.UnsupportedParseError`，其中写明格式（注册用的扩展名加适配器的 Go 类型），调用方知道文件名时还会带上文件名。用 `errors.As` 匹配该错误是稳定的判定方式；而格式为 nil 时返回的是哨兵值 `config.ErrNoFormat`。
+  - SDK 自带的每个适配器都同时实现两者，并在 `format.go` 中以编译期断言固化。因此 `GetFormat` 的结果在实践中总是可以拿去解析，尽管其静态类型只承诺 `Marshal`。
+- **FormatAdapter**：适配器模式实现，通过 `config.GetFormat(ConfigFormatType)` 选择（`xml`、`properties`、`yaml`、`env`、`ini`；未知类型回退到 properties）。适配器会校验输入并直接报错，而不是输出目标解析器会读错的内容：
+  - `XMLAdapter`：将键值对转换为 Hadoop 风格的 `<property><name>...</name><value>...</value></property>` XML 结构。它拒绝 XML 1.0 根本承载不了的文本——制表符/换行/回车之外的 C0 控制字符，以及非 UTF-8 字节——并在报错中点名出问题的键；回车写作 `&#13;`，因为解析器会把内容中的字面行结束符归一化。
+  - `PropertiesAdapter`：转换为标准 Java `.properties` 格式，对键中的分隔符、注释符与首尾空白以及值中的续行进行转义。读取时会解码 `\uXXXX` 转义（含代理对），并丢弃未经转义的排版空白，包括续行的缩进。
+  - `YAMLAdapter`：通过 `gopkg.in/yaml.v3` 输出扁平映射（会被解析为 bool/数字的值加引号以保持字符串语义）；`Unmarshal` 遇到非扁平映射的文档——以及重复键这种非法 YAML——会直接报错，而不是返回残缺数据。
+  - `EnvAdapter`：格式化为 shell 环境变量导出或 .env 文件内容。键必须是合法的 shell 变量名（`^[A-Za-z_][A-Za-z0-9_]*$`），否则报错而不是输出损坏内容。只有当值的每个字符都落在 shell 惰性字符白名单 `[A-Za-z0-9_@%+=:,./-]` 内时才裸写；其余情况——命令分隔符、重定向、子 shell、波浪号、空白——一律用双引号包裹，并转义 `$`、反引号、`\` 与 `"`，因此 `source` 该文件绝不会执行到配置值。值中的换行、回车与制表符写成 dotenv 风格的 `\n`/`\r`/`\t` 转义，因此多行值在 POSIX shell `source` 该文件时并非逐字节保真。读取时，单引号包裹的值按字面量处理，与 POSIX shell 一致。
   - `INIAdapter`：输出 INI 段；键或值含换行、键含 `=`/`:` 或以 `[`、`#`、`;` 开头时报错。
 - **产品日志引擎**（`pkg/productlogging`）：独立于上述配置格式适配器的、与产品无关的专用日志引擎。
   - **输入**：深度合并后的 CRD 日志规格（如 `containers.coordinator.loggers.ROOT.level: DEBUG`），一次性转换为框架中立的 `LogConfig`。
@@ -398,11 +418,12 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
   - **声明**：产品通过 `ContainerLogging`（容器、框架、pattern）声明每容器日志；框架拥有 Vector source 所 glob 的稳定日志文件路径约定——`<LogDir>/<小写容器名>/<容器名>.<框架后缀>`，后缀决定边缘解析器（log4j/logback XMLLayout 为 `.log4j.xml`，log4j2 XMLLayout 为 `.log4j2.xml`，python JSON 行为 `.py.json`）——使生产者与消费者不会漂移。Vector 在边缘解析每种格式，并把事件规范化为稳定 schema（`.timestamp`/`.logger`/`.level`/`.message` + `.errors`，扁平的 `.namespace`/`.cluster`/`.role`/`.roleGroup` 元数据，以及从路径提取的 `.container`/`.file`）。
   - **与 Vector 耦合**：仅当启用 Vector agent 时才生成滚动文件 appender——没有消费者时不存在可写入的共享日志卷（见 Sidecar 注入模块）。
 - **集成**：配置生成发生在 **ConfigMap** 路径上，而不是 StatefulSet 构建器里。`BaseRoleGroupHandler.ConfigGenerator`（一个 `config.MultiFormatConfigGenerator`）把 `MergedConfig.ConfigFiles` 渲染成 `map[文件名]内容`，再由 `builder.ConfigMapBuilder.WithMergedConfig(mergedConfig, generator)` 写入角色组 ConfigMap 的 `Data`。未设置生成器时，handler 回退到确定性的 properties 风格渲染（键排序，分隔符与换行转义）。StatefulSet 只负责*挂载*生成出来的 ConfigMap。
+- **适配器选择**：`RegisterFormat` 注册的字符串按**文件名后缀**匹配，因此整个文件名（`server.properties`）也是合法的注册项。多个注册项同时命中某个文件名时，**最长者**确定性地胜出——选择不能依赖 Go 的 map 遍历顺序，否则同一个文件在不同调和轮次渲染结果不同，ConfigMap 就会反复抖动。什么都匹配不上的文件回退到 properties 适配器。要经由同一套分发逻辑回读文件，用 `MultiFormatConfigGenerator.Parse(filename, content)`——按文件名解析的受支持方式就是它，而不是去翻适配器表。
 
 ### 4.5.3 核心价值
 
 - **统一逻辑**：集中处理文件格式生成的复杂性，避免在每个产品 operator 中重复实现。
-- **可扩展性**：通过实现 `ConfigFormat` 接口轻松支持新格式。
+- **可扩展性**：实现 `ConfigMarshaler` 接口即可支持新格式——只有一个方法，只有真正会被回读的格式才需要再加 `Unmarshal`。
 - **一致性**：确保生成的配置文件遵循标准格式和转义规则。
 
 ## 4.6 Sidecar 注入模块
@@ -618,7 +639,7 @@ Day-2 运维（维护、调试、紧急停止）需要对 Operator 行为进行�
   - **非法的 `podOverrides`**：无法解析或 patch 失败的层会被记录到 `MergedConfig.PodOverrideErrors` 并以 `Warning` 事件暴露；该层被跳过，但不会毫无痕迹地消失。
 
 - **并发控制**：
-  - **status 写入上的乐观锁**：status 写入直接使用内存中的 CR，不先重新获取——重取会替换整个 status 段，把扩展钩子在本轮算出的产品自有字段一并丢弃（`ClusterInterface` 只暴露内嵌的通用 status）。遇到 409 时只刷新 `resourceVersion`（配置了未缓存的 `APIReader` 时走它，因为 informer 缓存按定义还没看到那次竞争写入），随后带着本轮的 status 原样重试。这是 last-writer-wins：因为控制器是自身 CR status 的唯一写者，所以它是正确的；代价是**其他**写者在读与写之间写入的 status 字段会被覆盖。`NotFound`（CR 在本轮中途被删除）按成功处理。注意 *cleaner* 不做冲突重试——见 §4.4.4。
+  - **status 写入上的乐观锁**：status 写入直接使用内存中的 CR，不先重新获取——重取会替换整个 status 段，把扩展钩子在本轮算出的产品自有字段一并丢弃（`ClusterInterface` 只暴露内嵌的通用 status，框架经由 `GetStatus` 返回的指针原地修改它——不存在能整体替换该段的 setter）。遇到 409 时只刷新 `resourceVersion`（配置了未缓存的 `APIReader` 时走它，因为 informer 缓存按定义还没看到那次竞争写入），随后带着本轮的 status 原样重试。这是 last-writer-wins：因为控制器是自身 CR status 的唯一写者，所以它是正确的；代价是**其他**写者在读与写之间写入的 status 字段会被覆盖。`NotFound`（CR 在本轮中途被删除）按成功处理。注意 *cleaner* 不做冲突重试——见 §4.4.4。
   - **幂等性**：所有副作用操作（Create/Update/Delete）设计为幂等的。部分失败后的重试是安全的，不会导致重复资源。
 
 - **扩展容错**：
@@ -727,7 +748,8 @@ SDK 的核心设计复用了多种经典设计模式，以增强架构的灵活�
 
 ### 5.1.2 SDK 中的应用
 
-- **`ClusterInterface`**：定义集群级操作（GetName、GetNamespace、GetSpec、GetStatus、SetStatus、GetRuntimeObject、DeepCopyCluster）。
+- **`ClusterInterface`**：`client.Object` 加两个方法——`GetSpec()` 与 `GetStatus()`。凡是 Kubernetes 对象本就能回答的，都由内嵌的 `client.Object` 提供；SDK 唯一要求产品编写的，是把自己的 spec 与 status 投影到框架通用结构上的那两个方法。
+- **`ClusterResource[T ClusterInterface]`**：`ClusterInterface` 加 `DeepCopy() T`。它是*约束*，只用作 `GenericReconciler` 的类型参数，且由 controller-gen 生成的代码满足，无需任何手写实现。
 - **`RoleInterface`**：可选的 role 级描述接口（GetRoleName、GetRoleSpec、GetRoleGroups、GetOverrides）。调和器并不使用它。
 - **`RoleGroupHandler`**：定义产品算子实现的 `BuildResources()` 契约，用于生成 RoleGroup 特定的 Kubernetes 资源。
 - **`RoleExtension` / `RoleGroupExtension`**：定义产品在 role 与 role group 级别定制行为所用的 Pre/PostReconcile 钩子。
@@ -742,7 +764,23 @@ SDK 的核心设计复用了多种经典设计模式，以增强架构的灵活�
 ### 5.1.4 示例
 
 ```go
+// SDK 接口本身：client.Object，加上两个投影方法。
+type ClusterInterface interface {
+    client.Object
+
+    GetSpec() *v1alpha1.GenericClusterSpec
+    GetStatus() *v1alpha1.GenericClusterStatus
+}
+
+// GenericReconciler 用作类型参数的约束。
+type ClusterResource[T ClusterInterface] interface {
+    ClusterInterface
+
+    DeepCopy() T
+}
+
 // 产品 CR 实现 ClusterInterface；其余接口都是可选的。
+// +kubebuilder:object:root=true
 type HdfsCluster struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -750,12 +788,16 @@ type HdfsCluster struct {
     Status            HdfsClusterStatus `json:"status,omitempty"`
 }
 
-// 内嵌 metav1.ObjectMeta（或 common.ClusterObject）可提供元数据访问方法，
-// 但仅靠内嵌是不够的：CR 仍需显式实现 SDK 专有方法——
-// GetSpec() *v1alpha1.GenericClusterSpec、GetStatus()、SetStatus()、
-// GetScheme()、GetRuntimeObject() 与 DeepCopyCluster()。
+// 内嵌 metav1.TypeMeta 与 metav1.ObjectMeta 提供全部元数据访问方法，
+// `make generate` 生成 DeepCopyObject()（补齐 client.Object）与
+// DeepCopy() *HdfsCluster（补齐 ClusterResource）。于是 CR 只需写两个方法：
 func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &h.Spec.GenericClusterSpec }
+func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus {
+    return &h.Status.GenericClusterStatus
+}
 ```
+
+> CR 还必须注册进 manager 的 scheme（`SchemeBuilder.Register(&HdfsCluster{}, &HdfsClusterList{})`）：调和器把取回的对象直接读入 CR 本身，未注册的类型会在 `client.Get` 处以 "no kind is registered for the type" 失败。
 
 > `GetSpec()` 每次调用都新建一个 `GenericClusterSpec` 在语法上合法，但语义微妙：调和循环每轮只快照一次 spec，因此快照之后在内存中所做的修改无法被一致地观察到（见 §4.2.5）。返回指向 CR 内部的指针是更简单的契约。
 
@@ -767,8 +809,8 @@ func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &h.Spec.Ge
 
 ### 5.2.2 SDK 中的应用
 
-- **扩展接口**：产品实现 `ClusterExtension`、`RoleExtension` 或 `RoleGroupExtension` 来注入自定义调和逻辑。
-- **ConfigFormat 接口**：不同的配置序列化器（XML、Properties、YAML、Env）实现相同的接口。
+- **扩展接口**：产品实现 `ClusterExtension[CR]`、`RoleExtension[CR]` 或 `RoleGroupExtension[CR]` 来注入自定义调和逻辑。
+- **ConfigMarshaler 接口**：不同的配置序列化器（XML、Properties、YAML、Env、INI）实现同一个单方法接口。
 - **SidecarProvider 接口**：不同的 sidecar 注入器（Vector、JMX Exporter）遵循通用契约。
 
 ### 5.2.3 优势
@@ -780,22 +822,27 @@ func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &h.Spec.Ge
 ### 5.2.4 示例
 
 ```go
-// ConfigFormat 策略接口（双向：两个方法都必须实现）
-type ConfigFormat interface {
+// 策略的必需半边：输出即格式的全部契约。
+type ConfigMarshaler interface {
     Marshal(data map[string]string) (string, error)
+}
+
+// 可选半边，仅在 Parse 路径上通过接口升级发现。
+type ConfigUnmarshaler interface {
     Unmarshal(data string) (map[string]string, error)
 }
 
-// 具体策略
+// 具体策略（五个都实现了两个半边）
 type XMLAdapter struct{}        // Hadoop XML 格式
 type PropertiesAdapter struct{} // Java .properties 格式
 type YAMLAdapter struct{}       // YAML 格式
 type EnvAdapter struct{}        // shell / .env 格式
 type INIAdapter struct{}        // INI 格式
 
-// 上下文使用策略
+// 上下文使用策略。它只保存必需的半边；Parse 会把该值升级一次，
+// 若格式无法回读自己的输出，则返回 *UnsupportedParseError。
 type ConfigGenerator struct {
-    format ConfigFormat
+    format ConfigMarshaler
 }
 ```
 
@@ -874,20 +921,22 @@ ConfigMap → HeadlessService → Service → ExtraResources → StatefulSet →
 - **可控扩展**：产品只能在指定点扩展。
 - **可维护性**：核心流程的更改统一影响所有产品。
 
-## 5.4 单例模式
+## 5.4 持有式协作者模式（以组合替代全局状态）
 
 ### 5.4.1 模式概述
 
-单例模式确保一个类只有一个实例，并提供全局访问点。
+共享设施以显式构造的值形式存在，由需要它的一方持有，并通过配置交给协作者，而不是放在包级变量里靠全局访问函数取用。所有权体现在类型上，生命周期体现在接线上。
 
 ### 5.4.2 SDK 中的应用
 
-- **ExtensionRegistry**：进程级的默认注册表，管理所有扩展并按确定性顺序执行。单例只是*默认值*而非约束：`common.NewExtensionRegistry()` 可创建独立实例，由控制器通过 `GenericReconcilerConfig.ExtensionRegistry` 注入（§4.2.3）。
-- **Scheme**：Kubernetes scheme 在 operator 初始化期间注册一次。
+- **`ExtensionRegistry[CR]`**：单个产品扩展的注册表。operator 用 `common.NewExtensionRegistry[CR]()` 构造它、把扩展注册进去，再通过 `GenericReconcilerConfig[CR].ExtensionRegistry` 交给恰好一个调和器（§4.2.3）。SDK 自身不持有任何注册表：既无包级实例，也无访问函数。管理多个 CR 类型的二进制为每个类型建一个注册表，而类型参数使跨产品共享同一实例成为编译错误，而非运行时的意外。
+- **Scheme**：`runtime.Scheme` 同样在 `main` 中构建一次（实践中就是 manager 的，经 `mgr.GetScheme()` 取得）并显式传递——调和器通过 `GenericReconcilerConfig.Scheme` 接收它。SDK 不声明任何全局 scheme。
 
 ### 5.4.3 优势
 
-- **一致性**：扩展管理的单一事实来源。
+- **隔离性**：一个产品的钩子不可能作用到另一个产品的集群上，因为不存在两边都能触达的对象。
+- **显式接线**：调和器的依赖都写在它的配置里；漏配某一项的故障因此是"钩子不执行"这种就地可诊断的现象，而不是全局状态引发的悬案。
+- **可测试性**：测试自建注册表，用例之间既不会互相泄漏注册项，也不需要全局重置；按用例隔离的实例可以安全并行。
 - **确定性执行**：扩展按优先级降序执行，相同优先级内以注册序号作为全序的次级比较键。
 - **线程安全**：注册表由 `sync.RWMutex` 保护；钩子执行基于条目快照进行。
 
@@ -895,7 +944,7 @@ ConfigMap → HeadlessService → Service → ExtraResources → StatefulSet →
 
 ```go
 // 注册项被包装成 entry，使优先级、注册序号与单次注册的容错策略随扩展一起流转。
-// 扩展接口本身是泛型的，注册表以 ClusterInterface 这一实例化形式存放它们。
+// 注册表按产品自身的 CR 类型实例化，因此条目里放的扩展本就说这门类型。
 type extensionEntry[T Extension] struct {
     extension   T
     priority    ExtensionPriority
@@ -903,27 +952,26 @@ type extensionEntry[T Extension] struct {
     stopOnError *bool  // nil 表示使用该钩子的默认值
 }
 
-type ExtensionRegistry struct {
-    clusterExtensions   []extensionEntry[ClusterExtension[ClusterInterface]]
-    roleExtensions      []extensionEntry[RoleExtension[ClusterInterface]]
-    roleGroupExtensions []extensionEntry[RoleGroupExtension[ClusterInterface]]
+type ExtensionRegistry[CR ClusterInterface] struct {
+    clusterExtensions   []extensionEntry[ClusterExtension[CR]]
+    roleExtensions      []extensionEntry[RoleExtension[CR]]
+    roleGroupExtensions []extensionEntry[RoleGroupExtension[CR]]
     nextSeq             uint64
     mu                  sync.RWMutex
 }
 
-// 进程级默认实例。
-var globalRegistry = NewExtensionRegistry()
-
-func GetExtensionRegistry() *ExtensionRegistry { return globalRegistry }
+func NewExtensionRegistry[CR ClusterInterface]() *ExtensionRegistry[CR]
 ```
 
-针对具体 CR 类型编写的扩展需通过适配器注册，类型断言由此收敛到一处：
+扩展直接声明自己操作的 CR 类型并直接注册——整条路径上既没有适配器，也没有类型断言：
 
 ```go
-registry.RegisterClusterExtensionWithOptions(
-    common.AsClusterExtension[*HdfsCluster](&SafeModeExtension{}),
-    common.WithPriority(common.PriorityHigh),
-)
+// func (e *SafeModeExtension) PreReconcile(
+//     ctx context.Context, c client.Client, cr *HdfsCluster) error
+var _ common.ClusterExtension[*HdfsCluster] = &SafeModeExtension{}
+
+registry := common.NewExtensionRegistry[*HdfsCluster]()
+registry.RegisterClusterExtension(&SafeModeExtension{}, common.WithPriority(common.PriorityHigh))
 ```
 
 ## 5.5 构建者模式
@@ -976,16 +1024,17 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 
 ### 5.6.2 SDK 中的应用
 
-- **ConfigFormat 适配器**：将内部配置映射转换为各种外部格式：
+- **配置格式适配器**：将内部配置映射转换为各种外部格式：
   - `XMLAdapter`：适配为 Hadoop XML 格式
   - `PropertiesAdapter`：适配为 Java .properties 格式
   - `YAMLAdapter`：适配为 YAML 格式
   - `EnvAdapter`：适配为环境变量格式
+  - `INIAdapter`：适配为 INI 格式
 
 ### 5.6.3 优势
 
 - **格式独立性**：SDK 核心使用内部映射表示。
-- **可扩展性**：通过实现适配器接口可以添加新格式。
+- **可扩展性**：实现 `ConfigMarshaler` 即可添加新格式；只有需要回读的格式才补上 `ConfigUnmarshaler`。
 - **可复用性**：同一配置源可以产生多种输出格式。
 
 ## 5.7 观察者模式
@@ -1007,20 +1056,20 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 
 ## 5.8 模式总结
 
-| Pattern | Primary Application | Key Benefit |
+| 模式 | 主要应用 | 关键收益 |
 |---------|---------------------|-------------|
-| Interface Segregation | `ClusterInterface`, `RoleGroupHandler` | Focused, implementable contracts |
-| Strategy | Extensions, ConfigFormat | Swappable behaviors |
-| Template Method | Reconciliation flow | Consistent process with hooks |
-| Singleton | ExtensionRegistry | Global state management |
-| Builder | StatefulSetBuilder | Complex object construction |
-| Adapter | ConfigFormat adapters | Format interoperability |
-| Observer | Event recording | Change notification |
+| 接口隔离 | `ClusterInterface`（`client.Object` + 2 个方法）、`RoleGroupHandler` | 聚焦、可落地的契约 |
+| 策略 | 扩展接口、`ConfigMarshaler` | 行为可替换 |
+| 模板方法 | 调和流程 | 流程统一且预留钩子 |
+| 持有式协作者 | `ExtensionRegistry[CR]`、Scheme | 显式接线，无全局状态 |
+| 构建者 | StatefulSetBuilder | 复杂对象的分步构建 |
+| 适配器 | 配置格式适配器 | 格式互操作 |
+| 观察者 | 事件记录 | 变更通知 |
 
 # 6. 关键问题与解决方案
 
 - **类型断言导致的运行时错误和代码冗余**
-  - **解决方案**：为调和器、扩展接口与 Webhook 契约引入 Go Generics，把仅剩的类型擦除收敛在注册表适配器中。
+  - **解决方案**：为调和器、扩展接口、扩展注册表与 Webhook 契约引入 Go Generics，使产品钩子直接拿到自己的 CR 类型，路径上不再有任何适配器或断言。
   - **核心优势**：编译时类型安全，减少样板代码，提高开发效率。
 
 - **删除 role group 后残留孤儿资源**
@@ -1045,13 +1094,16 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 
 ## 7.2 新产品扩展步骤
 
-1. 定义 CRD 结构体，嵌入 SDK Generic Spec/Status 模型。
-2. 在 CR 类型上实现 `ClusterInterface` 以适配 SDK 调和流程（见 §5.1.4）。
-3. 实现 `RoleGroupHandler`——通常通过内嵌 `BaseRoleGroupHandler`——描述一个 role group 的 Kubernetes 资源。
-4. 用 `GenericReconcilerConfig` 接线出 `GenericReconciler`，声明产品需要的可选钩子（`ProductConfig`、`Dependencies`、`ServiceHealthCheck`、`ExtensionRegistry`、灰度删除与健康检查间隔等）。
-5. （可选）实现 `ProductDefaulter`/`ProductValidator` 接口以自定义 Webhook 逻辑。
-6. （可选）注册产品特定扩展以实现差异化业务逻辑。
-7. 通过 Kubebuilder 生成 Webhook 和 CRD 配置，部署验证。
+1. **定义 CRD 结构体**：内嵌 `metav1.TypeMeta` 与 `metav1.ObjectMeta`，为类型加上 `+kubebuilder:object:root=true` 标记，并在产品自身的 Spec/Status 中嵌入 SDK Generic Spec/Status 模型。
+2. **注册进 scheme**：`SchemeBuilder.Register(&YourCluster{}, &YourClusterList{})`——调和器把取回的对象直接读入 CR 本身，未注册的类型会在 `client.Get` 处失败。
+3. **执行 `make generate`**：controller-gen 生成 `DeepCopyObject()`（补齐 `client.Object`）与 `DeepCopy() *YourCluster`（补齐 `ClusterResource[*YourCluster]`），两者都不需要手写。
+4. **编写 `ClusterInterface` 的两个方法**：`GetSpec() *v1alpha1.GenericClusterSpec` 与 `GetStatus() *v1alpha1.GenericClusterStatus`（见 §5.1.4）。集群级契约到此为止。
+5. **实现 `RoleGroupHandler[*YourCluster]`**——通常通过内嵌 `BaseRoleGroupHandler`——描述一个 role group 的 Kubernetes 资源。
+6. **接线 `GenericReconciler`**：用 `GenericReconcilerConfig[*YourCluster]` 至少设置 `Client`、`Scheme`、`Recorder`、`RoleGroupHandler` 与 `Prototype`（`&YourCluster{}`），再加上产品需要的可选钩子（`APIReader`、`ProductConfig`、`Dependencies`、`ServiceHealthCheck`、灰度删除与健康检查间隔等），最后调用 `SetupWithManager`。
+7. *（可选）* **添加扩展**：实现 `ClusterExtension[*YourCluster]` / `RoleExtension[*YourCluster]` / `RoleGroupExtension[*YourCluster]`（钩子签名中直接写具体 CR 类型），在 `main.go` 中于 Manager 启动前用 `common.NewExtensionRegistry[*YourCluster]()` 建好注册表，用 `RegisterClusterExtension`/`RegisterRoleExtension`/`RegisterRoleGroupExtension` 注册（顺序或容错策略有要求时配合 `common.WithPriority` / `common.WithStopOnError`），并**设置 `GenericReconcilerConfig.ExtensionRegistry`**——漏掉该字段，钩子永远不会执行。
+8. *（可选）* 实现 `ProductDefaulter`/`ProductValidator` 接口以自定义 Webhook 逻辑。
+9. *（可选）* 增加产品自有配置格式：实现 `config.ConfigMarshaler` 的适配器，注册到 handler 的 `MultiFormatConfigGenerator` 上。
+10. 通过 Kubebuilder 生成 Webhook 和 CRD 配置，部署验证。
 
 # 8. 总结与展望
 

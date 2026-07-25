@@ -13,7 +13,7 @@ Every directory under `pkg/`:
 |---------|---------|--------|
 | `apis/` | CRD definitions and API types (`authentication`, `commons`, `database`, `listeners`, `s3`) | [apis/AGENTS.md](apis/AGENTS.md) |
 | `builder/` | Kubernetes resource builders (StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount, metrics Service) | [builder/AGENTS.md](builder/AGENTS.md) |
-| `common/` | Framework interfaces: `ClusterInterface`, the extension system and its registry, `ServiceHealthCheck`, shared error types | |
+| `common/` | Framework interfaces: `ClusterInterface` / `ClusterResource[T]`, the extension system and its per-CR-type `ExtensionRegistry[CR]`, `ServiceHealthCheck`, shared error types | |
 | `config/` | Config-file serialization (XML/Properties/YAML/Env/INI) and the layered override merge | [config/AGENTS.md](config/AGENTS.md) |
 | `constant/` | Kubedoop path, label, domain and restarter constants (`KubedoopMountDir`, `KubedoopSecretDir`, …) | |
 | `listener/` | Listener CSI volume registration and `ListenerProvisioner` | |
@@ -49,7 +49,9 @@ Every directory under `pkg/`:
 2. **Adding reconciliation logic:** extend `reconciler/`. Product-specific behavior goes through
    `RoleGroupHandler`, the extension hooks or `GenericReconcilerConfig` fields — not by forking the
    loop.
-3. **Adding config generation:** add an adapter in `config/` implementing both `Marshal` and
-   `Unmarshal`.
+3. **Adding config generation:** add an adapter in `config/` implementing `config.ConfigMarshaler`
+   (`Marshal`). `config.ConfigUnmarshaler` (`Unmarshal`) is optional — add it only when something
+   actually reads that format back; the parse paths discover it at runtime and otherwise fail with
+   an `*UnsupportedParseError`. Adapters shipped by the SDK implement both.
 4. **Adding utilities:** put framework interfaces in `common/`, Kubernetes plumbing in `util/`, and
    shared literals in `constant/` rather than hardcoding paths or label keys.

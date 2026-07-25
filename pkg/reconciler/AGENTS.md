@@ -28,7 +28,12 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
 
 1. **Implementing a reconciler:** build a `GenericReconcilerConfig[CR]` and pass it to
    `NewGenericReconciler`. Product-specific resource building goes in a `RoleGroupHandler`
-   (usually by embedding `BaseRoleGroupHandler`), not in a subclass of the reconciler.
+   (usually by embedding `BaseRoleGroupHandler`), not in a subclass of the reconciler. The type
+   parameter is constrained by `common.ClusterResource[CR]` (`common.ClusterInterface` plus
+   `DeepCopy() CR`, which controller-gen generates), because the fetch path materialises the object
+   it reads into by copying `GenericReconcilerConfig.Prototype` — `new(T)` is unavailable for a
+   pointer type parameter. The CR must be registered with the scheme: it *is* the object
+   `client.Get` reads into.
 2. **Status updates:** the reconciler owns the status write. `updateStatus` retries on conflict
    (re-Get, re-apply this cycle's conditions/roleGroups/observedGeneration) and **skips the write
    entirely** when the computed status is `apiequality.Semantic.DeepEqual` to the stored one — the
@@ -72,8 +77,13 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    that has not elapsed, or a deletion in flight (`DefaultDrainPollInterval` = 5s). `Cleanup`
    returns the earliest of those and `earliestRequeue` picks the sooner of the two. Products with a
    `ServiceHealthCheck` depend on it: a probe result produces no watch event.
-8. **Per-product extensions:** pass `GenericReconcilerConfig.ExtensionRegistry` to isolate a
-   product's hooks; the default is the process-wide singleton shared by every reconciler.
+8. **Per-product extensions:** `GenericReconcilerConfig.ExtensionRegistry` is a
+   `*common.ExtensionRegistry[CR]`, typed for this reconciler's CR, and it is the **only** registry
+   the reconciler executes — there is no process-wide fallback. Leaving it nil is legal and means
+   every hook is a no-op (`NewGenericReconciler` substitutes an empty registry so the hook call
+   sites stay unconditional), so an operator that registers extensions must wire the field or they
+   silently never run. Build it with `common.NewExtensionRegistry[CR]()`; a binary hosting two CR
+   types needs one registry per type, and sharing one is a compile error.
 9. **Pre-apply validation:** registered, enabled sidecar providers are validated via
    `SidecarManager.ValidateAll` after the ConfigMap/Services/extras are applied and **before** the
    StatefulSet. A failure aborts the role group with a `*ValidationError` (`NewValidationError` /
