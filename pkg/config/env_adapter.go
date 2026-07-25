@@ -21,11 +21,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
-// EnvAdapter converts between map and environment variable format.
+// EnvAdapter converts between map and environment variable format. It implements both
+// ConfigMarshaler and the optional ConfigUnmarshaler.
 type EnvAdapter struct {
 	// ExportPrefix adds 'export ' prefix to each line.
 	ExportPrefix bool
@@ -76,11 +75,16 @@ func (a *EnvAdapter) Marshal(data map[string]string) (string, error) {
 	return sb.String(), nil
 }
 
-// Unmarshal converts environment variable format to a map.
+// Unmarshal converts environment variable format to a map. It is the optional ConfigUnmarshaler
+// half of the adapter.
+//
 // Supports:
 // - KEY=value
 // - export KEY=value
 // - Comments starting with #
+//
+// A single-quoted value is taken literally, as a POSIX shell does: no escape sequence inside it
+// means anything, so 'a\nb' is the four characters a, backslash, n, b.
 func (a *EnvAdapter) Unmarshal(data string) (map[string]string, error) {
 	result := make(map[string]string)
 
@@ -107,13 +111,21 @@ func (a *EnvAdapter) Unmarshal(data string) (map[string]string, error) {
 		value := strings.TrimSpace(line[sepIndex+1:])
 
 		// Remove quotes from value if present
+		literal := false
 		if len(value) >= 2 {
-			if (value[0] == '"' && value[len(value)-1] == '"') ||
-				(value[0] == '\'' && value[len(value)-1] == '\'') {
+			switch {
+			case value[0] == '"' && value[len(value)-1] == '"':
 				value = value[1 : len(value)-1]
+			case value[0] == '\'' && value[len(value)-1] == '\'':
+				value = value[1 : len(value)-1]
+				literal = true
 			}
 		}
 
+		if literal {
+			result[key] = value
+			continue
+		}
 		result[key] = unescapeEnvValue(value)
 	}
 
@@ -129,11 +141,19 @@ var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // command.
 func validateEnvKey(s string) error {
 	if !envKeyPattern.MatchString(s) {
-		return common.ConfigParseError("env", fmt.Errorf(
+		return serializeError("env", fmt.Errorf(
 			"invalid environment variable name %q: must match %s", s, envKeyPattern))
 	}
 	return nil
 }
+
+// envBareValuePattern is the set of characters a POSIX shell reads verbatim on the right-hand
+// side of an assignment. It is an allowlist, not a denylist of the characters that happen to
+// break today: a value carrying anything else — a command separator (';', '&', '|'), a
+// redirection ('<', '>'), a subshell ('(', ')'), a tilde the shell would expand to a home
+// directory, whitespace that ends the assignment word — must be quoted, or sourcing the file
+// would run the rest of the value as a command instead of assigning it.
+var envBareValuePattern = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
 // escapeEnvValue escapes special characters in environment variable values.
 //
@@ -144,18 +164,17 @@ func validateEnvKey(s string) error {
 // than literal bytes (unescapeEnvValue reverses them); a shell reads them back as the two
 // characters, not as the control character.
 func escapeEnvValue(s string) string {
-	// If value contains spaces, special chars, or is empty, wrap in quotes
-	if s == "" || strings.ContainsAny(s, " \t\n\r\"'$`\\") {
-		escaped := strings.ReplaceAll(s, "\\", "\\\\")
-		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
-		escaped = strings.ReplaceAll(escaped, "$", "\\$")
-		escaped = strings.ReplaceAll(escaped, "`", "\\`")
-		escaped = strings.ReplaceAll(escaped, "\n", "\\n")
-		escaped = strings.ReplaceAll(escaped, "\r", "\\r")
-		escaped = strings.ReplaceAll(escaped, "\t", "\\t")
-		return fmt.Sprintf("\"%s\"", escaped)
+	if envBareValuePattern.MatchString(s) {
+		return s
 	}
-	return s
+	escaped := strings.ReplaceAll(s, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	escaped = strings.ReplaceAll(escaped, "$", "\\$")
+	escaped = strings.ReplaceAll(escaped, "`", "\\`")
+	escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+	escaped = strings.ReplaceAll(escaped, "\r", "\\r")
+	escaped = strings.ReplaceAll(escaped, "\t", "\\t")
+	return fmt.Sprintf("\"%s\"", escaped)
 }
 
 // unescapeEnvValue unescapes an environment variable value.

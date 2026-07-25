@@ -21,14 +21,14 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/zncdatadev/operator-go/pkg/common"
 	"gopkg.in/yaml.v3"
 )
 
 // yamlStringTag is the YAML resolved tag that forces a scalar to stay a string.
 const yamlStringTag = "!!str"
 
-// YAMLAdapter converts between map and YAML format.
+// YAMLAdapter converts between map and YAML format. It implements both ConfigMarshaler and the
+// optional ConfigUnmarshaler.
 //
 // Both directions go through a real YAML emitter/parser, so values are byte-faithful: a value
 // containing a colon, a backslash, a quote or a newline is quoted (or folded into a block
@@ -78,16 +78,17 @@ func (a *YAMLAdapter) Marshal(data map[string]string) (string, error) {
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(root); err != nil {
-		return "", common.ConfigParseError("yaml", err)
+		return "", serializeError("yaml", err)
 	}
 	if err := enc.Close(); err != nil {
-		return "", common.ConfigParseError("yaml", err)
+		return "", serializeError("yaml", err)
 	}
 
 	return buf.String(), nil
 }
 
-// Unmarshal converts a flat key-value YAML document to a map.
+// Unmarshal converts a flat key-value YAML document to a map. It is the optional
+// ConfigUnmarshaler half of the adapter.
 //
 // Every value is taken as its literal string, so a quoted, folded or type-looking scalar
 // ("true", "123") yields the same string Marshal was given. Nested structures are NOT
@@ -98,7 +99,7 @@ func (a *YAMLAdapter) Unmarshal(data string) (map[string]string, error) {
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(data), &doc); err != nil {
-		return nil, common.ConfigParseError("yaml", err)
+		return nil, parseError("yaml", err)
 	}
 	// An empty (or comment-only) document decodes to a zero node.
 	if doc.Kind == 0 || len(doc.Content) == 0 {
@@ -107,17 +108,22 @@ func (a *YAMLAdapter) Unmarshal(data string) (map[string]string, error) {
 
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return nil, common.ConfigParseError("yaml", fmt.Errorf("expected a key-value mapping at the document root"))
+		return nil, parseError("yaml", fmt.Errorf("expected a key-value mapping at the document root"))
 	}
 
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i], root.Content[i+1]
 		if key.Kind != yaml.ScalarNode {
-			return nil, common.ConfigParseError("yaml", fmt.Errorf("keys must be scalars; got a complex key"))
+			return nil, parseError("yaml", fmt.Errorf("keys must be scalars; got a complex key"))
 		}
 		if value.Kind != yaml.ScalarNode {
-			return nil, common.ConfigParseError("yaml", fmt.Errorf(
+			return nil, parseError("yaml", fmt.Errorf(
 				"key %q has a nested value; only flat key-value documents are supported", key.Value))
+		}
+		// A duplicate key is invalid YAML: silently keeping one of the two would hand the caller
+		// a value the document does not unambiguously carry.
+		if _, exists := result[key.Value]; exists {
+			return nil, parseError("yaml", fmt.Errorf("key %q is defined more than once", key.Value))
 		}
 		result[key.Value] = value.Value
 	}

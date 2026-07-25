@@ -16,14 +16,57 @@ limitations under the License.
 
 package config
 
-// ConfigFormat defines the interface for configuration serialization.
-// Implementations convert between map[string]string and file content.
-type ConfigFormat interface {
+import "fmt"
+
+// ConfigMarshaler emits configuration file content from a key-value map. Emitting is the entire
+// required contract of a configuration format: the framework's write path — the generators,
+// BaseRoleGroupHandler and ConfigMapBuilder — never reads a generated file back, so a format a
+// product only needs to WRITE is complete with Marshal alone.
+type ConfigMarshaler interface {
 	// Marshal converts a configuration map to file content.
 	Marshal(data map[string]string) (string, error)
+}
 
+// ConfigUnmarshaler reads a format's own output back into a key-value map. It is an optional
+// capability layered on ConfigMarshaler: the Parse paths discover it at runtime, so an emit-only
+// format registers and generates like any other and only an actual parse attempt fails, with an
+// UnsupportedParseError naming the format.
+type ConfigUnmarshaler interface {
 	// Unmarshal converts file content to a configuration map.
 	Unmarshal(data string) (map[string]string, error)
+}
+
+// Every adapter shipped with the SDK round-trips, so the Parse paths accept all of them. A
+// product's own adapter is free to implement ConfigMarshaler only.
+var (
+	_ ConfigUnmarshaler = (*XMLAdapter)(nil)
+	_ ConfigUnmarshaler = (*PropertiesAdapter)(nil)
+	_ ConfigUnmarshaler = (*YAMLAdapter)(nil)
+	_ ConfigUnmarshaler = (*EnvAdapter)(nil)
+	_ ConfigUnmarshaler = (*INIAdapter)(nil)
+)
+
+// unmarshalerFor upgrades a format to its optional parsing half. Whether a format can parse is
+// not expressible in the static type of a registered adapter — registration requires
+// ConfigMarshaler alone — so this is the single place the package inspects a dynamic type, and
+// every Parse path funnels through it to fail the same, named way.
+func unmarshalerFor(format ConfigMarshaler, formatName, file string) (ConfigUnmarshaler, error) {
+	unmarshaler, ok := format.(ConfigUnmarshaler)
+	if !ok {
+		return nil, &UnsupportedParseError{Format: formatName, File: file}
+	}
+	return unmarshaler, nil
+}
+
+// formatName labels a format in an error message. The name the caller knows (a registered file
+// extension or a requested ConfigFormatType) says which entry is at fault; the adapter's Go type
+// says which implementation has to change, which is the part a product cannot guess when the
+// format was registered elsewhere.
+func formatName(requested string, format ConfigMarshaler) string {
+	if requested == "" {
+		return fmt.Sprintf("%T", format)
+	}
+	return fmt.Sprintf("%s (%T)", requested, format)
 }
 
 // ConfigFormatType represents a configuration file format type.
@@ -42,8 +85,9 @@ const (
 	FormatINI ConfigFormatType = "ini"
 )
 
-// GetFormat returns the appropriate ConfigFormat for the given type.
-func GetFormat(formatType ConfigFormatType) ConfigFormat {
+// GetFormat returns the adapter for the given format type. Every shipped adapter also implements
+// ConfigUnmarshaler, so the result can be parsed with as well as generated from.
+func GetFormat(formatType ConfigFormatType) ConfigMarshaler {
 	switch formatType {
 	case FormatXML:
 		return NewXMLAdapter()
