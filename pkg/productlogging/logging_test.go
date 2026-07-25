@@ -123,6 +123,15 @@ var _ = Describe("RenderConfigFile file path", func() {
 		Expect(err).To(MatchError(ContainSubstring("must keep the framework suffix")))
 	})
 
+	It("rejects a LogFileName override containing a path separator", func() {
+		_, _, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
+			Framework:   productlogging.LoggingFrameworkLog4j2,
+			Container:   "node",
+			LogFileName: "../escape/spark.log4j2.xml",
+		}, true)
+		Expect(err).To(MatchError(ContainSubstring("must be a bare file name")))
+	})
+
 	It("omits the file appender when withFileAppender is false (console-only)", func() {
 		_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
 			Framework: productlogging.LoggingFrameworkLogback,

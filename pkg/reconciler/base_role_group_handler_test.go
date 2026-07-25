@@ -476,6 +476,46 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(*resources.StatefulSet.Spec.Replicas).To(Equal(int32(3)))
 	})
 
+	It("fails loudly when a podOverride container matches nothing (typo or sidecar name)", func() {
+		// Sidecars are injected AFTER the overrides merge, so an override naming one (or a
+		// typo) yields an image-less container; without this guard the API server would
+		// reject the StatefulSet and the CR would sit silently Degraded.
+		handler.MainContainerName = "node"
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "vector",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).To(MatchError(ContainSubstring(`container "vector" has no image`)))
+		Expect(err).To(MatchError(ContainSubstring(`main container: "node"`)))
+	})
+
+	It("does not alias the live CR spec through the merged logging config", func() {
+		roleCfg := &v1alpha1.RoleGroupConfigSpec{
+			Logging: &v1alpha1.LoggingSpec{
+				EnableVectorAgent: ptr.To(true),
+			},
+		}
+		merged := reconciler.MergeRoleGroupConfig(roleCfg, &v1alpha1.RoleGroupConfigSpec{})
+		Expect(merged.Logging).NotTo(BeIdenticalTo(roleCfg.Logging),
+			"the merged result must be a fresh copy, never the CR's own object")
+
+		*merged.Logging.EnableVectorAgent = false
+		Expect(*roleCfg.Logging.EnableVectorAgent).To(BeTrue(),
+			"mutating the merge result must not touch the input")
+	})
+
 	It("consumes role-level config when the role group declares none (role->group fallback)", func() {
 		// Regression: only logging and overrides were merged role->group; role-level
 		// resources/affinity/gracefulShutdownTimeout were silently dropped.

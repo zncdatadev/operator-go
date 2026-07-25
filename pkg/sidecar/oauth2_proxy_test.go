@@ -116,6 +116,58 @@ var _ = Describe("OAuth2ProxySidecarProvider", func() {
 		Expect(envs["OAUTH2_PROXY_SCOPE"].Value).To(Equal("openid email profile"))
 	})
 
+	It("lets SidecarConfig.EnvVars override built-in defaults (replace semantics)", func() {
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, "cr-uid")
+
+		Expect(provider.Inject(podSpec, &sidecar.SidecarConfig{
+			EnvVars: map[string]string{
+				"OAUTH2_PROXY_COOKIE_SECURE": "true",
+				"OAUTH2_PROXY_EXTRA_KNOB":    "custom",
+			},
+		})).To(Succeed())
+
+		envs := envByName(&podSpec.InitContainers[0])
+		Expect(envs["OAUTH2_PROXY_COOKIE_SECURE"].Value).To(Equal("true"),
+			"a same-named default must be replaced, not silently kept")
+		Expect(envs["OAUTH2_PROXY_EXTRA_KNOB"].Value).To(Equal("custom"))
+
+		names := map[string]int{}
+		for _, e := range podSpec.InitContainers[0].Env {
+			names[e.Name]++
+		}
+		Expect(names["OAUTH2_PROXY_COOKIE_SECURE"]).To(Equal(1), "no duplicate env entries")
+	})
+
+	It("keeps the declared port and HTTP_ADDRESS aligned under a SidecarConfig.Ports override", func() {
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, "cr-uid")
+
+		Expect(provider.Inject(podSpec, &sidecar.SidecarConfig{
+			Ports: []corev1.ContainerPort{{Name: "auth", ContainerPort: 9999}},
+		})).To(Succeed())
+
+		container := &podSpec.InitContainers[0]
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(9999)))
+		envs := envByName(container)
+		Expect(envs["OAUTH2_PROXY_HTTP_ADDRESS"].Value).To(Equal("0.0.0.0:9999"),
+			"the proxy must actually listen on the declared port")
+	})
+
+	It("keeps its pinned image when the manager propagates the product image", func() {
+		manager := sidecar.NewSidecarManager()
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, "cr-uid")
+		manager.Register(provider, &sidecar.SidecarConfig{Enabled: true})
+
+		Expect(manager.SetProductImage("quay.io/zncdatadev/spark-k8s:3.5.5", corev1.PullIfNotPresent)).To(Succeed())
+		Expect(manager.InjectAll(podSpec)).To(Succeed())
+
+		Expect(podSpec.InitContainers).To(HaveLen(1))
+		Expect(podSpec.InitContainers[0].Image).To(Equal(sidecar.DefaultOAuth2ProxyImage),
+			"OwnsImage must shield the provider from product-image propagation")
+	})
+
 	It("honors port and image overrides", func() {
 		provider := sidecar.NewOAuth2ProxySidecarProvider(
 			keycloakProvider(), "oidc-credentials", 8080, "cr-uid",

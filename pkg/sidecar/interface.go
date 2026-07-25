@@ -69,3 +69,13 @@ type SidecarProvider interface {
 	// Validate validates the provider's dependencies (e.g., required ConfigMaps).
 	Validate(ctx context.Context, c client.Client, namespace string) error
 }
+
+// OwnImageProvider is optionally implemented by sidecar providers that ship their own
+// upstream image (e.g. oauth2-proxy) rather than running a command inside the product
+// image (e.g. Vector, JMX Exporter). SidecarManager.SetProductImage skips such providers,
+// so their pinned default image stays reachable when a product registers them with an
+// empty SidecarConfig.Image.
+type OwnImageProvider interface {
+	// OwnsImage reports whether the provider supplies its own default image.
+	OwnsImage() bool
+}

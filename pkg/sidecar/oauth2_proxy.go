@@ -118,6 +118,14 @@ func (p *OAuth2ProxySidecarProvider) Name() string {
 	return p.name
 }
 
+// OwnsImage implements OwnImageProvider: oauth2-proxy ships as its own upstream image, so
+// SetProductImage must not fill an empty SidecarConfig.Image with the product image —
+// DefaultOAuth2ProxyImage stays reachable for a plain `&SidecarConfig{Enabled: true}`
+// registration.
+func (p *OAuth2ProxySidecarProvider) OwnsImage() bool {
+	return true
+}
+
 // Validate validates that the client credentials Secret exists.
 func (p *OAuth2ProxySidecarProvider) Validate(ctx context.Context, c client.Client, namespace string) error {
 	if p.oidcProvider == nil {
@@ -147,6 +155,13 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	pullPolicy := corev1.PullIfNotPresent
 	if config.ImagePullPolicy != "" {
 		pullPolicy = config.ImagePullPolicy
+	}
+
+	// The effective listen port: a SidecarConfig.Ports override wins, so the declared port
+	// and the OAUTH2_PROXY_HTTP_ADDRESS the proxy actually binds can never diverge.
+	port := p.port
+	if len(config.Ports) > 0 {
+		port = config.Ports[0].ContainerPort
 	}
 
 	scopes := p.oidcProvider.Scopes
@@ -183,17 +198,17 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 			{Name: "OAUTH2_PROXY_SCOPE", Value: strings.Join(scopes, " ")},
 			{Name: "OAUTH2_PROXY_PROVIDER", Value: OAuth2ProxyProviderFor(p.oidcProvider.ProviderHint)},
 			{Name: "OAUTH2_PROXY_UPSTREAMS", Value: "http://localhost:" + strconv.Itoa(int(p.upstreamPort))},
-			{Name: "OAUTH2_PROXY_HTTP_ADDRESS", Value: "0.0.0.0:" + strconv.Itoa(int(p.port))},
+			{Name: "OAUTH2_PROXY_HTTP_ADDRESS", Value: "0.0.0.0:" + strconv.Itoa(int(port))},
 			// The proxy serves plain HTTP inside the pod network; secure cookies would be
 			// dropped by browsers on http:// service URLs. Products terminating TLS in
-			// front can override via SidecarConfig.EnvVars.
+			// front override via SidecarConfig.EnvVars (applied with replace semantics below).
 			{Name: "OAUTH2_PROXY_COOKIE_SECURE", Value: "false"},
 			{Name: "OAUTH2_PROXY_WHITELIST_DOMAINS", Value: "*"},
 			{Name: "OAUTH2_PROXY_CODE_CHALLENGE_METHOD", Value: "S256"},
 			{Name: "OAUTH2_PROXY_EMAIL_DOMAINS", Value: "*"},
 		},
 		Ports: []corev1.ContainerPort{
-			{Name: OAuth2ProxyPortName, ContainerPort: p.port, Protocol: corev1.ProtocolTCP},
+			{Name: OAuth2ProxyPortName, ContainerPort: port, Protocol: corev1.ProtocolTCP},
 		},
 		Resources: corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{
@@ -212,8 +227,11 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}
+	// Replace semantics, not add-only: oauth2-proxy's whole configuration surface IS env
+	// vars, so SidecarConfig.EnvVars must be able to change the built-in defaults (e.g.
+	// OAUTH2_PROXY_COOKIE_SECURE=true behind TLS, tightening OAUTH2_PROXY_EMAIL_DOMAINS).
 	if len(config.EnvVars) > 0 {
-		AddEnvVars(container, config.EnvVars)
+		AddOrReplaceEnvVars(container, config.EnvVars)
 	}
 	if len(config.VolumeMounts) > 0 {
 		AddVolumeMounts(container, config.VolumeMounts)

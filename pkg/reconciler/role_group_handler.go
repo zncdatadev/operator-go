@@ -273,6 +273,13 @@ func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []pro
 // container via productlogging.MergeLoggingSpec). The inputs are never mutated; the result
 // is always a fresh copy (or nil when both inputs are nil). GenericReconciler applies this
 // when building the RoleGroupBuildContext, so role-wide config defaults reach every group.
+//
+// Caveat — gracefulShutdownTimeout: the commons CRD schema defaults this field to "30s", and
+// the API server stamps that default into EVERY config block that exists. A role-level value
+// therefore only reaches groups that declare no config block at all; a group with any config
+// (e.g. just resources) carries the server-stamped "30s", which wins here — indistinguishable
+// from an explicit group-level "30s". Fixing this properly means dropping the CRD-level
+// default (or making the field a *string) across the product CRDs.
 func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.RoleGroupConfigSpec {
 	switch {
 	case role == nil && group == nil:
@@ -290,7 +297,9 @@ func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.R
 	if merged.GracefulShutdownTimeout == "" {
 		merged.GracefulShutdownTimeout = role.GracefulShutdownTimeout
 	}
-	merged.Logging = productlogging.MergeLoggingSpec(role.Logging, group.Logging)
+	// MergeLoggingSpec may return one of its inputs unchanged (e.g. a nil counterpart);
+	// deep-copy so the merged config never aliases the live CR spec.
+	merged.Logging = productlogging.MergeLoggingSpec(role.Logging, group.Logging).DeepCopy()
 	if role.Resources != nil {
 		if merged.Resources == nil {
 			merged.Resources = role.Resources.DeepCopy()
