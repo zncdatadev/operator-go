@@ -20,9 +20,9 @@ import (
 	"bufio"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
-
-	"github.com/zncdatadev/operator-go/pkg/common"
+	"unicode/utf16"
 )
 
 const (
@@ -37,7 +37,8 @@ const (
 	escapeT         = "\\t"
 )
 
-// PropertiesAdapter converts between map and Java .properties format.
+// PropertiesAdapter converts between map and Java .properties format. It implements both
+// ConfigMarshaler and the optional ConfigUnmarshaler.
 type PropertiesAdapter struct {
 	// Separator is the character used to separate key and value.
 	Separator string
@@ -79,13 +80,16 @@ func (a *PropertiesAdapter) Marshal(data map[string]string) (string, error) {
 	return sb.String(), nil
 }
 
-// Unmarshal converts Java .properties format to a map.
+// Unmarshal converts Java .properties format to a map. It is the optional ConfigUnmarshaler half
+// of the adapter.
+//
 // Supports:
 // - key=value
 // - key:value
 // - key value
 // - Comments starting with # or !
 // - Line continuations with backslash
+// - \uXXXX escapes
 //
 // It parses the output of Marshal back into the original map, including keys and values holding
 // a separator character, an edge space or a trailing backslash. Whitespace that is not escaped
@@ -95,35 +99,47 @@ func (a *PropertiesAdapter) Unmarshal(data string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	scanner := bufio.NewScanner(strings.NewReader(data))
-	var continuedLine string
+	var (
+		continued  strings.Builder
+		continuing bool
+	)
 
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// The indentation of a continuation line is layout, not part of the value: a wrapped
+		// entry is conventionally written indented, and java.util.Properties skips that
+		// whitespace when it joins the natural lines.
+		if continuing {
+			line = strings.TrimLeft(line, " \t")
+		}
 
 		// A trailing backslash continues the line only when it is not itself escaped: an even
 		// count ends in an escaped backslash (e.g. the value "C:\" is written as "C:\\"), which
 		// terminates the entry.
 		if trailingBackslashes(line)%2 == 1 {
-			continuedLine += line[:len(line)-1]
+			continued.WriteString(line[:len(line)-1])
+			continuing = true
 			continue
 		}
 
-		if continuedLine != "" {
-			line = continuedLine + line
-			continuedLine = ""
+		if continuing {
+			line = continued.String() + line
+			continued.Reset()
+			continuing = false
 		}
 
 		parsePropertiesLine(line, result)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, common.ConfigParseError("properties", fmt.Errorf("failed to scan properties: %w", err))
+		return nil, parseError("properties", fmt.Errorf("failed to scan properties: %w", err))
 	}
 
 	// A continuation that is never terminated (the input ends on a backslash) still carries an
 	// entry; dropping it would silently lose the last key.
-	if continuedLine != "" {
-		parsePropertiesLine(continuedLine, result)
+	if continuing {
+		parsePropertiesLine(continued.String(), result)
 	}
 
 	return result, nil
@@ -268,6 +284,17 @@ func unescapeProperties(s string) string {
 			case 't':
 				result = append(result, '\t')
 				i++
+			case 'u':
+				// \uXXXX is how a .properties file spells a code point it cannot carry
+				// literally; Java writes one per UTF-16 unit, so an astral character arrives as
+				// a surrogate pair that has to be recombined into a single rune.
+				decoded, width, ok := decodePropertiesUnicode(runes[i+1:])
+				if !ok {
+					result = append(result, runes[i])
+					break
+				}
+				result = append(result, decoded)
+				i += width
 			case '\\', '=', ':', ' ', '#', '!':
 				result = append(result, runes[i+1])
 				i++
@@ -280,4 +307,47 @@ func unescapeProperties(s string) string {
 	}
 
 	return string(result)
+}
+
+// decodePropertiesUnicode decodes the escape starting at runes[0] == 'u'. It returns the code
+// point and how many runes to skip past the leading backslash. A sequence that is not four hex
+// digits is not an escape at all and is left to the caller to emit verbatim, which is what a
+// lenient reader does with a Windows path such as "C:\users".
+func decodePropertiesUnicode(runes []rune) (rune, int, bool) {
+	const escapeLen = 5 // "uXXXX"
+
+	unit, ok := parseHexQuad(runes)
+	if !ok {
+		return 0, 0, false
+	}
+
+	if !utf16.IsSurrogate(rune(unit)) {
+		return rune(unit), escapeLen, true
+	}
+
+	// A lone surrogate is not a character; only a complete pair decodes.
+	if len(runes) < escapeLen+2 || runes[escapeLen] != '\\' || runes[escapeLen+1] != 'u' {
+		return 0, 0, false
+	}
+	low, ok := parseHexQuad(runes[escapeLen+1:])
+	if !ok {
+		return 0, 0, false
+	}
+	decoded := utf16.DecodeRune(rune(unit), rune(low))
+	if decoded == '\uFFFD' {
+		return 0, 0, false
+	}
+	return decoded, 2*escapeLen + 1, true
+}
+
+// parseHexQuad reads the four hex digits following runes[0] == 'u'.
+func parseHexQuad(runes []rune) (uint64, bool) {
+	if len(runes) < 5 || runes[0] != 'u' {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(string(runes[1:5]), 16, 32)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }

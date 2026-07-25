@@ -240,4 +240,65 @@ var _ = Describe("MultiFormatConfigGenerator", func() {
 			Expect(result["app.env"]).To(ContainSubstring("APP_ENV=production"))
 		})
 	})
+
+	// Two registrations can match the same file name; Go randomizes map iteration, so a
+	// first-match selection renders the file differently from one reconcile to the next, and the
+	// apply path rewrites ConfigMap.Data on every pass.
+	Describe("Adapter selection", func() {
+		It("prefers the longest matching registration on every run", func() {
+			for i := 0; i < 50; i++ {
+				generator = config.NewMultiFormatConfigGenerator()
+				generator.RegisterDefaultFormats()
+				generator.RegisterFormat("server.properties", config.NewXMLAdapter())
+
+				content, err := generator.Generate("server.properties", map[string]string{"key": "value"})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(content).To(ContainSubstring("<name>key</name>"))
+			}
+		})
+
+		It("keeps a shorter registration for a file the longer one does not match", func() {
+			generator.RegisterDefaultFormats()
+			generator.RegisterFormat("server.properties", config.NewXMLAdapter())
+
+			content, err := generator.Generate("client.properties", map[string]string{"key": "value"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(content).To(Equal("key=value\n"))
+		})
+	})
+
+	Describe("Error reporting", func() {
+		It("names the file and the format when an adapter refuses the data", func() {
+			generator.RegisterDefaultFormats()
+
+			_, err := generator.Generate("app.env", map[string]string{"not a shell name": "value"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`"app.env"`))
+			Expect(err.Error()).To(ContainSubstring(".env"))
+			Expect(err.Error()).To(ContainSubstring("EnvAdapter"))
+			Expect(err.Error()).To(ContainSubstring("invalid environment variable name"))
+		})
+
+		It("names the offending file when GenerateFiles fails", func() {
+			generator.RegisterDefaultFormats()
+
+			_, err := generator.GenerateFiles(map[string]map[string]string{
+				"good.properties": {"key": "value"},
+				"bad.ini":         {"key": "line\nbreak"},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`"bad.ini"`))
+			Expect(err.Error()).To(ContainSubstring("INIAdapter"))
+		})
+
+		It("names the file and the format when parsing fails", func() {
+			generator.RegisterDefaultFormats()
+
+			_, err := generator.Parse("app.yaml", "key: [nested]\n")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`"app.yaml"`))
+			Expect(err.Error()).To(ContainSubstring(".yaml"))
+			Expect(err.Error()).To(ContainSubstring("only flat key-value documents are supported"))
+		})
+	})
 })

@@ -18,6 +18,9 @@ package builder_test
 
 import (
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -34,6 +37,24 @@ func (f *failingFormat) Marshal(data map[string]string) (string, error) {
 
 func (f *failingFormat) Unmarshal(data string) (map[string]string, error) {
 	return nil, errors.New("mock unmarshal error")
+}
+
+// bannerFormat is an emit-only format: the ConfigMap path only ever generates, so a format with
+// no Unmarshal has to be usable here.
+type bannerFormat struct{}
+
+func (bannerFormat) Marshal(data map[string]string) (string, error) {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var sb strings.Builder
+	for _, key := range keys {
+		fmt.Fprintf(&sb, "# %s -> %s\n", key, data[key])
+	}
+	return sb.String(), nil
 }
 
 var _ = Describe("ConfigMapBuilder", func() {
@@ -249,6 +270,40 @@ var _ = Describe("ConfigMapBuilder", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("failed to generate config files"))
 			Expect(result).To(Equal(cmBuilder))
+		})
+
+		It("should name the ConfigMap, the file and the format when generation fails", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"test.fail": {"key": "value"},
+				},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterFormat(".fail", &failingFormat{})
+
+			_, err := cmBuilder.WithMergedConfig(cfg, generator)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(namespace + "/" + name))
+			Expect(err.Error()).To(ContainSubstring(`"test.fail"`))
+			Expect(err.Error()).To(ContainSubstring(".fail"))
+			Expect(err.Error()).To(ContainSubstring("failingFormat"))
+			Expect(err.Error()).To(ContainSubstring("mock marshal error"))
+		})
+
+		It("should accept a format that only marshals", func() {
+			cfg := &config.MergedConfig{
+				ConfigFiles: map[string]map[string]string{
+					"notes.banner": {"key": "value"},
+				},
+			}
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterFormat(".banner", bannerFormat{})
+
+			_, err := cmBuilder.WithMergedConfig(cfg, generator)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmBuilder.Data).To(HaveKeyWithValue("notes.banner", "# key -> value\n"))
 		})
 	})
 })

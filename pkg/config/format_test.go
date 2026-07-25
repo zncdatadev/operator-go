@@ -17,10 +17,118 @@ limitations under the License.
 package config_test
 
 import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/config"
 )
+
+// bannerFormat is an emit-only format: it renders a config as a comment banner a product ships
+// read-only. It deliberately has no Unmarshal — that is what makes it a legal ConfigMarshaler
+// and an illegal parse target.
+type bannerFormat struct{}
+
+var _ config.ConfigMarshaler = bannerFormat{}
+
+func (bannerFormat) Marshal(data map[string]string) (string, error) {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var sb strings.Builder
+	for _, key := range keys {
+		fmt.Fprintf(&sb, "# %s -> %s\n", key, data[key])
+	}
+	return sb.String(), nil
+}
+
+var _ = Describe("Format contract", func() {
+	Describe("ConfigMarshaler", func() {
+		It("is the whole contract a registered format has to satisfy", func() {
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterFormat(".banner", bannerFormat{})
+
+			content, err := generator.Generate("notes.banner", map[string]string{"b": "2", "a": "1"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(content).To(Equal("# a -> 1\n# b -> 2\n"))
+		})
+
+		It("carries an emit-only format through GenerateFiles alongside a round-tripping one", func() {
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterDefaultFormats()
+			generator.RegisterFormat(".banner", bannerFormat{})
+
+			files, err := generator.GenerateFiles(map[string]map[string]string{
+				"notes.banner":   {"a": "1"},
+				"app.properties": {"b": "2"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(files).To(HaveKeyWithValue("notes.banner", "# a -> 1\n"))
+			Expect(files).To(HaveKeyWithValue("app.properties", "b=2\n"))
+		})
+
+		It("is satisfied by a single-format generator that never parses", func() {
+			generator := config.NewConfigGenerator(bannerFormat{})
+
+			content, err := generator.Generate(map[string]string{"a": "1"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(content).To(Equal("# a -> 1\n"))
+		})
+	})
+
+	Describe("ConfigUnmarshaler", func() {
+		It("is implemented by every shipped adapter, so they all round-trip through Parse", func() {
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterDefaultFormats()
+
+			for _, filename := range []string{"a.xml", "a.properties", "a.yaml", "a.yml", "a.env", "a.ini"} {
+				data := map[string]string{"KEY": "value"}
+				content, err := generator.Generate(filename, data)
+				Expect(err).ToNot(HaveOccurred(), filename)
+
+				parsed, err := generator.Parse(filename, content)
+				Expect(err).ToNot(HaveOccurred(), filename)
+				Expect(parsed).To(Equal(data), filename)
+			}
+		})
+
+		It("makes a multi-format parse of an emit-only file fail naming the file and the format", func() {
+			generator := config.NewMultiFormatConfigGenerator()
+			generator.RegisterFormat(".banner", bannerFormat{})
+
+			parsed, err := generator.Parse("notes.banner", "# a -> 1\n")
+			Expect(parsed).To(BeNil())
+			Expect(err).To(HaveOccurred())
+
+			var unsupported *config.UnsupportedParseError
+			Expect(errors.As(err, &unsupported)).To(BeTrue())
+			Expect(unsupported.File).To(Equal("notes.banner"))
+			Expect(unsupported.Format).To(ContainSubstring(".banner"))
+			Expect(err.Error()).To(ContainSubstring("notes.banner"))
+			Expect(err.Error()).To(ContainSubstring(".banner"))
+			Expect(err.Error()).To(ContainSubstring("bannerFormat"))
+		})
+
+		It("makes a single-format parse of an emit-only format fail naming the format", func() {
+			generator := config.NewConfigGenerator(bannerFormat{})
+
+			parsed, err := generator.Parse("# a -> 1\n")
+			Expect(parsed).To(BeNil())
+			Expect(err).To(HaveOccurred())
+
+			var unsupported *config.UnsupportedParseError
+			Expect(errors.As(err, &unsupported)).To(BeTrue())
+			Expect(unsupported.File).To(BeEmpty())
+			Expect(err.Error()).To(ContainSubstring("bannerFormat"))
+		})
+	})
+})
 
 var _ = Describe("GetFormat", func() {
 	It("should return XMLAdapter for FormatXML", func() {

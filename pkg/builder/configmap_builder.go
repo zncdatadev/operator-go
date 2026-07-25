@@ -87,6 +87,11 @@ func (b *ConfigMapBuilder) WithConfigFiles(files map[string]string) *ConfigMapBu
 
 // WithMergedConfig sets the data from a MergedConfig using the provided generator.
 // Returns an error if config generation fails to prevent creating ConfigMaps with incomplete data.
+//
+// The generator only ever emits, so a format registered with Marshal alone (a
+// config.ConfigMarshaler that is not a config.ConfigUnmarshaler) works here. A failure carries
+// the generator's message, which names the offending file and format, under the ConfigMap the
+// caller was building.
 func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator *config.MultiFormatConfigGenerator) (*ConfigMapBuilder, error) {
 	if cfg == nil || generator == nil {
 		return b, nil
@@ -94,7 +99,7 @@ func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator 
 
 	files, err := generator.GenerateFiles(cfg.ConfigFiles)
 	if err != nil {
-		return b, fmt.Errorf("failed to generate config files for %s: %w", b.Name, err)
+		return b, fmt.Errorf("failed to generate config files for ConfigMap %s/%s: %w", b.Namespace, b.Name, err)
 	}
 
 	for filename, content := range files {

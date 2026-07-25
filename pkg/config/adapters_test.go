@@ -492,6 +492,45 @@ var _ = Describe("PropertiesAdapter", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("key", "valuecontinued"))
 		})
+
+		// A wrapped entry is conventionally written with the continuation indented; that
+		// indentation is layout, not part of the value.
+		It("should drop the indentation of a continuation line", func() {
+			content := "key=value \\\n    continued\n"
+			result, err := adapter.Unmarshal(content)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("key", "value continued"))
+		})
+
+		It("should drop the indentation of every line of a multi-line continuation", func() {
+			content := "key=a\\\n\tb\\\n  c\n"
+			result, err := adapter.Unmarshal(content)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("key", "abc"))
+		})
+
+		// A .properties file may be plain ASCII, with every other code point spelled \uXXXX.
+		DescribeTable("should decode unicode escapes",
+			func(content, expected string) {
+				result, err := adapter.Unmarshal(content)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).To(HaveKeyWithValue("key", expected))
+			},
+			Entry("latin-1 supplement", `key=caf\u00e9`, "café"),
+			Entry("uppercase hex digits", `key=caf\u00E9`, "café"),
+			Entry("CJK", `key=\u4e2d\u6587`, "中文"),
+			Entry("surrogate pair", `key=\ud83d\ude00`, "\U0001F600"),
+			Entry("too few hex digits stays literal", `key=\u12`, `\u12`),
+			Entry("non-hex digits stay literal", `key=\uzzzz`, `\uzzzz`),
+			Entry("lone high surrogate stays literal", `key=\ud83dx`, `\ud83dx`),
+			Entry("escaped backslash is not an escape", `key=C:\\users`, `C:\users`),
+		)
+
+		It("should decode unicode escapes in keys", func() {
+			result, err := adapter.Unmarshal(`caf\u00e9=v`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("café", "v"))
+		})
 	})
 
 	Describe("Round-trip", func() {
@@ -626,6 +665,46 @@ var _ = Describe("XMLAdapter", func() {
 			unmarshaled, err := adapter.Unmarshal(marshaled)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(unmarshaled).To(Equal(original))
+		})
+
+		// An XML parser normalizes literal line endings in content, so a carriage return has to
+		// travel as a character reference to come back as itself.
+		DescribeTable("should survive the parser's line-ending normalization",
+			func(value string) {
+				original := map[string]string{"key": value}
+				marshaled, err := adapter.Marshal(original)
+				Expect(err).ToNot(HaveOccurred())
+
+				unmarshaled, err := adapter.Unmarshal(marshaled)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(unmarshaled).To(Equal(original))
+			},
+			Entry("carriage return", "line1\rline2"),
+			Entry("CRLF", "line1\r\nline2"),
+			Entry("newline", "line1\nline2"),
+			Entry("tab", "col1\tcol2"),
+		)
+	})
+
+	Describe("Characters XML cannot carry", func() {
+		DescribeTable("should be rejected instead of written into an unparseable document",
+			func(value string) {
+				_, err := adapter.Marshal(map[string]string{"a.key": value})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("a.key"))
+			},
+			Entry("NUL", "a\x00b"),
+			Entry("backspace", "a\bb"),
+			Entry("vertical tab", "a\vb"),
+			Entry("form feed", "a\fb"),
+			Entry("escape", "a\x1bb"),
+			Entry("invalid UTF-8", "a\xffb"),
+		)
+
+		It("should name the key when the control character is in the key itself", func() {
+			_, err := adapter.Marshal(map[string]string{"bad\x00key": "value"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("control character"))
 		})
 	})
 })
@@ -776,6 +855,16 @@ var _ = Describe("YAMLAdapter", func() {
 			_, err := adapter.Unmarshal(content)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("only flat key-value documents are supported"))
+		})
+
+		// A duplicate key is invalid YAML; keeping one of the two silently would return a value
+		// the document does not unambiguously carry.
+		It("should reject a duplicate key instead of picking one", func() {
+			adapter := config.NewYAMLAdapter()
+			result, err := adapter.Unmarshal("key: first\nkey: second\n")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`"key"`))
+			Expect(result).To(BeNil())
 		})
 
 		It("should reject a document that is not a mapping", func() {
@@ -1073,6 +1162,30 @@ var _ = Describe("EnvAdapter", func() {
 			Entry("backtick substitution", "x`id`y", "\"x\\`id\\`y\""),
 		)
 
+		// An unquoted value ends at the first shell metacharacter: everything after it is read as
+		// a new command, a redirection or a home directory rather than as part of the value.
+		DescribeTable("should quote values carrying shell syntax",
+			func(value string) {
+				result, err := adapter.Marshal(map[string]string{"KEY": value})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).To(HavePrefix(`KEY="`), "value %q was written unquoted", value)
+
+				recovered, err := adapter.Unmarshal(result)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(recovered).To(HaveKeyWithValue("KEY", value))
+			},
+			Entry("command separator", "a;id"),
+			Entry("background operator", "a&id"),
+			Entry("pipeline", "a|id"),
+			Entry("subshell", "a(id)"),
+			Entry("output redirection", "a>out"),
+			Entry("input redirection", "a<in"),
+			Entry("tilde expansion", "~/data"),
+			Entry("brace expansion", "a{1,2}"),
+			Entry("glob", "*.log"),
+			Entry("comment marker", "a#b"),
+		)
+
 		DescribeTable("should reject keys that are not shell variable names",
 			func(key string) {
 				_, err := adapter.Marshal(map[string]string{key: "value"})
@@ -1129,6 +1242,20 @@ var _ = Describe("EnvAdapter", func() {
 			result, err := adapter.Unmarshal(content)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(HaveKeyWithValue("KEY", "value\nwith\nnewlines"))
+		})
+
+		// A POSIX shell performs no expansion and honours no escape inside single quotes, so a
+		// reader that unescapes them hands back a value the shell would never produce.
+		It("should take a single-quoted value literally", func() {
+			result, err := adapter.Unmarshal(`KEY='line1\nline2'`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("KEY", `line1\nline2`))
+		})
+
+		It("should keep a backslash inside a single-quoted value", func() {
+			result, err := adapter.Unmarshal(`KEY='C:\path'`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(HaveKeyWithValue("KEY", `C:\path`))
 		})
 	})
 })
