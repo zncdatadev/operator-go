@@ -46,6 +46,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -114,6 +115,21 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// When 0 (default), orphaned resources are deleted immediately.
 	// +optional
 	GrayDeleteGracePeriod time.Duration
+
+	// DrainPollInterval is how long a reconcile waits before resuming an orphan deletion it has
+	// already started (scale to zero -> drain -> delete -> confirm). It paces the state machine,
+	// not the pod termination itself. Defaults to DefaultDrainPollInterval (5s); products with a
+	// long terminationGracePeriodSeconds can raise it to poll less often.
+	// +optional
+	DrainPollInterval time.Duration
+
+	// DrainTimeout bounds how long an orphaned StatefulSet's ordered drain may block the rest of
+	// its role group's teardown. Once it elapses the StatefulSet is deleted regardless of the pods
+	// still reported, so a pod that cannot terminate (a stuck finalizer, an unreachable node)
+	// cannot strand the group's ConfigMap, Services and status entry indefinitely. Defaults to
+	// DefaultDrainTimeout (10m).
+	// +optional
+	DrainTimeout time.Duration
 
 	// ServiceAccountName is the static name of the ServiceAccount to create for the workload.
 	// When set (and ServiceAccountNameFunc is nil or returns ""), the GenericReconciler
@@ -283,6 +299,12 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 	// The cleanup path issues API writes like the apply path does, so it backs off on a 429 with
 	// the same delay instead of inventing its own.
 	cleaner.WithRateLimitRetryAfter(rateLimitRetryAfter)
+	// Pruning a role group from the status snapshot is irreversible — nothing enumerates the
+	// group afterwards — so that verdict is confirmed against the API server rather than a cache
+	// that may answer NotFound for an object that exists.
+	cleaner.WithAPIReader(cfg.APIReader)
+	cleaner.WithDrainPollInterval(cfg.DrainPollInterval)
+	cleaner.WithDrainTimeout(cfg.DrainTimeout)
 	if cfg.GrayDeleteGracePeriod > 0 {
 		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
 	}
@@ -585,12 +607,20 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 		return NewReconcileError("RolePreReconcile", fmt.Sprintf("role %s extension hook failed", roleName), err)
 	}
 
-	// Process each role group
+	// Process each role group.
+	//
+	// Sorted, not map order, for the same reason the role loop is (see reconcile): the first
+	// failing group aborts the role and its error text becomes the Degraded message, so with map
+	// order a cluster with several broken groups reports a different one every cycle and the
+	// status never settles.
+	//
 	// Note: groupSpec is deep copied because it may be modified during reconciliation.
 	// roleSpec is passed directly as read-only (used for configuration lookup only);
 	// it originates from spec.Roles which is re-fetched from the API server each reconcile,
 	// so any accidental modifications would not persist and would be corrected on next reconcile.
-	for groupName, groupSpec := range roleSpec.GetRoleGroups() {
+	roleGroups := roleSpec.GetRoleGroups()
+	for _, groupName := range slices.Sorted(maps.Keys(roleGroups)) {
+		groupSpec := roleGroups[groupName]
 		groupSpecCopy := *groupSpec.DeepCopy()
 		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy); err != nil {
 			return err
@@ -633,10 +663,14 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 
 	name := RoleResourceName(cr.GetName(), roleName)
 
-	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, cr.GetLabels(), roleSpec)
+	// cr.GetLabels() hands out the live CR's map; the handler is free to build its label set on
+	// top of the argument, which would otherwise mutate the CR object itself.
+	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, maps.Clone(cr.GetLabels()), roleSpec)
 	if pdb == nil {
-		// PDB unset or disabled: remove any role PDB we previously created (ownership-checked).
-		if err := r.cleaner.deletePDB(ctx, cr.GetNamespace(), name, cr.GetUID(), cr.GetName()); err != nil {
+		// PDB unset or disabled: remove the role PDB we previously created. Gated on the slot
+		// label, not on ownership: a product's own PDB may legitimately be named "<cluster>-<role>"
+		// and carries the same controller owner reference, so ownership cannot tell them apart.
+		if err := r.reclaimRolePDB(ctx, cr.GetNamespace(), name, roleName, cr.GetUID(), cr.GetName()); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", cr.GetNamespace(), name, "failed to delete disabled PDB", err)
 		}
 		return nil
@@ -765,14 +799,16 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 	return &RoleGroupBuildContext{
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
-		ClusterLabels:    cr.GetLabels(),
-		ClusterSpec:      cr.GetSpec(),
-		RoleName:         roleName,
-		RoleSpec:         roleSpec,
-		RoleGroupName:    groupName,
-		RoleGroupSpec:    *mergedGroupSpec,
-		MergedConfig:     mergedConfig,
-		ResourceName:     resourceName,
+		// Cloned: GetLabels hands out the live CR's map, and a handler that adds an entry to
+		// ClusterLabels would mutate the object this cycle's status write is computed from.
+		ClusterLabels: maps.Clone(cr.GetLabels()),
+		ClusterSpec:   cr.GetSpec(),
+		RoleName:      roleName,
+		RoleSpec:      roleSpec,
+		RoleGroupName: groupName,
+		RoleGroupSpec: *mergedGroupSpec,
+		MergedConfig:  mergedConfig,
+		ResourceName:  resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
 		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
 		// empty when no SA is configured (backward compatible).
@@ -788,8 +824,15 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 // have a SidecarManager to register their own containers with (e.g. init containers via
 // StaticContainerProvider), so pod container injection always flows through the manager
 // rather than being mutated directly.
+//
+// It also records the resolved Vector decision on buildCtx (VectorLogPipelineActive), so the
+// logging renderers gate the rolling file appender on the sidecar that is really injected rather
+// than on the enablement flag they cannot fully evaluate.
 func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
 	mgr := sidecar.NewSidecarManager()
+	// Every early return below leaves the shared log volume unbuilt, so the pipeline is inactive
+	// unless the registration at the end of this function is reached.
+	buildCtx.VectorLogPipelineActive = ptr.To(false)
 
 	// Logging was deep-merged once in buildRoleGroupContext.
 	logging := buildCtx.MergedConfig.Logging
@@ -854,6 +897,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 		}
 	}
 	mgr.Register(vector.NewVectorSidecarProvider("", opts...), &sidecar.SidecarConfig{Enabled: true})
+	buildCtx.VectorLogPipelineActive = ptr.To(true)
 
 	return mgr
 }
@@ -983,14 +1027,17 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	// 6. Apply the custom per-group PodDisruptionBudget (escape hatch), or reclaim the legacy
 	// per-role-group PDB. The framework's own PDB is now role-level (reconcileRolePodDisruptionBudget);
 	// a product may still ship a custom per-group PDB via RoleGroupResources.PodDisruptionBudget.
-	// When it does not, delete any PDB named "<cluster>-<role>-<group>" left behind by older
-	// framework versions (ownership-checked, no-op if absent) so upgraded clusters converge to
-	// exactly one role-level PDB instead of retaining stale per-group constraints.
+	// When it does not, delete the PDB named "<cluster>-<role>-<group>" left behind by older
+	// framework versions (no-op if absent) so upgraded clusters converge to exactly one role-level
+	// PDB instead of retaining stale per-group constraints.
 	if resources.PodDisruptionBudget != nil {
+		// The reclaim below deletes by derived name; stamping the slot marks this object as the
+		// framework's per-group PDB, so turning the escape hatch off later actually removes it.
+		markRoleGroupPodDisruptionBudget(resources.PodDisruptionBudget, buildCtx.RoleGroupName)
 		if err := r.applyResource(ctx, cr, resources.PodDisruptionBudget); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
-	} else if err := r.cleaner.deletePDB(ctx, buildCtx.ClusterNamespace, buildCtx.ResourceName, cr.GetUID(), buildCtx.ClusterName); err != nil {
+	} else if err := r.reclaimRoleGroupPDB(ctx, buildCtx, cr.GetUID()); err != nil {
 		return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to delete legacy per-group PDB", err)
 	}
 
@@ -1034,6 +1081,68 @@ func markRolePodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, roleName str
 		pdb.Labels = map[string]string{}
 	}
 	pdb.Labels[LabelRolePodDisruptionBudget] = roleName
+}
+
+// markRoleGroupPodDisruptionBudget stamps the role group slot label on the per-group PDB a product
+// ships through RoleGroupResources.PodDisruptionBudget. See LabelRoleGroupPodDisruptionBudget.
+func markRoleGroupPodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, roleGroupName string) {
+	if pdb.Labels == nil {
+		pdb.Labels = map[string]string{}
+	}
+	pdb.Labels[LabelRoleGroupPodDisruptionBudget] = roleGroupName
+}
+
+// reclaimRolePDB deletes the role's PodDisruptionBudget when its config is unset or disabled, but
+// only when the live object is the one this framework applied as the role slot. Deleting purely by
+// derived name would also hit a product's own PDB named "<cluster>-<role>" (shipped through
+// RoleGroupResources.ExtraResources, say), which carries this CR's controller owner reference too —
+// ownership does not distinguish them, which is exactly why the slot label exists.
+func (r *GenericReconciler[CR]) reclaimRolePDB(ctx context.Context, namespace, name, roleName string, ownerUID types.UID, clusterName string) error {
+	pdb := &policyv1.PodDisruptionBudget{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, pdb); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if pdb.Labels[LabelRolePodDisruptionBudget] != roleName {
+		return nil
+	}
+	return r.cleaner.deletePDB(ctx, namespace, name, ownerUID, clusterName)
+}
+
+// reclaimRoleGroupPDB deletes the per-role-group PodDisruptionBudget named "<cluster>-<role>-<group>"
+// when the handler stops shipping one, but only when the live object is the framework's per-group
+// slot: the label this apply path stamps, or — for a cluster created before the PDB became a
+// role-level resource (issue #530), when no slot label existed — the pre-#530 framework
+// fingerprint. Without that check the reclaim would delete any owned PDB a product happens to ship
+// under the role group's own name.
+func (r *GenericReconciler[CR]) reclaimRoleGroupPDB(ctx context.Context, buildCtx *RoleGroupBuildContext, ownerUID types.UID) error {
+	pdb := &policyv1.PodDisruptionBudget{}
+	key := types.NamespacedName{Namespace: buildCtx.ClusterNamespace, Name: buildCtx.ResourceName}
+	if err := r.client.Get(ctx, key, pdb); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if !isFrameworkRoleGroupPDB(pdb, buildCtx.ClusterName, buildCtx.RoleGroupName) {
+		return nil
+	}
+	return r.cleaner.deletePDB(ctx, key.Namespace, key.Name, ownerUID, buildCtx.ClusterName)
+}
+
+// isFrameworkRoleGroupPDB reports whether a live PodDisruptionBudget under a role group's own name
+// is one the framework put there. Pre-#530 versions built it from the role group's descriptive
+// labels, which is the only fingerprint those objects carry: the framework's managed-by value plus
+// the role group marker label. Both are required — managed-by alone would also match the role-level
+// PDB of a differently named role group.
+func isFrameworkRoleGroupPDB(pdb *policyv1.PodDisruptionBudget, clusterName, roleGroupName string) bool {
+	if pdb.Labels[LabelRoleGroupPodDisruptionBudget] == roleGroupName {
+		return true
+	}
+	return pdb.Labels["app.kubernetes.io/managed-by"] == managedByValue &&
+		pdb.Labels[clusterName+"-"+roleGroupName] == valueTrue
 }
 
 // reclaimMetricsService deletes the role group's metrics Service, but only when the live object
@@ -1107,7 +1216,12 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 	if !ok {
 		return fmt.Errorf("failed to deep copy desired object %T: copy is not a client.Object", obj)
 	}
+	// The resourceVersion the live object carried before the write. CreateOrUpdate Gets into obj
+	// and then runs this mutate func, so this is the only point where it can be read; after the
+	// call obj holds whatever the API server returned.
+	var liveResourceVersion string
 	result, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
+		liveResourceVersion = obj.GetResourceVersion()
 		// Set ownership
 		if err := controllerutil.SetControllerReference(owner, obj, r.scheme); err != nil {
 			return err
@@ -1127,7 +1241,14 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 	case controllerutil.OperationResultCreated:
 		r.eventManager.EmitCreateEvent(owner.GetName(), obj)
 	case controllerutil.OperationResultUpdated:
-		r.eventManager.EmitUpdateEvent(owner.GetName(), obj)
+		// An Update is issued whenever the desired object differs from the live one in Go terms,
+		// which it always does once the API server has defaulted fields the handler omits. The
+		// server short-circuits such a write and returns the stored object unchanged, so the
+		// resourceVersion is what separates a real change from the steady state — without it a
+		// settled cluster emits a Normal "Updated" event per resource on every reconcile, forever.
+		if obj.GetResourceVersion() != liveResourceVersion {
+			r.eventManager.EmitUpdateEvent(owner.GetName(), obj)
+		}
 	}
 	return nil
 }

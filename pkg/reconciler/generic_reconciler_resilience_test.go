@@ -19,12 +19,14 @@ package reconciler_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
@@ -37,6 +39,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -741,6 +744,311 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		sts := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
 		Expect(hasVectorSidecar(sts)).To(BeTrue())
+	})
+
+	It("omits the rolling file appender when the sidecar is skipped", func() {
+		crName := uniqueCRName("vector-appender")
+		cr, resourceName := newVectorCR(crName)
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: testNamespace}})
+		})
+
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme)
+		handler.MainContainerName = "app"
+		handler.LoggingContainers = []productlogging.ContainerLogging{
+			{Container: "app", Framework: productlogging.LoggingFrameworkLogback},
+		}
+		r := newReconciler(handler, record.NewFakeRecorder(100))
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
+		Expect(hasVectorSidecar(sts)).To(BeFalse())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, cm)).To(Succeed())
+		Expect(cm.Data).To(HaveKey("logback.xml"))
+		// The Vector provider is the sole owner of the shared log emptyDir and its mounts, so a
+		// file appender emitted without it points the product at a path no volume backs.
+		Expect(cm.Data["logback.xml"]).NotTo(ContainSubstring(constant.KubedoopLogDir))
+	})
+})
+
+var _ = Describe("GenericReconciler status stability", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("reports the same Degraded message on every pass when several role groups fail", func() {
+		crName := uniqueCRName("degraded-order")
+		groups := map[string]v1alpha1.RoleGroupSpec{}
+		for i := 1; i <= 8; i++ {
+			groups[fmt.Sprintf("group-%d", i)] = v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))}
+		}
+		cr := testutil.NewMockCluster(crName, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{"broker": {RoleGroups: groups}})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+		})
+
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.MockCluster]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.MockCluster, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				return nil, fmt.Errorf("cannot build role group %s", buildCtx.RoleGroupName)
+			},
+		}
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: crName}}
+		var messages []string
+		for i := 0; i < 6; i++ {
+			_, reconcileErr := r.Reconcile(ctx, req)
+			Expect(reconcileErr).To(HaveOccurred())
+
+			fetched := &testutil.MockCluster{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, fetched)).To(Succeed())
+			degraded := fetched.Status.GetCondition(v1alpha1.ConditionDegraded)
+			Expect(degraded).NotTo(BeNil())
+			messages = append(messages, degraded.Message)
+		}
+
+		// The first failing group aborts the role and its error becomes the Degraded message. In
+		// map order a different group wins every cycle, so the status never settles and each write
+		// schedules the next reconcile.
+		Expect(messages).To(HaveEach(messages[0]))
+		Expect(messages[0]).To(ContainSubstring("group-1"))
+	})
+
+	It("stops emitting Updated events once the cluster has settled", func() {
+		crName := uniqueCRName("settled-events")
+		cr, _ := newResilienceCR(ctx, crName)
+
+		fakeRecorder := record.NewFakeRecorder(100)
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         fakeRecorder,
+			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}}
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(drainRecorder(fakeRecorder)).To(ContainElement(ContainSubstring("Created")))
+
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Handler-built objects omit server-defaulted fields, so CreateOrUpdate reports "Updated"
+		// on every pass even when the API server stores exactly what it already had. Trusting that
+		// verdict makes a settled cluster emit a Normal event per resource, forever.
+		Expect(drainRecorder(fakeRecorder)).NotTo(ContainElement(ContainSubstring("Updated")))
+	})
+})
+
+// clusterLabelWritingHandler writes into the label map the framework hands it, which is what a
+// product does when it derives its own label set from the cluster's. It records what the CR object
+// itself carried immediately afterwards.
+type clusterLabelWritingHandler struct {
+	*reconciler.BaseRoleGroupHandler[*testutil.MockCluster]
+	roleGroupCRLabels map[string]string
+	rolePDBCRLabels   map[string]string
+}
+
+func (h *clusterLabelWritingHandler) BuildResources(
+	ctx context.Context,
+	k8sClient client.Client,
+	cr *testutil.MockCluster,
+	buildCtx *reconciler.RoleGroupBuildContext,
+) (*reconciler.RoleGroupResources, error) {
+	buildCtx.ClusterLabels["injected-by-handler"] = "true"
+	h.roleGroupCRLabels = maps.Clone(cr.GetLabels())
+	return h.BaseRoleGroupHandler.BuildResources(ctx, k8sClient, cr, buildCtx)
+}
+
+func (h *clusterLabelWritingHandler) BuildRolePodDisruptionBudget(
+	clusterName, namespace, roleName string,
+	clusterLabels map[string]string,
+	roleSpec *v1alpha1.RoleSpec,
+) *policyv1.PodDisruptionBudget {
+	clusterLabels["injected-by-handler"] = "true"
+	h.rolePDBCRLabels = clusterLabels
+	return h.BaseRoleGroupHandler.BuildRolePodDisruptionBudget(clusterName, namespace, roleName, clusterLabels, roleSpec)
+}
+
+var _ = Describe("GenericReconciler cluster label ownership", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("hands handlers a copy of the CR's labels, not the live map", func() {
+		crName := uniqueCRName("label-alias")
+		cr := testutil.NewMockCluster(crName, testNamespace).
+			WithLabels(map[string]string{"env": "prod"}).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"broker": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+			})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		resourceName := reconciler.RoleGroupResourceName(crName, "broker", "default")
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+			for _, suffix := range []string{"", "-headless"} {
+				meta := metav1.ObjectMeta{Name: resourceName + suffix, Namespace: testNamespace}
+				_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+				_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: meta})
+				_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: meta})
+			}
+		})
+
+		handler := &clusterLabelWritingHandler{
+			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme),
+		}
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: crName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		// GetLabels hands out the live CR's map: without a clone the handler's write lands on the
+		// object this cycle's status decisions are computed from.
+		Expect(handler.roleGroupCRLabels).NotTo(HaveKey("injected-by-handler"))
+		Expect(handler.rolePDBCRLabels).NotTo(BeNil())
+		Expect(handler.rolePDBCRLabels).To(HaveKey("injected-by-handler"))
+
+		fetched := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: crName}, fetched)).To(Succeed())
+		Expect(fetched.GetLabels()).NotTo(HaveKey("injected-by-handler"))
+	})
+})
+
+var _ = Describe("GenericReconciler orphan drain wiring", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("requeues an orphan deletion in flight on the configured drain poll interval", func() {
+		crName := uniqueCRName("drain-poll")
+		cr, _ := newResilienceCR(ctx, crName)
+
+		orphanName := reconciler.RoleGroupResourceName(crName, "broker", "removed")
+		orphan := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: testNamespace},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(2)),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": orphanName}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": orphanName}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img"}}},
+				},
+			},
+		}
+		Expect(controllerutil.SetControllerReference(cr, orphan, testScheme)).To(Succeed())
+		Expect(k8sClient.Create(ctx, orphan)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, orphan)
+		})
+
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:              k8sClient,
+			Scheme:              testScheme,
+			Recorder:            recorder,
+			RoleGroupHandler:    &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			Prototype:           testutil.NewMockCluster("proto", testNamespace),
+			HealthCheckInterval: time.Hour,
+			DrainPollInterval:   7 * time.Second,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: cr.Name}, fetched)).To(Succeed())
+		fetched.Status.SetRoleGroup("broker", "removed")
+		Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
+		Expect(err).NotTo(HaveOccurred())
+		// The orphan is scaled to zero and its deletion resumes on a later pass; without this
+		// wiring the state machine only advanced when an unrelated event happened to arrive.
+		Expect(result.RequeueAfter).To(Equal(7 * time.Second))
+	})
+})
+
+var _ = Describe("GenericReconciler role PodDisruptionBudget reclaim", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("reclaims only the PDB carrying the framework's role slot", func() {
+		crName := uniqueCRName("role-pdb-slot")
+		cr, _ := newResilienceCR(ctx, crName)
+
+		// The role declares no podDisruptionBudget, so the framework builds none and the apply
+		// path reclaims the role slot. A product's own PDB may legitimately live under the derived
+		// name and carries this CR's controller owner reference like every framework object.
+		name := reconciler.RoleResourceName(crName, "broker")
+		custom := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+				Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			},
+		}
+		Expect(controllerutil.SetControllerReference(cr, custom, testScheme)).To(Succeed())
+		Expect(k8sClient.Create(ctx, custom)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, custom)
+		})
+
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme),
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}}
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(custom), &policyv1.PodDisruptionBudget{})).To(Succeed())
+
+		// Stamped with the slot label, the same object IS the framework's role PDB, and turning
+		// the role's budget off has to remove it.
+		live := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(custom), live)).To(Succeed())
+		live.Labels = map[string]string{reconciler.LabelRolePodDisruptionBudget: "broker"}
+		Expect(k8sClient.Update(ctx, live)).To(Succeed())
+
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(custom), &policyv1.PodDisruptionBudget{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
 	})
 })
 

@@ -162,6 +162,18 @@ type RoleGroupBuildContext struct {
 	// framework does not own vector.yaml for this role group (the product builds it, or Vector is
 	// off).
 	VectorAggregatorAddress string
+
+	// VectorLogPipelineActive is the resolved answer to "will the Vector sidecar actually be
+	// injected into this role group's pods?" — the agent is enabled AND at least one producer is
+	// declared AND something supplies vector.yaml (see GenericReconciler.buildSidecarManager,
+	// which populates it). The Vector provider owns the shared log emptyDir and its mounts, so
+	// the logging renderers gate the rolling file appender on this rather than on the enablement
+	// flag alone: a skipped sidecar means no shared volume, and a file appender would send the
+	// product's logs to an unmounted path.
+	//
+	// Nil means the build context was not produced by GenericReconciler; the renderers then fall
+	// back to the enablement flag.
+	VectorLogPipelineActive *bool
 }
 
 // VectorAggregatorProvider is optionally implemented by a product CR to expose the name of the
@@ -229,16 +241,16 @@ func (c *RoleGroupBuildContext) ContainerLogging(container string) *v1alpha1.Log
 // config file. Handlers embedding BaseRoleGroupHandler get this wired automatically via
 // LoggingContainers; handlers that build their own ConfigMap can call it directly.
 func RenderContainerLogging(buildCtx *RoleGroupBuildContext, decl productlogging.ContainerLogging) (string, string, error) {
-	// Emit the rolling file appender only when the Vector agent is enabled: file logging is
-	// coupled to Vector (without a consumer there is no shared log volume to write to). Gating
-	// here means products building their own ConfigMap inherit the behavior for free.
+	// Emit the rolling file appender only when the Vector sidecar is really injected: file logging
+	// is coupled to Vector, which owns the shared log volume the appender writes into. Gating here
+	// means products building their own ConfigMap inherit the behavior for free.
 	return productlogging.RenderConfigFile(
-		buildCtx.ContainerLogging(decl.Container), decl, vectorEnabledFor(buildCtx))
+		buildCtx.ContainerLogging(decl.Container), decl, vectorLogPipelineActive(buildCtx))
 }
 
 // RenderLoggingConfigMapData renders the logging-related entries for a role group ConfigMap:
 //   - one logging config file per declared producer (level config, plus the rolling file appender
-//     when Vector is enabled), keyed by the generator file name (e.g. "logback.xml"), and
+//     when the Vector sidecar is injected), keyed by the generator file name (e.g. "logback.xml"), and
 //   - the Vector agent config ("vector.yaml") when the Vector agent is enabled AND the aggregator
 //     address has been resolved (buildCtx.VectorAggregatorAddress, populated by GenericReconciler
 //     from the CR's VectorAggregatorProvider).
@@ -265,7 +277,7 @@ func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []pro
 	// Generate vector.yaml only when the aggregator address is known. If Vector is enabled but the
 	// CR does not expose an aggregator ConfigMap (VectorAggregatorProvider), the address is empty
 	// and the framework leaves vector.yaml to the product.
-	if vectorEnabledFor(buildCtx) && buildCtx.VectorAggregatorAddress != "" {
+	if vectorLogPipelineActive(buildCtx) && buildCtx.VectorAggregatorAddress != "" {
 		vectorConfig, err := vector.RenderVectorConfig(vector.VectorConfigData{
 			LogDir:            constant.KubedoopLogDir,
 			AggregatorAddress: buildCtx.VectorAggregatorAddress,

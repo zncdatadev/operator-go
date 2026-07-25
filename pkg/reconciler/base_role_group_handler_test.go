@@ -2029,6 +2029,52 @@ var _ = Describe("Selector label stability", func() {
 			Matches(k8slabels.Set(after.StatefulSet.Spec.Template.Labels))).To(BeTrue())
 		Expect(after.HeadlessService.Spec.Selector).To(Equal(frozenSelector))
 	})
+
+	It("keeps satisfying the selector a StatefulSet froze under the previous label scheme", func() {
+		clusterLabels := map[string]string{"env": "prod"}
+		buildCtx := newBuildCtx(clusterLabels)
+
+		// The selector the previous framework version wrote into .spec.selector: the FULL
+		// descriptive label set (cluster labels, then the framework identity labels, then
+		// ExtraLabels). It is immutable on the live object, so every pod template this version
+		// builds must still match it or the API server rejects every update.
+		legacySelector := map[string]string{
+			"env":                          "prod",
+			"app.kubernetes.io/instance":   "test-cluster",
+			"app.kubernetes.io/component":  "server",
+			"app.kubernetes.io/managed-by": "operator-go",
+			"test-cluster-default":         "true",
+			"team":                         "platform",
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8slabels.SelectorFromSet(legacySelector).
+			Matches(k8slabels.Set(resources.StatefulSet.Spec.Template.Labels))).To(BeTrue())
+	})
+
+	It("fails the build when an ExtraLabel collides with a selector label", func() {
+		// The builder re-writes the selector keys into the pod template AFTER the labels, so this
+		// value can never take effect — and on a StatefulSet created while the selector still
+		// carried it, the frozen selector demands "platform" while the template now says "server",
+		// which makes every update fail with nothing on the object to explain why.
+		handler.ExtraLabels["app.kubernetes.io/component"] = "platform"
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(map[string]string{"env": "prod"}))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("app.kubernetes.io/component"))
+		Expect(err.Error()).To(ContainSubstring("ExtraLabels collide with the selector labels"))
+	})
+
+	It("allows an ExtraLabel that restates a selector label's own value", func() {
+		handler.ExtraLabels["app.kubernetes.io/managed-by"] = "operator-go"
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(map[string]string{"env": "prod"}))
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("Role group Services", func() {

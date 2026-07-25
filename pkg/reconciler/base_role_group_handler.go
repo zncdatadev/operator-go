@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -151,8 +152,9 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// sidecar provider (via LoggingProducers()), which is the single owner of the shared log
 	// volume: it creates the size-limited log emptyDir, RW-mounts it on each producer container,
 	// and mounts it on itself (pre-creating each producer's per-container log directory before
-	// exec'ing vector). When Vector is disabled, no shared volume exists and no file
-	// appender is emitted (console-only).
+	// exec'ing vector). Whenever the sidecar does not land — Vector disabled, no producer, or no
+	// source for vector.yaml — no shared volume exists and no file appender is emitted
+	// (console-only); see RoleGroupBuildContext.VectorLogPipelineActive.
 	//
 	// Products whose primary container name (and therefore its logging key) differs per role set
 	// this per role via SetRoleLoggingContainers; the per-role value wins over this global list.
@@ -291,6 +293,12 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		}
 	}
 
+	// An ExtraLabel that collides with a selector key can never take effect, and on an existing
+	// StatefulSet it makes every update fail. Reject it before anything is built.
+	if err := h.validateExtraLabels(buildCtx); err != nil {
+		return nil, err
+	}
+
 	// Build labels
 	labels := h.buildLabels(buildCtx)
 
@@ -327,8 +335,8 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 }
 
 // vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on
-// the deep-merged logging spec. It is the single source of truth for both the producer (shared
-// log volume + RW mounts) and Option A (file-appender gating).
+// the deep-merged logging spec. It is the enablement FLAG only — whether the sidecar is really
+// injected is decided by vectorLogPipelineActive.
 func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 	if buildCtx == nil || buildCtx.MergedConfig == nil {
 		return false
@@ -336,6 +344,26 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 	// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and
 	// the consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
 	return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
+}
+
+// vectorLogPipelineActive reports whether the shared Vector log pipeline really exists for this
+// role group. The Vector provider is the sole owner of the shared log emptyDir and of its mounts,
+// and the reconciler skips it whenever the agent is enabled but the sidecar cannot run (no
+// declared producer, or nothing supplying vector.yaml). Everything that writes INTO that volume —
+// above all the rolling file appender — has to key off the same resolved decision, or the product
+// is pointed at a path no volume backs.
+//
+// A nil RoleGroupBuildContext.VectorLogPipelineActive means the context was not built by
+// GenericReconciler (a product assembling one by hand): the enablement flag is then all that is
+// known, which is the behavior such a caller already had.
+func vectorLogPipelineActive(buildCtx *RoleGroupBuildContext) bool {
+	if !vectorEnabledFor(buildCtx) {
+		return false
+	}
+	if buildCtx.VectorLogPipelineActive == nil {
+		return true
+	}
+	return *buildCtx.VectorLogPipelineActive
 }
 
 // LoggingProducers implements LoggingProducerProvider: it exposes the role's declared
@@ -515,6 +543,38 @@ func (h *BaseRoleGroupHandler[CR]) buildSelectorLabels(buildCtx *RoleGroupBuildC
 // matching selectors for resources they add themselves (e.g. a metrics Service).
 func (h *BaseRoleGroupHandler[CR]) SelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	return h.buildSelectorLabels(buildCtx)
+}
+
+// validateExtraLabels rejects an ExtraLabel whose key is a selector key but whose value differs
+// from the selector's. Such a label is silently ineffective and actively harmful:
+//
+//   - buildLabels applies ExtraLabels last, but the StatefulSet builder re-writes the selector
+//     keys into the pod template AFTER the labels, so the product's value never reaches the pod.
+//   - The .spec.selector of a live StatefulSet is immutable. A cluster created while the selector
+//     still included the ExtraLabels carries the product's value there forever, and the pod
+//     template the framework now builds no longer satisfies it — every update is rejected by the
+//     API server, with nothing in the object to explain why.
+//
+// A collision that agrees with the selector value changes nothing and is allowed, so a product
+// restating e.g. app.kubernetes.io/managed-by keeps working.
+func (h *BaseRoleGroupHandler[CR]) validateExtraLabels(buildCtx *RoleGroupBuildContext) error {
+	selector := h.buildSelectorLabels(buildCtx)
+
+	var collisions []string
+	for key, value := range h.ExtraLabels {
+		if selectorValue, isSelector := selector[key]; isSelector && selectorValue != value {
+			collisions = append(collisions, fmt.Sprintf("%s (selector value %q, ExtraLabels value %q)",
+				key, selectorValue, value))
+		}
+	}
+	if len(collisions) == 0 {
+		return nil
+	}
+
+	slices.Sort(collisions)
+	return fmt.Errorf(
+		"ExtraLabels collide with the selector labels of role %q group %q: %s; a selector label is framework-owned and cannot be overridden",
+		buildCtx.RoleName, buildCtx.RoleGroupName, strings.Join(collisions, ", "))
 }
 
 // buildAnnotations creates the annotations for resources.

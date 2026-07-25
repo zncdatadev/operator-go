@@ -14,7 +14,7 @@ Every non-test file in this package:
 | `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
 | `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters |
 | `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
-| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs`, `LabelRolePodDisruptionBudget`, `DefaultDrainPollInterval` |
+| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithDrainTimeout` / `WithAPIReader` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` / `AnnotationDrainStarted`, `LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`, `ConditionOrphanCleanupPending`, `DefaultDrainPollInterval` / `DefaultDrainTimeout` |
 | `health.go` | `HealthManager` — role group aggregation into Available/Progressing/Degraded plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
 | `dependency.go` | `Dependency` / `DependencyKind` / `DependencyResolver` — declarative existence checks for referenced ConfigMaps and Secrets, plus the explicit `ValidateS3Connection` / `ValidateDatabaseConnection` / `ValidateZKConfig` helpers |
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
@@ -98,16 +98,33 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     reconcile — the orphaned StatefulSet is scaled to zero, then left to the StatefulSet
     controller's ordered drain (`.status.replicas` back to 0), then deleted; every deletion is
     confirmed absent before the next resource type is touched, and the pass requeues itself
-    (`WithDrainPollInterval`) until the group is fully reclaimed. A failure is confined to its role
-    group (the others still progress, errors are joined), and a 429 anywhere in the cleanup surfaces
-    as a `*RateLimitError` that `Reconcile` turns into a plain backoff. A role removed from
-    `spec.roles` wholesale has its role PDB reclaimed by label (`LabelRolePodDisruptionBudget`,
-    stamped by the apply path) — no role group is left to diff it out of the status snapshot.
+    (`DrainPollInterval`) until the group is fully reclaimed. The drain is bounded by
+    `DrainTimeout` (default 10m, deadline stamped on the object as `AnnotationDrainStarted`), so a
+    pod that can never terminate cannot strand the rest of the group; what is still pending is
+    reported on the CR as `ConditionOrphanCleanupPending`. Pruning a group from
+    `status.roleGroups` is terminal — nothing enumerates it afterwards — so the "nothing left"
+    verdict is re-confirmed through the uncached `APIReader` before the entry is dropped. A failure
+    is confined to its role group (the others still progress, errors are joined), and a 429
+    anywhere in the cleanup surfaces as a `*RateLimitError` that `Reconcile` turns into a plain
+    backoff. A role removed from `spec.roles` wholesale has its role PDB reclaimed by label
+    (`LabelRolePodDisruptionBudget`, stamped by the apply path) — no role group is left to diff it
+    out of the status snapshot. Every PDB reclaim is gated on its slot label
+    (`LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`), because a product's own
+    PDB may share the derived name and carries the same controller owner reference.
 12. **Vector sidecar gating:** the framework injects the Vector sidecar only when something supplies
     `vector.yaml` — the CR implements `VectorAggregatorProvider` (the framework then renders it) or
     the handler implements `VectorConfigProvider` and claims the role. Otherwise it logs, emits a
     `VectorSidecarSkipped` Warning and skips the sidecar: registering it would fail the provider's
-    own validation on every cycle and abort the whole cluster's reconcile.
+    own validation on every cycle and abort the whole cluster's reconcile. The resolved answer is
+    recorded on `RoleGroupBuildContext.VectorLogPipelineActive`, and the logging renderers gate the
+    rolling file appender on it — the Vector provider owns the shared log volume, so without the
+    sidecar an appender would write to an unmounted path.
+13. **Framework-owned selector labels:** the StatefulSet/Service/PDB selectors are derived from the
+    cluster/role/role group names alone (or the product's `LabelDomain` identity labels). An
+    `ExtraLabels` entry that collides with a selector key and disagrees with its value fails the
+    build, naming the key: the builder re-writes selector keys into the pod template after the
+    labels, so it could never take effect, and on an object created under the older, wider selector
+    it would make every update fail.
 
 ## Reconcile Flow
 

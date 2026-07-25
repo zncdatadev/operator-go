@@ -445,6 +445,7 @@ var _ = Describe("MockCluster operations", func() {
 
 	It("should deep copy into its own concrete type", func() {
 		mockCR := testutil.NewMockCluster("deepcopy-cluster", "default").
+			WithLabels(map[string]string{"env": "prod"}).
 			WithRoles(map[string]v1alpha1.RoleSpec{
 				"role-a": {
 					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
@@ -454,10 +455,20 @@ var _ = Describe("MockCluster operations", func() {
 			})
 
 		copied := mockCR.DeepCopy()
-
 		Expect(copied.GetName()).To(Equal("deepcopy-cluster"))
-		Expect(copied).NotTo(BeIdenticalTo(mockCR))
-		Expect(copied.Spec.Roles).NotTo(BeIdenticalTo(mockCR.Spec.Roles))
+
+		// Aliasing is asserted by mutation, not by identity: BeIdenticalTo on a map panics inside
+		// the matcher (maps are not comparable), which Gomega reports as a failed match — so an
+		// identity assertion on the shared maps passes whether or not they are shared.
+		// MockCluster.DeepCopy is load-bearing: the reconciler builds every fetched CR from the
+		// prototype through it, and the status guard compares against a snapshot taken with it.
+		copied.Labels["env"] = "staging"
+		copied.Spec.Roles["role-b"] = v1alpha1.RoleSpec{}
+		copied.Status.SetRoleGroup("role-a", "group-1")
+
+		Expect(mockCR.Labels).To(HaveKeyWithValue("env", "prod"))
+		Expect(mockCR.Spec.Roles).NotTo(HaveKey("role-b"))
+		Expect(mockCR.Status.RoleGroups).To(BeEmpty())
 	})
 })
 
@@ -2312,14 +2323,14 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
 		}
 	})
 
-	It("reclaims a legacy per-role-group PDB left by an older framework version", func() {
-		// Simulate an upgrade: a per-group PDB "<cluster>-server-default", owned by the CR, was
-		// written by an older framework version and still lingers.
-		legacyName := reconciler.RoleGroupResourceName(crName, "server", "default")
-		legacy := &policyv1.PodDisruptionBudget{
+	// newOwnedPerGroupPDB creates a PodDisruptionBudget named after a role group and owned by the
+	// CR, so only its labels can say whether the framework put it there.
+	newOwnedPerGroupPDB := func(name string, labels map[string]string) *policyv1.PodDisruptionBudget {
+		pdb := &policyv1.PodDisruptionBudget{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      legacyName,
+				Name:      name,
 				Namespace: namespace,
+				Labels:    labels,
 				OwnerReferences: []metav1.OwnerReference{{
 					APIVersion: "test.zncdata.dev/v1alpha1",
 					Kind:       "MockCluster",
@@ -2333,7 +2344,24 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
 				MaxUnavailable: func() *intstr.IntOrString { v := intstr.FromInt(1); return &v }(),
 			},
 		}
-		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, pdb)
+		})
+		return pdb
+	}
+
+	It("reclaims a legacy per-role-group PDB left by an older framework version", func() {
+		// Simulate an upgrade: a per-group PDB "<cluster>-server-default", owned by the CR, was
+		// written by an older framework version and still lingers. Pre-#530 versions built it from
+		// the role group's descriptive labels, which is the fingerprint the reclaim recognizes.
+		legacyName := reconciler.RoleGroupResourceName(crName, "server", "default")
+		newOwnedPerGroupPDB(legacyName, map[string]string{
+			"app.kubernetes.io/instance":   crName,
+			"app.kubernetes.io/component":  "server",
+			"app.kubernetes.io/managed-by": "operator-go",
+			crName + "-default":            "true",
+		})
 
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
 		_, err := r.Reconcile(ctx, req)
@@ -2343,5 +2371,19 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
 		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: legacyName}, &policyv1.PodDisruptionBudget{})
 		Expect(k8serrors.IsNotFound(getErr)).To(BeTrue(), "legacy per-group PDB should have been deleted")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: reconciler.RoleResourceName(crName, "server")}, &policyv1.PodDisruptionBudget{})).To(Succeed())
+	})
+
+	It("leaves a product's own PDB of the same name alone", func() {
+		// A product may ship a PDB named after one of its role groups through ExtraResources. It
+		// carries this CR's controller owner reference like every framework object, so ownership
+		// cannot tell it apart from the framework's per-group slot — only the slot label can.
+		customName := reconciler.RoleGroupResourceName(crName, "server", "secondary")
+		custom := newOwnedPerGroupPDB(customName, map[string]string{"app.kubernetes.io/name": "product-owned"})
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(custom), &policyv1.PodDisruptionBudget{})).To(Succeed())
 	})
 })

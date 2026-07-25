@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -1628,5 +1629,282 @@ var _ = Describe("RoleGroupCleaner role PodDisruptionBudget reclaim", func() {
 		Expect(err).To(Succeed())
 
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(foreign), &policyv1.PodDisruptionBudget{})).To(Succeed())
+	})
+})
+
+// staleCacheClient hides one object from Get, reproducing a manager cache that answers NotFound
+// for an object the API server still has (an informer that has not synced, or that dropped the
+// object on a relist).
+type staleCacheClient struct {
+	client.Client
+	hidden string
+}
+
+func (c *staleCacheClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Name == c.hidden {
+		return k8serrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, key.Name)
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+var _ = Describe("RoleGroupCleaner terminal confirmation", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("does not prune a role group the cache only believes is gone", func() {
+		clusterName := "stale-cache"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+
+		cleaner := reconciler.NewRoleGroupCleaner(&staleCacheClient{Client: k8sClient, hidden: resourceName}, testScheme).
+			WithAPIReader(k8sClient)
+
+		requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+
+		// Pruning is irreversible: the status snapshot is the only record the orphan detector has,
+		// so acting on a cached NotFound would leave this ConfigMap behind with nothing left to
+		// find it.
+		Expect(status.GetRoleGroups()).To(HaveKeyWithValue("role", ConsistOf("gone")))
+		Expect(requeue).To(Equal(reconciler.DefaultDrainPollInterval))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})).To(Succeed())
+	})
+})
+
+var _ = Describe("RoleGroupCleaner bounded drain", func() {
+	var ctx context.Context
+	const pollInterval = 2 * time.Second
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("deletes an undrainable StatefulSet once the drain timeout elapses", func() {
+		clusterName := "drain-timeout"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+
+		sts := orphanTestStatefulSet(resourceName, 0)
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, sts)
+		})
+		// envtest runs no StatefulSet controller: a pod that can never terminate (a stuck
+		// finalizer, an unreachable node) is modelled by a replica count that never reaches zero.
+		sts.Status.Replicas = 2
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+
+		// The rest of the role group's resources are stranded behind the drain.
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithDrainPollInterval(pollInterval).
+			WithDrainTimeout(time.Hour)
+
+		requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+		Expect(requeue).To(Equal(pollInterval))
+
+		live := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sts), live)).To(Succeed())
+		// The deadline lives on the object, so it survives an operator restart or a leader change.
+		Expect(live.Annotations).To(HaveKey(reconciler.AnnotationDrainStarted))
+
+		// A teardown that cannot finish has to be visible where an operator looks first.
+		pending := status.GetCondition(reconciler.ConditionOrphanCleanupPending)
+		Expect(pending).NotTo(BeNil())
+		Expect(pending.Status).To(Equal(metav1.ConditionTrue))
+		Expect(pending.Message).To(ContainSubstring("role/gone"))
+
+		live.Annotations[reconciler.AnnotationDrainStarted] = time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+		Expect(k8sClient.Update(ctx, live)).To(Succeed())
+
+		_, err = cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+
+		// The graceful drain is a courtesy; it must not cost the role group its liveness.
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sts), &appsv1.StatefulSet{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+		Expect(status.GetRoleGroups()).To(BeEmpty())
+		Expect(status.GetCondition(reconciler.ConditionOrphanCleanupPending).Status).To(Equal(metav1.ConditionFalse))
+	})
+})
+
+var _ = Describe("RoleGroupCleaner gray deletion across the teardown", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("evaluates the grace period once per teardown, not once per primary resource", func() {
+		clusterName := "gray-once"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+
+		sts := orphanTestStatefulSet(resourceName, 0)
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, sts)
+		})
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithGrayDeleteGracePeriod(time.Hour)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+
+		liveSTS := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sts), liveSTS)).To(Succeed())
+		liveCM := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cm), liveCM)).To(Succeed())
+
+		// The StatefulSet is deleted before the ConfigMap, so a ConfigMap left unmarked would be
+		// stamped with a fresh timestamp on the pass that first finds no StatefulSet — and the
+		// remaining resources would wait a second full grace period.
+		mark := liveSTS.Annotations[reconciler.AnnotationPendingDeletion]
+		Expect(mark).NotTo(BeEmpty())
+		Expect(liveCM.Annotations).To(HaveKeyWithValue(reconciler.AnnotationPendingDeletion, mark))
+
+		// The teardown reaches the ConfigMap only after the StatefulSet is gone; by then the one
+		// grace period the operator asked for has elapsed.
+		liveCM.Annotations[reconciler.AnnotationPendingDeletion] = time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+		Expect(k8sClient.Update(ctx, liveCM)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, liveSTS)).To(Succeed())
+
+		_, err = cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+		Expect(status.GetRoleGroups()).To(BeEmpty())
+	})
+})
+
+// throttlingGetClient answers Get with a 429 for one object name, as the API server does when the
+// operator exceeds its request budget.
+type throttlingGetClient struct {
+	client.Client
+	name string
+}
+
+func (c *throttlingGetClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Name == c.name {
+		return k8serrors.NewTooManyRequests("slow down", 1)
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// throttlingUpdateClient answers every Update with a 429.
+type throttlingUpdateClient struct {
+	client.Client
+}
+
+func (c *throttlingUpdateClient) Update(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+	return k8serrors.NewTooManyRequests("slow down", 1)
+}
+
+// throttlingListClient answers every List with a 429.
+type throttlingListClient struct {
+	client.Client
+}
+
+func (c *throttlingListClient) List(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+	return k8serrors.NewTooManyRequests("slow down", 1)
+}
+
+// A 429 says nothing about the cluster's state. Reported as a plain error it marks a healthy
+// cluster Degraded, and the next pass pushes the API server further over its budget — so every
+// path that talks to the API server has to map it the same way.
+var _ = Describe("RoleGroupCleaner rate limit mapping", func() {
+	var ctx context.Context
+	var status *v1alpha1.GenericClusterStatus
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		status = &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+	})
+
+	It("maps a 429 from the gray-delete read", func() {
+		clusterName := "gray-get-429"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(&throttlingGetClient{Client: k8sClient, name: resourceName}, testScheme).
+			WithGrayDeleteGracePeriod(time.Hour)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(reconciler.IsRateLimitError(err)).To(BeTrue(), "expected a RateLimitError, got %v", err)
+	})
+
+	It("maps a 429 from the gray-delete mark", func() {
+		clusterName := "gray-update-429"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: cleanerTestNamespace},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		cleaner := reconciler.NewRoleGroupCleaner(&throttlingUpdateClient{Client: k8sClient}, testScheme).
+			WithGrayDeleteGracePeriod(time.Hour)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(reconciler.IsRateLimitError(err)).To(BeTrue(), "expected a RateLimitError, got %v", err)
+	})
+
+	It("maps a 429 from the PVC listing", func() {
+		clusterName := "pvc-list-429"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+		sts := orphanTestStatefulSet(resourceName, 1)
+		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
+			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, sts)
+		})
+
+		cleaner := reconciler.NewRoleGroupCleaner(&throttlingListClient{Client: k8sClient}, testScheme)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "",
+			map[string]string{reconciler.AnnotationDeletePVCs: "true"})
+		Expect(reconciler.IsRateLimitError(err)).To(BeTrue(), "expected a RateLimitError, got %v", err)
 	})
 })

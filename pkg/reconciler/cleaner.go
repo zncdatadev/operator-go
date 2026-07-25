@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -47,6 +48,24 @@ const (
 	// AnnotationDeletePVCs when set to "true" on the cluster CR, causes the cleaner to also
 	// delete PVCs associated with orphaned StatefulSets.
 	AnnotationDeletePVCs = "operator.zncdata.dev/delete-pvcs"
+
+	// AnnotationDrainStarted records, as an RFC3339 timestamp, when an orphaned StatefulSet was
+	// first observed draining. It lives on the object rather than in memory so the drain deadline
+	// survives operator restarts and leader changes.
+	AnnotationDrainStarted = "orphan.zncdata.dev/drain-started"
+)
+
+// ConditionOrphanCleanupPending reports that the framework has not finished reclaiming the
+// resources of role groups that left the spec. The teardown runs as a state machine across
+// reconciles and can wait on a StatefulSet that refuses to drain; without this condition that
+// wait is only visible in the operator log, while the CR advertises a perfectly healthy cluster.
+const ConditionOrphanCleanupPending v1alpha1.ConditionType = "OrphanCleanupPending"
+
+const (
+	// ReasonOrphanCleanupPending means at least one orphaned role group is not reclaimed yet.
+	ReasonOrphanCleanupPending = "OrphanCleanupPending"
+	// ReasonOrphanCleanupComplete means nothing is left to reclaim.
+	ReasonOrphanCleanupComplete = "OrphanCleanupComplete"
 )
 
 // LabelRolePodDisruptionBudget marks a PodDisruptionBudget as the framework's role-level slot and
@@ -57,11 +76,26 @@ const (
 // and that object carries the same controller owner reference.
 const LabelRolePodDisruptionBudget = "pdb." + constant.KubedoopDomain + "/role"
 
+// LabelRoleGroupPodDisruptionBudget marks a PodDisruptionBudget as the framework's per-role-group
+// slot (RoleGroupResources.PodDisruptionBudget) and records the role group it covers. Only objects
+// carrying it — or the pre-#530 framework fingerprint, see isFrameworkRoleGroupPDB — are reclaimed
+// when a role group stops shipping a per-group PDB, because "<cluster>-<role>-<group>" is also a
+// name a product may legitimately use for a PDB of its own.
+const LabelRoleGroupPodDisruptionBudget = "pdb." + constant.KubedoopDomain + "/role-group"
+
 // DefaultDrainPollInterval is how long the cleaner asks the caller to wait before re-entering a
 // deletion it has already started — a StatefulSet scaling down, a Delete whose effect is not
 // observable yet. It paces the orphan state machine, not the pod termination itself, so it is
 // short: the cycle it schedules only re-reads the resources it is waiting on.
 const DefaultDrainPollInterval = 5 * time.Second
+
+// DefaultDrainTimeout bounds the ordered drain of an orphaned StatefulSet. The drain is a
+// courtesy — it lets a stateful product shut down the way its own rolling update would — but it
+// gates every following step, so a pod that can never terminate (a stuck finalizer, an
+// unreachable node) would otherwise strand the role group's ConfigMap, Services and status entry
+// forever. Once this elapses the StatefulSet is deleted anyway and the remaining pods are left to
+// cascade garbage collection, which is what deleting it outright always did.
+const DefaultDrainTimeout = 10 * time.Minute
 
 // defaultCleanupRateLimitRetryAfter mirrors GenericReconcilerConfig.RateLimitRetryAfter for a
 // cleaner a product builds directly.
@@ -71,8 +105,10 @@ const defaultCleanupRateLimitRetryAfter = 10 * time.Second
 type RoleGroupCleaner struct {
 	Client                client.Client
 	Scheme                *runtime.Scheme
+	apiReader             client.Reader
 	grayDeleteGracePeriod time.Duration
 	drainPollInterval     time.Duration
+	drainTimeout          time.Duration
 	rateLimitRetryAfter   time.Duration
 	eventManager          *EventManager
 }
@@ -102,6 +138,26 @@ func (c *RoleGroupCleaner) WithDrainPollInterval(d time.Duration) *RoleGroupClea
 	return c
 }
 
+// WithDrainTimeout bounds how long an orphaned StatefulSet's ordered drain may block the rest of
+// its role group's teardown; once it elapses the StatefulSet is deleted with pods still
+// terminating. A non-positive value keeps DefaultDrainTimeout — the wait is always bounded,
+// because everything that follows it (the ConfigMap, the Services, the status entry) is blocked
+// until it ends.
+func (c *RoleGroupCleaner) WithDrainTimeout(d time.Duration) *RoleGroupCleaner {
+	c.drainTimeout = d
+	return c
+}
+
+// WithAPIReader wires the uncached reader used to confirm that a role group's resources are
+// really gone before its entry is pruned from the status snapshot. That verdict is terminal —
+// the snapshot is the orphan detector's only record of the group — and a cached read can answer
+// NotFound for an object that exists. Optional; without it the confirmation falls back to the
+// regular (cached) client, which is the behavior a product building a cleaner by hand gets.
+func (c *RoleGroupCleaner) WithAPIReader(reader client.Reader) *RoleGroupCleaner {
+	c.apiReader = reader
+	return c
+}
+
 // WithRateLimitRetryAfter sets the backoff carried by the *RateLimitError the cleaner returns when
 // the API server answers 429. GenericReconciler wires its own RateLimitRetryAfter here so the
 // cleanup and apply paths back off identically.
@@ -116,6 +172,23 @@ func (c *RoleGroupCleaner) pollInterval() time.Duration {
 		return c.drainPollInterval
 	}
 	return DefaultDrainPollInterval
+}
+
+// drainDeadline is how long an orphaned StatefulSet may keep the rest of its role group waiting.
+func (c *RoleGroupCleaner) drainDeadline() time.Duration {
+	if c.drainTimeout > 0 {
+		return c.drainTimeout
+	}
+	return DefaultDrainTimeout
+}
+
+// confirmReader is the reader used for the terminal "nothing of this role group is left" check.
+// It is the uncached APIReader when one is wired, falling back to the regular client.
+func (c *RoleGroupCleaner) confirmReader() client.Reader {
+	if c.apiReader != nil {
+		return c.apiReader
+	}
+	return c.Client
 }
 
 // apiError maps a Kubernetes API failure onto the framework's typed errors. A 429 becomes a
@@ -227,6 +300,7 @@ func (c *RoleGroupCleaner) Cleanup(
 	}
 
 	if len(orphanedGroups) == 0 {
+		setOrphanCleanupCondition(status, nil)
 		return nextRequeue, stderrors.Join(errs...)
 	}
 
@@ -238,6 +312,10 @@ func (c *RoleGroupCleaner) Cleanup(
 	}
 
 	logger.Info("Cleaning up orphaned role groups", "count", countOrphanedGroups(orphanedGroups))
+
+	// Role groups whose teardown has not finished this pass. They are reported on the CR so a
+	// deletion that cannot make progress is visible where an operator looks first.
+	var pending []string
 
 	// Sorted, not map order: the deletion pass is spread over several reconciles, so a stable
 	// order makes the sequence of events (and the logs) reproducible.
@@ -256,10 +334,12 @@ func (c *RoleGroupCleaner) Cleanup(
 				// here would let one wedged group keep every other orphan alive indefinitely.
 				errs = append(errs, fmt.Errorf("failed to cleanup role group %s/%s: %w", roleName, groupName, err))
 				nextRequeue = earliestRequeue(nextRequeue, c.pollInterval())
+				pending = append(pending, roleName+"/"+groupName)
 				continue
 			}
 			if !deleted {
 				nextRequeue = earliestRequeue(nextRequeue, retryAfter)
+				pending = append(pending, roleName+"/"+groupName)
 				continue
 			}
 
@@ -271,7 +351,37 @@ func (c *RoleGroupCleaner) Cleanup(
 		}
 	}
 
+	setOrphanCleanupCondition(status, pending)
+
 	return nextRequeue, stderrors.Join(errs...)
+}
+
+// setOrphanCleanupCondition reports the teardown still in flight on the CR. The message lists the
+// role groups in sorted order, so a teardown that stays stuck writes an identical status on every
+// pass: the reconciler's no-op guard then skips the write instead of scheduling itself again.
+func setOrphanCleanupCondition(status *v1alpha1.GenericClusterStatus, pending []string) {
+	if len(pending) == 0 {
+		// Only clear a condition that was actually raised. Stamping a permanently-False condition
+		// on every cluster that never had an orphan is noise on every product's CR.
+		if status.GetCondition(ConditionOrphanCleanupPending) == nil {
+			return
+		}
+		status.SetCondition(metav1.Condition{
+			Type:    string(ConditionOrphanCleanupPending),
+			Status:  metav1.ConditionFalse,
+			Reason:  ReasonOrphanCleanupComplete,
+			Message: "No orphaned role group is waiting to be reclaimed",
+		})
+		return
+	}
+
+	slices.Sort(pending)
+	status.SetCondition(metav1.Condition{
+		Type:    string(ConditionOrphanCleanupPending),
+		Status:  metav1.ConditionTrue,
+		Reason:  ReasonOrphanCleanupPending,
+		Message: fmt.Sprintf("Waiting to reclaim orphaned role groups: %s", strings.Join(pending, ", ")),
+	})
 }
 
 // cleanupOrphanedRolePDBs deletes the framework's role-level PodDisruptionBudgets
@@ -393,6 +503,7 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(
 	// this orphan's derived name. Both objects carry the same controller owner reference, so the
 	// ownership check cannot separate them: skip any derived name that belongs to a role group
 	// the spec still declares.
+	derivedServices := make([]string, 0, 2)
 	for _, suffix := range []string{"-headless", "-metrics"} {
 		derived := resourceName + suffix
 		if _, live := liveResourceNames[derived]; live {
@@ -400,6 +511,7 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(
 				"name", derived)
 			continue
 		}
+		derivedServices = append(derivedServices, derived)
 		steps = append(steps, func() (deletionState, error) {
 			return deleteOwned[corev1.Service](ctx, c, namespace, derived, ownerUID, clusterName)
 		})
@@ -415,7 +527,75 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(
 		}
 	}
 
+	// Every step settled — but each of those reads went through the manager's cache, which may
+	// report NotFound for an object that exists (a stale or not-yet-synced informer). The caller
+	// prunes the role group from Status.RoleGroups on the strength of this verdict, and that
+	// snapshot is the ONLY record the orphan detector has: a wrong "nothing left" answer leaves
+	// live resources that nothing will ever look at again. Confirm it against the API server.
+	state, err := c.confirmRoleGroupReclaimed(ctx, namespace, resourceName, ownerUID, derivedServices)
+	if err != nil {
+		return false, 0, err
+	}
+	if state == deletionInFlight {
+		return false, c.pollInterval(), nil
+	}
+
 	return true, 0, nil
+}
+
+// confirmRoleGroupReclaimed re-reads every resource of a role group through the uncached reader
+// (see WithAPIReader). It runs once, at the end of a teardown whose every step already settled —
+// not on every poll — so the extra direct API reads are paid once per reclaimed role group.
+// A resource that belongs to another cluster does not count: this cluster will never delete it,
+// and waiting for it would keep the role group in the status snapshot forever.
+func (c *RoleGroupCleaner) confirmRoleGroupReclaimed(
+	ctx context.Context,
+	namespace, resourceName string,
+	ownerUID types.UID,
+	derivedServices []string,
+) (deletionState, error) {
+	key := types.NamespacedName{Namespace: namespace, Name: resourceName}
+
+	checks := make([]func() (bool, error), 0, 4+len(derivedServices))
+	checks = append(checks,
+		func() (bool, error) { return stillOwned[policyv1.PodDisruptionBudget](ctx, c, key, ownerUID) },
+		func() (bool, error) { return stillOwned[appsv1.StatefulSet](ctx, c, key, ownerUID) },
+		func() (bool, error) { return stillOwned[corev1.ConfigMap](ctx, c, key, ownerUID) },
+		func() (bool, error) { return stillOwned[corev1.Service](ctx, c, key, ownerUID) },
+	)
+	for _, derived := range derivedServices {
+		derivedKey := types.NamespacedName{Namespace: namespace, Name: derived}
+		checks = append(checks, func() (bool, error) {
+			return stillOwned[corev1.Service](ctx, c, derivedKey, ownerUID)
+		})
+	}
+
+	for _, check := range checks {
+		present, err := check()
+		if err != nil {
+			return deletionInFlight, err
+		}
+		if present {
+			log.FromContext(ctx).Info(
+				"Cached reads reported the role group gone but the API server still has resources; resuming the teardown",
+				"name", resourceName)
+			return deletionInFlight, nil
+		}
+	}
+	return deletionSettled, nil
+}
+
+// stillOwned reports whether a resource this cluster owns is still present, read through the
+// uncached confirmation reader.
+func stillOwned[T any, PT ptrObject[T]](ctx context.Context, c *RoleGroupCleaner, key types.NamespacedName, ownerUID types.UID) (bool, error) {
+	obj := PT(new(T))
+	if err := c.confirmReader().Get(ctx, key, obj); err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, c.apiError(err)
+	}
+	return isOwnedByCluster(obj, ownerUID), nil
 }
 
 // deletionState reports how far a single resource's deletion got.
@@ -496,33 +676,41 @@ func confirmDeleted[T any, PT ptrObject[T]](ctx context.Context, c *RoleGroupCle
 	}
 }
 
-// checkOrMarkGrayDelete checks whether the grace period for a gray-deleted resource has elapsed.
-// Uses the StatefulSet (falling back to ConfigMap) as the primary resource to annotate.
+// checkOrMarkGrayDelete checks whether the grace period for a gray-deleted role group has elapsed.
+//
+// The mark is written to EVERY primary resource that exists (the StatefulSet and the ConfigMap),
+// carrying the same timestamp, so the grace gate is evaluated ONCE per teardown. Annotating only
+// the preferred primary would restart the clock as the state machine progresses: the StatefulSet
+// is deleted first, the next pass finds a never-annotated ConfigMap, stamps a fresh timestamp, and
+// the remaining resources wait another whole grace period.
+//
 // Only resources owned by ownerUID are annotated; a foreign primary carries no grace period at all
-// (see below).
-// Returns true if the resource should be deleted now, false if still within grace period; in the
-// latter case remaining is the time left until the resource becomes deletable, so the caller can
-// requeue precisely instead of waiting for an unrelated event.
+// (see below). Returns true if the resources should be deleted now, false if still within the
+// grace period; in the latter case remaining is the time left, so the caller can requeue precisely
+// instead of waiting for an unrelated event.
 func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace, name string, ownerUID types.UID) (ready bool, remaining time.Duration, err error) {
 	logger := log.FromContext(ctx)
+	key := types.NamespacedName{Namespace: namespace, Name: name}
 
-	// Try StatefulSet first, then ConfigMap as fallback
-	var primaryObj client.Object
+	var primaries []client.Object
 	sts := &appsv1.StatefulSet{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, sts); err == nil {
-		primaryObj = sts
-	} else if !errors.IsNotFound(err) {
-		return false, 0, err
-	} else {
-		cm := &corev1.ConfigMap{}
-		if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, cm); err == nil {
-			primaryObj = cm
-		} else if errors.IsNotFound(err) {
-			// Resource already gone — allow deletion pass-through
-			return true, 0, nil
-		} else {
-			return false, 0, err
-		}
+	switch err := c.Client.Get(ctx, key, sts); {
+	case err == nil:
+		primaries = append(primaries, sts)
+	case !errors.IsNotFound(err):
+		return false, 0, c.apiError(err)
+	}
+	cm := &corev1.ConfigMap{}
+	switch err := c.Client.Get(ctx, key, cm); {
+	case err == nil:
+		primaries = append(primaries, cm)
+	case !errors.IsNotFound(err):
+		return false, 0, c.apiError(err)
+	}
+
+	// Resources already gone — allow deletion pass-through.
+	if len(primaries) == 0 {
+		return true, 0, nil
 	}
 
 	// A foreign primary must not be annotated (that would mutate an unrelated object on a name
@@ -530,33 +718,39 @@ func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace,
 	// proceed: every deletion is ownership-checked on its own, so the foreign objects are skipped
 	// and whatever this cluster does own under that name is reclaimed. Deferring instead would
 	// leave the role group in Status.RoleGroups for as long as the foreign object exists.
-	if !isOwnedByCluster(primaryObj.(metav1.Object), ownerUID) {
-		logger.V(1).Info("Gray-delete grace period skipped: primary resource not owned by this cluster", "name", name)
-		return true, 0, nil
-	}
-
-	annotations := primaryObj.(metav1.Object).GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-
-	markedAt, exists := annotations[AnnotationPendingDeletion]
-	if !exists {
-		// First detection: annotate and defer
-		annotations[AnnotationPendingDeletion] = time.Now().UTC().Format(time.RFC3339)
-		primaryObj.(metav1.Object).SetAnnotations(annotations)
-		if err := c.Client.Update(ctx, primaryObj); err != nil {
-			return false, 0, fmt.Errorf("failed to mark resource for gray deletion: %w", err)
+	for _, primary := range primaries {
+		if !isOwnedByCluster(primary, ownerUID) {
+			logger.V(1).Info("Gray-delete grace period skipped: primary resource not owned by this cluster", "name", name)
+			return true, 0, nil
 		}
+	}
+
+	// The mark of whichever primary already carries one is authoritative: it is when this teardown
+	// began. An unparsable timestamp is treated as no mark and re-stamped below, rather than
+	// short-circuiting the grace period the operator asked for.
+	markedTime, marked := grayDeleteMark(primaries)
+	if !marked {
+		markedTime = time.Now().UTC()
+	}
+
+	for _, primary := range primaries {
+		annotations := primary.GetAnnotations()
+		if annotations[AnnotationPendingDeletion] == markedTime.Format(time.RFC3339) {
+			continue
+		}
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[AnnotationPendingDeletion] = markedTime.Format(time.RFC3339)
+		primary.SetAnnotations(annotations)
+		if err := c.Client.Update(ctx, primary); err != nil {
+			return false, 0, fmt.Errorf("failed to mark resource for gray deletion: %w", c.apiError(err))
+		}
+	}
+
+	if !marked {
 		logger.Info("Marked orphaned resource for gray deletion", "name", name, "gracePeriod", c.grayDeleteGracePeriod)
 		return false, c.grayDeleteGracePeriod, nil
-	}
-
-	// Check if grace period has elapsed
-	markedTime, err := time.Parse(time.RFC3339, markedAt)
-	if err != nil {
-		// Invalid timestamp — proceed with deletion
-		return true, 0, nil
 	}
 
 	if time.Since(markedTime) >= c.grayDeleteGracePeriod {
@@ -565,10 +759,25 @@ func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace,
 	}
 
 	logger.Info("Gray deletion grace period not yet elapsed", "name", name,
-		"markedAt", markedAt, "gracePeriod", c.grayDeleteGracePeriod)
+		"markedAt", markedTime.Format(time.RFC3339), "gracePeriod", c.grayDeleteGracePeriod)
 	// The annotation timestamp has second granularity, so round up to the next whole second to
 	// avoid requeuing a hair too early and burning a no-op reconcile.
 	return false, time.Until(markedTime.Add(c.grayDeleteGracePeriod)).Round(time.Second) + time.Second, nil
+}
+
+// grayDeleteMark returns the timestamp this teardown was first marked with, taken from the first
+// primary carrying a parsable one.
+func grayDeleteMark(primaries []client.Object) (time.Time, bool) {
+	for _, primary := range primaries {
+		markedAt, exists := primary.GetAnnotations()[AnnotationPendingDeletion]
+		if !exists {
+			continue
+		}
+		if marked, err := time.Parse(time.RFC3339, markedAt); err == nil {
+			return marked, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // isOwnedByCluster returns true if the object's ownerReferences contain an entry
@@ -647,11 +856,21 @@ func (c *RoleGroupCleaner) deleteStatefulSet(
 
 	// The scale-down is only a request: the pods leave one by one, honouring their
 	// terminationGracePeriodSeconds. Deleting the StatefulSet before that finishes cancels the
-	// ordered shutdown it was scaled down for.
+	// ordered shutdown it was scaled down for — but the wait gates every following step, so it is
+	// bounded: a pod that can never terminate must not strand the ConfigMap, the Services and the
+	// status entry of this role group indefinitely.
 	if sts.Status.Replicas > 0 {
-		logger.V(1).Info("Waiting for the orphaned StatefulSet to finish draining",
-			"name", name, "remainingReplicas", sts.Status.Replicas)
-		return deletionInFlight, nil
+		expired, err := c.drainDeadlineExpired(ctx, sts, key)
+		if err != nil {
+			return deletionInFlight, err
+		}
+		if !expired {
+			logger.V(1).Info("Waiting for the orphaned StatefulSet to finish draining",
+				"name", name, "remainingReplicas", sts.Status.Replicas)
+			return deletionInFlight, nil
+		}
+		logger.Info("Orphaned StatefulSet drain timed out; deleting it with pods still terminating",
+			"name", name, "remainingReplicas", sts.Status.Replicas, "drainTimeout", c.drainDeadline())
 	}
 
 	if err := c.Client.Delete(ctx, sts); err != nil {
@@ -663,6 +882,40 @@ func (c *RoleGroupCleaner) deleteStatefulSet(
 	c.emitDeleted(clusterName, sts)
 
 	return confirmDeleted[appsv1.StatefulSet](ctx, c, key)
+}
+
+// drainDeadlineExpired reports whether the ordered drain of an orphaned StatefulSet has been
+// waiting longer than the configured timeout. The start of the drain is recorded on the object
+// itself (AnnotationDrainStarted) rather than in memory, so the deadline survives an operator
+// restart or a leader change — with in-memory state, a controller that restarts every few minutes
+// would reset the clock and the wait would be unbounded again.
+func (c *RoleGroupCleaner) drainDeadlineExpired(ctx context.Context, sts *appsv1.StatefulSet, key types.NamespacedName) (bool, error) {
+	if startedAt, ok := sts.GetAnnotations()[AnnotationDrainStarted]; ok {
+		if started, err := time.Parse(time.RFC3339, startedAt); err == nil {
+			return time.Since(started) >= c.drainDeadline(), nil
+		}
+		// An unparsable timestamp is re-stamped below: it carries no deadline, and treating it as
+		// expired would delete a StatefulSet that may have started draining seconds ago.
+	}
+
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		live := &appsv1.StatefulSet{}
+		if err := c.Client.Get(ctx, key, live); err != nil {
+			return err
+		}
+		annotations := live.GetAnnotations()
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[AnnotationDrainStarted] = time.Now().UTC().Format(time.RFC3339)
+		live.SetAnnotations(annotations)
+		return c.Client.Update(ctx, live)
+	})
+	// The StatefulSet disappeared while the drain was being timestamped: the next step re-reads it.
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, c.apiError(err)
 }
 
 // scaleToZero sets .spec.replicas to 0 on a live StatefulSet, re-reading it on conflict. The same
@@ -705,13 +958,13 @@ func (c *RoleGroupCleaner) deletePVCsForStatefulSet(ctx context.Context, sts *ap
 		client.InNamespace(namespace),
 		client.MatchingLabels(sts.Spec.Selector.MatchLabels),
 	); err != nil {
-		return fmt.Errorf("failed to list PVCs for StatefulSet %s/%s: %w", namespace, sts.Name, err)
+		return fmt.Errorf("failed to list PVCs for StatefulSet %s/%s: %w", namespace, sts.Name, c.apiError(err))
 	}
 
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
 		if err := c.Client.Delete(ctx, pvc); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete PVC %s/%s: %w", namespace, pvc.Name, err)
+			return fmt.Errorf("failed to delete PVC %s/%s: %w", namespace, pvc.Name, c.apiError(err))
 		}
 		logger.Info("Deleted PVC", "name", pvc.Name, "namespace", namespace)
 	}
