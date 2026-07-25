@@ -4,6 +4,72 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-25]
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+Consistency pass: every concrete claim was re-verified against the code, and claims the code does
+not implement were removed or restated as the real, weaker behavior. All edits were applied to both
+language versions with identical section numbering.
+
+#### Removed (documented but never implemented)
+
+- `RoleExtender` — deleted from §3.2.2, §4.1.2 and §5.1.2. No such type exists; role-level
+  customization happens through `RoleExtension` Pre/PostReconcile hooks. (Supersedes the
+  `RoleConfigExtender` → `RoleExtender` rename recorded under [2026-03-09], which renamed a type
+  that was never in the code.)
+- Extension `Cleanup()` shutdown hook (§4.2.4) — the extension interfaces declare only
+  `Name`/`PreReconcile`/`PostReconcile`/`OnReconcileError`.
+- `ExtensionRegistry.Register()` (§4.2.3) — replaced with the real per-level methods.
+- Webhook "common logic" claims about CPU/Memory, ZooKeeper port 2181, log paths and replica
+  validation (§4.3.2) — none of it exists in `pkg/webhook`.
+- Cleanup guarantees that do not hold (§4.4.3, §4.4.4): per-delete confirmation, waiting for
+  scale-down, in-cleaner 409 retry, 429 exponential backoff, atomic status+cluster update.
+- §5.3.3's "creation order is the inverse of the deletion order" — the two orders genuinely differ.
+- `ListenerScopeAnnotation` (§4.15.2) and the listener scope concept (§4.10.2) — removed from the API.
+- Auxiliary API models that do not exist (`RoleCommonConfig`, `RoleGroupCommonConfig`) in §3.2.1.
+
+#### Corrected
+
+- §3.2.2 / §5.1.2 / §7.2: `RoleInterface`'s real methods, and that implementing it is optional
+  (the reconciler never calls it); integration requires `ClusterInterface` + `RoleGroupHandler`.
+- §3.2.4 / §4.8.3: `ExecUtil` is a consumer-facing helper, not a reconcile-loop component;
+  `ServiceHealthCheck.CheckHealthy` takes `(ctx, client, namespace, name)`.
+- §2.5: CLI-args slice strategy — the framework path is always Replace; empty means "unset";
+  `podOverrides` decode failures are recorded and surfaced as events.
+- §4.2.3/§4.2.5: real registration API, registration-order tiebreak, and the actual per-hook
+  fault-tolerance policy including `common.WithStopOnError`.
+- §4.4.2–§4.4.5: single-pass best-effort deletion, ownerReference-based ownership check, metrics
+  Service in the deletion set, gray-delete grace period with a real requeue, status pruned only for
+  really-deleted groups, and the PVC annotation's actual scope.
+- §4.5.2: `ConfigFormat` requires `Marshal` **and** `Unmarshal`; config generation is integrated on
+  the ConfigMap path (`BaseRoleGroupHandler.ConfigGenerator` + `ConfigMapBuilder.WithMergedConfig`),
+  not in `StatefulSetBuilder`.
+- §4.6.2: `Inject` takes `*SidecarConfig`; `Validate` exists and now runs before the StatefulSet.
+- §4.7.2: dependency validation is an opt-in `GenericReconcilerConfig.Dependencies` hook, not
+  automatic traversal of the CR spec; `DependencyResolver.Validate` is a no-op.
+- §4.10.2: the SDK declares a generic ephemeral CSI volume whose PVC template carries the
+  annotations — it creates neither a PVC object nor a Service.
+- §4.12.2: `pkg/s3` renders S3A properties as opt-in helpers (not "automatically", not via
+  `ConfigGenerator`), credentials travel over CSI and are never rendered as properties;
+  `DatabaseConnection` has no renderer.
+- §5.3.3: apply semantics for Service (whole `ServiceSpec` assigned, server-owned fields restored).
+- §5.4.4: registry snippet now matches the real generic, entry-wrapped, sequence-ordered declaration.
+- §8.2: the roadmap list is explicitly labelled as not-yet-implemented; delivered items (gray
+  deletion, extension fault-tolerance degradation) were removed from it.
+
+#### Added
+
+- §4.3.3: a webhook wiring example that compiles against controller-runtime v0.23.x.
+- §4.8.4 **Reconcile Requeue Policy**: the success path requeues at `HealthCheckInterval`
+  (default 120s), with the earliest pending gray-delete deadline winning when sooner; 429, error,
+  panic and paused paths documented; status writes skipped when deep-equal to the live object.
+- §4.13.2: pre-flight validation (handler role names, declared dependencies, sidecar dependencies,
+  malformed `podOverrides`) and the panic path returning an error so controller-runtime backs off
+  while the status is left untouched.
+- §4.14.2: `Deleted` events from the cleaner, and Warning events for `ReconcilePanic` and
+  `podOverrides` failures.
+
 ## [2026-06-29]
 
 ### Security Documentation (`security.md`)

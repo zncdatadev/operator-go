@@ -84,10 +84,12 @@ Because the user's CRD overrides sit above the product layer, **a value a user s
 Each field type folds with a defined strategy:
 
 - **Map Types (Config files / Env)**: **Deep Merge**. A higher layer's keys override the same keys in a lower layer; new keys are appended.
-- **Slice Types (CLI args)**: **Replace** (default) or **Append**.
-  - **Replace**: a higher layer's slice completely replaces the lower layer's slice.
-  - **Append**: the higher layer's items are appended to the lower layer's slice.
-- **PodTemplate (`podOverrides`)**: Kubernetes **Strategic Merge Patch**, applied layer over layer, allowing fine-grained overrides of Pod fields (e.g., changing container image while keeping volume mounts).
+- **Slice Types (CLI args)**: governed by `ConfigMerger.SliceMergeStrategy`.
+  - **Replace** (`MergeStrategyReplace`, the default): a higher layer's non-empty slice completely replaces the lower layer's slice.
+  - **Append** (`MergeStrategyAppend`): the higher layer's items are appended to the lower layer's slice.
+  - **Empty means "unset", not "clear"**: an empty or nil higher-layer slice leaves the lower layer untouched, so a RoleGroup cannot erase the CLI arguments its Role set — it can only replace them.
+  - The `GenericReconciler` builds its merger with `config.NewConfigMerger()` and does not expose the strategy, so **inside the framework reconcile path the strategy is always Replace**. Append is reachable only by product code that drives its own `config.ConfigMerger`.
+- **PodTemplate (`podOverrides`)**: Kubernetes **Strategic Merge Patch**, applied layer over layer, allowing fine-grained overrides of Pod fields (e.g., changing container image while keeping volume mounts). A layer whose raw JSON does not decode into a `PodTemplateSpec`, or whose patch fails, is treated as absent; the reason is recorded on `MergedConfig.PodOverrideErrors` and surfaced by the reconciler as a `Warning` event (see §4.14.2) rather than silently dropped.
 
 > The two-layer Role↔RoleGroup merge is the special case of this fold with no product layer; existing callers that pass only those two layers are unaffected.
 
@@ -160,7 +162,7 @@ Defines the common data model, serving as the data exchange contract between the
 - **Core Components**:
     - `GenericClusterSpec`: Common cluster configuration, containing cluster-level configuration, role, and role group configuration.
     - `GenericClusterStatus`: Common cluster status, employing standard Kubernetes **Conditions** (e.g., `Available`, `Progressing`, `Degraded`, `ServiceHealthy`) to represent complex states beyond simple replica counts.
-    - **Auxiliary Models**: `RoleCommonConfig` (Role Common Configuration), `RoleGroupCommonConfig` (Role Group Common Configuration), `ZKConfig` (ZK Common Configuration), etc.
+    - **Auxiliary Models**: `RoleSpec` / `RoleGroupSpec` (role and role group definitions), `RoleConfigSpec` (Role-scoped Kubernetes controls, e.g. PDB), `RoleGroupConfigSpec` (workload runtime configuration), `OverridesSpec` (the flattened override fields), `ImageSpec`, `LoggingSpec`, `ResourcesSpec`.
 
 - **Design Points**: Specific product Spec/Status must embed common models (e.g., `HdfsClusterStatus` embeds `GenericClusterStatus`) to achieve state reuse. The `ServiceHealthy` condition allows products to report business-level readiness (e.g., HDFS safe mode off).
 
@@ -170,12 +172,11 @@ Defines core interfaces and extension contracts. It only depends on the API laye
 
 - **Business Interfaces**:
     - `ClusterInterface`: Cluster-level interface, defining methods for cluster name, Spec/Status access, state updates, etc.
-    - `RoleInterface`: Role-level interface, defining methods for role name, default ports, configuration extenders, etc.
-    - `RoleExtender`: Role extender interface, defining logic for extending Role configurations (e.g., extending `role.config` fields for product-specific workload settings).
+    - `RoleInterface`: Role-level descriptor exposing `GetRoleName()`, `GetRoleSpec()`, `GetRoleGroups()` and `GetOverrides()`, with the default implementations `RoleInfo`/`RoleGroupInfo`. It carries no port defaults and no configuration extenders. **Not required for integration**: the `GenericReconciler` iterates `GenericClusterSpec.Roles` directly and never calls this interface, so it is an optional convenience for product code.
     - `RoleGroupHandler`: The primary implementation extension point for product operators. Each product implements this interface to define the specific Kubernetes resources (StatefulSet, Services, ConfigMaps) built for each RoleGroup. The `GenericReconciler` calls `BuildResources()` on this handler during reconciliation.
 
 - **Extension Interfaces**:
-    - `ClusterExtension/RoleExtension/RoleGroupExtension`: Extension point interfaces, defining custom logic before and after reconciliation at each level.
+    - `ClusterExtension/RoleExtension/RoleGroupExtension`: Extension point interfaces, defining custom logic before and after reconciliation at each level. Role-level customization of `role.config` is done here (a `RoleExtension.PreReconcile` hook), not through a separate extender interface.
     - `ExtensionRegistry`: Extension registry, managing the registration, priority-based ordering, and execution of all extensions.
 
 ### 3.2.3 Core Component Layer (Common Logic Layer)
@@ -195,15 +196,16 @@ Implements common business logic based on abstract interfaces. It depends on the
 Provides non-intrusive common utility functions for the Core Component Layer to call, reducing repetitive coding.
 
 - **Core Tools**:
-    - `K8sUtil`: K8s resource operation tool, encapsulating idempotent operations like CreateOrUpdate and Delete.
-    - `ExecUtil`: Pod command execution tool, supporting the execution of commands inside containers during the reconciliation process (e.g., disk checks).
+    - `K8sUtil`: K8s resource operation tool, encapsulating idempotent operations like CreateOrUpdate and Delete. This is the only tool the reconcile loop itself wires in; the CR status write is handled by the reconciler directly (see §4.13.2).
+    - `ExecUtil`: Pod command execution tool (`util.NewExecUtil(client, restConfig)`) for running commands inside containers. It is a **consumer-facing helper**: the reconciler never constructs it, so a product that needs in-container exec builds it from its own `*rest.Config`.
 
 ### 3.2.5 Specific Product Layer (Extension Implementation Layer)
 
 Implements product-specific logic based on SDK abstract interfaces without modifying SDK core code, relying only on the API Layer and Abstract Interface Layer.
 
 - **Implementation Points**:
-    - **CR structs implement `ClusterInterface`/`RoleInterface` interfaces and provide `RoleGroupHandler` to define product-specific resources.**    - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
+    - **CR structs implement `ClusterInterface` and provide a `RoleGroupHandler` to define product-specific resources.** (`RoleInterface` is optional — see §3.2.2.)
+    - Implement specific logic through extension interfaces (e.g., HDFS ZK connectivity check, Namenode heap size configuration).
     - Integrate Webhook specific validation and default value population logic.
 
 # 4. Core Module Implementation
@@ -230,8 +232,9 @@ Original interfaces relied on type assertions, presenting runtime error risks an
 ### 4.1.2 Core Implementation
 
 - **Generic Reconciler Skeleton**: `GenericReconciler[CR ClusterInterface]`, constraining CR type and reusing the reconciliation process.
-- **Generic Extension Interface**: `ClusterExtension[CR ClusterInterface]`, eliminating type assertions and directly receiving specific CR types.
-- **Generic Role Extender**: `RoleExtender[ExtConfig any]`, constraining extension configuration types for extending Role-level settings (e.g., `role.config` fields) to ensure type safety.
+- **Generic Extension Interfaces**: `ClusterExtension[CR ClusterInterface]` (likewise `RoleExtension[CR]`, `RoleGroupExtension[CR]`), eliminating type assertions and directly receiving specific CR types.
+- **Generic Webhook Contracts**: `ProductDefaulter[CR]` / `ProductValidator[CR]`, which mirror controller-runtime's `admission.Defaulter[T]` / `admission.Validator[T]` so a typed implementation is passed straight to the webhook builder (§4.3).
+- **Erasure at the registry boundary**: `ExtensionRegistry` itself stores `ClusterExtension[ClusterInterface]` entries, so an extension written against a concrete CR type is registered through the `common.AsClusterExtension` / `AsRoleExtension` / `AsRoleGroupExtension` adapters, which perform the one remaining type assertion in a single place.
 
 ### 4.1.3 Core Value
 
@@ -252,25 +255,28 @@ Reserve extension points at key nodes in the reconciliation process to support e
 ### 4.2.3 Extension Registration
 
 - **Registration Timing**: Extensions must be registered during Operator initialization, specifically in the `main.go` setup phase before the Manager starts. This ensures all extensions are available when reconciliation begins.
-- **Registration Method**: Use the `ExtensionRegistry.Register()` method to add extensions. Each extension must implement the appropriate interface (`ClusterExtension`, `RoleExtension`, or `RoleGroupExtension`).
-- **Execution Order**: Extensions execute in **priority order (highest first)**. When multiple extensions share the same priority, they execute in registration order. Use `RegisterXxxExtensionWithPriority()` to assign explicit priority values (Lowest=0, Low=25, Normal=50, High=75, Highest=100).
+- **Registration Methods**: `RegisterClusterExtension`, `RegisterRoleExtension` and `RegisterRoleGroupExtension`, each with a `...WithPriority(ext, priority)` and a variadic `...WithOptions(ext, opts...)` form. There is no generic `Register()` method — the level is part of the method name because the registry keeps one ordered list per level.
+- **Registry Instance**: `common.GetExtensionRegistry()` returns a process-wide singleton, which every `GenericReconciler` in the process shares — an extension written for one CR type also runs (and can fail) for another product's clusters. Use `common.NewExtensionRegistry()` and pass it through `GenericReconcilerConfig.ExtensionRegistry` to give a controller its own isolated registry. `common.ResetExtensionRegistry()` empties the singleton in place (for tests) without replacing the pointer, so reconcilers that captured it observe the reset.
+- **Registration Options**: `common.WithPriority(p)` sets the priority (Lowest=0, Low=25, Normal=50, High=75, Highest=100; default Normal); `common.WithStopOnError(bool)` overrides the hook's default fault tolerance for that one registration (see §4.2.5).
+- **Execution Order**: Extensions execute in **priority order (highest first)**. Same-priority extensions execute in **registration order** — each entry carries a registration sequence number, so the ordering is total and does not depend on sort stability.
 
 ### 4.2.4 Extension Lifecycle
 
 - **Initialization**: Extensions are instantiated once during Operator startup. The SDK does not recreate extensions per reconciliation.
 - **State Management**: Extensions should be stateless or manage their own internal state. The SDK passes the current CR context to each extension method, enabling access to cluster state without requiring persistent extension state.
-- **Cleanup**: Extensions can implement an optional `Cleanup()` method for resource release during Operator shutdown.
+- **Shutdown**: There is **no shutdown hook**. The extension interfaces declare only `Name`, `PreReconcile`, `PostReconcile` and (cluster level) `OnReconcileError`; an extension owning a resource that must be released on operator shutdown registers its own `manager.Runnable`.
 
 ### 4.2.5 Execution Process
 
-The reconciler iterates through extensions in the extension registry, executing them in **priority order (highest first)**, supporting configuration for "process interruption on extension failure" to adapt to different fault tolerance needs.
+The reconciler iterates through the registry's entries in **priority order (highest first)**, and per-hook fault tolerance decides whether a failure skips the entries behind it.
 
-- **Normal Execution**: Extensions execute sequentially. Each extension receives the current context and can modify the CR or return an error.
+- **Normal Execution**: Extensions execute sequentially. Each extension receives the reconcile context, the client, and the CR.
+- **CR Mutation**: Hooks are **observe-and-act**, not mutate-in-place. Mutations to the in-memory CR are never persisted by the framework, and `reconcile()` snapshots `spec := cr.GetSpec()` *before* the cluster `PreReconcile` hooks run, so role iteration, cleanup and health evaluation may not observe a spec a hook changed. A hook that must change the CR writes through the client and lets the resulting watch event drive the next reconcile.
 - **Error Handling**:
-  - If an extension returns an error, the SDK captures the error and propagates it to the CR Status.
-  - The `OnReconcileError` hook is triggered for cleanup or logging.
-  - Subsequent extensions may be skipped depending on error severity (configurable via `StopOnError` flag).
-- **State Recovery**: If an extension modifies the CR and a subsequent extension fails, the SDK does not automatically rollback changes. Extensions should implement their own compensation logic if needed.
+  - Every hook failure is wrapped in an `*ExtensionError` naming the extension.
+  - `PreReconcile`/`PostReconcile` **stop on the first failure by default** and return it, which aborts the reconcile and maps to the `Degraded` condition. An extension registered with `common.WithStopOnError(false)` does not stop the loop; its failure is logged, the remaining extensions still run, and the collected failures are joined and returned so they still reach the CR status.
+  - `OnReconcileError` handlers **all run by default** and their own failures are only logged — the original reconcile error stays authoritative. Registering an error handler with `common.WithStopOnError(true)` makes its failure abort the remaining handlers instead.
+- **State Recovery**: If an extension modifies external state and a subsequent extension fails, the SDK does not roll anything back. Extensions implement their own compensation logic, typically in `OnReconcileError`.
 
 ## 4.3 Webhook Integration Module
 
@@ -281,16 +287,30 @@ Based on Kubebuilder annotation-driven practices, integrating MutatingWebhook an
 ### 4.3.2 Core Functions
 
 - **MutatingWebhook**:
-    - **Common Logic**: Populate resource defaults (CPU/Memory), ZK configuration defaults (Port 2181), log path defaults.
-    - **Specific Logic**: Product side implements the `ProductDefaulter` interface to populate product-specific default values for **typed Spec fields** (e.g., HDFS Namenode heap size, default ports). These are *defaults* — static fallbacks persisted into the Spec at admission.
+    - **Common Logic**: `webhook.DefaultGenericClusterSpec(spec, defaultImage)` defaults **the image only** — it copies the operator's default `ImageSpec` when `spec.image` is absent, and sets `spec.image.pullPolicy` to `IfNotPresent` when empty. The SDK ships no CPU/Memory, ZooKeeper or log-path defaulting.
+    - **Specific Logic**: Product side implements the `ProductDefaulter[CR]` interface to populate product-specific default values for **typed Spec fields** (e.g., HDFS Namenode heap size, default ports). These are *defaults* — static fallbacks persisted into the Spec at admission.
     - **Scope boundary**: `ProductDefaulter` defaults typed Spec fields only. Product **config-file content** (and any value derived from live cluster state) is *computed* at reconcile time via `ProductConfig`, not defaulted here — see §2.6 for the distinction.
 - **ValidatingWebhook**:
-    - **Common Logic**: Required field validation, resource format validation (CPU/Memory format), replica count legitimacy validation.
-    - **Specific Logic**: Product side implements the `ProductValidator` interface to execute business rule validation (e.g., HDFS HA mode configuration validation).
+    - **Common Logic**: `webhook.ValidateGenericClusterSpec(spec, fldPath)` validates **the image only** — when `spec.image.custom` is unset, `repo`, `productVersion` and `kubedoopVersion` are required, and `pullPolicy` must be one of `Always`/`IfNotPresent`/`Never`. It returns a `field.ErrorList` for composition with the product's own checks. Two opt-in helpers are available for product validators: `webhook.ValidateFieldLength` and `webhook.ValidateNonEmptyMap`.
+    - **Specific Logic**: Product side implements the `ProductValidator[CR]` interface to execute business rule validation (e.g., HDFS HA mode configuration validation).
+- **Enforced by the CRD schema, not by admission code**: replica bounds (`RoleGroupSpec.Replicas` carries `+kubebuilder:validation:Minimum=0` and `+kubebuilder:default=1`) and CPU/Memory quantity formats (`resource.Quantity` fields) are checked by the OpenAPI schema the apiserver applies. The SDK deliberately does not duplicate them in webhook code.
 
 ### 4.3.3 Admission Workflow Overview
 
 MutatingWebhook runs first to apply defaults. ValidatingWebhook runs next to enforce invariants. Failed validations reject the request before persistence, ensuring only valid specs enter reconciliation.
+
+`ProductDefaulter[CR]`/`ProductValidator[CR]` mirror controller-runtime's `admission.Defaulter[T]`/`admission.Validator[T]`, so a typed implementation is wired directly (controller-runtime v0.23.x):
+
+```go
+func SetupWebhookWithManager(mgr ctrl.Manager) error {
+    return ctrl.NewWebhookManagedBy(mgr, &HdfsCluster{}).
+        WithDefaulter(&HdfsClusterDefaulter{}).
+        WithValidator(&HdfsClusterValidator{}).
+        Complete()
+}
+```
+
+`webhook.NewDefaulterAdapter` / `webhook.NewValidatorAdapter` erase the CR type to `runtime.Object` for the older `WithCustomDefaulter`/`WithCustomValidator` entry points; they remain available but are no longer the recommended wiring.
 
 ### 4.3.4 Deployment Adaptation
 
@@ -304,51 +324,56 @@ Adopts a hybrid scheme of "Spec vs Status comparison as primary, cluster resourc
 
 ### 4.4.2 Execution Process
 
-1. Get the desired role group list (`desiredGroups`) of roles from Spec.
-2. Get the historical actual role group list (`oldActualGroups`) from Status.RoleGroups.
+1. Get the desired role group list (`desiredGroups`) of roles from Spec. Each role group reconciled in this cycle is recorded in `Status.RoleGroups`.
+2. Get the historical actual role group list (`oldActualGroups`) from `Status.RoleGroups`.
 3. Calculate orphaned role groups: `orphanedGroups = oldActualGroups - desiredGroups`.
-4. Validate resource existence before deletion, deleting resources in the order of "PDB → StatefulSet → ConfigMap → Service".
-5. Sync Status.RoleGroups to `desiredGroups` and update the actual status snapshot.
+4. For each orphaned role group, Get-then-Delete its resources in a single pass, in the order "PDB → StatefulSet → ConfigMap → Service → headless Service → metrics Service".
+5. Remove from `Status.RoleGroups` **only those role groups whose deletion pass actually ran**. A group still inside its gray-delete grace period, or one whose primary resource belongs to another cluster, stays in the status snapshot and is retried on the next reconcile instead of being silently forgotten. The pruned map is persisted by the reconcile's final status update (step 7 of the loop).
+6. Return the earliest remaining gray-delete deadline so the reconcile loop can requeue exactly when the next deferred deletion becomes due (see §4.8.4).
 
 ### 4.4.3 Safety Protection Mechanisms
 
 - **Pre-Delete Validation**:
-  - Before deleting any resource, the SDK verifies the resource still exists in the cluster.
-  - Resource labels are checked to confirm ownership (matching the CR's ownership references).
-  - Resources without proper ownership labels are **NOT deleted** to prevent accidental deletion of manually created resources.
+  - Every resource is fetched before deletion; `NotFound` is treated as "already gone" and short-circuits to success.
+  - Ownership is confirmed through the **ownerReferences** — the resource must carry a reference whose UID matches the CR and whose `controller` flag is true. (An empty owner UID disables the check, for callers that drive the cleaner directly.)
+  - Resources not owned by this cluster are **NOT deleted** — this prevents a name collision with a manually created or foreign resource from destroying it.
 
 - **Deletion Order**:
   - Resources are deleted in dependency order to avoid orphaned references:
-    1. **PDB** (PodDisruptionBudget) - Remove first to avoid blocking StatefulSet deletion.
-    2. **StatefulSet** - Scale to 0 first, then delete (ensures graceful pod termination).
-    3. **ConfigMap** - Delete after StatefulSet is removed.
-    4. **Service** - Delete last as other resources may reference it.
-  - Each deletion waits for confirmation before proceeding to the next resource type.
+    1. **PDB** (PodDisruptionBudget) — removed first so it cannot block pod eviction.
+    2. **StatefulSet** — when `replicas > 0` the cleaner first patches `spec.replicas = 0`, then issues the Delete.
+    3. **ConfigMap**.
+    4. **Service**, **headless Service** (`<resource>-headless`) and **metrics Service** (`<resource>-metrics`) — the metrics Service is a framework slot like the other two, so it is reclaimed here instead of outliving its role group.
+
+- **Best-effort, single-pass semantics** (important):
+  - The scale-to-0 Update is **best effort**: a failure is logged at V(1) and the Delete is issued anyway.
+  - **No deletion waits for the previous one to be observed gone**, and the cleaner does not wait for the StatefulSet to finish scaling down. Pods terminate through the normal cascade garbage collection with their `terminationGracePeriodSeconds`; there is no ordered reverse-ordinal drain.
+  - A failed delete aborts the pass for that cluster and is returned to the reconcile loop, which logs it and continues (cleanup failures are non-fatal); the group stays in `Status.RoleGroups` and is retried next cycle.
+
+- **Gray Deletion (opt-in grace period)**:
+  - With `GenericReconcilerConfig.GrayDeleteGracePeriod > 0`, an orphaned role group is not deleted on first detection. The cleaner stamps `orphan.zncdata.dev/pending-deletion` (an RFC3339 timestamp) on the group's primary resource — its StatefulSet, falling back to its ConfigMap — and defers.
+  - Deletion proceeds on a later reconcile once the grace period has elapsed. The remaining time is returned to the reconcile loop and turned into a `RequeueAfter`, so the deletion happens on schedule rather than waiting for an unrelated watch event.
+  - If the role group is re-added to the Spec before the deadline, the annotation is cleared, so a future re-orphaning gets a full grace period again.
+  - With the default value `0` the annotation is never written and orphans are deleted immediately.
 
 - **PVC Handling**:
   - By default, **PVCs are PRESERVED** during orphaned resource cleanup to protect data.
-  - If PVC deletion is explicitly requested, the SDK requires confirmation via a specific annotation.
+  - Setting the annotation `operator.zncdata.dev/delete-pvcs: "true"` on the cluster CR makes the cleaner also delete the PVCs of an orphaned StatefulSet (listed by the StatefulSet's pod selector, before the scale-to-0 so the selector is still meaningful).
+  - **Scope**: this applies to orphan cleanup only — role groups removed from the Spec. The SDK registers no finalizer, so deleting the whole CR does not run SDK code: the PVCs of a deleted cluster are left to Kubernetes' own garbage collection rules.
 
 ### 4.4.4 Concurrency Conflict Handling
 
-- **Optimistic Locking**:
-  - The SDK uses Kubernetes resource versioning to detect concurrent modifications.
-  - If a resource was modified by another process between read and delete, the operation is retried with the latest resource version.
-
-- **Conflict Resolution**:
-  - **409 Conflict**: Automatically re-fetches the resource and retries the deletion.
-  - **429 Too Many Requests**: Implements exponential backoff before retry.
-  - **404 Not Found**: Treats as success (resource already deleted by another process).
-
-- **Status Synchronization**:
-  - After cleanup, the SDK atomically updates both the CR Status and the actual cluster state.
-  - If Status update fails, the next reconciliation cycle re-evaluates orphaned resources.
+- **404 Not Found**: treated as success — the resource was already deleted by another process.
+- **409 Conflict**: the annotate/scale-down path is Get-then-Update, so it carries a `resourceVersion` and a concurrent modification surfaces as a conflict. The cleaner does **not** retry internally: the error is returned, cleanup for that cycle stops, and the next reconcile re-evaluates. (`retry.RetryOnConflict` is applied on the *status write* path via `K8sUtil.UpdateStatusWithRetry`, not inside the cleaner.)
+- **429 Too Many Requests**: there is **no** 429-specific handling on the cleanup path. Only the *apply* path maps a 429 to a fixed `RequeueAfter` (`GenericReconcilerConfig.RateLimitRetryAfter`, default 10s) — it is a flat delay, not exponential backoff.
+- **Status Synchronization**: cleanup and the CR Status are not updated atomically. The cleaner prunes the in-memory `Status.RoleGroups` for the groups it really deleted, and the reconcile's final status update persists it. If that write fails, the next reconciliation re-evaluates the same orphans — deletion is idempotent, so a repeated pass is safe.
+- **Events**: when an `EventManager` is wired (`RoleGroupCleaner.WithEventManager`), each removed resource emits a `Normal`/`Deleted` event; without it deletions are recorded only in the operator log.
 
 ### 4.4.5 Boundary Handling
 
-- **CR First Creation**: Status is empty, no orphaned resources, directly sync desired role groups to Status.
-- **Manual Resource Deletion**: Rely on idempotent deletion (IgnoreNotFound) to avoid errors, syncing Status in the next reconciliation.
-- **Status Tampering**: Query cluster resources before deletion, only deleting actually existing resources to avoid accidental deletion.
+- **CR First Creation**: Status is empty, no orphaned resources, the reconciled role groups are recorded in Status.
+- **Manual Resource Deletion**: Rely on idempotent deletion (`IsNotFound` short-circuit) to avoid errors, syncing Status in the next reconciliation.
+- **Status Tampering**: Query cluster resources before deletion, and verify the ownerReference, so only resources this cluster actually owns are deleted.
 
 ## 4.5 Configuration Generator Module
 
@@ -358,19 +383,21 @@ Big data components often require configuration files in various formats (e.g., 
 
 ### 4.5.2 Core Implementation
 
-- **ConfigFormat Interface**: Defines the contract for configuration serialization.
+- **ConfigFormat Interface**: Defines the contract for configuration serialization. It is **round-trip**: an adapter must implement both directions.
   - `Marshal(data map[string]string) (string, error)`
-- **FormatAdapter**: Adapter pattern implementation supporting common formats:
+  - `Unmarshal(data string) (map[string]string, error)`
+- **FormatAdapter**: Adapter pattern implementation supporting common formats, selected by `config.GetFormat(ConfigFormatType)` (`xml`, `properties`, `yaml`, `env`, `ini`; unknown types fall back to properties):
   - `XMLAdapter`: Converts key-value pairs into Hadoop-style `<property><name>...</name><value>...</value></property>` XML structure.
-  - `PropertiesAdapter`: Converts key-value pairs into standard Java `.properties` format.
-  - `YAMLAdapter`: Converts structured data into YAML format.
-  - `EnvAdapter`: Formats as shell environment variable exports or .env file content.
+  - `PropertiesAdapter`: Converts key-value pairs into standard Java `.properties` format, escaping separators in keys and line continuations in values.
+  - `YAMLAdapter`: Emits a flat mapping through `gopkg.in/yaml.v3` (values that would otherwise parse as bool/number are quoted to stay strings); `Unmarshal` rejects a document that is not a flat mapping instead of returning partial data.
+  - `EnvAdapter`: Formats as shell environment variable exports or .env file content. Keys must be valid shell variable names (`^[A-Za-z_][A-Za-z0-9_]*$`) — anything else is an error rather than corrupt output. Newlines, carriage returns and tabs in values are written as dotenv-style `\n`/`\r`/`\t` escapes, so a multi-line value is not byte-faithful when a POSIX shell sources the file.
+  - `INIAdapter`: Emits INI sections; rejects keys/values containing line breaks and keys containing `=`, `:` or a leading `[`, `#`, `;`.
 - **Product Logging Engine** (`pkg/productlogging`): A dedicated, product-agnostic logging engine (separate from the config-format adapters above).
   - **Input**: The deep-merged CRD logging spec (e.g., `containers.coordinator.loggers.ROOT.level: DEBUG`), converted once into a framework-neutral `LogConfig`.
   - **Generators**: A registry of `LogFileGenerator`s renders framework-specific files (Logback XML, Log4j2 properties, Python logging) from the neutral model — including console/file appender thresholds and a bounded rolling file appender.
   - **Declaration**: Products declare per-container logging via `ContainerLogging` (container, framework, pattern). The framework owns the stable log file-path convention that the Vector sources glob — `<LogDir>/<lowercased container>/<container>.<framework suffix>`, where the suffix selects the edge parser (`.log4j.xml` for log4j/logback XMLLayout, `.log4j2.xml` for log4j2 XMLLayout, `.py.json` for python JSON lines) — so producers and the consumer cannot drift. Vector parses each format at the edge and normalizes every event to the stable schema (`.timestamp`/`.logger`/`.level`/`.message` + `.errors`, flat `.namespace`/`.cluster`/`.role`/`.roleGroup` metadata, and `.container`/`.file` extracted from the path).
   - **Vector coupling**: The rolling file appender is emitted only when the Vector agent is enabled — without a consumer there is no shared log volume to write to (see the Sidecar Injection module).
-- **Integration**: The `StatefulSetBuilder` utilizes the `ConfigGenerator` to process the merged configuration map (from `ConfigMerger`) into the final string data stored in ConfigMaps.
+- **Integration**: Config generation happens on the **ConfigMap** path, not in the StatefulSet builder. `BaseRoleGroupHandler.ConfigGenerator` (a `config.MultiFormatConfigGenerator`) renders `MergedConfig.ConfigFiles` into `map[filename]content`, which `builder.ConfigMapBuilder.WithMergedConfig(mergedConfig, generator)` turns into the role group ConfigMap's `Data`. When no generator is set, the handler falls back to a deterministic properties-style rendering (keys sorted, separators and line breaks escaped). The StatefulSet only *mounts* the resulting ConfigMap.
 
 ### 4.5.3 Core Value
 
@@ -386,11 +413,15 @@ Operations such as log collection (Vector), metric monitoring (JMX Exporter), an
 
 ### 4.6.2 Core Implementation
 
-- **SidecarProvider Interface**: Defines the abstraction for sidecar injection.
-  - `Inject(podSpec *corev1.PodSpec, config SidecarConfig) error`
+- **SidecarProvider Interface**: Defines the abstraction for sidecar injection. The pod spec is mutated in place and injection must be idempotent; a nil config means "provider defaults".
+  - `Name() string`
+  - `Inject(podSpec *corev1.PodSpec, config *SidecarConfig) error`
+  - `Validate(ctx context.Context, c client.Client, namespace string) error` — checks the provider's external dependencies (e.g. a required ConfigMap key).
+- **Injection Phases**: `SidecarManager.InjectAll` orders providers by `(phase, name)`, so injection is deterministic and a pod template does not re-render between reconciles. The phases are `SidecarPhaseProducer` (10), `SidecarPhaseDefault` (50) and `SidecarPhasePipeline` (90). A provider declares its phase by implementing `PhasedProvider`, or the caller pins one with `SidecarManager.RegisterWithPhase` (an explicit registration phase wins). This is what guarantees a pipeline provider — Vector, which must RW-mount the shared log volume onto the containers it collects from — runs after the producers that inject those containers.
+- **Dependency Validation**: The `GenericReconciler` calls `SidecarManager.ValidateAll` for every role group **after** the ConfigMap, Services and extra resources are applied and **before** the StatefulSet. A registered, enabled provider whose `Validate` fails aborts the reconcile with a `reconciler.ValidationError` instead of producing pods that crash-loop on a broken mount. Validation only runs once a client and namespace are wired into the manager (the namespace is per CR).
 - **Provider Placement**: Providers with config generation or external service discovery are placed in their own domain package. Trivial providers remain in `pkg/sidecar/`.
 - **Standard Implementations**:
-  - `VectorSidecarProvider` (in `pkg/vector/`): The **single owner of the shared log pipeline**. It creates the size-limited shared log `emptyDir`, RW-mounts it on the declared producer containers (so the product writes its log files there), mounts it on the Vector agent container (read-write: the agent is a native init container that starts before the producers and pre-creates each producer's per-container log directory, since log4j 1.x and Python's file handlers do not create parent directories), and injects the agent. Config generation (`RenderVectorConfig`) and aggregator discovery (`DiscoverAggregatorAddress`) are separate pure functions in the same package.
+  - `VectorSidecarProvider` (in `pkg/vector/`): The **single owner of the shared log pipeline**. It creates the size-limited shared log `emptyDir`, RW-mounts it on the declared producer containers (so the product writes its log files there), mounts it on the Vector agent container (read-write: the agent is a native init container that starts before the producers and pre-creates each producer's per-container log directory, since log4j 1.x and Python's file handlers do not create parent directories), and injects the agent. Config generation (`RenderVectorConfig`) and aggregator discovery (`DiscoverAggregatorAddress`) are separate pure functions in the same package. It declares `SidecarPhasePipeline`, so it is always injected after the producer containers exist, and its `Validate` requires the target ConfigMap to exist **and to carry the `vector.yaml` key** — an agent mounted on a ConfigMap without its config would otherwise start and immediately fail.
   - `JmxExporterSidecarProvider` (in `pkg/sidecar/`): Injects Prometheus JMX Exporter agent and exposes metric ports.
 - **Workflow**: The `GenericReconciler` registers the Vector provider — configured with the producer container names (from the handler's `LoggingProducers`) and the shared log volume size — only when the agent is enabled **and** at least one producer is declared (otherwise it warns and skips, so an agent that has nothing to collect can never yield an invalid Pod). The `BaseRoleGroupHandler` then invokes the `SidecarManager` after StatefulSet construction, and the manager injects Containers, Volumes, and VolumeMounts. For CRs that expose the aggregator ConfigMap (via `VectorAggregatorProvider`), the framework also generates `vector.yaml` into the role group ConfigMap — keeping producer, consumer, and config in lockstep in one place rather than spread across product operators.
 
@@ -408,14 +439,25 @@ Big Data systems often have strict startup dependency orders (e.g., Zookeeper ->
 
 ### 4.7.2 Core Implementation
 
-- **External Reference Validation**:
-  - The SDK automatically validates the existence of referenced external resources (ConfigMaps, Secrets) defined in the CR Spec.
-- **DependencyResolver**:
-  - **Component**: Validates external dependencies (e.g., Zookeeper Connection) during `PreReconcile`.
-  - **Action**: If dependencies are missing, the Reconciler pauses the process and sets the `Degraded` condition with a descriptive message, effectively preventing the creation of Pods until dependencies are satisfied.
+- **External Reference Validation is OPT-IN, declarative, and not derived from the Spec.** The SDK does **not** traverse the CR Spec looking for object references. A product declares what to check by setting the `GenericReconcilerConfig.Dependencies` hook:
+
+  ```go
+  Dependencies: func(cr *HdfsCluster) []reconciler.Dependency {
+      return []reconciler.Dependency{
+          {Kind: reconciler.DependencySecret, Name: cr.Spec.Kerberos.SecretName},
+          {Kind: reconciler.DependencyConfigMap, Name: cr.Spec.ZookeeperConfigMap},
+      }
+  },
+  ```
+
+  - Supported kinds: `DependencyConfigMap` and `DependencySecret`. An empty `Dependency.Namespace` defaults to the CR's namespace; an empty `Name` is itself an error.
+  - When the hook is nil (the default), **no dependency checking happens at all**.
+- **Placement in the loop**: the check runs after the cluster `PreReconcile` extensions and **before any role is reconciled**, so a missing object aborts the cycle with a `DependencyValidation` reconcile error, which maps to the `Degraded` condition and a `Warning` event. No Pods are created for that cycle.
+- **DependencyResolver**: the helper behind the hook. Its exported methods — `ValidateConfigMap`, `ValidateSecret`, `ValidateS3Connection`, `ValidateDatabaseConnection`, `ValidateZKConnection`, `ValidateEndpointFormat`, `ParseConnectionStrings` — are also usable directly from product code (e.g. from a `ClusterExtension.PreReconcile`) for checks richer than existence. Failures are `*DependencyError`, which products map to their own conditions.
+  - `DependencyResolver.Validate(ctx, spec)` is a stable **no-op** kept for source compatibility; the reconcile flow no longer calls it. Do not rely on it to check anything.
 
 ### 4.7.3 Core Value
-- **Stability**: Prevents cascading failures and "noise" from pod crash loops by enforcing dependency checks before startup.
+- **Stability**: Prevents cascading failures and "noise" from pod crash loops by declaring the prerequisites that must exist before startup.
 - **Clarity**: Clearly indicates missing prerequisites in the CR Status.
 
 ## 4.8 Health Management Module
@@ -425,17 +467,18 @@ Stateful systems distinguish between "Infrastructure Ready" (Pod Running) and "S
 
 ### 4.8.2 Health Check Mechanism
 
-The SDK implements a comprehensive health check mechanism that validates:
-- **External Dependencies**: Availability of required external resources (e.g., Zookeeper, S3, Database).
-- **Service Availability**: Whether the service is ready to accept traffic.
-- **Pod Status**: Health and readiness of individual Pods.
+The health step runs once per reconcile, after orphan cleanup, and evaluates:
+- **Workload Status**: for every role group in the Spec, the StatefulSet's `readyReplicas` against the role group's desired replicas — producing `Available`, `Progressing` (revision rollout in flight) and `Degraded`. A role group deliberately scaled to `replicas: 0` is healthy at 0 ready replicas; a role group whose StatefulSet cannot be read is both not-healthy and not-available.
+- **Service Availability**: the optional product-level `ServiceHealthCheck` (below), reported through the `ServiceHealthy` condition.
+- **ClusterOperation short-circuit**: `reconciliationPaused` reports `Degraded/ReconciliationPaused`, and `stopped` reports `Available=False` with `Degraded=False` (a stopped cluster is doing exactly what was asked).
 
-- **Check Interval**: Health checks execute every **120 seconds** during reconciliation.
-- **Timeout**: Each health check operation has a maximum timeout of **300 seconds**.
+- **Check Cadence**: `GenericReconcilerConfig.HealthCheckInterval` (default **120 s**) is the interval at which a successful reconcile requeues itself, which is what makes health re-evaluation periodic — see §4.8.4. A negative value disables the periodic wakeup.
+- **Timeout**: `GenericReconcilerConfig.HealthCheckTimeout` (default **300 s**) is applied as a `context.WithTimeout` around the product-level `ServiceHealthCheck` call, so a hanging probe cannot pin a reconcile worker. A non-positive value disables the deadline. It does not bound the workload checks, which are ordinary client reads governed by the reconcile context.
 - **Failure Handling**:
-  - If a health check fails, the CR Status is marked as **Degraded** with an appropriate reason and message.
-  - If the controller itself encounters an internal error (e.g., panic, unexpected exception), the Status is **NOT modified** to prevent incorrect state propagation.
-  - Transient failures trigger a requeue for retry in the next reconciliation cycle.
+  - A failing health evaluation marks the CR Status **Degraded**. The message names the offenders: `Unhealthy role groups: <role>/<group>, ...`.
+  - A `ServiceHealthCheck` that errors or reports unhealthy sets both `Degraded=True` and `ServiceHealthy=False` with the probe's message.
+  - An error raised by the health step itself is logged and does **not** fail the reconcile; the state is re-evaluated on the next cycle.
+  - If the controller itself encounters an internal error (a recovered panic), the Status is **NOT modified** — an internal fault says nothing about the cluster's actual state. The panic is instead returned as an error so the work queue retries with backoff (§4.13.2).
 
 ### 4.8.3 Core Implementation
 
@@ -446,12 +489,26 @@ The SDK implements a comprehensive health check mechanism that validates:
   - **ServiceHealthy**: The application-level check passed (e.g., SafeMode off, RegionServer registered).
   - **ReconcileComplete**: The SDK has finished the latest reconciliation loop successfully.
 - **ServiceHealthCheck Interface**:
-  - **Contract**: `CheckHealthy(ctx context.Context) (bool, error)`
-  - **Mechanism**: Executed via `ExecUtil` inside the container or by querying external APIs.
-  - **Example**: HDFS implements this to run `hdfs dfsadmin -safemode get`.
-- **Status Aggregation**: The SDK aggregates Pod Readiness, Dependency Status, and Business Health Checks into the final `GenericClusterStatus`.
+  - **Contract**: `CheckHealthy(ctx context.Context, client client.Client, namespace, name string) (bool, error)`. `common.ServiceHealthCheckFunc` adapts a plain function to it, and `common.CompositeHealthCheck` composes several.
+  - **Mechanism**: The SDK hands the probe a `client.Client` and the cluster's namespace/name, so the natural implementation reads Kubernetes objects or queries the product's own HTTP/RPC endpoint. The framework does **not** provide an in-container exec handle — no `*rest.Config` is threaded into this path. A product that needs to exec inside a Pod constructs `util.NewExecUtil(client, restConfig)` itself from the config it already has in `main.go`.
+  - **Example**: HDFS implements this by querying the NameNode's JMX/HTTP SafeMode endpoint; running `hdfs dfsadmin -safemode get` inside the container is possible only through a product-built `ExecUtil`.
+  - **Registration**: `GenericReconcilerConfig.ServiceHealthCheck`.
+- **Status Aggregation**: The SDK aggregates workload readiness and the business health check into the final `GenericClusterStatus`. Conditions carry `observedGeneration`, and `SetCondition` preserves `lastTransitionTime` when the status value does not actually change, so an idle cluster produces no condition churn.
 
-### 4.8.4 Core Value
+### 4.8.4 Reconcile Requeue Policy
+
+Watches only cover the resource kinds the framework owns (`StatefulSet`, `ConfigMap`, `Service`, `PodDisruptionBudget`, `ServiceAccount`, plus any GVK a product registers through `SetupWithManagerOptions`). Anything that changes **without** producing a watch event — a product `ServiceHealthCheck` whose remote side degrades, a gray-delete grace period running out — would otherwise never be re-evaluated. The reconcile loop therefore schedules its own wakeups:
+
+- On the **success path**, `Reconcile` returns `ctrl.Result{RequeueAfter: d}` where `d` is the **earliest strictly-positive** of:
+  1. `HealthCheckInterval` (default 120 s) — the periodic health cadence;
+  2. the earliest pending **gray-delete deadline** returned by the cleaner (§4.4.3), i.e. the time until the next orphaned role group becomes deletable.
+
+  A gray-delete deadline sooner than the health cadence wins, so a deferred deletion runs on time. When both are non-positive (`HealthCheckInterval` set negative and nothing pending), `d` is `0` — no periodic wakeup, purely watch-driven.
+- On the **429 rate-limit path**, `Reconcile` returns `RequeueAfter: RateLimitRetryAfter` (default 10 s) with a nil error, so no `Degraded` condition and no error event are produced for throttling.
+- On the **error path** (including a recovered panic), `Reconcile` returns the error and lets controller-runtime's rate limiter apply exponential backoff. No `RequeueAfter` is set — setting both is meaningless.
+- On the **paused path** (`reconciliationPaused: true`), the loop returns `ctrl.Result{}` with no requeue: nothing will change until the user edits the CR, which produces a watch event anyway.
+
+Because the cadence makes the operator write to the API server on a timer, the final status update is skipped when the computed status is deep-equal to the live one — a steady-state cluster costs one read, not a write, per wakeup.
 
 ## 4.9 Security Module
 
@@ -482,9 +539,11 @@ Big Data services often require complex network exposure strategies (e.g., UIs n
   - **external-stable**: Creates a LoadBalancer/NodePort with stable external IPs (crucial for Kafka/HDFS clients).
   - **external-unstable**: Creates a LoadBalancer with dynamic IPs for ephemeral access.
 - **Workflow (CSI-Based)**:
-  1. **Declaration**: The Product CR defines that a Role needs a listener by referencing a `ListenerClass`.
-  2. **Injection**: The SDK creates a `PersistentVolumeClaim` (PVC) with specific annotations pointing to the listener configuration, instead of creating a Kubernetes `Service` directly.
-  3. **Realization**: The `listener-operator`'s CSI driver intercepts the Pod mount, automatically provisions the required Kubernetes `Service`, and projects the resulting public address/port into the Pod's filesystem.
+  1. **Declaration**: The Product CR defines that a Role needs a listener by referencing a `ListenerClass`. The operator registers it with `listener.NewVolume(volumeName, class)` (optionally `.WithListenerName(...)`) on a `ListenerProvisioner`.
+  2. **Injection**: The SDK declares a **generic ephemeral volume** on the Pod template — `Ephemeral.VolumeClaimTemplate` with the `listeners.kubedoop.dev` StorageClass, `ReadWriteOnce`, a 1Mi request, and the listener annotations (`listeners.kubedoop.dev/class`, and `listeners.kubedoop.dev/listenerName` when set) on the *template's* metadata. The SDK does **not** create a `PersistentVolumeClaim` object and does **not** create a Kubernetes `Service`. Kubernetes' ephemeral-volume controller materializes one pod-owned PVC per Pod, so the operator needs no PVC create permission and the PVC's lifecycle is bound to its Pod.
+  3. **Realization**: The `listener-operator`'s CSI driver intercepts the Pod mount, automatically provisions the required Kubernetes `Service`, and projects the resulting public address/port into the Pod's filesystem (readable through `ListenerProvisioner.Path()`/`MustPath()`).
+
+> **Note**: there is no listener *scope* annotation. Scope selection is a `secret-operator` concept (see `pkg/security`), not a listener one; `pkg/listener` emits only the class and listener-name annotations.
 
 ### 4.10.3 Core Value
 - **Decoupling**: Developers define *logical* ports (e.g., "WebUI"), while Ops define *physical* exposure strategies via `ListenerClass`.
@@ -506,7 +565,7 @@ Day-2 operations (maintenance, debugging, emergency stop) require safe and predi
   - **Persistence**: Crucially, **PVCs (Persistent Volume Claims) and ConfigMaps are PRESERVED**. This ensures data safety while freeing up compute resources.
 - **Graceful Shutdown**:
   - **Mechanism**: The `gracefulShutdownTimeout` field configures the `terminationGracePeriodSeconds` of the Pod.
-  - **Lifecycle Hooks**: The SDK can optionally inject `preStop` hooks to execute application-specific decommissioning logic (e.g., `hdfs dfsadmin -saveNamespace`) before the SIGTERM signal.
+  - **Lifecycle Hooks**: `preStop` hooks are opt-in on the product side — `StatefulSetBuilder.WithPreStopHook(command)` / `WithPreStopHTTPGet(path, port)` inject application-specific decommissioning logic (e.g., `hdfs dfsadmin -saveNamespace`) before SIGTERM. The framework does not add one by default.
 
 ### 4.11.3 Core Value
 
@@ -524,15 +583,21 @@ Hardcoding these connections in `configOverrides` is error-prone and leaks crede
 
 ### 4.12.2 Core Implementation
 
-- **Unified Types**:
-  - `S3Connection`: Standard struct for Endpoint, Bucket, Region, and Credential reference.
-  - `DatabaseConnection`: Standard struct for Host, Port, Drive Class, and Credential reference.
-- **Configuration Rendering**:
-  - The SDK automatically converts these high-level objects into application-specific configuration files.
-  - *Example*: An `S3Connection` object is transformed into `core-site.xml` properties (`fs.s3a.access.key`, `fs.s3a.endpoint`, etc.) by the **ConfigGenerator**.
-- **Credential Resolution**: References to Secrets (e.g., `credentials: secret-name`) are validated and mounted, or resolved to CSI `SecretClass` references for secure injection.
+- **Unified Types** (`pkg/apis/s3/v1alpha1`, `pkg/apis/database/v1alpha1`):
+  - `S3Connection` / `S3Bucket`: Standard CRDs for Endpoint, Region, TLS, path-style access, bucket name, and a credentials `SecretClass` reference. Both are usable **inline or by reference** from a product CR.
+  - `DatabaseConnection`: Standard CRD for Host, Port, driver class, database name, and a credentials reference.
+- **S3 Resolution and Rendering** (`pkg/s3`) — **opt-in helpers, not an automatic pass**:
+  - `s3.ResolveConnection(ctx, client, ns, inline, reference)` and `s3.ResolveBucket(...)` collapse the inline-or-reference pair into a flat `ConnectionInfo` / `BucketInfo`.
+  - `ConnectionInfo.S3AProperties()` returns the Hadoop S3A client properties — `fs.s3a.endpoint`, `fs.s3a.path.style.access`, `fs.s3a.connection.ssl.enabled`, and `fs.s3a.endpoint.region` when a region is set. `BucketInfo.S3AURI(prefix)` renders an `s3a://<bucket>/<prefix>` URI.
+  - **The product merges the returned map into its own config files** (prefixing where the engine requires it, e.g. `spark.hadoop.`). The `ConfigGenerator` knows nothing about connection objects — it is a pure `map → XML/Properties/YAML/Env/INI` serializer.
+  - **Access and secret keys are never rendered as configuration properties.** `ConnectionInfo.CredentialsProvisioner(volumeName)` returns a `security.SecretProvisioner` (it satisfies `reconciler.VolumeProvider`) that mounts the credentials as a `secret-operator` CSI volume under `/kubedoop/secret/<volumeName>`; the container reads them via `s3.CredentialsExportScript`, which exports `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`.
+- **DatabaseConnection has no rendering support.** The SDK ships the CRD types and `DependencyResolver.ValidateDatabaseConnection` (a shape check on host and credentials `SecretClass`) — no JDBC-URL builder, no credentials volume helper. Products build the connection string themselves. *(Not yet implemented: a `pkg/database` resolver mirroring `pkg/s3`.)*
+- **Credential Resolution**: Credentials are referenced as a `SecretClass` and delivered through the CSI volume described above, so the Operator never reads the secret material itself. See [security.md](security.md).
 
 ### 4.12.3 Core Value
+
+- **Decoupling**: The product's CRD accepts a stable, typed connection description instead of a pile of `configOverrides`.
+- **No Credential Leakage**: Credentials travel over CSI into the Pod; they are never written into a ConfigMap or a rendered config file.
 
 ## 4.13 Error Handling & Resilience Module
 
@@ -543,20 +608,27 @@ Distributed systems and Kubernetes Controllers face unpredictable failures: netw
 ### 4.13.2 Core Strategies
 
 - **Reconciler Resilience**:
-  - **Panic Recovery**: The SDK includes a top-level recovery mechanism to catch panics within the reconciliation loop, preventing the entire Operator process from crashing due to a bug in a specific CR handler.
-  - **Exponential Backoff**: Transient errors (e.g., API server timeouts) trigger requeueing with exponentially increasing delays, preventing "thundering herd" issues.
+  - **Panic Recovery**: A top-level `recover()` catches panics inside the reconciliation loop, so a bug in one CR handler cannot crash the operator process. The recovered panic is logged with its stack, emitted as a `Warning`/`ReconcilePanic` event on the CR (when the CR was already fetched), and **returned as an error** — swallowing it would report the cycle as successful and the work queue would neither retry nor back off. On this path the **CR Status is deliberately left untouched**: an internal fault is not evidence about the cluster's actual state.
+  - **Exponential Backoff**: Returning an error hands the request back to controller-runtime's rate limiter, which requeues with exponentially increasing delay. The SDK adds no backoff of its own; the one flat delay it does apply is the 429 path (§4.8.4).
+
+- **Pre-flight Validation (fail fast, before the workload)**:
+  - **Role names**: the handler's configured role names are checked against the roles actually present in the CR Spec. A handler configured for a role the CR does not declare is a wiring mistake that would otherwise silently produce nothing — it is reported as an error instead.
+  - **Declared dependencies**: `GenericReconcilerConfig.Dependencies` is verified before any role is reconciled (§4.7.2).
+  - **Sidecar dependencies**: each enabled provider's `Validate` runs before the StatefulSet is applied, failing with a `ValidationError` rather than creating pods that crash-loop (§4.6.2).
+  - **Malformed `podOverrides`**: a layer that cannot be decoded or patched is recorded on `MergedConfig.PodOverrideErrors` and surfaced as a `Warning` event; the layer is skipped rather than silently dropped without trace.
 
 - **Concurrency Control**:
-  - **Optimistic Locking**: When updating K8s resources, the SDK handles `Conflict` errors (HTTP 409) caused by concurrent modifications (e.g., mismatched `ResourceVersion`). It employs a "Retry-On-Conflict" utility that automatically refreshes the object and retries the update.
+  - **Optimistic Locking on status writes**: the status write is issued from the in-memory CR without re-fetching it first, because a re-fetch would replace the whole status stanza and discard the product-specific fields an extension hook computed during this cycle (`ClusterInterface` exposes only the embedded generic status). On a 409 only the `resourceVersion` is refreshed — through the uncached `APIReader` when one is configured, since the informer cache has by definition not seen the competing write — and the write is retried with this cycle's status unchanged. That is last-writer-wins: it is correct because the controller is the sole writer of its own CR's status, and it does mean a status field written by a *different* actor between the read and the write is overwritten. A `NotFound` (the CR was deleted mid-cycle) is treated as success. Note that the *cleaner* does not retry on conflict — see §4.4.4.
   - **Idempotency**: All side-effect operations (Create/Update/Delete) are designed to be idempotent. A retry after a partial failure is safe and will not result in duplicated resources.
 
 - **Extension Fault Tolerance**:
-  - **Fail-Fast**: Critical errors in extensions (e.g., Security configuration failure) bubble up immediately, stopping the reconciliation to prevent an insecure deployment.
-  - **Error Propagation**: Errors returned by Extensions are captured and propagated to the CR Status.
+  - **Fail-Fast by default**: a `PreReconcile`/`PostReconcile` failure aborts the reconciliation, preventing a partially configured (e.g. insecure) deployment. A single registration can opt out with `common.WithStopOnError(false)`; its failure is still returned.
+  - **Error Propagation**: Errors returned by Extensions are wrapped in `*ExtensionError` and propagated to the CR Status.
 
 - **Status Visibility**:
   - **Condition Mapping**: Top-level errors are automatically mapped to the `Degraded` Condition in `GenericClusterStatus`.
   - **Reasoning**: The `Reason` and `Message` fields of the Condition are populated with the error details, allowing users/admins to diagnose issues (e.g., "DependencyMissing: Zookeeper secret not found") via `kubectl get`.
+  - **No churn**: the status write is skipped when the computed status is deep-equal to the live one, so the periodic requeue cadence (§4.8.4) does not translate into a stream of no-op writes.
 
 ## 4.14 Event Management Module
 
@@ -566,11 +638,12 @@ K8s Events provide a chronological log of significant occurrences within the clu
 
 ### 4.14.2 Core Implementation
 
-- **Unified Recorder**: The SDK encapsulates the Kubernetes `EventRecorder` and injects it into the Reconciler context.
+- **Unified Recorder**: The SDK encapsulates the Kubernetes `EventRecorder` in an `EventManager` and injects it into the Reconciler context.
 - **Automated Lifecycle Events**:
-  - **Resource Operations**: The SDK automatically emits `Normal` events whenever it creates, updates, or deletes a sub-resource (StatefulSet, Service, PDB), ensuring auditability without boilerplate code.
+  - **Resource Operations**: The SDK emits `Normal` events when it creates, updates, or deletes a sub-resource (StatefulSet, Service, ConfigMap, PDB), ensuring auditability without boilerplate code. Orphan cleanup emits a `Deleted` event per removed resource once the cleaner has an `EventManager` (`RoleGroupCleaner.WithEventManager`).
   - **Reconciliation Milestones**: Emits events for Reconcile start (debug level), completion, and critical failures.
 - **Error Integration**: Any error bubbling up from the Reconciliation loop (including Extensions) that triggers a `Degraded` status automatically generates a `Warning` event with the error reason.
+- **Degraded-input warnings**: some inputs are bad but not fatal, and they get a `Warning` event of their own rather than being dropped silently — a `podOverrides` layer that fails to decode or patch (`MergedConfig.PodOverrideErrors`), and a recovered panic (`ReconcilePanic`).
 
 ### 4.14.3 Core Value
 
@@ -624,9 +697,9 @@ This ensures changing the organization domain requires updating only one constan
 
 **`pkg/listener/`** — Listener operator constants:
 - `ListenerAPIGroup`, `ListenerStorageClass`, `CSIDriverName`
-- Annotations: `ListenerClassAnnotation`, `ListenerScopeAnnotation`, `AnnotationListenerName`
+- Annotations: `ListenerClassAnnotation`, `AnnotationListenerName` (there is no listener scope annotation — scope is a `secret-operator` concept)
 - Types: `ListenerClass` (cluster-internal, external-stable, external-unstable)
-- Provisioner: `ListenerProvisioner` (declarative CSI listener volume registration with `RegisterVolume()`, `Volumes()`/`VolumeMounts()`, `AutoInject()`; the `listener-operator` creates the Service, not the SDK)
+- Provisioner: `ListenerProvisioner` (declarative CSI listener volume registration with `RegisterVolume()`, `Volumes()`/`VolumeMounts()`, `AutoInject()`, `Path()`/`MustPath()`; the `listener-operator` creates the Service, not the SDK)
 
 **`pkg/security/`** — Secret operator constants:
 - `SecretAPIGroup`, `SecretStorageClass`, `CSIDriverName`
@@ -654,10 +727,10 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 
 ### 5.1.2 Application in SDK
 
-- **`ClusterInterface`**: Defines cluster-level operations (GetName, GetNamespace, GetSpec, GetStatus, SetStatus).
-- **`RoleInterface`**: Defines role-level operations (GetRoleName, GetConfig, GetRoleGroups).
+- **`ClusterInterface`**: Defines cluster-level operations (GetName, GetNamespace, GetSpec, GetStatus, SetStatus, GetRuntimeObject, DeepCopyCluster).
+- **`RoleInterface`**: Optional role-level descriptor (GetRoleName, GetRoleSpec, GetRoleGroups, GetOverrides). The reconciler does not consume it.
 - **`RoleGroupHandler`**: Defines the `BuildResources()` contract that product operators implement to produce RoleGroup-specific Kubernetes resources.
-- **`RoleExtender`**: Defines Role extension points for extending `role.config` fields with product-specific settings.
+- **`RoleExtension` / `RoleGroupExtension`**: Define the Pre/PostReconcile hooks products use to customize behavior at role and role group level.
 - **`ServiceHealthCheck`**: Defines health check contract for business-level readiness.
 
 ### 5.1.3 Benefits
@@ -669,7 +742,7 @@ The Interface Segregation Principle (ISP) states that clients should not be forc
 ### 5.1.4 Example
 
 ```go
-// Product implements only ClusterInterface, not all interfaces
+// A product CR implements ClusterInterface; the other interfaces are opt-in.
 type HdfsCluster struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -677,8 +750,14 @@ type HdfsCluster struct {
     Status            HdfsClusterStatus `json:"status,omitempty"`
 }
 
-// HdfsCluster automatically satisfies ClusterInterface by embedding GenericClusterSpec
+// Embedding metav1.ObjectMeta (or common.ClusterObject) supplies the metadata accessors,
+// but embedding alone is NOT enough: the CR must still implement the SDK-specific methods
+// explicitly — GetSpec() *v1alpha1.GenericClusterSpec, GetStatus(), SetStatus(),
+// GetScheme(), GetRuntimeObject() and DeepCopyCluster().
+func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &h.Spec.GenericClusterSpec }
 ```
+
+> A `GetSpec()` implementation that builds a fresh `GenericClusterSpec` on every call is legal but subtle: the reconcile loop snapshots the spec once per cycle, so in-memory mutations made after that snapshot are not observed consistently (see §4.2.5). Returning a pointer into the CR is the simpler contract.
 
 ## 5.2 Strategy Pattern
 
@@ -701,15 +780,18 @@ The Strategy Pattern defines a family of algorithms, encapsulates each one, and 
 ### 5.2.4 Example
 
 ```go
-// ConfigFormat strategy interface
+// ConfigFormat strategy interface (round-trip: both directions are required)
 type ConfigFormat interface {
     Marshal(data map[string]string) (string, error)
+    Unmarshal(data string) (map[string]string, error)
 }
 
 // Concrete strategies
-type XMLAdapter struct{}       // Hadoop XML format
+type XMLAdapter struct{}        // Hadoop XML format
 type PropertiesAdapter struct{} // Java .properties format
-type YAMLAdapter struct{}      // YAML format
+type YAMLAdapter struct{}       // YAML format
+type EnvAdapter struct{}        // shell / .env format
+type INIAdapter struct{}        // INI format
 
 // Context uses the strategy
 type ConfigGenerator struct {
@@ -738,7 +820,7 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 │  1. PreReconcile Extensions (Hook)                          │
 │     └── Product-specific pre-processing                     │
 │  2. Validate Dependencies                                   │
-│     └── Check external resources (ZK, S3, DB)               │
+│     └── Declared ConfigMaps/Secrets (opt-in hook)           │
 │  3. For Each Role:                                          │
 │     ├── Role PreReconcile Extensions (Hook)                 │
 │     ├── For Each RoleGroup:                                 │
@@ -746,10 +828,12 @@ The Template Method Pattern defines the skeleton of an algorithm in a base class
 │     │   ├── Build/Apply Resources (ordered, see below)      │
 │     │   └── RoleGroup PostReconcile Extensions (Hook)       │
 │     └── Role PostReconcile Extensions (Hook)                │
-│  4. Cleanup Orphaned Resources                              │
-│  5. Update Status                                           │
+│  4. Cleanup Orphans (-> gray-delete deadline)               │
+│  5. Health Check -> Status Conditions                       │
 │  6. PostReconcile Extensions (Hook)                         │
 │     └── Product-specific post-processing                    │
+│  7. Final Status Update (skipped if deep-equal)             │
+│  8. Requeue = min(health cadence, gray deadline)            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -767,18 +851,20 @@ The rationale follows Kubernetes resource dependency rules:
 2. **HeadlessService**: A StatefulSet requires a `serviceName` pointing to a headless Service. Kubernetes uses it to create stable, predictable DNS entries (`pod-0.svc.ns.svc.cluster.local`) for inter-pod communication. It must exist before the StatefulSet is created.
 3. **Service** (client-facing): Created before the StatefulSet so that client endpoints are available as soon as Pods become ready.
 4. **ExtraResources** (product-specific objects): Applied before the StatefulSet because they are typically pod-scheduling prerequisites — e.g. a Listener CR that the pods reference through an ephemeral CSI volume (see `RoleGroupResources.ExtraResources`).
+   Between this step and the StatefulSet, the registered sidecar providers' `Validate` checks run (§4.6.2) — late enough that the ConfigMap and any extras they depend on already exist, early enough that a failure never produces a Pod.
 5. **StatefulSet**: Applied after all its dependencies (configs, DNS, extras) are in place. The StatefulSet controller then creates Pods in ordinal order.
 6. **PDB** (PodDisruptionBudget): Applied after the workload, as it references existing Pods. It enforces availability guarantees during voluntary disruptions once the workload is running.
 7. **MetricsService**: Applied last; it only exposes already-running Pods to Prometheus discovery and nothing depends on it.
 
-This creation order is the inverse of the deletion order used during orphaned resource cleanup (see §4.4.2).
+Orphan cleanup uses its own order — `PDB → StatefulSet → ConfigMap → Service → headless Service → metrics Service` (see §4.4.3) — which is **not** the exact inverse of this creation order. The two orders answer different questions: creation sequences prerequisites before dependants, while deletion removes the PDB first so it cannot block pod eviction and drops the Services last.
 
 **Resource Application Semantics (create-or-update)**
 
 Applying a resource is not create-only: when the resource already exists, `applyResource` updates the live object to the handler-built desired state on every reconcile, so CR spec changes (replicas, config overrides, ports, ...) propagate to existing resources (issue #526). The update rules live in `copyDesiredState` (`pkg/reconciler/apply.go`):
 
 - **Labels** are framework-owned and replaced wholesale; **annotations** are merged, so foreign annotations (e.g. `kubectl.kubernetes.io/last-applied-configuration`) survive.
-- **Typed kinds** copy their spec/data from the desired object while preserving Kubernetes immutable/allocated fields: StatefulSet `selector`, `serviceName`, `volumeClaimTemplates` and `podManagementPolicy` keep their live values (changing them requires a manual delete/recreate migration); Service `clusterIP(s)`/`ipFamilies` are never touched, and NodePorts already allocated by the API server are carried over; ConfigMap data is replaced wholesale (removed keys disappear).
+- **Typed kinds** copy their spec/data from the desired object while preserving Kubernetes immutable/allocated fields: StatefulSet `selector`, `serviceName`, `volumeClaimTemplates` and `podManagementPolicy` keep their live values (changing them requires a manual delete/recreate migration); ConfigMap data is replaced wholesale (removed keys disappear).
+- **Service** is assigned the desired `ServiceSpec` **as a whole**, after which only the server-owned/immutable fields are restored — `clusterIP`/`clusterIPs`, `ipFamilies`/`ipFamilyPolicy`, `healthCheckNodePort`, `loadBalancerClass` — and a NodePort the API server already allocated is carried over onto the matching desired port (matched by name, falling back to port number) unless the handler pinned one explicitly. The consequence for handler authors: **any mutable `ServiceSpec` field left at its zero value overwrites the live value**, so a handler must build the Service it wants in full rather than relying on previously applied state.
 - **Arbitrary GVKs** (`ExtraResources`) get a generic copy of every top-level field except `apiVersion`/`kind`/`metadata`/`status` via unstructured conversion.
 
 ### 5.3.4 Benefits
@@ -795,28 +881,50 @@ The Singleton Pattern ensures a class has only one instance and provides a globa
 
 ### 5.4.2 Application in SDK
 
-- **ExtensionRegistry**: Globally unique registry that manages all extensions. Ensures extensions are registered only once and executed in a deterministic order.
+- **ExtensionRegistry**: A process-wide default registry that manages all extensions and executes them in a deterministic order. The singleton is a *default*, not a constraint: `common.NewExtensionRegistry()` creates an isolated instance, which a controller injects through `GenericReconcilerConfig.ExtensionRegistry` (§4.2.3).
 - **Scheme**: The Kubernetes scheme is registered once during operator initialization.
 
 ### 5.4.3 Benefits
 
 - **Consistency**: Single point of truth for extension management.
-- **Deterministic Execution**: Extensions execute in priority order (highest first); registration order is used as a tiebreaker.
-- **Thread Safety**: Prevents duplicate registration in concurrent scenarios.
+- **Deterministic Execution**: Extensions execute in priority order (highest first), with the registration sequence number as a total tiebreaker.
+- **Thread Safety**: The registry is guarded by a `sync.RWMutex`; hook execution runs against a snapshot of the entries.
 
 ### 5.4.4 Example
 
 ```go
-// ExtensionRegistry is a global singleton
-var globalRegistry = &ExtensionRegistry{
-    clusterExtensions:  make([]ClusterExtension, 0),
-    roleExtensions:     make([]RoleExtension, 0),
-    roleGroupExtensions: make([]RoleGroupExtension, 0),
+// Registrations are wrapped in entries so priority, registration sequence and
+// per-registration fault tolerance travel with the extension. The extension
+// interfaces are generic, and the registry stores them at the ClusterInterface
+// instantiation.
+type extensionEntry[T Extension] struct {
+    extension   T
+    priority    ExtensionPriority
+    seq         uint64 // registration sequence: total order for equal priorities
+    stopOnError *bool  // nil = use the hook's default
 }
 
-func GetExtensionRegistry() *ExtensionRegistry {
-    return globalRegistry
+type ExtensionRegistry struct {
+    clusterExtensions   []extensionEntry[ClusterExtension[ClusterInterface]]
+    roleExtensions      []extensionEntry[RoleExtension[ClusterInterface]]
+    roleGroupExtensions []extensionEntry[RoleGroupExtension[ClusterInterface]]
+    nextSeq             uint64
+    mu                  sync.RWMutex
 }
+
+// The process-wide default instance.
+var globalRegistry = NewExtensionRegistry()
+
+func GetExtensionRegistry() *ExtensionRegistry { return globalRegistry }
+```
+
+An extension written against a concrete CR type is registered through an adapter, which performs the type assertion in one place:
+
+```go
+registry.RegisterClusterExtensionWithOptions(
+    common.AsClusterExtension[*HdfsCluster](&SafeModeExtension{}),
+    common.WithPriority(common.PriorityHigh),
+)
 ```
 
 ## 5.5 Builder Pattern
@@ -828,8 +936,11 @@ The Builder Pattern separates the construction of a complex object from its repr
 ### 5.5.2 Application in SDK
 
 - **StatefulSetBuilder**: Constructs `StatefulSet` resources step-by-step, handling complex configurations like volumes, containers, and affinity rules.
-- **ConfigMapBuilder**: Builds ConfigMaps with merged configurations.
-- **ServiceBuilder**: Constructs Service resources with appropriate ports and selectors.
+- **ConfigMapBuilder**: Builds ConfigMaps with merged configurations (`WithMergedConfig`, see §4.5.2).
+- **ServiceBuilder** / **MetricsServiceBuilder**: Constructs Service resources with appropriate ports and selectors.
+- **PDBBuilder**, **RBACBuilder**, **ServiceAccountBuilder**: Cover the remaining framework-owned kinds.
+- `BaseRoleGroupHandler` builds the role group ConfigMap and both Services through these builders, so a product that overrides one part of the workload inherits the same construction rules for the rest.
+- **Ownership of returned values**: `Build()` returns deep copies — mutating a built object never reconfigures the builder — and `WithLabels`/`WithAnnotations` on the RBAC and ServiceAccount builders **merge** into the existing set rather than replacing it.
 
 ### 5.5.3 Builder Workflow
 
@@ -899,7 +1010,7 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 
 | Pattern | Primary Application | Key Benefit |
 |---------|---------------------|-------------|
-| Interface Segregation | `ClusterInterface`, `RoleInterface` | Focused, implementable contracts |
+| Interface Segregation | `ClusterInterface`, `RoleGroupHandler` | Focused, implementable contracts |
 | Strategy | Extensions, ConfigFormat | Swappable behaviors |
 | Template Method | Reconciliation flow | Consistent process with hooks |
 | Singleton | ExtensionRegistry | Global state management |
@@ -910,11 +1021,11 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 # 6. Key Problems and Solutions
 
 - **Runtime errors and code redundancy caused by type assertions**
-  - **Solution**: Introduce Go Generics, designing generic reconcilers, extension interfaces, and configuration extenders.
+  - **Solution**: Introduce Go Generics for the reconciler, the extension interfaces and the webhook contracts, confining the remaining erasure to the registry adapters.
   - **Core Advantage**: Compile-time type safety, reduced boilerplate code, improved development efficiency.
 
 - **Residual orphaned resources after role group deletion**
-  - **Solution**: Based on Spec and Status comparison combined with resource existence validation, delete orphaned resources in dependency order.
+  - **Solution**: Compare Spec against the Status snapshot, verify ownership through ownerReferences, and delete the orphans in a fixed order; an optional gray-delete grace period defers the deletion and requeues for it.
   - **Core Advantage**: Efficient and precise, avoiding accidental deletion, ensuring state convergence.
 
 - **Repetitive multi-product configuration validation/default value logic**
@@ -922,7 +1033,7 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
   - **Core Advantage**: Logic reuse, flexible extension, intercepting illegal configurations upfront.
 
 - **Complex logic for external infrastructure binding (S3/DB)**
-  - **Solution**: Introduce high-level `Connection` abstractions and automatic configuration rendering strategies.
+  - **Solution**: Introduce high-level `Connection`/`Bucket` CRDs plus opt-in resolution and rendering helpers (`pkg/s3`), with credentials delivered over CSI instead of being rendered into config. Database connections currently get the typed CRDs and validation only (§4.12.2).
   - **Core Advantage**: Decouples business logic from infrastructure details, reducing configuration complexity and common misconfigurations.
 
 # 7. Deployment and Extension Guide
@@ -936,10 +1047,12 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 ## 7.2 New Product Extension Steps
 
 1. Define the CRD struct, embedding the SDK Generic Spec/Status model.
-2. Implement `ClusterInterface`/`RoleInterface` interfaces to adapt to the SDK reconciliation process.
-3. (Optional) Implement `ProductDefaulter`/`ProductValidator` interfaces to customize Webhook logic.
-4. Register product-specific extensions to implement differentiated business logic.
-5. Generate Webhook and CRD configurations via Kubebuilder and deploy for verification.
+2. Implement `ClusterInterface` on the CR type to adapt to the SDK reconciliation process (see §5.1.4).
+3. Implement `RoleGroupHandler` — typically by embedding `BaseRoleGroupHandler` — to describe the Kubernetes resources of a role group.
+4. Wire a `GenericReconciler` with a `GenericReconcilerConfig`, declaring the optional hooks the product needs (`ProductConfig`, `Dependencies`, `ServiceHealthCheck`, `ExtensionRegistry`, gray-delete and health intervals).
+5. (Optional) Implement `ProductDefaulter`/`ProductValidator` interfaces to customize Webhook logic.
+6. (Optional) Register product-specific extensions to implement differentiated business logic.
+7. Generate Webhook and CRD configurations via Kubebuilder and deploy for verification.
 
 # 8. Summary and Outlook
 
@@ -949,7 +1062,11 @@ Through layered architecture, interface-driven design, generics transformation, 
 
 ## 8.2 Future Optimization Directions
 
+The following are **not yet implemented**; they describe intended direction, not current behavior:
+
 - Support **ConversionWebhook** to achieve smooth CRD version upgrades.
-- Extend extension point fault tolerance mechanisms to support degradation strategies when partial extensions fail.
-- Add monitoring metrics to statistics extension execution time, resource cleanup counts, etc., facilitating troubleshooting.
-- Support gray deletion of role group resources to reduce the risk of accidental deletion.
+- Add monitoring metrics for extension execution time, resource cleanup counts, etc., facilitating troubleshooting.
+- Ordered drain on orphan cleanup: wait for the StatefulSet to reach zero ready replicas, and confirm each deletion before issuing the next (today's cleanup is single-pass and best effort, §4.4.3).
+- Conflict/throttling resilience inside the cleaner (`RetryOnConflict`, 429 → backoff), which today exists only on the status-write and apply paths.
+- A `pkg/database` resolver mirroring `pkg/s3` (JDBC URL construction plus a credentials volume).
+- Opt-in finalizer support so cluster deletion — not just role group orphaning — can run SDK cleanup such as PVC removal.

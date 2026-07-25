@@ -5,17 +5,25 @@
 
 **Key Features:**
 - **GenericReconciler**: Template Method Pattern-based reconciliation framework
-- **Extension System**: Hook-based customization at cluster/role/role-group levels
+- **Extension System**: Hook-based customization at cluster/role/role-group levels, with per-product registries
 - **Resource Builders**: Fluent builders for StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount
 - **Config Generation**: Multi-format config file generation (XML, YAML, Properties, Env, INI)
 - **Logging Config**: Framework-aware logging configuration generation (Log4j, Log4j2, Logback, Python)
 - **Health Checks**: Business-level health check interface with composite checks
-- **Sidecar Management**: Pluggable sidecar injection framework with domain-specific providers
+- **Sidecar Management**: Phase-ordered, validated sidecar injection framework with domain-specific providers
+- **Secret/Listener CSI Wiring**: `SecretProvisioner` and `ListenerProvisioner` declare secret-operator / listener-operator CSI volumes and resolve their mount paths
 - **CRD APIs**: Common types for authentication, database, listeners, S3
 
 ## Architecture Documentation (Authoritative Design Source)
 
 > **IMPORTANT**: The `docs/` directory contains architecture documents that are the **authoritative source of design constraints** for this project. All implementations — including the SDK itself and any operators built with it — **must follow** the design defined in these documents. When code and documentation conflict, the documentation takes precedence. Consult these docs before making design decisions.
+
+> **Scope of that rule.** `docs/architecture.md` is authoritative about **design intent**: a
+> conflict means the code should change, not that the doc should be quietly relaxed. The
+> `AGENTS.md` files (this one and the per-package ones) are the opposite: they describe the API and
+> behavior that **exist today**, and must be corrected whenever the code changes. Never treat a
+> statement in an `AGENTS.md` as a requirement the code has yet to meet — anything aspirational
+> belongs in `docs/architecture.md` and must be explicitly labelled as such.
 
 ### Documentation Structure
 
@@ -41,7 +49,7 @@
 2. **Desired State Convergence**: CR Spec is the desired state; reconciliation loop converges actual state. Bidirectional: also cleans orphaned resources.
 3. **Separation of Common and Specific**: SDK handles common logic (resource construction, config merging, webhook validation); products handle specific logic via extension interfaces.
 4. **Type Safety and Idempotency**: Go Generics for compile-time safety. All operations are idempotent.
-5. **Strict Merge Strategy**: Role/RoleGroup config merging follows defined rules — Deep Merge for maps, Replace/Append for slices, Strategic Merge Patch for PodTemplate.
+5. **Strict Merge Strategy**: Role/RoleGroup config merging follows defined rules — Deep Merge for maps, `SliceMergeStrategy` (Replace by default) for slices, Strategic Merge Patch for PodTemplate.
 6. **Layered Architecture**: Specific Product Layer → Abstract Interface Layer → Core Component Layer → Tools Layer → API Layer.
 
 ## Development Environment
@@ -52,10 +60,10 @@
 
 ### Tool Versions
 - `controller-gen`: v0.19.0
-- `golangci-lint`: v2.10.1
+- `golangci-lint`: v2.12.2
 - `kustomize`: v5.7.1
 - `controller-runtime`: v0.23.3
-- `k8s.io/api`: v0.35.3
+- `k8s.io/api`: v0.35.4
 
 ## Common Commands
 Run these from the project root:
@@ -79,10 +87,13 @@ operator-go/
 │   ├── apis/                     # Kubernetes API definitions — CRDs (see pkg/apis/AGENTS.md)
 │   ├── builder/                  # Fluent resource builders (see pkg/builder/AGENTS.md)
 │   ├── common/                   # Core interfaces, extensions, errors
-│   ├── config/                   # Config generation, merging, logging (see pkg/config/AGENTS.md)
-│   ├── listener/                 # Listener provisioner (CSI volume and service registration)
+│   ├── config/                   # Config file generation and override merging (see pkg/config/AGENTS.md)
+│   ├── constant/                 # Kubedoop paths, labels, domains, restarter annotations
+│   ├── listener/                 # Listener provisioner (CSI volume registration)
+│   ├── productlogging/           # Product logging config generation (Log4j, Log4j2, Logback, Python)
 │   ├── reconciler/               # Reconciliation framework (see pkg/reconciler/AGENTS.md)
-│   ├── security/                 # Pod security, secret class handling
+│   ├── s3/                       # S3Connection/S3Bucket resolution, S3A properties, credential wiring
+│   ├── security/                 # Pod security defaults, SecretProvisioner (secret-operator CSI)
 │   ├── sidecar/                  # Sidecar injection framework (SidecarManager, SidecarProvider interface)
 │   ├── vector/                   # Vector sidecar implementation (config generation, discovery, provider)
 │   ├── testutil/                 # Testing utilities (envtest, mocks, matchers)
@@ -127,25 +138,40 @@ type ClusterInterface interface {
 The `GenericReconciler` provides a fixed reconciliation flow with customizable extension points:
 
 **Reconciliation Flow:**
-1. Fetch CR
-2. Panic recovery
-3. PreReconcile Extensions (Hook)
-4. Validate Dependencies
-5. For Each Role:
+1. Fetch CR (NotFound ⇒ done — see "Deletion" below)
+2. Panic recovery: a recovered panic becomes a returned error plus a `ReconcilePanic` Warning
+   event; the status is left untouched
+3. ClusterOperation gate: `reconciliationPaused` returns immediately; `stopped` falls through so
+   every resource is still reconciled with replicas forced to 0
+4. Ensure the ServiceAccount (when configured); warn about handler-configured role names the CR
+   does not declare
+5. PreReconcile Extensions (Hook)
+6. Validate declared dependencies (`GenericReconcilerConfig.Dependencies`)
+7. For Each Role:
    - Role PreReconcile Extensions
    - For Each RoleGroup:
      - RoleGroup PreReconcile Extensions
      - Build RoleGroupBuildContext
      - Delegate to RoleGroupHandler.BuildResources()
-     - Apply Resources (CM -> HeadlessSvc -> Service -> Extras -> STS -> PDB -> MetricsSvc)
+     - Apply Resources (CM -> HeadlessSvc -> Service -> Extras -> [sidecar Validate] -> STS ->
+       per-group PDB -> MetricsSvc)
      - RoleGroup PostReconcile Extensions
+   - Role-level PodDisruptionBudget
    - Role PostReconcile Extensions
-6. Cleanup Orphaned Resources
-7. Update Health Status
-8. PostReconcile Extensions
-9. Final Status Update
+8. Cleanup Orphaned Resources
+9. Update Health Status
+10. PostReconcile Extensions
+11. Final Status Update, then requeue
 
 Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration.
+
+**Requeue cadence.** A successful reconcile returns `ctrl.Result{RequeueAfter: HealthCheckInterval}` (`DefaultHealthCheckInterval` = 120s; a negative value disables the periodic wakeup), or the earliest pending gray-delete deadline when that is sooner. Watches only cover the kinds the framework owns, so anything that changes without producing an event — a product `ServiceHealthCheck` probe, a grace period running out — depends on this timer.
+
+**Status writes are conditional.** `updateStatus` skips the write entirely when the whole CR is `apiequality.Semantic.DeepEqual` to the object read at the start of the cycle — comparing the whole object, not just the embedded generic status, so a product's own status fields count too. Without that guard the controller's watch on its own CR would turn every reconcile into another reconcile. The write itself goes out from the in-memory object (a re-fetch would discard product-specific status fields); a 409 refreshes only the `resourceVersion`, preferring `GenericReconcilerConfig.APIReader` because the informer cache has not seen the competing write, and a `NotFound` is treated as success.
+
+**Deletion uses owner-reference garbage collection, not finalizers.** The SDK registers **no** finalizer anywhere, so deleting a cluster CR runs **no SDK code**: `Reconcile` sees `IsNotFound` and returns. Everything the framework applies carries a controller owner reference and is reclaimed by Kubernetes GC. The `operator.zncdata.dev/delete-pvcs` annotation (`reconciler.AnnotationDeletePVCs`) therefore only affects the **orphan** path — PVCs of a StatefulSet whose role group was removed or renamed in the spec. On cluster deletion those PVCs remain, because the SDK sets no `persistentVolumeClaimRetentionPolicy` and StatefulSet-managed PVCs carry no owner reference. Products with state outside owner-reference GC must clean it up themselves.
+
+**Validation failures are loud.** Registered, enabled sidecar providers are validated before the StatefulSet is applied; a failure aborts the role group with `*reconciler.ValidationError` (`NewValidationError` / `IsValidationError`). A `podOverrides` layer that fails to decode is recorded on `config.MergedConfig.PodOverrideErrors` and re-emitted as a `PodOverrideIgnored` Warning event rather than being dropped silently.
 
 ### 3. RoleGroupHandler and BaseRoleGroupHandler
 Product operators implement `RoleGroupHandler` to define resource building logic:
@@ -155,12 +181,23 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 }
 ```
 
-`BaseRoleGroupHandler` provides a default implementation that creates ConfigMap, Headless Service, Service, StatefulSet, and PDB. Product operators can embed it and override specific methods:
+`BaseRoleGroupHandler.BuildResources` returns a ConfigMap, a headless Service, a StatefulSet, and a client-facing Service **when the role declares service ports**. It does not return a PDB: the framework's PDB comes from `roleConfig.podDisruptionBudget` and is a **role-level** resource built by `BuildRolePodDisruptionBudget` and applied once per role by the reconciler (`RoleGroupResources.PodDisruptionBudget` remains an escape hatch for an extra per-group PDB). Product operators embed the base handler and override specific methods:
 ```go
 handler := reconciler.NewBaseRoleGroupHandler[*v1alpha1.TrinoCluster](image, scheme)
+handler.ProductName = "trino" // resolves spec.image into "{repo}/trino:{version}-kubedoop{v}"
 handler.SetRoleContainerPorts("coordinator", ports)
 handler.SetRoleServicePorts("coordinator", svcPorts)
 ```
+
+`ProductName` is what opts a handler into CR-driven images: with it set, `spec.image` is resolved per role group through `ImageSpec.GetImage(ProductName)`; left empty, the handler's static `Image` (and any per-role override) is used and `spec.image` is ignored.
+
+`BaseRoleGroupHandler` also implements `reconciler.RoleNameProvider`:
+```go
+type RoleNameProvider interface {
+    ConfiguredRoleNames() []string
+}
+```
+`ConfiguredRoleNames()` returns the sorted union of the role names the handler carries settings for (images, container ports, service ports, logging containers, main container names). The reconciler checks it against `spec.roles` and emits an `UnknownConfiguredRole` Warning event for names the CR does not declare — a typo there would otherwise silently produce a role group with no ports, no image override and no Service. It is a warning, not a failure, because a handler may legitimately be configured for optional roles.
 
 When building the StatefulSet, `BaseRoleGroupHandler` consumes the role group's `config` (commons `RoleGroupConfigSpec`): `resources` (requests/limits, plus an opt-in data PVC via `StorageMountPath`), `affinity` (a RawExtension unmarshaled into `corev1.Affinity` and set on the pod spec — invalid JSON fails the build), and `gracefulShutdownTimeout` (a Go duration mapped to `terminationGracePeriodSeconds` — unparsable or non-positive values fail the build). All of these are applied before `podOverrides`, so user pod overrides keep precedence. The framework sets affinity only when the config provides one, so products that post-process the built StatefulSet with `if podSpec.Affinity == nil {...}` default guards remain correct.
 
@@ -168,8 +205,8 @@ When building the StatefulSet, `BaseRoleGroupHandler` consumes the role group's 
 
 Besides the fixed fields (ConfigMap, Services, StatefulSet, PDB, MetricsService), `RoleGroupResources.ExtraResources []client.Object` lets products ship arbitrary per-role-group resources (e.g. a `listeners.kubedoop.dev` Listener CR) through the framework's apply path: same controller owner reference, applied BEFORE the StatefulSet because extras are typically pod-scheduling prerequisites. The cleaner does not discover arbitrary-GVK extras — extras of removed role groups are reclaimed only via owner-reference GC when the CR is deleted (see the field's doc comment).
 
-### 4. RoleInterface and RoleGroupInfo
-`RoleInterface` defines role-level operations for interacting with role configurations:
+### 4. RoleInterface and RoleGroupInfo (standalone helpers)
+`pkg/common/role_interface.go` provides read-accessor types over the commons role model:
 ```go
 type RoleInterface interface {
     GetRoleName() string
@@ -178,16 +215,56 @@ type RoleInterface interface {
     GetOverrides() *v1alpha1.OverridesSpec
 }
 ```
+`RoleInfo` implements it. `RoleGroupInfo` exposes `GetName`, `GetRoleName`, `GetSpec`,
+`GetReplicas`, `GetOverrides`, `GetResources`, `GetLogging`, `GetGracefulShutdownTimeout` and
+`GetAffinity() (*corev1.Affinity, error)` (affinity is a schema-free `RawExtension`, so a decode
+failure is reported instead of silently dropping the user's scheduling constraints).
 
-`RoleInfo` provides a default implementation. `RoleGroupInfo` contains role group details including replicas, resources, logging, and graceful shutdown config.
+> **Not wired into the reconcile loop.** Nothing in `pkg/` or `examples/` consumes these three
+> types — the reconciler iterates `spec.Roles` directly and role group configuration reaches
+> handlers through `RoleGroupBuildContext`. Treat them as optional helpers for product code, not as
+> interfaces a product must implement.
 
 ### 5. Extension System
-Three levels of extensions for injecting custom logic:
-- **ClusterExtension**: PreReconcile, PostReconcile, OnReconcileError
-- **RoleExtension**: Per-role hooks
-- **RoleGroupExtension**: Per-role-group hooks
+Three levels of extensions for injecting custom logic, all generic over the product CR type:
+- **`ClusterExtension[CR]`**: `Name`, `PreReconcile`, `PostReconcile`, `OnReconcileError`
+- **`RoleExtension[CR]`**: `Name`, per-role `PreReconcile` / `PostReconcile`
+- **`RoleGroupExtension[CR]`**: `Name`, per-role-group `PreReconcile` / `PostReconcile`
 
-Extensions have priorities (Lowest=0, Low=25, Normal=50, High=75, Highest=100).
+There is no `Cleanup()` hook and no shutdown callback.
+
+**Registration.** The registry methods are `RegisterClusterExtension`, `RegisterRoleExtension`,
+`RegisterRoleGroupExtension`, their `*WithPriority` variants, and the option-taking
+`*WithOptions` variants:
+```go
+registry := common.NewExtensionRegistry() // or common.GetExtensionRegistry() for the singleton
+registry.RegisterClusterExtensionWithOptions(
+    common.AsClusterExtension[*v1alpha1.TrinoCluster](myExtension),
+    common.WithPriority(common.PriorityHigh),
+    common.WithStopOnError(false),
+)
+```
+The registry's slices are typed over `ClusterInterface`, so `common.AsClusterExtension`,
+`AsRoleExtension` and `AsRoleGroupExtension` adapt an extension written against a concrete CR type
+(they perform the type assertion and skip cleanly for another product's CRs).
+
+**Ordering.** Extensions execute from highest to lowest priority (Lowest=0, Low=25, Normal=50,
+High=75, Highest=100); same-priority extensions execute in **registration order** (each entry
+carries a registration sequence number, so the order never depends on sort stability).
+
+**Fault tolerance.** `WithStopOnError(bool)` overrides the per-hook default. `PreReconcile` and
+`PostReconcile` stop at the first failure (a broken precondition makes the rest meaningless) and
+return it as a `*common.ExtensionError`; a failure from an extension registered with
+`WithStopOnError(false)` does not stop the remaining ones, but is still reported — the per-extension
+`*ExtensionError` values are combined with `errors.Join` and returned. `OnReconcileError` runs every
+handler and only logs their failures (returning nil), so the original reconcile error stays
+authoritative — unless a handler opted into `WithStopOnError(true)`.
+
+**Isolation.** `common.NewExtensionRegistry()` creates an isolated registry; pass it as
+`GenericReconcilerConfig.ExtensionRegistry` so a product's hooks do not run for every other
+product's clusters in the same process. The default remains the process-wide singleton
+`common.GetExtensionRegistry()`. `common.ResetExtensionRegistry()` empties the singleton **in
+place** (the pointer is preserved, so reconcilers that captured it observe the reset).
 
 ### 6. Resource Builders
 Fluent builders for K8s resources:
@@ -201,21 +278,44 @@ sts := builder.NewStatefulSetBuilder(name, namespace).
     Build()
 ```
 
-Additional builders: `RoleBuilder`, `RoleBindingBuilder`, `ServiceAccountBuilder`.
+Additional builders: `ServiceBuilder`, `HeadlessServiceBuilder`, `ConfigMapBuilder`, `PDBBuilder`,
+`MetricsServiceBuilder`, `RoleBuilder`, `RoleBindingBuilder`, `ClusterRoleBuilder`,
+`ClusterRoleBindingBuilder`, `ServiceAccountBuilder`.
+
+Framework-wide builder semantics (see `pkg/builder/AGENTS.md` for the details): `Build()` deep-copies
+every map and slice, so the returned object shares no state with the builder; `WithLabels` /
+`WithAnnotations` **merge** rather than replace; and each builder exposes `NamespacedName()`
+(`MetricsServiceBuilder` excepted).
+
+`ServiceBuilder` additions worth knowing: `AddServicePort(corev1.ServicePort)` and
+`WithPorts([]corev1.ServicePort)` append fully specified ports without dropping `nodePort`,
+`appProtocol` or a named `targetPort` (unlike the scalar `AddPort`/`AddPortSimple`), and
+`WithPublishNotReadyAddresses(bool)` sets `.spec.publishNotReadyAddresses` for quorum systems whose
+members must resolve each other before readiness. `.spec.type` is always written explicitly
+(default `ClusterIP`).
+
+The reconciler builds the role group ConfigMap and both Services through these builders, so
+behavior changes made here reach the framework path directly.
 
 ### 7. Config Generation
-Multi-format config generation with `ConfigFormat` interface:
+Multi-format config generation with the `ConfigFormat` interface:
 ```go
 generator := config.NewMultiFormatConfigGenerator()
-generator.RegisterDefaultFormats() // .xml, .properties, .yaml, .yml, .env
-generator.RegisterFormat(".ini", config.NewINIAdapter()) // INI requires explicit registration
+generator.RegisterDefaultFormats() // .xml, .properties, .yaml, .yml, .env, .ini
 files, err := generator.GenerateFiles(map[string]map[string]string{
     "config.properties": {"key": "value"},
     "config.yaml":       {"nested": "data"},
 })
 ```
 
-`ConfigFormat` interface supports custom format adapters via `Marshal`/`Unmarshal`. Supported formats: XML, Properties, YAML, Env, INI.
+`ConfigFormat` requires **both** `Marshal(map[string]string) (string, error)` and
+`Unmarshal(string) (map[string]string, error)` — a custom adapter must implement the round trip,
+not just serialization. Supported formats: XML, Properties, YAML, Env, INI; all six extensions are
+registered by `RegisterDefaultFormats`, and `RegisterFormat` is for adding or replacing one.
+
+Adapters reject input they cannot represent faithfully rather than emitting output the target parser
+would misread: YAML only round-trips a flat mapping, Env rejects keys that are not shell variable
+names, and INI rejects keys/values containing line breaks or delimiters.
 
 ### 8. Health Checks
 `ServiceHealthCheck` interface for business-level health verification (beyond Pod readiness):
@@ -225,10 +325,12 @@ type ServiceHealthCheck interface {
 }
 ```
 
-`CompositeHealthCheck` combines multiple checks (all must pass). `AlwaysHealthy` and `AlwaysUnhealthy` are provided as convenience constants.
+`CompositeHealthCheck` combines multiple checks (all must pass). `AlwaysHealthy` and `AlwaysUnhealthy` are provided as convenience constants. (`common.HealthCheckResult` is **deprecated** — no SDK API produces or consumes it.)
+
+The check runs against the API server through the injected `client.Client`; the SDK does not hand a `*rest.Config` to `ServiceHealthCheck`, so a product wanting an in-container exec probe constructs `util.NewExecUtil(client, restConfig)` itself. Each pass runs under a `context.WithTimeout` of `GenericReconcilerConfig.HealthCheckTimeout` (`DefaultHealthCheckTimeout` = 300s; non-positive disables the deadline), so a hanging probe cannot stall a reconcile worker.
 
 ### 9. Logging Configuration
-`LoggingFramework`-aware logging config generation (Log4j, Log4j2, Logback, Python) via `pkg/config/logging_generator.go`.
+`LoggingFramework`-aware logging config generation (Log4j, Log4j2, Logback, Python) lives in `pkg/productlogging`. `BaseRoleGroupHandler.LoggingContainers` (or the per-role `SetRoleLoggingContainers`) declares which containers get a generated config file; the framework merges the CRD logging spec, renders the file and injects it into the role group ConfigMap. The same declaration names the producers of the Vector log pipeline.
 
 ### 10. Product Config (`ProductConfig`)
 Products contribute their computed configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductConfig` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):
@@ -276,15 +378,135 @@ err := reconciler.EnsureDiscoveryConfigMap(ctx, client, scheme, cr, cr.GetName()
 
 The helper is idempotent (CreateOrUpdate), sets a controller owner reference (the ConfigMap is GC'd with the CR), and applies canonical labels (`app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`, plus `app.kubernetes.io/name` via `WithDiscoveryProductName`); extra labels/annotations are merged via options, but canonical labels always win. Data is replaced wholesale.
 
+### 12. External Dependencies
+
+`GenericReconcilerConfig.Dependencies` declares the external objects a CR references but does not
+create, so a missing one fails the cycle with a `Degraded` condition instead of producing pods that
+crash-loop on an absent mount:
+
+```go
+Dependencies: func(cr *v1alpha1.TrinoCluster) []reconciler.Dependency {
+    return []reconciler.Dependency{
+        {Kind: reconciler.DependencySecret, Name: cr.Spec.ClusterConfig.KeytabSecret},
+        {Kind: reconciler.DependencyConfigMap, Name: cr.Spec.ClusterConfig.AuthConfigMap},
+    }
+},
+```
+
+`DependencyKind` supports `DependencyConfigMap` and `DependencySecret`; an empty `Namespace`
+defaults to the CR's namespace, and an empty `Name` is itself an error. Checks run before any role
+is reconciled. The hook is **opt-in**: nil (the default) performs no checks.
+
+`DependencyResolver.Validate(ctx, spec)` is a retained no-op that the reconcile flow does not call.
+Richer, product-shaped checks — `ValidateS3Connection`, `ValidateDatabaseConnection`,
+`ValidateZKConfig` — stay explicit product-side calls, because only the product knows where those
+specs live in its CRD.
+
+### 13. Controller Setup and Watches
+
+`SetupWithManager(mgr)` registers watches for the kinds the framework owns. Products emitting
+`RoleGroupResources.ExtraResources` must add those GVKs, or out-of-band changes to them produce no
+reconcile event:
+
+```go
+err := r.SetupWithManagerOpts(mgr, reconciler.SetupWithManagerOptions{
+    ExtraOwns: []client.Object{&listenersv1alpha1.Listener{}},
+    Watches: []func(*builder.Builder) *builder.Builder{ /* arbitrary extra watches */ },
+})
+```
+
+`ControllerBuilder(mgr, opts)` returns the configured `*builder.Builder` for operators that need to
+add `WithOptions`, predicates, or anything else before calling `Complete`.
+
+### 14. Sidecar Injection
+
+`SidecarManager` owns injection into the pod spec. Registration is `Register(provider, config)` or
+`RegisterWithPhase(provider, config, phase)`; a provider may instead declare its own phase by
+implementing `sidecar.PhasedProvider`:
+
+```go
+type PhasedProvider interface{ Phase() int }
+```
+
+Phases order `InjectAll`: `SidecarPhaseProducer` (10) → `SidecarPhaseDefault` (50, the phase of
+providers that declare none) → `SidecarPhasePipeline` (90). Within a phase, providers are injected in
+name order, so a pod template does not re-render across reconciles. Resolution order is: the phase
+passed to `RegisterWithPhase` > the provider's own `PhasedProvider.Phase()` > `SidecarPhaseDefault`;
+`SidecarManager.Phase(name)` reports the effective one. The Vector provider declares
+`SidecarPhasePipeline`, so — unless a caller overrides it with `RegisterWithPhase` — it is injected
+after the producer containers whose shared log volume it mounts.
+
+`SidecarProvider.Validate(ctx, client, namespace)` is a real gate, not advisory: the reconciler calls
+`ValidateAll` before applying the StatefulSet, and a failure aborts the role group with a
+`*reconciler.ValidationError`. The Vector provider's `Validate` requires the target ConfigMap to
+exist **and** to carry the `vector.yaml` key: the framework generates that key only for CRs
+implementing `reconciler.VectorAggregatorProvider`, and without it the agent starts unconfigured and
+crash-loops.
+
+`SidecarConfig` carries `Image`, `ImagePullPolicy`, `Resources`, `EnvVars`, `Volumes`,
+`VolumeMounts`, `Ports`, `Enabled` and `SecurityContext`. There is no `MainContainerName` field and
+no `FindMainContainer` helper — a provider that must address the primary container uses
+`sidecar.FindContainer(podSpec, name)`, and the primary container's name is controlled by
+`BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName`.
+
+Providers shipping their own upstream image (oauth2-proxy) implement `sidecar.OwnImageProvider` so
+`SetProductImage` leaves their pinned default alone.
+
+### 15. Slice Merge Strategy
+
+`config.ConfigMerger.SliceMergeStrategy` selects how `cliOverrides` merge:
+`MergeStrategyReplace` (the default) or `MergeStrategyAppend`. **The framework path is always
+Replace** — `GenericReconciler` constructs its merger with `config.NewConfigMerger()` and exposes no
+knob — so `Append` is reachable only by driving `config.ConfigMerger` directly from product code.
+
+An empty override slice means "unset", not "clear": a role group cannot erase the CLI arguments its
+role set, because only a non-empty override replaces (or extends) the base.
+
+### 16. Secret and Listener CSI Volumes
+
+`security.SecretProvisioner` declares secret-operator CSI volumes and resolves their mount paths;
+`listener.ListenerProvisioner` does the same for the listener-operator. Both satisfy
+`reconciler.VolumeProvider`, so a product appends them to
+`RoleGroupBuildContext.VolumeProviders` (or calls `AutoInject(stsBuilder)`), and both expose
+`Path(volumeName) (string, error)` / `MustPath(volumeName) string` — config generation should ask
+for the path rather than hardcode it.
+
+Mount bases: secret volumes default to `constant.KubedoopMountDir` (`/kubedoop/mount/<volume>`),
+listener volumes to `constant.KubedoopListenerDir` (`/kubedoop/listener/<volume>`). Both
+`WithMountBasePath` overrides ignore an empty argument (keeping the default) and panic on a
+relative path, since a relative base composes into a container `mountPath` the API server rejects.
+
+Registration constructors: `TLS`, `TLSPEMFormat`, `ServiceTLS`, `KerberosVolume`, `ListenerVolume`,
+`Custom`, `CredentialsVolume`.
+
+```go
+security.ListenerVolume(volumeName, secretClass, listenerVolumeName string, format SecretFormat)
+```
+`ListenerVolume` requires `listenerVolumeName` — the name of the pod volume mounting the listener,
+which the secret-operator resolves to that listener's addresses. It emits the scope
+`listener-volume=<listenerVolumeName>`; a bare `listener-volume` entry carries no name for the CSI
+driver to resolve, so an empty argument panics. The same rule is enforced for every named scope key
+(`service=`, `listener-volume=`) by `SecretVolumeRegistration.WithScope` and
+`SecretProvisioner.Register`. Unknown scope keys still pass — the scope vocabulary belongs to the
+secret-operator. `security.ScopeString(*commonsv1alpha1.CredentialsScope)` renders a CRD scope into
+that annotation value.
+
+`pkg/listener` has **no scope API**: `VolumeRegistration.WithScope`, the `ListenerScope` type,
+`ListenerScopeNode`, `ListenerScopeCluster` and `ListenerScopeAnnotation` do not exist, and listener
+PVC templates carry no `listeners.kubedoop.dev/scope` annotation. A listener volume is declared with
+`listener.NewVolume(name, class)` and optionally `.WithListenerName(name)`; a registration with
+neither a class nor a listener name is rejected.
+
 ## Building a New Operator
 
 1. **Define CRD** - Create API types implementing `ClusterInterface` (embed `ClusterObject` for defaults)
-2. **Create RoleGroupHandler** - Embed `BaseRoleGroupHandler` for default resource building, or implement `RoleGroupHandler` directly
+2. **Create RoleGroupHandler** - Embed `BaseRoleGroupHandler` for default resource building, or implement `RoleGroupHandler` directly; set `ProductName` to opt into CR-driven images
 3. **Provide Product Config** (optional) - Set `ProductConfig` on `GenericReconcilerConfig` to contribute product-intrinsic/derived config as the lowest merge layer
-4. **Register Extensions** (optional) - Add custom hooks via extension registry
-5. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
-6. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
-7. **Create main.go** - Use `GenericReconciler` with your handler
+4. **Declare Dependencies** (optional) - Set `Dependencies` so missing ConfigMaps/Secrets fail fast with a Degraded condition
+5. **Register Extensions** (optional) - Add custom hooks on a per-product `common.NewExtensionRegistry()` passed via `GenericReconcilerConfig.ExtensionRegistry`
+6. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
+7. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
+8. **Create main.go** - Use `GenericReconciler` with your handler, and register any extra-resource GVKs through `SetupWithManagerOpts`
 
 See `examples/trino-operator/` for a complete example.
 
@@ -310,19 +532,31 @@ All AI agents and developers working on this project **must** follow these rules
 - **Generation**: When modifying API structs in `pkg/apis`, always run `make generate`
 - **Testing**: Use Ginkgo v2 + Gomega; test files use `suite_test.go` pattern
 - **Error Handling**: Use error types from `pkg/common/errors.go` and `pkg/reconciler/errors.go`
-- **Generics**: Extensive use of generics for type-safe operator framework — no type assertions
+- **Generics**: the framework is generic over the product CR type (`GenericReconciler[CR]`,
+  `RoleGroupHandler[CR]`, `ClusterExtension[CR]`), so product code never asserts on a CR type.
+  Inside the SDK, a type assertion is acceptable **only** to detect an optional capability on a
+  method-set interface — `RoleNameProvider`, `rolePodDisruptionBudgetBuilder`,
+  `sidecar.PhasedProvider`, `sidecar.OwnImageProvider` — never to recover a concrete product type
 
 ### Design Constraints
 - Follow the layered architecture defined in `docs/architecture.md`
-- Use Go Generics for type safety — no type assertions
+- Use Go Generics for type safety; reserve type assertions for optional-capability interfaces
 - All operations must be idempotent
-- Config merging follows the strict merge strategy (Deep Merge for maps, Replace/Append for slices, Strategic Merge Patch for PodTemplate)
-- Extensions must be registered during Operator initialization (in `main.go` before Manager starts)
+- Config merging follows the strict merge strategy: Deep Merge for maps, `SliceMergeStrategy` for
+  slices (Replace by default and always on the framework path — see §15), Strategic Merge Patch for
+  PodTemplate
+- Extensions must be registered during Operator initialization (in `main.go` before Manager starts).
+  Prefer an isolated `common.NewExtensionRegistry()` passed via
+  `GenericReconcilerConfig.ExtensionRegistry` over the process-wide singleton
 - Override fields (`configOverrides`, `envOverrides`, `cliOverrides`, `podOverrides`) are **flattened** directly at Role/RoleGroup level, NOT nested under an `overrides` field
+- Resource cleanup relies on owner references, not finalizers — do not add a finalizer without
+  updating the deletion contract documented above
 
 ## Testing
 - Unit tests use Ginkgo v2 with Gomega matchers
 - Each package has a `suite_test.go` for test setup
-- `pkg/testutil/` provides envtest helpers and mocks
+- `pkg/testutil/` provides envtest helpers (`TestEnv`), object/CR builders, matchers, and mocks.
+  `MockRoleGroupHandlerFor[CR]` is the generic handler mock; `MockRoleGroupHandler` is the alias
+  bound to the package's own `*ClusterWrapper` CR
 - Run tests: `make test`
 - All tests must pass before any code is committed
