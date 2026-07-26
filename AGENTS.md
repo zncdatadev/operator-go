@@ -209,6 +209,22 @@ env vars and args through `MergedConfig` (`StatefulSetBuilder.WithConfig`), and 
 patches the template directly — all three change the pod template, so they roll natively with no
 restarter involved.
 
+**Every framework resource of a role group carries a fixed role-group label.**
+`app.kubernetes.io/role-group` (`constant.LabelKubernetesRoleGroup`) is stamped on the ConfigMap,
+both Services, the StatefulSet, and — from `applyResources`, since products supply them — the
+metrics Service and any per-group PDB. It exists because the default label set identifies the role
+group only through `<cluster>-<group>: "true"`: a **dynamic key**, so nothing can select on it
+without knowing both names first, and it is baked into the StatefulSet's immutable `.spec.selector`
+so it cannot be changed for an existing cluster. Operators that set `LabelDomain` already get a
+fixed key from `identityLabels`; this gives everyone else one, additively.
+
+It goes on **object metadata only**, never the pod template, via the new
+`StatefulSetBuilder.WithObjectLabels`. `WithLabels` writes both, and changing a pod template rolls
+every pod of every managed cluster — an operational event that must not arrive with an operator
+upgrade for a label the pods have no use for. It is likewise kept out of `.spec.selector`, which
+would be a one-way door. `WithObjectLabels` is the general channel for "identifies the workload
+object, not the pods" (the `restarter.kubedoop.dev/enable` label has the same shape).
+
 **Role iteration is best-effort.** A failing role does not stop the others, and a failing role group does not stop its siblings, the role-level PDB, or the role's PostReconcile hook. Steps 8-10 (orphan cleanup, health, cluster PostReconcile) run regardless. Roles and role groups are independent workloads: aborting at the first failure meant one unparsable value on the alphabetically-first role indefinitely blocked the *deletion* of an unrelated role group, the health of every other role, and the discovery ConfigMap a product publishes from PostReconcile. The per-role errors are combined with `errors.Join` and returned once, so the cluster still goes `Degraded` and the workqueue still backs off. Iteration stays **sorted** so that aggregated message is byte-stable across cycles — an unstable message would defeat the no-op guard in `updateStatus` and make the controller reschedule itself forever. The single exception is a 429: a `*RateLimitError` aborts the pass immediately, because pushing the remaining roles through would only deepen the backlog.
 
 **Requeue cadence.** A successful reconcile returns `ctrl.Result{RequeueAfter: HealthCheckInterval}` (`DefaultHealthCheckInterval` = 120s; a negative value disables the periodic wakeup), or the cleaner's earliest pending wakeup when that is sooner — a remaining gray-delete deadline, or the drain poll interval of an orphan deletion in flight. Watches only cover the kinds the framework owns, so anything that changes without producing an event — a product `ServiceHealthCheck` probe, a grace period running out, a StatefulSet finishing its drain — depends on this timer.

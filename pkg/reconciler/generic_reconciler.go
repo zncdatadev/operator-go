@@ -1116,7 +1116,7 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 		// resource name for a role group literally called "<group>-metrics". Stamping the slot
 		// here is what lets the reclaim tell "the metrics Service this framework applied" apart
 		// from a sibling role group's Service, or a product's own object of the same name.
-		markMetricsService(resources.MetricsService)
+		markMetricsService(resources.MetricsService, buildCtx.RoleGroupName)
 		if err := r.applyResource(ctx, cr, resources.MetricsService); err != nil {
 			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, metricsName, "failed to apply metrics service", err)
 		}
@@ -1132,11 +1132,16 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 const LabelMetricsService = "metrics." + constant.KubedoopDomain + "/service"
 
 // markMetricsService stamps the metrics slot label on a handler-built metrics Service.
-func markMetricsService(svc *corev1.Service) {
+func markMetricsService(svc *corev1.Service, roleGroupName string) {
 	if svc.Labels == nil {
 		svc.Labels = map[string]string{}
 	}
 	svc.Labels[LabelMetricsService] = valueTrue
+	// The metrics Service and the per-group PDB are supplied BY THE PRODUCT, so the base handler
+	// cannot label them where it labels its own resources. Stamping the role group here keeps the
+	// framework's object set uniformly self-describing: every resource the framework applies for a
+	// role group can be attributed to it by a fixed label, without parsing derived names.
+	svc.Labels[constant.LabelKubernetesRoleGroup] = roleGroupName
 }
 
 // markRolePodDisruptionBudget stamps the role slot label, carrying the role the PDB covers, on a
@@ -1156,6 +1161,7 @@ func markRoleGroupPodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, roleGro
 		pdb.Labels = map[string]string{}
 	}
 	pdb.Labels[LabelRoleGroupPodDisruptionBudget] = roleGroupName
+	pdb.Labels[constant.LabelKubernetesRoleGroup] = roleGroupName
 }
 
 // reclaimRolePDB deletes the role's PodDisruptionBudget when its config is unset or disabled, but

@@ -44,6 +44,13 @@ type StatefulSetBuilder struct {
 	// (and must be a subset of Labels, which are applied to the pod template). When empty,
 	// Labels is used for the selector. Decoupling the selector from the full descriptive
 	// labels keeps the immutable selector stable and free of user-mutable labels.
+	// ObjectLabels are merged onto the StatefulSet's OWN metadata only, never onto the pod
+	// template. Labels set through WithLabels land on both, which makes them part of the pod's
+	// identity: adding one to an existing workload changes the pod template and therefore rolls
+	// every pod. A label that only identifies the workload object — for inventory, selection with
+	// `kubectl get sts -l`, or an ecosystem controller that watches workloads — has no business
+	// forcing that.
+	ObjectLabels    map[string]string
 	SelectorLabels  map[string]string
 	Annotations     map[string]string
 	Replicas        int32
@@ -129,6 +136,18 @@ func NewStatefulSetBuilder(name, namespace string) *StatefulSetBuilder {
 func (b *StatefulSetBuilder) WithLabels(labels map[string]string) *StatefulSetBuilder {
 	for k, v := range labels {
 		b.Labels[k] = v
+	}
+	return b
+}
+
+// WithObjectLabels merges labels onto the StatefulSet's own metadata WITHOUT adding them to the
+// pod template, so applying them to a running workload does not roll its pods.
+func (b *StatefulSetBuilder) WithObjectLabels(labels map[string]string) *StatefulSetBuilder {
+	if b.ObjectLabels == nil {
+		b.ObjectLabels = make(map[string]string, len(labels))
+	}
+	for k, v := range labels {
+		b.ObjectLabels[k] = v
 	}
 	return b
 }
@@ -477,11 +496,21 @@ func (b *StatefulSetBuilder) DisableStartupProbe() *StatefulSetBuilder {
 // rewrites the template when pod overrides are applied), so sharing would let a pod-level change
 // contaminate ObjectMeta, the immutable .spec.selector, or a second Build() from the same builder.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
+	// The workload's own labels are the pod labels PLUS the object-only ones; the pod template
+	// below deliberately gets only the former.
+	objectLabels := maps.Clone(b.Labels)
+	if objectLabels == nil {
+		objectLabels = make(map[string]string, len(b.ObjectLabels))
+	}
+	for k, v := range b.ObjectLabels {
+		objectLabels[k] = v
+	}
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      maps.Clone(b.Labels),
+			Labels:      objectLabels,
 			Annotations: maps.Clone(b.Annotations),
 		},
 		Spec: appsv1.StatefulSetSpec{

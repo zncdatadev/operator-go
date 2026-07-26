@@ -113,6 +113,17 @@ changes are listed below.**
 
 ### features
 
+- Every framework-built resource of a role group now carries the fixed
+  `app.kubernetes.io/role-group` label (`constant.LabelKubernetesRoleGroup`, previously declared and
+  unused). The default label set identified the role group only through a **dynamic** key,
+  `<cluster>-<group>: "true"`, which cannot be selected on without knowing both names and is baked
+  into the StatefulSet's immutable selector. Operators setting `LabelDomain` already had a fixed
+  key; this gives everyone else one.
+- `StatefulSetBuilder.WithObjectLabels` merges labels onto the StatefulSet's own metadata **without**
+  adding them to the pod template. `WithLabels` writes both, so using it for a workload-identifying
+  label would change the pod template and roll every pod of every managed cluster. The role-group
+  label uses the new channel and is therefore applied with no rollout and no selector change.
+
 - `SidecarConfig.Probes` (`sidecar.SidecarProbes`) lets a product override the probes a provider
   sets: `Startup`/`Liveness`/`Readiness` replace one **wholesale** (probe handlers are a Kubernetes
   one-of, and a merged probe carrying two handlers is rejected by the API server), and

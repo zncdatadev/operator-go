@@ -2307,3 +2307,67 @@ var _ = Describe("BaseRoleGroupHandler ConfigMap data", func() {
 		Expect(resources.ConfigMap.Data).NotTo(BeNil())
 	})
 })
+
+var _ = Describe("Fixed role-group label", func() {
+	var buildCtx *reconciler.RoleGroupBuildContext
+	var handler *reconciler.BaseRoleGroupHandler[*testutil.MockCluster]
+
+	BeforeEach(func() {
+		handler = reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("test-image:latest", testScheme)
+		buildCtx = &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleGroupName:    "default",
+			ResourceName:     "test-cluster-default",
+			ClusterSpec:      &v1alpha1.GenericClusterSpec{},
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     config.NewMergedConfig(),
+		}
+	})
+
+	It("labels every framework resource with a fixed key", func() {
+		// The default label set identifies the role group only through "<cluster>-<group>: true" —
+		// a DYNAMIC key, so nothing can select on it without knowing both names first, and it is
+		// baked into the StatefulSet's immutable selector so it cannot be changed later.
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		for name, obj := range map[string]client.Object{
+			"ConfigMap":        resources.ConfigMap,
+			"headless Service": resources.HeadlessService,
+			"StatefulSet":      resources.StatefulSet,
+		} {
+			Expect(obj).NotTo(BeNil(), name)
+			Expect(obj.GetLabels()).To(HaveKeyWithValue(constant.LabelKubernetesRoleGroup, "default"), name)
+		}
+	})
+
+	It("keeps the label off the pod template, so applying it rolls nothing", func() {
+		// This is the whole reason the StatefulSet takes it through WithObjectLabels. Labels set
+		// through WithLabels land on the pod template too, and changing a pod template rolls every
+		// pod of every managed cluster — an operational event that must not arrive with an
+		// operator upgrade for a label the pods have no use for.
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := resources.StatefulSet
+		Expect(sts.Labels).To(HaveKeyWithValue(constant.LabelKubernetesRoleGroup, "default"))
+		Expect(sts.Spec.Template.Labels).NotTo(HaveKey(constant.LabelKubernetesRoleGroup))
+	})
+
+	It("keeps the label out of the immutable selector", func() {
+		// Adding it to .spec.selector would be a one-way door: the selector cannot be changed for
+		// an existing StatefulSet, so every cluster created before this change would need a manual
+		// delete/recreate migration.
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).
+			NotTo(HaveKey(constant.LabelKubernetesRoleGroup))
+		// And the selector remains a subset of the pod labels, which the API server requires.
+		for k, v := range resources.StatefulSet.Spec.Selector.MatchLabels {
+			Expect(resources.StatefulSet.Spec.Template.Labels).To(HaveKeyWithValue(k, v))
+		}
+	})
+})

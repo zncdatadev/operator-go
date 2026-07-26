@@ -467,6 +467,32 @@ func ClusterLabelKey(domain string) string { return domain + "/cluster" }
 // RoleLabelKey returns the identity label key for the role, under the given domain.
 func RoleLabelKey(domain string) string { return domain + "/role" }
 
+// roleGroupObjectLabel is the fixed, framework-independent way to tell which role group an object
+// belongs to. It goes on OBJECT METADATA ONLY (see StatefulSetBuilder.WithObjectLabels): putting it
+// on the pod template would change the pod template of every existing workload and roll every
+// cluster once, for a label the pods have no use for.
+//
+// The default label set has no such key. It identifies the role group with
+// "<cluster>-<group>: true" — a DYNAMIC key, computed from user-chosen names and baked into the
+// StatefulSet's immutable .spec.selector, so it cannot be changed for an existing cluster and
+// cannot be selected on without knowing both names first. Operators that set LabelDomain already
+// get a fixed key (see identityLabels); this gives everyone else one, additively, without touching
+// the selector.
+func (h *BaseRoleGroupHandler[CR]) roleGroupObjectLabel(buildCtx *RoleGroupBuildContext) map[string]string {
+	return map[string]string{constant.LabelKubernetesRoleGroup: buildCtx.RoleGroupName}
+}
+
+// withRoleGroupLabel returns a copy of labels carrying the fixed role-group label. Used for the
+// resources whose builders only ever write object metadata (ConfigMap, Services, PDB); the
+// StatefulSet takes it through WithObjectLabels instead, because its label channel also feeds the
+// pod template.
+func (h *BaseRoleGroupHandler[CR]) withRoleGroupLabel(labels map[string]string, buildCtx *RoleGroupBuildContext) map[string]string {
+	out := make(map[string]string, len(labels)+1)
+	maps.Copy(out, labels)
+	maps.Copy(out, h.roleGroupObjectLabel(buildCtx))
+	return out
+}
+
 // RoleGroupLabelKey returns the identity label key for the role group, under the given domain.
 func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
 
@@ -649,7 +675,7 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 	}
 
 	cm := builder.NewConfigMapBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
-		WithLabels(labels).
+		WithLabels(h.withRoleGroupLabel(labels, buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithConfigFiles(data).
 		Build()
@@ -667,7 +693,7 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 // buildHeadlessService creates the headless service for StatefulSet.
 func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuildContext, labels map[string]string) *corev1.Service {
 	return builder.NewHeadlessServiceBuilder(buildCtx.ResourceName+"-headless", buildCtx.ClusterNamespace).
-		WithLabels(labels).
+		WithLabels(h.withRoleGroupLabel(labels, buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
 		WithPublishNotReadyAddresses(h.PublishNotReadyAddresses).
@@ -678,7 +704,7 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 // buildService creates the client-facing service.
 func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext, labels map[string]string, ports []corev1.ServicePort) *corev1.Service {
 	return builder.NewServiceBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
-		WithLabels(labels).
+		WithLabels(h.withRoleGroupLabel(labels, buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
 		WithPorts(ports).
@@ -710,7 +736,8 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 
 	// Set basic properties
 	image, pullPolicy := h.containerImage(buildCtx, buildCtx.RoleName)
-	stsBuilder.WithLabels(labels).
+	stsBuilder.WithObjectLabels(h.roleGroupObjectLabel(buildCtx)).
+		WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithReplicas(replicas).
