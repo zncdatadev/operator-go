@@ -34,3 +34,73 @@ jobs:
           ENVTEST_K8S_VERSION: ${{ matrix.k8s-version }}
         run: |
           make test
+
+  # Nothing in CI exercised the race detector, on a framework whose entire job is to run reconcile
+  # loops concurrently. One Kubernetes version rather than the whole matrix: -race multiplies
+  # runtime several-fold, and a data race is a property of this code, not of the API server it talks
+  # to.
+  go-test-race:
+    name: Go Test (race detector)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Running Tests with -race
+        env:
+          ENVTEST_K8S_VERSION: '1.35.0'
+        run: |
+          make test GOTESTFLAGS=-race
+
+  # `make test` runs `generate` and `manifests` as prerequisites, so it REPAIRS stale generated
+  # files before testing instead of failing on them. A commit carrying an out-of-date
+  # zz_generated.deepcopy.go or test CRD therefore went green, and CI tested a tree that differed
+  # from the one under review. This job regenerates and fails if anything moved.
+  verify-generate:
+    name: Verify Generated Files
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Verify generated files are committed
+        run: |
+          make verify-generate
+
+  # examples/trino-operator is a separate Go module, so the root module's jobs never compiled it.
+  # It is the reference implementation downstream operators are told to copy, and it was green
+  # purely because nothing ran it. Its own Makefile pins its own tool versions, so it is driven
+  # through that rather than reimplementing the setup here.
+  #
+  # The e2e suite still does not run: it needs a Kind cluster (see the module's `test-e2e` target).
+  examples-test:
+    name: Go Test (examples/trino-operator)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: examples/trino-operator/go.mod
+
+      - name: Running Tests
+        run: |
+          make -C examples/trino-operator test

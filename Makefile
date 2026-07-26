@@ -43,8 +43,33 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: generate manifests fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: generate manifests fmt vet setup-envtest ## Run tests. Pass extra flags with GOTESTFLAGS, e.g. GOTESTFLAGS=-race.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $(GOTESTFLAGS) $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+.PHONY: verify-generate
+verify-generate: generate manifests ## Fail if the committed generated files are out of date.
+# `make test` runs `generate` and `manifests` as prerequisites, so it REPAIRS stale generated files
+# before testing rather than reporting them. On its own it can therefore never fail on drift, and
+# CI ends up testing a tree that differs from the one that was committed. This target regenerates
+# and then insists the generated paths are unchanged.
+#
+# git status, not git diff: a new package needs a NEW zz_generated.deepcopy.go, which is untracked
+# and therefore invisible to git diff.
+#
+# Scoped to the paths generation writes, so the target stays usable with unrelated work in progress
+# — a check that fails on any dirty file is a check nobody runs locally.
+#
+# examples/trino-operator is a separate module and is checked too: it embeds the commons API types,
+# so a change to pkg/apis leaves its CRD stale, and it is the reference implementation downstream
+# operators copy. Its own Makefile pins its own controller-gen, so it is driven through that.
+	$(MAKE) -C examples/trino-operator generate manifests
+	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases' config/crd/bases)"; \
+	if [ -n "$$drift" ]; then \
+		echo "Generated files are out of date. Run 'make generate manifests' and commit the result:"; \
+		echo "$$drift"; \
+		exit 1; \
+	fi
+	@echo "Generated files are up to date."
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

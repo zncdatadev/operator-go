@@ -280,6 +280,17 @@ changes are listed below.**
 
 ### tests
 
+- CI gained three guards it had been missing. `make test` regenerates before it tests, so a commit
+  with stale generated files went green and CI tested a tree that differed from the one under
+  review — the new `verify-generate` target and job regenerate and fail on any difference, across
+  **both** modules. The race detector now runs (on one Kubernetes version), on a framework whose
+  whole job is concurrent reconcile loops. And `examples/trino-operator`, a separate Go module that
+  no root-module job ever compiled, is now linted and tested; it is the reference implementation
+  downstream operators copy, and it was green only because nothing ran it.
+- Regenerated `examples/trino-operator`'s CRD, which was stale: it still carried the
+  `gracefulShutdownTimeout` CRD default removed from the commons types, so the example operator
+  shipped a CRD with the defaulting bug still in it.
+
 - The CRDs envtest installs for the mock cluster resources are now **generated** from the Go types
   by `make manifests` instead of being hand-written. The previous fixtures declared
   `x-kubernetes-preserve-unknown-fields: true` for spec and status and no schema at all, so the API
