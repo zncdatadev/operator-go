@@ -73,9 +73,10 @@ func RenderVectorConfig(data VectorConfigData) (string, error) {
 	data.LogDir = strings.TrimRight(data.LogDir, "/") + "/"
 
 	tmpl, err := template.New(VectorSidecarName).Funcs(template.FuncMap{
-		"APIPort":   func() int { return VectorAPIPort },
-		"logSuffix": logFileSuffix,
-		"quote":     quoteDoubleQuoted,
+		"APIPort":     func() int { return VectorAPIPort },
+		"MetricsPort": func() int { return VectorMetricsPort },
+		"logSuffix":   logFileSuffix,
+		"quote":       quoteDoubleQuoted,
 		// The container/file extraction regex embeds LogDir literally; without this a path
 		// metacharacter (e.g. a "." in the directory name) would silently widen the match.
 		"regexQuote": regexp.QuoteMeta,

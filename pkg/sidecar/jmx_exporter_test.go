@@ -202,7 +202,7 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			Expect(foundVolume.ConfigMap.Name).To(Equal("jmx-exporter-config"))
 		})
 
-		It("should set no probes, so a broken exporter cannot empty the product's Services", func() {
+		It("should set no readiness probe, so a broken exporter cannot empty the product's Services", func() {
 			// Kubernetes documents that for a sidecar container (an init container with
 			// restartPolicy Always) "if a readinessProbe is specified for this init container, its
 			// result will be used to determine the ready state of the Pod". A metrics exporter is
@@ -214,8 +214,55 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 
 			container := podSpec.InitContainers[0]
 			Expect(container.ReadinessProbe).To(BeNil())
-			Expect(container.LivenessProbe).To(BeNil())
-			Expect(container.StartupProbe).To(BeNil())
+			Expect(container.StartupProbe).To(BeNil(), "nothing waits on the exporter")
+		})
+
+		It("should set a liveness probe, so a lost JMX connection is recovered", func() {
+			// The counterpart to the assertion above: a liveness failure restarts only this
+			// container and never touches Service membership, so it is the probe that CAN
+			// guarantee the sidecar keeps working. Having neither probe — the previous
+			// iteration's state — left a running-but-useless exporter invisible and permanent.
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
+			Expect(provider.Inject(podSpec, config)).To(Succeed())
+
+			probe := podSpec.InitContainers[0].LivenessProbe
+			Expect(probe).NotTo(BeNil())
+			Expect(probe.HTTPGet).NotTo(BeNil())
+			// The literal, not the constant: /metrics is fixed by jmx_prometheus_httpserver, so a
+			// constant pointing elsewhere is the bug — and an assertion against the constant
+			// would move with it.
+			Expect(probe.HTTPGet.Path).To(Equal("/metrics"))
+			Expect(probe.HTTPGet.Port.IntValue()).To(Equal(sidecar.JMXExporterPort))
+
+			// Scraping /metrics makes the exporter collect from the JVM over JMX, so the response
+			// time tracks the product's GC. The probe must tolerate a stop-the-world pause: a
+			// readiness-probe-grade 5s timeout is what made the original probe flap.
+			Expect(probe.TimeoutSeconds).To(BeNumerically(">=", 10))
+			Expect(probe.PeriodSeconds*probe.FailureThreshold).To(BeNumerically(">=", 120),
+				"a long GC pause must not be read as a broken exporter")
+		})
+
+		It("should let a product replace or remove the probe", func() {
+			// SidecarConfig could previously not express a probe at all, so the framework's policy
+			// was unconfigurable rather than a default.
+			custom := &corev1.Probe{
+				ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}},
+				PeriodSeconds: 7,
+			}
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
+			config.Probes.Liveness = custom
+			Expect(provider.Inject(podSpec, config)).To(Succeed())
+
+			probe := podSpec.InitContainers[0].LivenessProbe
+			Expect(probe).NotTo(BeNil())
+			Expect(probe.Exec).NotTo(BeNil())
+			Expect(probe.HTTPGet).To(BeNil(), "the override replaces wholesale; a probe with two handlers is rejected by the API server")
+
+			podSpec = &corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "main"}}}
+			disabled := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
+			disabled.Probes.DisableLiveness = true
+			Expect(provider.Inject(podSpec, disabled)).To(Succeed())
+			Expect(podSpec.InitContainers[0].LivenessProbe).To(BeNil())
 		})
 
 		It("should harden the container by default so restricted Pod Security admits it", func() {

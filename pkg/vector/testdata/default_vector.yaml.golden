@@ -1,6 +1,6 @@
 api:
   enabled: true
-  address: 127.0.0.1:8686
+  address: 0.0.0.0:8686
   playground: false
 data_dir: /kubedoop/vector/var
 log_schema:
@@ -8,6 +8,9 @@ log_schema:
 sources:
   vector:
     type: internal_logs
+
+  internal_metrics:
+    type: internal_metrics
 
   files_stdout:
     type: file
@@ -366,3 +369,9 @@ sinks:
       - extended_logs
     type: vector
     address: "vector-aggregator:9000"
+
+  metrics:
+    inputs:
+      - internal_metrics
+    type: prometheus_exporter
+    address: 0.0.0.0:9598

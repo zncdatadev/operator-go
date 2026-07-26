@@ -645,14 +645,24 @@ func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 	}
 }
 
-// TestProvider_Inject_NoReadinessProbe guards the availability property, not an implementation
-// detail. Kubernetes documents that for a sidecar container (an init container with
-// restartPolicy Always) "if a readinessProbe is specified for this init container, its result
-// will be used to determine the ready state of the Pod" — so a probe here would let an
-// unreachable aggregator or a slow Vector start pull every pod of the role group out of every
-// Service. It is also the precondition for the loopback API bind: an httpGet probe is executed
-// by the kubelet against the pod IP, which is why the API used to listen on 0.0.0.0.
-func TestProvider_Inject_NoReadinessProbe(t *testing.T) {
+// TestProvider_Inject_LivenessNotReadinessProbe guards two availability properties at once, and
+// the distinction between them is the whole point.
+//
+// No readinessProbe: Kubernetes documents that for a sidecar container (an init container with
+// restartPolicy Always) "if a readinessProbe is specified for this init container, its result will
+// be used to determine the ready state of the Pod", so one here would let a crash-looping or
+// slow-starting Vector pull every pod of the role group out of every Service — a product outage
+// caused by the log pipeline.
+//
+// A livenessProbe, though, restarts only this container and never touches Service membership, so
+// it delivers the guarantee readiness cannot: a wedged agent is recovered instead of merely being
+// visible. Deleting the probe outright, as the previous iteration did, left the agent with neither.
+//
+// It must target the metrics endpoint, not the API's /health, because serving the exporter requires
+// Vector's topology to be running while /health reports merely that the API server is up. That holds
+// regardless of what address the API binds — the API's exposure is a separate security question, and
+// letting probe placement settle it is what put the API on the wildcard address to begin with.
+func TestProvider_Inject_LivenessNotReadinessProbe(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -670,12 +680,99 @@ func TestProvider_Inject_NoReadinessProbe(t *testing.T) {
 		t.Errorf("readiness probe = %+v, want nil: a log shipper must not gate pod readiness",
 			container.ReadinessProbe)
 	}
-	if container.LivenessProbe != nil {
-		t.Errorf("liveness probe = %+v, want nil", container.LivenessProbe)
-	}
 	if container.StartupProbe != nil {
-		t.Errorf("startup probe = %+v, want nil", container.StartupProbe)
+		t.Errorf("startup probe = %+v, want nil: nothing waits on the log agent", container.StartupProbe)
 	}
+
+	probe := container.LivenessProbe
+	if probe == nil {
+		t.Fatal("liveness probe = nil, want one: a wedged agent would never be recovered")
+	}
+	if probe.HTTPGet == nil {
+		t.Fatalf("liveness probe = %+v, want an httpGet handler", probe)
+	}
+	if got := probe.HTTPGet.Port.IntValue(); got != VectorMetricsPort {
+		t.Errorf("liveness probe port = %d, want %d: the metrics endpoint proves the topology is running, the API's /health only that the API is up",
+			got, VectorMetricsPort)
+	}
+	// The literal, not VectorMetricsPath: Vector hardcodes the prometheus_exporter path, so a
+	// constant pointing elsewhere is itself the bug, and an assertion against it would follow.
+	if probe.HTTPGet.Path != "/metrics" {
+		t.Errorf("liveness probe path = %q, want %q", probe.HTTPGet.Path, "/metrics")
+	}
+	// Restarting the agent drops its in-memory buffer, so the probe must tolerate a busy agent
+	// and fire only on a sustained failure. Anything under a minute of tolerance is too eager.
+	if tolerance := probe.PeriodSeconds * probe.FailureThreshold; tolerance < 60 {
+		t.Errorf("liveness tolerance = %ds (period %d x threshold %d), want >= 60s: restarting Vector drops buffered logs",
+			tolerance, probe.PeriodSeconds, probe.FailureThreshold)
+	}
+
+	// The endpoint the probe hits must be declared, otherwise nothing but this test knows it exists.
+	var found bool
+	for _, port := range container.Ports {
+		if port.ContainerPort == VectorMetricsPort {
+			found = true
+			if port.Name != VectorMetricsPortName {
+				t.Errorf("metrics port name = %q, want %q", port.Name, VectorMetricsPortName)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("container ports = %+v, want one declaring %d", container.Ports, VectorMetricsPort)
+	}
+}
+
+// TestProvider_Inject_ProbeOverrides proves the framework policy is a default rather than a law:
+// before this, SidecarConfig could not express a probe at all, so a product that needed one had no
+// option but raw podOverrides.
+func TestProvider_Inject_ProbeOverrides(t *testing.T) {
+	custom := &corev1.Probe{
+		ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}},
+		PeriodSeconds: 7,
+	}
+
+	t.Run("replace", func(t *testing.T) {
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "i"}}}
+		config := &sidecar.SidecarConfig{Enabled: true}
+		config.Probes.Liveness = custom
+		if err := NewVectorSidecarProvider("p:latest").Inject(podSpec, config); err != nil {
+			t.Fatalf("Inject() error = %v", err)
+		}
+		probe := vectorInitContainer(podSpec).LivenessProbe
+		if probe == nil || probe.Exec == nil {
+			t.Fatalf("liveness probe = %+v, want the override's exec handler", probe)
+		}
+		if probe.HTTPGet != nil {
+			t.Errorf("liveness probe = %+v: the override must replace wholesale, not merge — a probe carrying two handlers is rejected by the API server", probe)
+		}
+		if probe == custom {
+			t.Error("liveness probe aliases the caller's SidecarConfig; it must be deep-copied")
+		}
+	})
+
+	t.Run("disable", func(t *testing.T) {
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "i"}}}
+		config := &sidecar.SidecarConfig{Enabled: true}
+		config.Probes.DisableLiveness = true
+		if err := NewVectorSidecarProvider("p:latest").Inject(podSpec, config); err != nil {
+			t.Fatalf("Inject() error = %v", err)
+		}
+		if probe := vectorInitContainer(podSpec).LivenessProbe; probe != nil {
+			t.Errorf("liveness probe = %+v, want nil once disabled", probe)
+		}
+	})
+
+	t.Run("readiness is opt-in", func(t *testing.T) {
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "i"}}}
+		config := &sidecar.SidecarConfig{Enabled: true}
+		config.Probes.Readiness = custom
+		if err := NewVectorSidecarProvider("p:latest").Inject(podSpec, config); err != nil {
+			t.Fatalf("Inject() error = %v", err)
+		}
+		if probe := vectorInitContainer(podSpec).ReadinessProbe; probe == nil {
+			t.Error("readiness probe = nil: a product must be able to gate its pod on a sidecar when it really is in the request path")
+		}
+	})
 }
 
 func TestProvider_Inject_Idempotency(t *testing.T) {

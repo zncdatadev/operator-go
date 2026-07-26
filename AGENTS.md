@@ -534,8 +534,8 @@ branch, an empty `VectorAggregatorConfigMapName()` or an undiscoverable aggregat
 error, not a skip.
 
 `SidecarConfig` carries `Image`, `ImagePullPolicy`, `Resources`, `EnvVars`, `Volumes`,
-`VolumeMounts`, `Ports`, `Enabled` and `SecurityContext`. There is no `MainContainerName` field and
-no `FindMainContainer` helper — a provider that must address the primary container uses
+`VolumeMounts`, `Ports`, `Enabled`, `SecurityContext` and `Probes`. There is no `MainContainerName`
+field and no `FindMainContainer` helper — a provider that must address the primary container uses
 `sidecar.FindContainer(podSpec, name)`, and the primary container's name is controlled by
 `BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName`.
 
@@ -549,11 +549,69 @@ pod-level property, and a third-party image such as oauth2-proxy has its own `US
 hsperfdata to `/tmp`); the Vector provider adds the read-only root itself, having established that
 it only writes into its own volumes.
 
-**No framework sidecar carries a probe.** Kubernetes uses a sidecar container's `readinessProbe` to
-determine the *Pod's* ready state, so a probe on an observability container converts its failure
-into a product outage — the pods leave every Service. Vector, the JMX exporter and oauth2-proxy all
-ship without one. This is also why the Vector API binds `127.0.0.1`: an `httpGet` probe is executed
-by the kubelet against the pod IP, which had forced the unauthenticated GraphQL API onto `0.0.0.0`.
+**Each sidecar carries the probe that fits its role, and the axis is whether it is in the data
+path — not "probes are dangerous".** All three providers inject into `InitContainers` with
+`RestartPolicy: Always` (native sidecars, stable since Kubernetes v1.33), and on such a container
+the *type* of probe is a correctness question, because the three have three different blast radii:
+
+| probe | effect on a native sidecar | reversible? |
+|---|---|---|
+| `readinessProbe` | decides the **Pod's** ready state — the pod leaves every Service (KEP-753: "Readiness probes of sidecars will contribute to determine the whole Pod readiness") | yes |
+| `livenessProbe` | restarts that container only; pod readiness and Service membership untouched | yes |
+| `startupProbe` | regular containers start only once every restartable init container has *started*, and with a `startupProbe` that means the probe **succeeded** | **no** |
+
+From which the framework's policy follows:
+
+- **Out-of-band sidecars (Vector, JMX exporter) → `livenessProbe` only.** A readiness probe here is a
+  lie: their failure does not mean the product cannot serve, so gating the pod on them empties every
+  Service for no reason. Liveness delivers the guarantee readiness cannot — a wedged-but-running
+  agent is *recovered*, not merely visible. Deleting the probe outright is a third, worse option: it
+  removes the coupling *and* the guarantee.
+- **Data-path sidecars (oauth2-proxy) → `readinessProbe` + `livenessProbe`, never `startupProbe`.**
+  Here readiness is the honest signal: the Service routes to the proxy's port, so a proxy that is not
+  listening genuinely means the pod cannot serve. Istio's Envoy makes the same call. A `startupProbe`
+  would also close the startup window and is the wrong tool — a proxy that can never answer would
+  block the product's own container from ever starting, permanently, which is a *larger* blast radius
+  than the coupling being avoided.
+
+Per-provider specifics:
+
+- **Vector** — `livenessProbe` `httpGet` on `VectorMetricsPath` at `VectorMetricsPort` (9598), with
+  ~2 minutes of tolerance because restarting the agent drops its in-memory buffer. It targets the
+  pipeline's `prometheus_exporter` sink rather than the API's `/health` because that endpoint
+  exercises the **running topology**, while `/health` reports only that the API server is up. The
+  rendered pipeline therefore carries an `internal_metrics` source and a `prometheus_exporter` sink
+  on `0.0.0.0`, which is also the only way to alert on the pipeline
+  (`vector_component_sent_events_total`, `vector_buffer_events`); it exposes component throughput,
+  error counters and buffer depth, never log content. The port is declared as a container port but is
+  **not** overridable via `SidecarConfig.Ports`, because it is baked into the rendered `vector.yaml`.
+  The probe target is independent of what address the Vector *API* binds (`0.0.0.0`, as it always
+  has) — whether that unauthenticated GraphQL endpoint should be reachable from the pod network is a
+  security question about that endpoint, and letting probe placement decide it is what put it on the
+  wildcard address in the first place.
+- **JMX exporter** — `livenessProbe` `httpGet` `/metrics`, with deliberately forgiving timings
+  (`timeoutSeconds: 10`, ~3 minutes to failure). Scraping makes the exporter collect from the JVM
+  over JMX, so its response time tracks the product's GC; a readiness-grade 5s timeout is what made
+  the original probe flap a healthy product out of its Services.
+- **oauth2-proxy** — `readinessProbe` and `livenessProbe` on `/ping` (`OAuth2ProxyPingPath`), never
+  `/ready`, which oauth2-proxy documents as a *deep* health check. Probing the local endpoint is what
+  keeps readiness safe: `/ping` never contacts the IdP, so a runtime issuer outage cannot evict the
+  pod. Readiness follows a fast-start / slow-evict shape (2s period, 30 failures ≈ 60s). Both probes
+  are built from the *effective* port, so a `SidecarConfig.Ports` override cannot leave them pointing
+  at a port nothing listens on.
+
+Every tolerance window (60–180s) deliberately exceeds the default 30s termination grace period.
+Sidecars are stopped **after** the main container and are probed while draining, so a shorter window
+would let a normally-terminating sidecar be restarted mid-shutdown.
+
+`SidecarConfig.Probes` (`sidecar.SidecarProbes`) makes all of this a **default rather than a law**:
+`Startup`/`Liveness`/`Readiness` replace a provider's probe **wholesale** (never merged — probe
+handlers are a Kubernetes one-of, and a probe carrying two handlers is rejected), and
+`DisableStartup`/`DisableLiveness`/`DisableReadiness` remove it. A `Disable` flag wins if both are
+set. `sidecar.ApplyProbes` deep-copies the override in, so a built pod spec never aliases the
+caller's config. Setting `Readiness` is legal — a product whose sidecar genuinely is in the request
+path may want the pod gated on it — but on a native sidecar that field means "this **Pod** is
+unready", not "this container is unready".
 
 Providers shipping their own upstream image (oauth2-proxy) implement `sidecar.OwnImageProvider` so
 `SetProductImage` leaves their pinned default alone.

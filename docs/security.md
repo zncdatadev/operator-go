@@ -159,9 +159,16 @@ front of the product's HTTP port.
     would otherwise win and silently discard the domain list. Post-login redirects are likewise
     closed by default (the proxy's own host only); `WithOAuth2ProxyWhitelistDomains(...)` widens
     that, one domain at a time.
-  - **Readiness**: the sidecar deliberately has no readiness probe. As a native sidecar it would
-    otherwise gate the whole Pod's readiness, taking the product's non-auth ports out of every
-    Service during an IdP outage.
+  - **Probes**: the sidecar carries a **readiness** probe and a **liveness** probe on `/ping` —
+    never `/ready`, which oauth2-proxy documents as a deep health check and which would make a
+    runtime IdP outage evict the pod from every Service. Readiness is the right gate here, and this
+    is an availability property with a security edge: this container terminates client traffic, but
+    pod readiness is otherwise decided by the *main* container's probe on the product's own port, so
+    without it the pod joined its Services — and received requests — while the proxy was still
+    starting. Requests arriving then are refused rather than authenticated, which on a rollout looks
+    to clients like an outage and to an operator like a working auth layer. There is deliberately no
+    **startup** probe: as a native sidecar, a proxy that could never satisfy it would stop the
+    product's own container from ever starting.
 
 ---
 

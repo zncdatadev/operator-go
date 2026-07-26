@@ -28,6 +28,7 @@ import (
 	authv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/authentication/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -38,6 +39,12 @@ const (
 	OAuth2ProxyPort = 4180
 	// OAuth2ProxyPortName is the default name of the oauth2-proxy container port.
 	OAuth2ProxyPortName = "oauth2-proxy"
+	// OAuth2ProxyPingPath is oauth2-proxy's basic health endpoint (its --ping-path default),
+	// served on the same address as the proxy itself. It is the target of both framework probes.
+	// Deliberately not --ready-path (/ready), which oauth2-proxy documents as a DEEP health check
+	// — gating on that would reintroduce the dependency coupling the missing readiness probe
+	// exists to avoid.
+	OAuth2ProxyPingPath = "/ping"
 	// DefaultOAuth2ProxyImage is the default (pinned) oauth2-proxy image. Products
 	// override it per role group via SidecarConfig.Image.
 	DefaultOAuth2ProxyImage = "quay.io/oauth2-proxy/oauth2-proxy:v7.8.2"
@@ -323,9 +330,61 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
-		// Deliberately no readiness probe: as a native sidecar, an unready oauth2-proxy
-		// would gate readiness of the WHOLE pod — an issuer (IdP) outage would take the
-		// product's non-auth ports out of every Service, not just the login flow.
+		// Readiness AND liveness — and deliberately NO startupProbe. This container is the one
+		// framework sidecar that sits IN THE DATA PATH: the Service sends client requests to its
+		// port and it forwards them to OAUTH2_PROXY_UPSTREAMS. That inverts the rule the
+		// observability sidecars follow.
+		//
+		// For Vector or the JMX exporter a readinessProbe is a lie: their failure does not mean
+		// the product cannot serve, so gating the pod on them empties Services for no reason. For
+		// this container it is the honest signal — a pod whose proxy is not listening genuinely
+		// cannot serve the port the Service routes to. Pod readiness is otherwise decided by the
+		// MAIN container's probe on the product's own port, so without this the pod was Ready, and
+		// receiving traffic, while the proxy had merely been launched: every rollout produced a
+		// window of refused connections. Istio's Envoy — the canonical data-path sidecar — makes
+		// the same call, with the same tunables.
+		//
+		// A startupProbe would ALSO close that window, and it is the wrong tool. KEP-753: regular
+		// containers start once "all restartable init containers have started", and for a
+		// container with a startupProbe "started" means the probe SUCCEEDED. So a proxy that can
+		// never answer — IdP unreachable at pod creation, so oauth2-proxy exits during OIDC
+		// discovery before it ever serves; a wrong client secret; a NetworkPolicy — would block
+		// the product's own container from starting, forever, with no way back. That is a strictly
+		// larger blast radius than the one this whole design exists to avoid: readiness failure is
+		// reversible (the proxy recovers, the pod rejoins its Services), startup failure is not.
+		//
+		// Both probes target /ping, oauth2-proxy's basic health endpoint, NOT /ready, which
+		// oauth2-proxy documents as a DEEP health check. That is what keeps readiness safe here:
+		// /ping never contacts the IdP, so a runtime issuer outage cannot evict the pod — which
+		// was the actual fear behind this provider's original "no probe" reasoning.
+		//
+		// Timings follow the fast-start / slow-evict shape: a 2s period means the pod is Ready
+		// within seconds of the proxy serving, while 30 consecutive failures (~60s) are needed to
+		// evict it. 60s also exceeds the default 30s termination grace period, so a proxy being
+		// shut down cannot accumulate enough failures to be acted on mid-termination — sidecars
+		// are stopped AFTER the main container, so they are probed while draining.
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: OAuth2ProxyPingPath,
+					Port: intstr.FromInt(int(port)),
+				},
+			},
+			PeriodSeconds:    2,
+			TimeoutSeconds:   2,
+			FailureThreshold: 30,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: OAuth2ProxyPingPath,
+					Port: intstr.FromInt(int(port)),
+				},
+			},
+			PeriodSeconds:    20,
+			TimeoutSeconds:   5,
+			FailureThreshold: 3,
+		},
 	}
 
 	// Emitted only when the product asked for off-host redirects. Unset, oauth2-proxy permits
@@ -347,6 +406,9 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}
+
+	ApplyProbes(container, config.Probes)
+
 	// Replace semantics, not add-only: oauth2-proxy's whole configuration surface IS env
 	// vars, so SidecarConfig.EnvVars must be able to change the built-in defaults (e.g.
 	// OAUTH2_PROXY_COOKIE_SECURE=true behind TLS, tightening OAUTH2_PROXY_EMAIL_DOMAINS).

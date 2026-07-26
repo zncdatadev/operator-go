@@ -17,6 +17,7 @@ limitations under the License.
 package vector
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -350,21 +351,47 @@ func TestRenderVectorConfig_APIDefaults(t *testing.T) {
 		t.Fatalf("RenderVectorConfig() error = %v", err)
 	}
 
-	// Enabled, so `kubectl exec` + `vector top` still works for in-pod debugging.
 	if !strings.Contains(result, "enabled: true") {
 		t.Error("RenderVectorConfig() API should be enabled")
 	}
-	// ...but bound to loopback. Vector's API is unauthenticated GraphQL, and `vector tap` over
-	// it streams the log events flowing through the pipeline — application logs, for these
-	// products. On 0.0.0.0 that endpoint was reachable from anywhere in the pod network.
-	if !strings.Contains(result, "address: 127.0.0.1:8686") {
-		t.Error("RenderVectorConfig() API address should be 127.0.0.1:8686")
-	}
-	if strings.Contains(result, "0.0.0.0") {
-		t.Error("RenderVectorConfig() must not bind any wildcard address")
+	// The wildcard bind is the framework's long-standing behaviour and is asserted here so a change
+	// to it is a deliberate, visible decision rather than a side effect of something else. It is a
+	// departure from Vector's own defaults (api.enabled false, api.address 127.0.0.1:8686) and the
+	// API is unauthenticated GraphQL that `vector tap` streams event payloads over, so whether to
+	// keep exposing it belongs to a security review of this endpoint — not to probe placement, which
+	// is what introduced the wildcard in the first place.
+	if !strings.Contains(result, "address: 0.0.0.0:8686") {
+		t.Error("RenderVectorConfig() API address should be 0.0.0.0:8686")
 	}
 	if !strings.Contains(result, "playground: false") {
 		t.Error("RenderVectorConfig() API playground should be disabled")
+	}
+}
+
+// TestRenderVectorConfig_SelfMetrics guards the agent's own observability: it is the only thing that
+// makes "the agent stopped shipping" detectable, since the pipeline's other sink is the aggregator it
+// may have lost. It is also what the Vector container's liveness probe targets, because serving it
+// requires the topology to be running while the API's /health reports merely that the API is up.
+func TestRenderVectorConfig_SelfMetrics(t *testing.T) {
+	data := defaultConfigData()
+	result, err := RenderVectorConfig(data)
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"internal_metrics:\n    type: internal_metrics",
+		"type: prometheus_exporter",
+		fmt.Sprintf("address: 0.0.0.0:%d", VectorMetricsPort),
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("RenderVectorConfig() missing %q; the liveness probe would have nothing to hit", want)
+		}
+	}
+	// Wired, not merely declared: a prometheus_exporter with no inputs serves an empty document
+	// and would still answer the probe, so this is the assertion that has content.
+	if !strings.Contains(result, "  metrics:\n    inputs:\n      - internal_metrics") {
+		t.Error("RenderVectorConfig() prometheus_exporter sink must take internal_metrics as input")
 	}
 }
 

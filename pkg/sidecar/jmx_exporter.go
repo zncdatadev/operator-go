@@ -23,6 +23,7 @@ import (
 
 	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -31,6 +32,9 @@ const (
 	JMXExporterSidecarName = "jmx-exporter"
 	// JMXExporterPort is the default JMX Exporter metrics port.
 	JMXExporterPort = 5556
+	// JMXExporterMetricsPath is the path jmx_prometheus_httpserver serves metrics on, and the
+	// target of the container's liveness probe.
+	JMXExporterMetricsPath = "/metrics"
 	// JMXExporterConfigVolumeName is the name of the config volume.
 	JMXExporterConfigVolumeName = "jmx-exporter-config"
 	// JMXExporterJarPath is the in-image path of the jar the sidecar executes.
@@ -140,13 +144,31 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 				ReadOnly:  true,
 			},
 		},
-		// Deliberately no readiness probe. Kubernetes documents that for a sidecar container
-		// (an init container with restartPolicy Always) "if a readinessProbe is specified for
-		// this init container, its result will be used to determine the ready state of the Pod".
-		// A metrics exporter is not in the request path, so gating pod readiness on it would take
-		// the product's own ports out of every Service the moment scraping broke — an outage
-		// caused by the monitoring, not by the product. Same reasoning as the oauth2-proxy
-		// provider.
+		// Liveness, not readiness. Kubernetes documents that for a sidecar container (an init
+		// container with restartPolicy Always) "if a readinessProbe is specified for this init
+		// container, its result will be used to determine the ready state of the Pod", so a
+		// readiness probe here would take the PRODUCT's own ports out of every Service the moment
+		// scraping broke — an outage caused by the monitoring. A liveness failure restarts only
+		// this container, which the product never notices.
+		//
+		// The timings are deliberately far more forgiving than a readiness probe's would be.
+		// Scraping /metrics makes the exporter connect into the JVM over JMX and collect, so the
+		// response time tracks the product's GC behaviour: a stop-the-world pause must not be
+		// read as a broken exporter. Only a sustained failure (~3 minutes) — the case actually
+		// worth recovering from, an exporter that has permanently lost its JMX connection —
+		// triggers a restart.
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: JMXExporterMetricsPath,
+					Port: intstr.FromInt(int(port)),
+				},
+			},
+			InitialDelaySeconds: 30,
+			TimeoutSeconds:      10,
+			PeriodSeconds:       30,
+			FailureThreshold:    6,
+		},
 	}
 
 	// Apply resources if provided
@@ -161,6 +183,8 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}
+
+	ApplyProbes(container, config.Probes)
 
 	// Apply custom configuration
 	if len(config.EnvVars) > 0 {
