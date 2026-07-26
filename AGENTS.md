@@ -72,9 +72,10 @@ Run these from the project root:
 |---------|-------------|
 | `make generate` | Generate DeepCopy methods via `controller-gen` |
 | `make manifests` | Generate the test CRDs (`config/crd/bases/`) from `pkg/testutil` types |
+| `make verify-generate` | Regenerate and fail if the committed generated files differ (both modules) |
 | `make fmt` | Run `go fmt` against code |
 | `make vet` | Run `go vet` against code |
-| `make test` | Run unit tests with coverage (uses envtest for K8s integration) |
+| `make test` | Run unit tests with coverage (uses envtest for K8s integration); `GOTESTFLAGS=-race` for the race detector |
 | `make lint` | Run `golangci-lint` |
 | `make lint-fix` | Run `golangci-lint` with auto-fix |
 | `make lint-config` | Verify golangci-lint configuration |
