@@ -132,19 +132,33 @@ front of the product's HTTP port.
   - **Configuration source**: an `AuthenticationClass` with an `OIDCProvider`
     (`pkg/apis/authentication/v1alpha1`). The product resolves the class and passes the provider to
     `sidecar.NewOAuth2ProxySidecarProvider(oidcProvider, clientCredentialsSecret, upstreamPort,
-    cookieSeed, opts...)`.
+    opts...)`.
   - **Credential injection**: a **plain Kubernetes Secret** named by `clientCredentialsSecret`,
-    carrying the keys `CLIENT_ID` and `CLIENT_SECRET` (`sidecar.OIDCClientIDKey` /
-    `OIDCClientSecretKey`). They reach the sidecar as `OAUTH2_PROXY_CLIENT_ID` /
-    `OAUTH2_PROXY_CLIENT_SECRET` env vars via `secretKeyRef` — the credentials are **not** mounted
-    through the secret-operator CSI driver, and they are never written into a config file.
-    `Validate` fails the reconcile before the StatefulSet is applied if that Secret is missing.
+    carrying the keys `CLIENT_ID`, `CLIENT_SECRET` and `COOKIE_SECRET` (`sidecar.OIDCClientIDKey` /
+    `OIDCClientSecretKey` / `OIDCCookieSecretKey`). All three reach the sidecar as
+    `OAUTH2_PROXY_*` env vars via `secretKeyRef` — they are **not** mounted through the
+    secret-operator CSI driver, and they are never written into a config file or inlined into the
+    PodSpec. `Validate` fails the reconcile before the StatefulSet is applied if the Secret is
+    missing, or if it does not carry the cookie-secret key.
   - **Configuration of the proxy**: the provider sets the `OAUTH2_PROXY_*` env vars (issuer URL,
     scopes, provider hint, upstream, listen address, PKCE `S256`). The SDK does **not** inject JVM
     system properties or configure the product application's own OIDC module — a product that needs
     in-application OIDC generates that configuration itself.
-  - **Cookie secret**: derived deterministically from a caller-supplied seed (typically the CR's
-    UID) via `DeterministicCookieSecret`, so it does not churn pods across reconciles.
+  - **Cookie secret**: read from the Secret above (relocate it with
+    `WithOAuth2ProxyCookieSecretRef`). It is **never** derived from the CR and never inlined: this
+    value signs every session cookie the proxy subsequently trusts, so anything readable through
+    the API — a UID, a name, an env `value` in the PodSpec — would let a reader forge a session and
+    bypass authentication entirely. Generate it once with `sidecar.GenerateCookieSecret()` and
+    store it; the value must stay stable, or each reconcile would roll the pods and log every user
+    out.
+  - **Authorization**: authenticating against an IdP is not authorization for this cluster. On a
+    shared realm, every account the IdP can issue a token for would otherwise reach the product, so
+    the provider requires an explicit policy — `WithOAuth2ProxyEmailDomains(...)` to restrict
+    logins, or `WithOAuth2ProxyAllowAllEmails()` to admit everyone deliberately. **Exactly one**:
+    building a proxy with neither fails, and so does building one with both, because "allow all"
+    would otherwise win and silently discard the domain list. Post-login redirects are likewise
+    closed by default (the proxy's own host only); `WithOAuth2ProxyWhitelistDomains(...)` widens
+    that, one domain at a time.
   - **Readiness**: the sidecar deliberately has no readiness probe. As a native sidecar it would
     otherwise gate the whole Pod's readiness, taking the product's non-auth ports out of every
     Service during an IdP outage.

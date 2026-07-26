@@ -69,6 +69,31 @@ changes are listed below.**
 - `testutil.ClusterWrapper` and `testutil.WrapMockCluster` are removed; `testutil.MockCluster`
   implements `common.ClusterInterface` directly and `testutil.MockRoleGroupHandler` is bound to
   `*testutil.MockCluster`.
+- `sidecar.NewOAuth2ProxySidecarProvider` lost its `cookieSeed` parameter: the session cookie
+  secret is now read from a Secret via `secretKeyRef` (the client-credentials Secret's
+  `COOKIE_SECRET` key by default; relocate with `WithOAuth2ProxyCookieSecretRef`). Add that key to
+  the Secret, generating the value once with the new `sidecar.GenerateCookieSecret()`.
+  `sidecar.DeterministicCookieSecret` and `WithOAuth2ProxyCookieSecret` are removed — both produced
+  a value that ended up inlined in the PodSpec.
+- The oauth2-proxy provider now requires exactly one explicit authorization policy. Pass
+  `WithOAuth2ProxyEmailDomains(...)` or `WithOAuth2ProxyAllowAllEmails()`; `Inject` and `Validate`
+  both fail with neither, and with both (allow-all would otherwise win and silently discard the
+  domain list). `OAUTH2_PROXY_WHITELIST_DOMAINS` is no longer emitted by default — declare redirect
+  targets with `WithOAuth2ProxyWhitelistDomains(...)`.
+
+### security
+
+- The oauth2-proxy session cookie secret is no longer inlined into the PodSpec as an env `value`.
+  It signs every session the proxy trusts, so anyone able to `get pod` could forge a session and
+  bypass authentication; it was additionally derived (via SHA-256) from a caller-supplied seed that
+  products naturally set to the CR's UID, making it reconstructible by anyone who could read the
+  CR. It is now referenced with `secretKeyRef` like the client credentials beside it, generated
+  from `crypto/rand`, and `Validate` fails the reconcile when the referenced key is absent instead
+  of letting the proxy crash-loop.
+- `OAUTH2_PROXY_EMAIL_DOMAINS` no longer defaults to `*`. Authenticating against an identity
+  provider is not authorization for the cluster: on a shared realm that default admitted every
+  account the IdP could issue a token for. `OAUTH2_PROXY_WHITELIST_DOMAINS` no longer defaults to
+  `*` either, which had made the post-login `rd` parameter an open redirect.
 
 ### features
 
