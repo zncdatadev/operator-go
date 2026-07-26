@@ -511,16 +511,35 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 		return ctrl.Result{}, NewReconcileError("DependencyValidation", "dependency validation failed", err)
 	}
 
-	// 3. Process each role
+	// 3. Process each role, BEST EFFORT: a role that fails does not stop the others, and does not
+	// stop the cleanup/health/PostReconcile steps below.
+	//
+	// Roles and role groups are independent workloads. Aborting the pass at the first failure meant
+	// one unparsable value on the alphabetically-first role indefinitely blocked the DELETION of an
+	// unrelated role group, the health of every other role, and the discovery ConfigMap a product
+	// publishes from PostReconcile — none of which had anything to do with the broken role.
+	// Sorting made that starvation deterministic rather than fixing it: the same later roles were
+	// starved every cycle.
+	//
+	// The cleaner already reasoned its way to this policy for the same situation (see
+	// cleaner.go, "aborting the whole pass here would let one wedged group keep every other orphan
+	// alive"). The framework held both policies and applied the wrong one to the hot path.
+	//
+	// The iteration stays sorted so the aggregated error — and therefore the Degraded message —
+	// is byte-stable across cycles; an unstable message would defeat the no-op guard in
+	// updateStatus and make the controller reschedule itself forever.
 	r.warnOnUnknownConfiguredRoles(ctx, cr, spec)
-	// Sorted, not map order: the first failing role aborts the cycle and its error text becomes
-	// the Degraded message. With map order, a cluster with several broken role groups reports a
-	// different one every cycle, so the status never settles and each write schedules the next
-	// reconcile.
+	var roleErrs []error
 	for _, roleName := range slices.Sorted(maps.Keys(spec.Roles)) {
 		roleSpec := spec.Roles[roleName]
 		if err := r.reconcileRole(ctx, cr, roleName, &roleSpec); err != nil {
-			return ctrl.Result{}, err
+			// Throttling is the one failure that must stop the pass: the API server is rejecting
+			// this operator's requests, so pushing the remaining roles through would only deepen
+			// the backlog.
+			if IsRateLimitError(err) {
+				return ctrl.Result{}, err
+			}
+			roleErrs = append(roleErrs, err)
 		}
 	}
 
@@ -550,14 +569,22 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 		return ctrl.Result{}, NewReconcileError("PostReconcile", "extension hook failed", err)
 	}
 
-	// 7. Final status update
+	// 7. Report role failures, if any. Returning here — after cleanup, health and PostReconcile
+	// have all run — is what makes the iteration best-effort rather than merely tolerant: the
+	// caller sets Degraded and writes the status once, and the workqueue backs off. The status
+	// write is left to that path so a failing cycle does not write twice.
+	if len(roleErrs) > 0 {
+		return ctrl.Result{}, stderrors.Join(roleErrs...)
+	}
+
+	// 8. Final status update
 	status.SetReconcileComplete(true, v1alpha1.ReasonReconcileComplete, "Reconciliation completed successfully")
 
 	if err := r.updateStatus(ctx, cr, stored); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// 8. Schedule the next wakeup. Watches only cover the resources the framework owns, so
+	// 9. Schedule the next wakeup. Watches only cover the resources the framework owns, so
 	// anything that changes without producing an event — a ServiceHealthCheck probe, a
 	// gray-delete grace period running out — needs a timed requeue. Both sources collapse into
 	// a single RequeueAfter (the earliest one); zero means "no periodic wakeup".
@@ -631,34 +658,49 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 		return NewReconcileError("RolePreReconcile", fmt.Sprintf("role %s extension hook failed", roleName), err)
 	}
 
-	// Process each role group.
+	// Process each role group, BEST EFFORT: role groups are independent StatefulSets, so one
+	// failing to build must not stop its siblings — nor the role-level PDB that covers all of
+	// them, nor the role's PostReconcile hook.
 	//
-	// Sorted, not map order, for the same reason the role loop is (see reconcile): the first
-	// failing group aborts the role and its error text becomes the Degraded message, so with map
-	// order a cluster with several broken groups reports a different one every cycle and the
-	// status never settles.
+	// Sorted, not map order, so the aggregated error text is byte-stable across cycles: an
+	// unstable Degraded message would defeat the no-op guard in updateStatus and make the
+	// controller reschedule itself forever.
 	//
 	// Note: groupSpec is deep copied because it may be modified during reconciliation.
 	// roleSpec is passed directly as read-only (used for configuration lookup only);
 	// it originates from spec.Roles which is re-fetched from the API server each reconcile,
 	// so any accidental modifications would not persist and would be corrected on next reconcile.
 	roleGroups := roleSpec.GetRoleGroups()
+	var errs []error
 	for _, groupName := range slices.Sorted(maps.Keys(roleGroups)) {
 		groupSpec := roleGroups[groupName]
 		groupSpecCopy := *groupSpec.DeepCopy()
 		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy); err != nil {
-			return err
+			// A 429 stops everything: see the role loop in reconcile.
+			if IsRateLimitError(err) {
+				return err
+			}
+			errs = append(errs, err)
 		}
 	}
 
 	// Reconcile the role-level PodDisruptionBudget (one per role, covering all its role groups).
+	// Still attempted when a group failed: the PDB protects the groups that ARE running, and it is
+	// derived from roleConfig, not from anything a failed group produced.
 	if err := r.reconcileRolePodDisruptionBudget(ctx, cr, roleName, roleSpec); err != nil {
-		return err
+		if IsRateLimitError(err) {
+			return err
+		}
+		errs = append(errs, err)
 	}
 
 	// Execute role PostReconcile extensions
 	if err := r.extensionRegistry.ExecuteRolePostReconcile(ctx, r.client, cr, roleName); err != nil {
-		return NewReconcileError("RolePostReconcile", fmt.Sprintf("role %s extension hook failed", roleName), err)
+		errs = append(errs, NewReconcileError("RolePostReconcile", fmt.Sprintf("role %s extension hook failed", roleName), err))
+	}
+
+	if len(errs) > 0 {
+		return stderrors.Join(errs...)
 	}
 
 	logger.V(1).Info("Role reconciled", "role", roleName)

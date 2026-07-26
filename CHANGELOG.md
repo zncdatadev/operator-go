@@ -140,6 +140,15 @@ changes are listed below.**
 
 ### fix
 
+- Role and role group iteration is **best effort**: a failing role no longer aborts the whole
+  reconcile. Orphan cleanup, the health check and the cluster PostReconcile hook now run even when
+  a role failed, and the per-role errors are combined with `errors.Join` so the cluster still goes
+  Degraded and the workqueue still backs off. Previously one unparsable value on the
+  alphabetically-first role indefinitely blocked the deletion of an unrelated role group, the
+  health of every other role, and the discovery ConfigMap products publish from PostReconcile —
+  and because iteration was sorted, the same later roles were starved on every cycle. A 429 still
+  aborts the pass. The cleaner had already adopted this policy for the same situation; the hot
+  path now matches it.
 - An immutable field the apply path refuses to change now produces an `ImmutableFieldIgnored`
   Warning event on the CR, naming the resource and the field paths. Preserving
   `volumeClaimTemplates`, `selector`, `serviceName` and `podManagementPolicy` is correct — the

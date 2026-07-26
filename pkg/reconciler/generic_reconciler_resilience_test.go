@@ -1249,3 +1249,147 @@ var _ = Describe("GenericReconciler deletion handling", func() {
 		Expect(after.Status.Conditions).To(HaveLen(len(before.Status.Conditions)))
 	})
 })
+
+var _ = Describe("GenericReconciler best-effort role iteration", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	// newSelectiveFailureReconciler builds a reconciler whose handler fails for the named role
+	// groups and succeeds for the rest.
+	newSelectiveFailureReconciler := func(fail map[string]bool) *reconciler.GenericReconciler[*testutil.MockCluster] {
+		handler := &reconciler.RoleGroupHandlerFuncs[*testutil.MockCluster]{
+			BuildResourcesFunc: func(_ context.Context, _ client.Client, _ *testutil.MockCluster, buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+				if fail[buildCtx.RoleName+"/"+buildCtx.RoleGroupName] {
+					return nil, fmt.Errorf("handler refused role group %s/%s", buildCtx.RoleName, buildCtx.RoleGroupName)
+				}
+				return &reconciler.RoleGroupResources{
+					ConfigMap: testutil.NewTestConfigMap(buildCtx.ResourceName, buildCtx.ClusterNamespace),
+				}, nil
+			},
+		}
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return r
+	}
+
+	// newTwoRoleCR creates a CR with two roles, "alpha" (sorted first) and "omega".
+	newTwoRoleCR := func(name string) *testutil.MockCluster {
+		cr := testutil.NewMockCluster(name, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"alpha": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+				"omega": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+			})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+			for _, role := range []string{"alpha", "omega"} {
+				_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+					Name: reconciler.RoleGroupResourceName(name, role, "default"), Namespace: testNamespace}})
+			}
+		})
+		return cr
+	}
+
+	It("reconciles later roles even though an earlier one failed", func() {
+		// "alpha" sorts before "omega". Under fail-fast the sorted iteration made the starvation
+		// deterministic: omega was never reconciled, on any cycle, for as long as alpha was broken.
+		cr := newTwoRoleCR(uniqueCRName("best-effort-roles"))
+		r := newSelectiveFailureReconciler(map[string]bool{"alpha/default": true})
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)})
+		Expect(err).To(HaveOccurred(), "the failure is still reported")
+		Expect(err.Error()).To(ContainSubstring("alpha/default"))
+
+		omegaKey := types.NamespacedName{
+			Namespace: testNamespace,
+			Name:      reconciler.RoleGroupResourceName(cr.Name, "omega", "default"),
+		}
+		Expect(k8sClient.Get(ctx, omegaKey, &corev1.ConfigMap{})).To(Succeed(),
+			"omega is an independent workload and must converge regardless of alpha")
+	})
+
+	It("aggregates every failing role rather than reporting only the first", func() {
+		cr := newTwoRoleCR(uniqueCRName("best-effort-aggregate"))
+		r := newSelectiveFailureReconciler(map[string]bool{"alpha/default": true, "omega/default": true})
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)})
+		Expect(err).To(HaveOccurred())
+		// Both, so an operator fixing one does not discover the next only on the following cycle.
+		Expect(err.Error()).To(ContainSubstring("alpha/default"))
+		Expect(err.Error()).To(ContainSubstring("omega/default"))
+	})
+
+	It("produces a byte-stable error across cycles so the status can settle", func() {
+		// Sorted iteration is what makes this true. An unstable message would re-stamp the
+		// Degraded condition every pass, defeating the no-op guard in updateStatus and making the
+		// controller reschedule itself forever.
+		cr := newTwoRoleCR(uniqueCRName("best-effort-stable"))
+		r := newSelectiveFailureReconciler(map[string]bool{"alpha/default": true, "omega/default": true})
+
+		req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)}
+		_, first := r.Reconcile(ctx, req)
+		_, second := r.Reconcile(ctx, req)
+		Expect(first).To(HaveOccurred())
+		Expect(second).To(HaveOccurred())
+		Expect(second.Error()).To(Equal(first.Error()))
+	})
+
+	It("still retires an orphaned role group when an unrelated role is broken", func() {
+		// The harm the review named: cleanup ran after the role loop, so one unparsable value on
+		// the alphabetically-first role indefinitely blocked the DELETION of a role group that had
+		// nothing to do with it.
+		name := uniqueCRName("best-effort-cleanup")
+		cr := testutil.NewMockCluster(name, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"alpha": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+				"omega": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+					"default": {Replicas: ptr.To(int32(1))},
+					"doomed":  {Replicas: ptr.To(int32(1))},
+				}},
+			})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		doomedName := reconciler.RoleGroupResourceName(name, "omega", "doomed")
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+			for _, n := range []string{
+				reconciler.RoleGroupResourceName(name, "alpha", "default"),
+				reconciler.RoleGroupResourceName(name, "omega", "default"),
+				doomedName,
+			} {
+				_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: testNamespace}})
+			}
+		})
+
+		req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)}
+		healthy := newSelectiveFailureReconciler(nil)
+		_, err := healthy.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		doomedKey := types.NamespacedName{Namespace: testNamespace, Name: doomedName}
+		Expect(k8sClient.Get(ctx, doomedKey, &corev1.ConfigMap{})).To(Succeed())
+
+		// Now remove the group from the spec AND break an unrelated role.
+		live := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, live)).To(Succeed())
+		omega := live.Spec.Roles["omega"]
+		delete(omega.RoleGroups, "doomed")
+		live.Spec.Roles["omega"] = omega
+		Expect(k8sClient.Update(ctx, live)).To(Succeed())
+
+		broken := newSelectiveFailureReconciler(map[string]bool{"alpha/default": true})
+		Eventually(func() error {
+			_, _ = broken.Reconcile(ctx, req)
+			return k8sClient.Get(ctx, doomedKey, &corev1.ConfigMap{})
+		}, 10*time.Second, 200*time.Millisecond).Should(MatchError(k8serrors.IsNotFound, "IsNotFound"),
+			"orphan cleanup must not be hostage to an unrelated role's failure")
+	})
+})
