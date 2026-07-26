@@ -394,7 +394,7 @@ Deletion is a **state machine driven across several reconciles**, not a single p
 - **PVC Handling**:
   - By default, **PVCs are PRESERVED** during orphaned resource cleanup to protect data.
   - Setting the annotation `operator.zncdata.dev/delete-pvcs: "true"` on the cluster CR makes the cleaner also delete the PVCs of an orphaned StatefulSet (listed by the StatefulSet's pod selector, before the scale-to-0 so the selector is still meaningful).
-  - **Scope**: this applies to orphan cleanup only — role groups removed from the Spec. The SDK registers no finalizer, so deleting the whole CR does not run SDK code: the PVCs of a deleted cluster are left to Kubernetes' own garbage collection rules.
+  - **Scope**: this applies to orphan cleanup only — role groups removed from the Spec. The SDK registers no finalizer, so deleting the whole CR runs no SDK teardown code: the PVCs of a deleted cluster are left to Kubernetes' own garbage collection rules. `Reconcile` still has to *recognise* deletion, because foreground propagation keeps the CR readable until its dependents are gone — it returns as soon as `deletionTimestamp` is set, so the loop never re-creates the dependents that deletion is waiting on.
 
 ### 4.4.4 Concurrency Conflict Handling
 

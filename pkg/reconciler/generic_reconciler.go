@@ -375,6 +375,30 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	panicSubject = cr
 
+	// The CR is being deleted. Stop here — before the ClusterOperation gate and before any
+	// mutating step.
+	//
+	// A deleted CR is not necessarily an absent one. Background propagation (the `kubectl delete`
+	// default) removes it from etcd immediately and the next event is the IsNotFound above, but
+	// FOREGROUND propagation (`kubectl delete --cascade=foreground`, and any product that registers
+	// its own finalizer) leaves the object readable with a deletionTimestamp set until its
+	// dependents are gone. Without this guard `fetchCR` succeeds and a full normal reconcile runs:
+	// every resource is re-created with `SetControllerReference`, which sets
+	// `BlockOwnerDeletion: true`, so foreground deletion can never retire the CR while each GC
+	// delete fires an Owns() watch event that schedules the recreate again. The CR stays
+	// Terminating forever, pods churn, and because the cycle returns no error the workqueue rate
+	// limiter is Forgotten every pass — the loop hammers the API server with no backoff.
+	//
+	// Returning nil (not an error) is deliberate: deletion is not a failure, and the object is
+	// about to disappear, so there is nothing to requeue for. The SDK registers no finalizer of its
+	// own; a product that needs teardown work registers its own finalizer and observes the same
+	// deletionTimestamp from its own controller.
+	if !cr.GetDeletionTimestamp().IsZero() {
+		logger.Info("Cluster resource is being deleted, skipping reconciliation",
+			"deletionTimestamp", cr.GetDeletionTimestamp())
+		return ctrl.Result{}, nil
+	}
+
 	// Snapshot the object exactly as stored, before any step mutates its status. Every status
 	// write this cycle is compared against it, so a cycle that computes nothing new costs a read
 	// instead of a write (and, since the controller watches its own CR, does not schedule itself

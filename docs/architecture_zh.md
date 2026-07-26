@@ -394,7 +394,7 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 - **PVC 处理**：
   - 默认情况下，**PVC 在孤儿资源清理期间被保留**以保护数据。
   - 在集群 CR 上设置注解 `operator.zncdata.dev/delete-pvcs: "true"` 后，cleaner 会同时删除孤儿 StatefulSet 的 PVC（按 StatefulSet 的 Pod 选择器列出，且在缩容到 0 之前执行，此时选择器仍然有意义）。
-  - **适用范围**：仅限孤儿清理，即从 Spec 中移除的 role group。SDK 不注册 finalizer，因此删除整个 CR 不会执行任何 SDK 代码：被删除集群的 PVC 交由 Kubernetes 自身的垃圾回收规则处理。
+  - **适用范围**：仅限孤儿清理，即从 Spec 中移除的 role group。SDK 不注册 finalizer，因此删除整个 CR 不会执行任何 SDK 拆除逻辑：被删除集群的 PVC 交由 Kubernetes 自身的垃圾回收规则处理。但 `Reconcile` 仍必须*识别*删除——前台传播会让 CR 在其依赖对象被清理完之前保持可读——因此一旦 `deletionTimestamp` 被置上就立即返回，避免调和循环反复重建正被删除流程等待的那些依赖对象。
 
 ### 4.4.4 并发冲突处理
 
