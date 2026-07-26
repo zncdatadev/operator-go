@@ -51,6 +51,10 @@ type SidecarConfig struct {
 
 	// SecurityContext defines the security context for the sidecar container.
 	SecurityContext *corev1.SecurityContext
+
+	// Probes overrides the probes the provider sets by default. The zero value keeps them; see
+	// SidecarProbes for why the probe TYPE is a correctness question on a native sidecar.
+	Probes SidecarProbes
 }
 
 // SidecarProvider defines the interface for sidecar injection.

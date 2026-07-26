@@ -28,6 +28,7 @@ import (
 	authv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/authentication/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -38,6 +39,12 @@ const (
 	OAuth2ProxyPort = 4180
 	// OAuth2ProxyPortName is the default name of the oauth2-proxy container port.
 	OAuth2ProxyPortName = "oauth2-proxy"
+	// OAuth2ProxyPingPath is oauth2-proxy's basic health endpoint (its --ping-path default),
+	// served on the same address as the proxy itself. It is the target of both framework probes.
+	// Deliberately not --ready-path (/ready), which oauth2-proxy documents as a DEEP health check
+	// — gating on that would reintroduce the dependency coupling the missing readiness probe
+	// exists to avoid.
+	OAuth2ProxyPingPath = "/ping"
 	// DefaultOAuth2ProxyImage is the default (pinned) oauth2-proxy image. Products
 	// override it per role group via SidecarConfig.Image.
 	DefaultOAuth2ProxyImage = "quay.io/oauth2-proxy/oauth2-proxy:v7.8.2"
@@ -323,9 +330,52 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
-		// Deliberately no readiness probe: as a native sidecar, an unready oauth2-proxy
-		// would gate readiness of the WHOLE pod — an issuer (IdP) outage would take the
-		// product's non-auth ports out of every Service, not just the login flow.
+		// Startup and liveness, but deliberately NO readiness probe. As a native sidecar an
+		// unready oauth2-proxy would gate readiness of the WHOLE pod, so a runtime issuer (IdP)
+		// outage would take the product's non-auth ports out of every Service rather than just
+		// breaking the login flow.
+		//
+		// Not having a readiness probe is not the same as needing no probe, though. This
+		// container is the one framework sidecar that DOES terminate client traffic: the Service
+		// sends requests to its port, and it forwards to OAUTH2_PROXY_UPSTREAMS. Meanwhile pod
+		// readiness is decided by the MAIN container's probe on the product's own port, so
+		// without a gate here the pod is Ready — and receiving traffic — while the proxy has
+		// merely been launched and is not yet listening. Every rollout produced a window of
+		// refused connections.
+		//
+		// A startupProbe is the exact instrument: the kubelet starts the next init container (and
+		// so, eventually, the main container) only once this one has "started", which for a
+		// container with a startupProbe means once that probe has SUCCEEDED. It therefore turns
+		// the ordering this provider already claims — "so kubelet starts it before the main
+		// container" — from "the process was launched" into "the proxy is serving", and it stops
+		// mattering entirely once satisfied, so a later IdP outage is unaffected.
+		//
+		// Both probes target /ping, oauth2-proxy's basic health endpoint, NOT /ready: /ready is
+		// documented as a deep health check, which is precisely the dependency coupling the
+		// missing readiness probe exists to avoid.
+		StartupProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: OAuth2ProxyPingPath,
+					Port: intstr.FromInt(int(port)),
+				},
+			},
+			PeriodSeconds: 2,
+			// ~60s: OIDC discovery against a cold IdP is the slow step, and failing startup
+			// restarts the container, which would only re-run discovery.
+			FailureThreshold: 30,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: OAuth2ProxyPingPath,
+					Port: intstr.FromInt(int(port)),
+				},
+			},
+			PeriodSeconds:    20,
+			TimeoutSeconds:   5,
+			FailureThreshold: 3,
+		},
 	}
 
 	// Emitted only when the product asked for off-host redirects. Unset, oauth2-proxy permits
@@ -347,6 +397,9 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}
+
+	ApplyProbes(container, config.Probes)
+
 	// Replace semantics, not add-only: oauth2-proxy's whole configuration surface IS env
 	// vars, so SidecarConfig.EnvVars must be able to change the built-in defaults (e.g.
 	// OAUTH2_PROXY_COOKIE_SECURE=true behind TLS, tightening OAUTH2_PROXY_EMAIL_DOMAINS).

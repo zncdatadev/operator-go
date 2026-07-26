@@ -9,6 +9,9 @@ sources:
   vector:
     type: internal_logs
 
+  internal_metrics:
+    type: internal_metrics
+
   files_stdout:
     type: file
     include:
@@ -366,3 +369,9 @@ sinks:
       - extended_logs
     type: vector
     address: "vector-aggregator:9000"
+
+  metrics:
+    inputs:
+      - internal_metrics
+    type: prometheus_exporter
+    address: 0.0.0.0:9598

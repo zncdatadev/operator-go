@@ -17,6 +17,7 @@ limitations under the License.
 package vector
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -360,11 +361,44 @@ func TestRenderVectorConfig_APIDefaults(t *testing.T) {
 	if !strings.Contains(result, "address: 127.0.0.1:8686") {
 		t.Error("RenderVectorConfig() API address should be 127.0.0.1:8686")
 	}
-	if strings.Contains(result, "0.0.0.0") {
-		t.Error("RenderVectorConfig() must not bind any wildcard address")
+	// Scoped to the api block, not the whole document: the prometheus_exporter sink binds the
+	// wildcard on purpose, and it is a different proposition — internal counters, never log
+	// content. A document-wide assertion would have to be relaxed the moment any sink listens,
+	// which is exactly when it stops guarding the API.
+	apiBlock := result[:strings.Index(result, "data_dir:")] //nolint:gocritic // fails loudly if absent
+	if strings.Contains(apiBlock, "0.0.0.0") {
+		t.Errorf("RenderVectorConfig() API must not bind a wildcard address, got block:\n%s", apiBlock)
 	}
 	if !strings.Contains(result, "playground: false") {
 		t.Error("RenderVectorConfig() API playground should be disabled")
+	}
+}
+
+// TestRenderVectorConfig_SelfMetrics guards the agent's own observability. It is the endpoint the
+// Vector container's liveness probe targets — the API's /health is unreachable to the kubelet,
+// which probes the pod IP from outside the pod's network namespace — and the only thing that makes
+// "the agent stopped shipping" alertable, since the pipeline's other sink is the aggregator it may
+// have lost.
+func TestRenderVectorConfig_SelfMetrics(t *testing.T) {
+	data := defaultConfigData()
+	result, err := RenderVectorConfig(data)
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"internal_metrics:\n    type: internal_metrics",
+		"type: prometheus_exporter",
+		fmt.Sprintf("address: 0.0.0.0:%d", VectorMetricsPort),
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("RenderVectorConfig() missing %q; the liveness probe would have nothing to hit", want)
+		}
+	}
+	// Wired, not merely declared: a prometheus_exporter with no inputs serves an empty document
+	// and would still answer the probe, so this is the assertion that has content.
+	if !strings.Contains(result, "  metrics:\n    inputs:\n      - internal_metrics") {
+		t.Error("RenderVectorConfig() prometheus_exporter sink must take internal_metrics as input")
 	}
 }
 

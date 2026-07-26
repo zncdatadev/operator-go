@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -171,17 +172,49 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 				MountPath: VectorLogMountPath,
 			},
 		},
-		// Deliberately no readiness probe. Kubernetes documents that for a sidecar container
-		// (an init container with restartPolicy Always) "if a readinessProbe is specified for
-		// this init container, its result will be used to determine the ready state of the Pod".
-		// Vector ships logs; it is not in the request path. Gating readiness on it meant that an
-		// unreachable aggregator, a malformed pipeline or a slow start pulled every pod of the
-		// role group out of every Service — a product outage caused by the log pipeline. Same
-		// reasoning as the oauth2-proxy provider.
+		// The rendered pipeline's prometheus_exporter sink. Declared so the endpoint the liveness
+		// probe below targets is discoverable — by a ServiceMonitor, by a scrape annotation, or
+		// just by reading the pod. Not overridable through SidecarConfig.Ports: the port is baked
+		// into the rendered vector.yaml (see vectorConfigTemplate), which is generated on a
+		// different code path, so accepting an override here would let the declared port and the
+		// bound port diverge.
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          VectorMetricsPortName,
+				ContainerPort: VectorMetricsPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		// Liveness, not readiness. Kubernetes documents that for a sidecar container (an init
+		// container with restartPolicy Always) "if a readinessProbe is specified for this init
+		// container, its result will be used to determine the ready state of the Pod". Vector
+		// ships logs; it is not in the request path. A readiness probe here meant a crash-looping
+		// or slow-starting agent pulled every pod of the role group out of every Service — a
+		// product outage caused by the log pipeline. A liveness failure restarts only this
+		// container, so the guarantee "a wedged agent is recovered" costs the product nothing.
 		//
-		// Removing it is also what lets the Vector API bind to localhost (see
-		// vectorConfigTemplate): an httpGet probe is executed by the kubelet against the POD IP,
-		// so the API had to listen on 0.0.0.0 for the probe to reach it.
+		// It targets the prometheus_exporter endpoint rather than the API's /health because the
+		// kubelet executes httpGet probes against the POD IP from outside the pod's network
+		// namespace, and the API is bound to 127.0.0.1 (deliberately — `vector tap` over it
+		// streams application logs). Probing the exporter is also the stronger check of the two:
+		// it fails when Vector's topology is not running, whereas /health reports only that the
+		// API is serving.
+		//
+		// Timings are forgiving on purpose. Restarting a log agent drops whatever is in its
+		// in-memory buffer, so a restart must be reserved for an agent that is genuinely gone
+		// (~2 minutes of failure), not one that is briefly busy.
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: VectorMetricsPath,
+					Port: intstr.FromInt(VectorMetricsPort),
+				},
+			},
+			InitialDelaySeconds: 15,
+			PeriodSeconds:       20,
+			TimeoutSeconds:      5,
+			FailureThreshold:    6,
+		},
 		SecurityContext: defaultSecurityContext(),
 	}
 
@@ -194,6 +227,8 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}
+
+	sidecar.ApplyProbes(container, config.Probes)
 
 	// Apply custom configuration
 	if len(config.EnvVars) > 0 {

@@ -387,6 +387,77 @@ var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
 		Expect(podSpec.InitContainers[0].ReadinessProbe).To(BeNil())
 	})
 
+	It("injects a startup probe so the pod is not Ready before the proxy can serve", func() {
+		// This container is the one framework sidecar in the request path: the Service targets
+		// its port and it forwards to the upstream. Pod readiness, meanwhile, is decided by the
+		// MAIN container's probe on the product's own port — so without a gate here the pod is
+		// Ready, and receiving traffic, while the proxy has merely been launched. Every rollout
+		// produced a window of refused connections.
+		//
+		// A startupProbe is what closes it: the kubelet starts the next init container (and so
+		// the main container) only once this one has started, which for a container with a
+		// startupProbe means once the probe SUCCEEDS. Unlike readiness it stops applying once
+		// satisfied, so a later IdP outage cannot evict the pod.
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
+
+		Expect(provider.Inject(podSpec, nil)).To(Succeed())
+
+		container := podSpec.InitContainers[0]
+		probe := container.StartupProbe
+		Expect(probe).NotTo(BeNil(), "without this the pod serves traffic before the proxy listens")
+		Expect(probe.HTTPGet).NotTo(BeNil())
+		// The literal, deliberately not sidecar.OAuth2ProxyPingPath: the guarantee is the VALUE.
+		// oauth2-proxy documents /ready as a DEEP health check, so pointing the constant there
+		// would reintroduce exactly the IdP coupling the absent readiness probe exists to avoid —
+		// and an assertion against the constant would follow it there without complaining.
+		Expect(probe.HTTPGet.Path).To(Equal("/ping"))
+		Expect(probe.HTTPGet.Port.IntValue()).To(Equal(sidecar.OAuth2ProxyPort))
+		// OIDC discovery against a cold IdP is the slow step, and failing startup only restarts
+		// the container to re-run it.
+		Expect(probe.PeriodSeconds * probe.FailureThreshold).To(BeNumerically(">=", 60))
+
+		Expect(container.LivenessProbe).NotTo(BeNil(), "a wedged proxy must be restarted")
+		Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/ping"))
+	})
+
+	It("lets a product replace or remove the framework probes", func() {
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
+
+		config := &sidecar.SidecarConfig{}
+		config.Probes.Startup = &corev1.Probe{
+			ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}},
+			PeriodSeconds: 7,
+		}
+		config.Probes.DisableLiveness = true
+		Expect(provider.Inject(podSpec, config)).To(Succeed())
+
+		container := podSpec.InitContainers[0]
+		Expect(container.StartupProbe).NotTo(BeNil())
+		Expect(container.StartupProbe.Exec).NotTo(BeNil())
+		Expect(container.StartupProbe.HTTPGet).To(BeNil(), "the override replaces wholesale, never merges")
+		Expect(container.LivenessProbe).To(BeNil())
+	})
+
+	It("targets the overridden port with both probes", func() {
+		// The probes are built from the effective port, so a SidecarConfig.Ports override cannot
+		// leave them pointing at a port nothing listens on.
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
+
+		Expect(provider.Inject(podSpec, &sidecar.SidecarConfig{
+			Ports: []corev1.ContainerPort{{Name: "proxy", ContainerPort: 9999}},
+		})).To(Succeed())
+
+		container := podSpec.InitContainers[0]
+		Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(9999))
+		Expect(container.LivenessProbe.HTTPGet.Port.IntValue()).To(Equal(9999))
+	})
+
 	It("rejects injection without an OIDC provider", func() {
 		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
 		provider := sidecar.NewOAuth2ProxySidecarProvider(nil, "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())

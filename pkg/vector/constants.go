@@ -81,9 +81,26 @@ const (
 	VectorAPIPort = 8686
 
 	// VectorHealthEndpoint is the health endpoint of the Vector API, reachable at
-	// 127.0.0.1:VectorAPIPort from inside the pod. The framework injects no probe against it —
-	// see the Vector provider for why a log shipper must not gate pod readiness.
+	// 127.0.0.1:VectorAPIPort from inside the pod only. It is NOT what the container's liveness
+	// probe targets: the kubelet executes an httpGet probe against the POD IP from outside the
+	// pod's network namespace, so a loopback-bound listener is unreachable to it. The probe uses
+	// the prometheus_exporter endpoint below instead.
 	VectorHealthEndpoint = "/health"
+
+	// VectorMetricsPort is the port the rendered pipeline's prometheus_exporter sink listens on
+	// (Vector's own default for that sink). Unlike the API it binds 0.0.0.0, because it carries
+	// only the agent's internal metrics — component throughput, error counters, buffer depth — and
+	// no log content, so it is ordinary Prometheus-grade exposure like any metrics endpoint. Two
+	// things depend on it being reachable: the container's liveness probe, and scraping the agent.
+	VectorMetricsPort = 9598
+
+	// VectorMetricsPortName names the metrics container port. Container port names must be unique
+	// across the whole Pod, so this cannot be the bare "metrics" the JMX exporter sidecar already
+	// uses (and which a product's own container is likely to use too).
+	VectorMetricsPortName = "vector-metrics"
+
+	// VectorMetricsPath is the path a prometheus_exporter sink serves; Vector hardcodes it.
+	VectorMetricsPath = "/metrics"
 
 	// VectorConfigFileName is the name of the Vector configuration file.
 	VectorConfigFileName = "vector.yaml"

@@ -21,11 +21,18 @@ package vector
 //   - api binds 127.0.0.1:<APIPort>; data_dir is /kubedoop/vector/var (the sidecar's data
 //     volume mount). The API is Vector's unauthenticated GraphQL endpoint — `vector tap` over it
 //     streams the log events flowing through the pipeline, which for these products means
-//     application logs — so it must not be reachable from the pod network. It previously bound
-//     0.0.0.0 because the kubelet executes an httpGet readiness probe against the POD IP, not
-//     localhost; that probe is gone (see the Vector provider), which is what makes the loopback
-//     bind possible. It stays enabled rather than disabled so `kubectl exec` + `vector top`
-//     remains available for debugging inside the pod.
+//     application logs — so it must not be reachable from the pod network. It stays enabled rather
+//     than disabled so `kubectl exec` + `vector top` remains available for debugging inside the
+//     pod, where loopback is reachable.
+//   - the internal_metrics source and the prometheus_exporter "metrics" sink expose the agent's
+//     OWN metrics on 0.0.0.0:<MetricsPort>. That endpoint, not the API, is what the container's
+//     liveness probe targets, because the kubelet executes httpGet probes against the POD IP from
+//     outside the pod's network namespace and so cannot reach a loopback-bound listener. Binding
+//     it publicly is a different proposition from binding the API publicly: it carries counters
+//     and gauges about the pipeline (component throughput, errors, buffer depth), never log
+//     content. It is also the endpoint that makes "the agent stopped shipping" alertable —
+//     vector_component_sent_events_total and vector_buffer_events say that; the API's /health,
+//     which reports only that the API itself is serving, never did.
 //   - log_schema.host_key is "pod" so the host field of every event is named "pod".
 //   - sources glob per-container log files ("<LogDir><container>/<file>"), one source per
 //     producer format: plain stdout/stderr, log4j 1.x XMLLayout events, log4j2 XMLLayout
@@ -55,6 +62,9 @@ log_schema:
 sources:
   vector:
     type: internal_logs
+
+  internal_metrics:
+    type: internal_metrics
 
   files_stdout:
     type: file
@@ -413,4 +423,10 @@ sinks:
       - extended_logs
     type: vector
     address: {{quote .AggregatorAddress}}
+
+  metrics:
+    inputs:
+      - internal_metrics
+    type: prometheus_exporter
+    address: 0.0.0.0:{{MetricsPort}}
 `

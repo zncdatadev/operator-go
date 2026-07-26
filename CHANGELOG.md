@@ -118,6 +118,19 @@ changes are listed below.**
 
 ### features
 
+- `SidecarConfig.Probes` (`sidecar.SidecarProbes`) lets a product override the probes a provider
+  sets: `Startup`/`Liveness`/`Readiness` replace one **wholesale** (probe handlers are a Kubernetes
+  one-of, and a merged probe carrying two handlers is rejected by the API server), and
+  `DisableStartup`/`DisableLiveness`/`DisableReadiness` remove it. `SidecarConfig` previously had no
+  way to express a probe at all, so the framework's policy was unconfigurable rather than a default,
+  and a product that needed one had to reach for raw `podOverrides`.
+- The rendered Vector pipeline now carries an `internal_metrics` source and a `prometheus_exporter`
+  sink on `0.0.0.0:9598` (`vector.VectorMetricsPort`, declared as the `vector-metrics` container
+  port). Unlike the API this endpoint carries only the agent's own counters and gauges — component
+  throughput, errors, buffer depth — and never log content. It is what the container's liveness probe
+  targets, and it is what makes "the agent stopped shipping" alertable
+  (`vector_component_sent_events_total`, `vector_buffer_events`); the API's `/health`, which reports
+  only that the API itself is serving, never could.
 - Split the config format contract into a required `ConfigMarshaler` and an optional
   `ConfigUnmarshaler`, so a product that only emits a format no longer writes a parser nobody calls
 - Added `MultiFormatConfigGenerator.Parse(filename, content)` and the typed errors
@@ -174,15 +187,31 @@ changes are listed below.**
 - `StatefulSetBuilder.WithResources` now honours an explicit zero CPU request instead of skipping
   it: `min: "0"` is a legitimate ask on a burstable workload, and the previous `IsZero()` check
   could not tell it apart from "unset".
-- The Vector and JMX exporter sidecars no longer declare a readiness probe. Both are injected as
-  native sidecars, and Kubernetes uses a sidecar container's readiness probe to determine the
-  **Pod's** ready state, so an unreachable Vector aggregator or a failing metrics scrape pulled
-  every pod of the role group out of every Service — an outage caused by the observability stack
-  rather than by the product. The oauth2-proxy provider already made this call; the other two now
-  match it. Removing Vector's probe is also what allows its API to bind loopback, since an
-  `httpGet` probe is executed by the kubelet against the pod IP.
-- `vector.VectorReadinessInitialDelaySeconds` and `vector.VectorReadinessPeriodSeconds` are removed
-  along with the probe they configured.
+- Framework sidecars carry the probe that fits them, and no `readinessProbe`. All three are injected
+  as native sidecars (init container, `restartPolicy: Always`), and on such a container Kubernetes
+  gives the three probes three different blast radii: a `readinessProbe` decides the **Pod's** ready
+  state, so a failing one pulls every pod of the role group out of every Service; a `livenessProbe`
+  restarts only that container; a `startupProbe` gates when the main container starts. Vector and the
+  JMX exporter previously declared *readiness* probes, which let a crash-looping log agent or a
+  metrics scrape timing out during a GC pause take a healthy product offline. They now declare
+  **liveness** probes instead, so the guarantee "a wedged agent is recovered" is kept while the
+  outage mode is gone — deleting the probe outright would have removed both.
+  - Vector probes the pipeline's `prometheus_exporter` endpoint, not the API's `/health`: the kubelet
+    executes `httpGet` probes against the **pod IP** from outside the pod's network namespace, and
+    the API is bound to loopback (below). Timings tolerate ~2 minutes of failure, because restarting
+    the agent drops its in-memory buffer.
+  - The JMX exporter's probe uses deliberately forgiving timings (`timeoutSeconds: 10`, ~3 minutes to
+    failure). Scraping `/metrics` makes it collect from the JVM over JMX, so its response time tracks
+    the product's GC — the original readiness-grade 5s timeout is what made it flap.
+  - oauth2-proxy gains a `startupProbe` (plus liveness) on `/ping`, never `/ready` (a deep health
+    check). It is the one framework sidecar in the request path: the Service targets its port while
+    pod readiness is decided by the *main* container's probe on the product's own port, so the pod
+    was Ready and receiving traffic while the proxy had merely been launched, refusing connections on
+    every rollout. A `startupProbe` is what turns "the process was launched" into "the proxy is
+    serving", and unlike readiness it stops applying once satisfied, so a later IdP outage cannot
+    evict the pod.
+- `vector.VectorReadinessInitialDelaySeconds` and `vector.VectorReadinessPeriodSeconds` are removed;
+  the liveness probe's timings are not configurable through constants (use `SidecarConfig.Probes`).
 - Orphan cleanup is a confirmed multi-pass state machine: scale to zero, wait for the ordered drain,
   delete, and confirm each resource is gone before the next type is touched; per-group failures no
   longer abort the pass, a 429 surfaces as `*RateLimitError` and backs off instead of marking the
