@@ -171,7 +171,17 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 				MountPath: VectorLogMountPath,
 			},
 		},
-		ReadinessProbe:  defaultReadinessProbe(),
+		// Deliberately no readiness probe. Kubernetes documents that for a sidecar container
+		// (an init container with restartPolicy Always) "if a readinessProbe is specified for
+		// this init container, its result will be used to determine the ready state of the Pod".
+		// Vector ships logs; it is not in the request path. Gating readiness on it meant that an
+		// unreachable aggregator, a malformed pipeline or a slow start pulled every pod of the
+		// role group out of every Service — a product outage caused by the log pipeline. Same
+		// reasoning as the oauth2-proxy provider.
+		//
+		// Removing it is also what lets the Vector API bind to localhost (see
+		// vectorConfigTemplate): an httpGet probe is executed by the kubelet against the POD IP,
+		// so the API had to listen on 0.0.0.0 for the probe to reach it.
 		SecurityContext: defaultSecurityContext(),
 	}
 
@@ -301,16 +311,16 @@ func vectorCommand(producers []string) []string {
 	return []string{"/bin/sh", "-c", script}
 }
 
-// defaultSecurityContext returns a hardened security context for the Vector container.
+// defaultSecurityContext returns a hardened security context for the Vector container: the
+// framework-wide sidecar baseline plus a read-only root filesystem.
+//
+// Vector writes only into its own mounted volumes (the data emptyDir at VectorDataMountPath and
+// the shared log emptyDir), so the read-only root is safe here — unlike the JVM-based JMX
+// exporter, which needs a writable /tmp.
 func defaultSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		RunAsNonRoot:             ptr.To(true),
-		ReadOnlyRootFilesystem:   ptr.To(true),
-		AllowPrivilegeEscalation: ptr.To(false),
-		Capabilities: &corev1.Capabilities{
-			Drop: []corev1.Capability{"ALL"},
-		},
-	}
+	sc := sidecar.DefaultSecurityContext()
+	sc.ReadOnlyRootFilesystem = ptr.To(true)
+	return sc
 }
 
 // ConfigMapName returns the ConfigMap name used by this provider.

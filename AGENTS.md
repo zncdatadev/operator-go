@@ -510,6 +510,22 @@ no `FindMainContainer` helper — a provider that must address the primary conta
 `sidecar.FindContainer(podSpec, name)`, and the primary container's name is controlled by
 `BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName`.
 
+**Every framework-injected sidecar is hardened by default.** Each provider sets
+`sidecar.DefaultSecurityContext()` — `runAsNonRoot`, `allowPrivilegeEscalation: false`,
+`capabilities: drop ALL`, `seccompProfile: RuntimeDefault`, i.e. exactly the container-level
+requirements of the restricted Pod Security Standard — and a non-nil `SidecarConfig.SecurityContext`
+replaces it **wholesale**, never merged. It deliberately sets neither `runAsUser` (identity is a
+pod-level property, and a third-party image such as oauth2-proxy has its own `USER`) nor
+`readOnlyRootFilesystem` (not part of the restricted profile, and it breaks a JVM writing
+hsperfdata to `/tmp`); the Vector provider adds the read-only root itself, having established that
+it only writes into its own volumes.
+
+**No framework sidecar carries a probe.** Kubernetes uses a sidecar container's `readinessProbe` to
+determine the *Pod's* ready state, so a probe on an observability container converts its failure
+into a product outage — the pods leave every Service. Vector, the JMX exporter and oauth2-proxy all
+ship without one. This is also why the Vector API binds `127.0.0.1`: an `httpGet` probe is executed
+by the kubelet against the pod IP, which had forced the unauthenticated GraphQL API onto `0.0.0.0`.
+
 Providers shipping their own upstream image (oauth2-proxy) implement `sidecar.OwnImageProvider` so
 `SetProductImage` leaves their pinned default alone.
 

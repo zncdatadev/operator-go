@@ -341,6 +341,9 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	if config.Resources != nil {
 		container.Resources = *config.Resources
 	}
+	// Hardened by default, replaced wholesale (not merged) by an explicit SidecarConfig value —
+	// a partially merged security context is how a container ends up with a setting nobody chose.
+	container.SecurityContext = DefaultSecurityContext()
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}

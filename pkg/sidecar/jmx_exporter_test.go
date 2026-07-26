@@ -202,15 +202,36 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			Expect(foundVolume.ConfigMap.Name).To(Equal("jmx-exporter-config"))
 		})
 
-		It("should set readiness probe", func() {
+		It("should set no probes, so a broken exporter cannot empty the product's Services", func() {
+			// Kubernetes documents that for a sidecar container (an init container with
+			// restartPolicy Always) "if a readinessProbe is specified for this init container, its
+			// result will be used to determine the ready state of the Pod". A metrics exporter is
+			// not in the request path, so a probe here converts a scraping failure into a product
+			// outage.
 			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
 			err := provider.Inject(podSpec, config)
 			Expect(err).NotTo(HaveOccurred())
 
-			probe := podSpec.InitContainers[0].ReadinessProbe
-			Expect(probe).NotTo(BeNil())
-			Expect(probe.HTTPGet).NotTo(BeNil())
-			Expect(probe.HTTPGet.Path).To(Equal("/metrics"))
+			container := podSpec.InitContainers[0]
+			Expect(container.ReadinessProbe).To(BeNil())
+			Expect(container.LivenessProbe).To(BeNil())
+			Expect(container.StartupProbe).To(BeNil())
+		})
+
+		It("should harden the container by default so restricted Pod Security admits it", func() {
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
+			Expect(provider.Inject(podSpec, config)).To(Succeed())
+
+			sc := podSpec.InitContainers[0].SecurityContext
+			Expect(sc).NotTo(BeNil(), "a nil security context is rejected under restricted PSS")
+			Expect(*sc.RunAsNonRoot).To(BeTrue())
+			Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+			Expect(sc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			// The JVM writes hsperfdata into /tmp at startup, so a read-only root filesystem
+			// would break this container specifically.
+			Expect(sc.ReadOnlyRootFilesystem).To(BeNil())
 		})
 
 		It("should apply custom resources", func() {

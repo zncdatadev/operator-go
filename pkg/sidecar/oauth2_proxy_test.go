@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -101,6 +102,42 @@ var _ = Describe("OAuth2ProxySidecarProvider", func() {
 
 		Expect(container.Ports).To(HaveLen(1))
 		Expect(container.Ports[0].ContainerPort).To(Equal(int32(4180)))
+	})
+
+	It("hardens the container by default so restricted Pod Security admits it", func() {
+		// The product's own container is hardened by the base handler; a sidecar shipping a nil
+		// security context is what makes the whole pod inadmissible in a namespace enforcing the
+		// restricted profile. These four fields are exactly the container-level requirements.
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
+
+		Expect(provider.Inject(podSpec, nil)).To(Succeed())
+
+		sc := podSpec.InitContainers[0].SecurityContext
+		Expect(sc).NotTo(BeNil())
+		Expect(*sc.RunAsNonRoot).To(BeTrue())
+		Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())
+		Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+		Expect(sc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+		// Not pinned: oauth2-proxy is a third-party image with its own USER, and the pod-level
+		// security context already supplies the identity.
+		Expect(sc.RunAsUser).To(BeNil())
+	})
+
+	It("lets an explicit SidecarConfig.SecurityContext replace the default wholesale", func() {
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
+
+		Expect(provider.Inject(podSpec, &sidecar.SidecarConfig{
+			SecurityContext: &corev1.SecurityContext{RunAsUser: ptr.To(int64(2000))},
+		})).To(Succeed())
+
+		sc := podSpec.InitContainers[0].SecurityContext
+		Expect(*sc.RunAsUser).To(Equal(int64(2000)))
+		// Replaced, not merged: a half-merged security context is how a container ends up with a
+		// setting nobody chose.
+		Expect(sc.Capabilities).To(BeNil())
 	})
 
 	It("is idempotent", func() {

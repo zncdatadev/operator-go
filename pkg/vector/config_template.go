@@ -18,8 +18,14 @@ package vector
 
 // vectorConfigTemplate is the stable (v0.12.6) Vector agent pipeline, ported faithfully:
 //
-//   - api binds 0.0.0.0:<APIPort> so the pod-IP readiness probe (httpGet :8686 /health)
-//     can reach it; data_dir is /kubedoop/vector/var (the sidecar's data volume mount).
+//   - api binds 127.0.0.1:<APIPort>; data_dir is /kubedoop/vector/var (the sidecar's data
+//     volume mount). The API is Vector's unauthenticated GraphQL endpoint — `vector tap` over it
+//     streams the log events flowing through the pipeline, which for these products means
+//     application logs — so it must not be reachable from the pod network. It previously bound
+//     0.0.0.0 because the kubelet executes an httpGet readiness probe against the POD IP, not
+//     localhost; that probe is gone (see the Vector provider), which is what makes the loopback
+//     bind possible. It stays enabled rather than disabled so `kubectl exec` + `vector top`
+//     remains available for debugging inside the pod.
 //   - log_schema.host_key is "pod" so the host field of every event is named "pod".
 //   - sources glob per-container log files ("<LogDir><container>/<file>"), one source per
 //     producer format: plain stdout/stderr, log4j 1.x XMLLayout events, log4j2 XMLLayout
@@ -41,7 +47,7 @@ package vector
 // transform or sink — kept for parity with the stable pipeline.
 const vectorConfigTemplate = `api:
   enabled: true
-  address: 0.0.0.0:{{APIPort}}
+  address: 127.0.0.1:{{APIPort}}
   playground: false
 data_dir: /kubedoop/vector/var
 log_schema:
