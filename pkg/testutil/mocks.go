@@ -35,6 +35,13 @@ import (
 // embedded alongside product-owned fields. ClusterInterface only exposes the embedded part, so a
 // mock whose status IS the generic struct cannot observe whether the framework preserves the
 // product's own fields across a status write.
+//
+// The explicit generate marker is load-bearing: embedding GenericClusterStatus PROMOTES its
+// DeepCopyInto, so controller-gen concludes this type already implements the deep-copy contract
+// and silently emits nothing — leaving MockCluster.DeepCopyInto calling the promoted method with
+// the wrong receiver type, which does not compile.
+//
+// +kubebuilder:object:generate=true
 type MockClusterStatus struct {
 	v1alpha1.GenericClusterStatus `json:",inline"`
 
@@ -43,18 +50,10 @@ type MockClusterStatus struct {
 	ProductField string `json:"productField,omitempty"`
 }
 
-// DeepCopy creates a deep copy of MockClusterStatus.
-func (s *MockClusterStatus) DeepCopy() *MockClusterStatus {
-	if s == nil {
-		return nil
-	}
-	out := new(MockClusterStatus)
-	*out = *s
-	out.GenericClusterStatus = *s.GenericClusterStatus.DeepCopy()
-	return out
-}
-
 // MockCluster is a test CR that embeds ObjectMeta for client.Object compatibility.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 type MockCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -113,25 +112,6 @@ func (m *MockCluster) WithRoles(roles map[string]v1alpha1.RoleSpec) *MockCluster
 func (m *MockCluster) WithClusterOperation(op *v1alpha1.ClusterOperationSpec) *MockCluster {
 	m.Spec.ClusterOperation = op
 	return m
-}
-
-// DeepCopy creates a deep copy of MockCluster.
-func (m *MockCluster) DeepCopy() *MockCluster {
-	if m == nil {
-		return nil
-	}
-	out := new(MockCluster)
-	*out = *m
-	out.TypeMeta = m.TypeMeta
-	out.ObjectMeta = *m.ObjectMeta.DeepCopy()
-	out.Spec = *m.Spec.DeepCopy()
-	out.Status = *m.Status.DeepCopy()
-	return out
-}
-
-// DeepCopyObject implements runtime.Object.
-func (m *MockCluster) DeepCopyObject() runtime.Object {
-	return m.DeepCopy()
 }
 
 // GetSpec implements common.ClusterInterface.
@@ -301,6 +281,48 @@ var _ common.ClusterInterface = &MockCluster{}
 var _ common.ClusterResource[*MockCluster] = &MockCluster{}
 var _ reconciler.RoleGroupHandler[*MockCluster] = &MockRoleGroupHandler{}
 
+// AltMockCluster is a SECOND product's cluster resource, standing beside MockCluster so tests can
+// put two CR types side by side — a manager process hosting two products runs one
+// GenericReconciler per CR type, and the extension registry is generic over the CR, so per-CR-type
+// isolation is only provable with two of them.
+//
+// It is deliberately the minimum a product CR can be: TypeMeta and ObjectMeta for client.Object,
+// the deep copy controller-gen generates, and the two accessors that project spec and status.
+// Nothing here bridges the CR to the framework — the CR IS the object the framework reads, owns
+// resources with and writes status to. Unlike MockCluster its status is the bare
+// GenericClusterStatus, with no product-owned field.
+//
+// It lives here rather than in a _test.go file because controller-gen cannot generate a CRD
+// schema from an unexported type in a test file, and a schema-free CRD is precisely what this
+// package exists to stop shipping.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+type AltMockCluster struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              v1alpha1.GenericClusterSpec   `json:"spec,omitempty"`
+	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
+}
+
+// GetSpec implements common.ClusterInterface.
+func (c *AltMockCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &c.Spec }
+
+// GetStatus implements common.ClusterInterface.
+func (c *AltMockCluster) GetStatus() *v1alpha1.GenericClusterStatus { return &c.Status }
+
+// AltMockClusterList is a list of AltMockCluster.
+//
+// +kubebuilder:object:root=true
+type AltMockClusterList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata"`
+	Items           []AltMockCluster `json:"items"`
+}
+
+var _ common.ClusterInterface = &AltMockCluster{}
+var _ common.ClusterResource[*AltMockCluster] = &AltMockCluster{}
+
 // SchemeBuilder for MockCluster
 var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
@@ -308,7 +330,10 @@ var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 var AddToScheme = SchemeBuilder.AddToScheme
 
 func addKnownTypes(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(MockClusterGroupVersion, &MockCluster{}, &MockClusterList{})
+	scheme.AddKnownTypes(MockClusterGroupVersion,
+		&MockCluster{}, &MockClusterList{},
+		&AltMockCluster{}, &AltMockClusterList{},
+	)
 	metav1.AddToGroupVersion(scheme, MockClusterGroupVersion)
 	return nil
 }
@@ -317,17 +342,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 var MockClusterGroupVersion = schema.GroupVersion{Group: "test.zncdata.dev", Version: "v1alpha1"}
 
 // MockClusterList is a list of MockCluster
+//
+// +kubebuilder:object:root=true
 type MockClusterList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
 	Items           []MockCluster `json:"items"`
-}
-
-// DeepCopyObject implements runtime.Object.
-func (l *MockClusterList) DeepCopyObject() runtime.Object {
-	return &MockClusterList{
-		TypeMeta: l.TypeMeta,
-		ListMeta: l.ListMeta,
-		Items:    append([]MockCluster{}, l.Items...),
-	}
 }

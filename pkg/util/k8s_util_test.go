@@ -415,6 +415,10 @@ var _ = Describe("K8sUtil", func() {
 						Type:   "Ready",
 						Status: metav1.ConditionTrue,
 						Reason: "TestComplete",
+						// Required by the metav1.Condition schema. The API server rejects the
+						// write without it; this spec only passed before because the test CRD
+						// carried no schema at all.
+						LastTransitionTime: metav1.Now(),
 					},
 				}
 				return nil

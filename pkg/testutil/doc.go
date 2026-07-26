@@ -17,4 +17,19 @@ limitations under the License.
 // Package testutil provides testing utilities for operator-go tests.
 // It includes envtest environment management, mock implementations,
 // Gomega matchers, and test data builders.
+//
+// The mock cluster resources in this package carry kubebuilder markers so that `make manifests`
+// generates REAL CRD schemas for them into config/crd/bases. That matters more than it looks:
+// envtest installs those CRDs, so a schema-free CRD would mean the API server performs no
+// defaulting, no validation and no pruning for any test in the repository — the entire suite
+// would exercise merge and defaulting logic in a world that does not exist in production.
+//
+// The package carries no +kubebuilder:object:generate=true marker on purpose: that would opt
+// EVERY struct here into deep-copy generation, including the mock handlers and extensions whose
+// fields are funcs, which controller-gen cannot copy. Deep copies are generated for the types
+// marked +kubebuilder:object:root=true and whatever they reference, which is exactly the set that
+// needs them.
+//
+// +groupName=test.zncdata.dev
+// +versionName=v1alpha1
 package testutil

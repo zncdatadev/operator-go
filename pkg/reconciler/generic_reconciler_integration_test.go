@@ -422,47 +422,14 @@ var altMockClusterGVK = schema.GroupVersionKind{Group: "test.zncdata.dev", Versi
 // addAltMockClusterToScheme registers the alt product CR. Every scheme a client or reconciler is
 // built with needs it, since a ClusterInterface is read and owned as itself.
 func addAltMockClusterToScheme(s *k8sruntime.Scheme) {
-	s.AddKnownTypeWithName(altMockClusterGVK, &altMockCluster{})
+	s.AddKnownTypeWithName(altMockClusterGVK, &testutil.AltMockCluster{})
 	metav1.AddToGroupVersion(s, altMockClusterGVK.GroupVersion())
 }
 
-// altMockCluster is a second product's cluster resource, standing beside MockCluster. A manager
-// process hosting two products runs one GenericReconciler per CR type, so this is what lets a
-// spec put two of them side by side.
-//
-// It is also the minimum a product CR can be: TypeMeta and ObjectMeta for client.Object, the
-// deep copy controller-gen would generate, and the two accessors that project spec and status.
-// Nothing here bridges the CR to the framework — the CR IS the object the framework reads,
-// owns resources with and writes status to.
-type altMockCluster struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              v1alpha1.GenericClusterSpec   `json:"spec,omitempty"`
-	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
-}
-
-func (c *altMockCluster) DeepCopy() *altMockCluster {
-	if c == nil {
-		return nil
-	}
-	out := new(altMockCluster)
-	*out = *c
-	out.ObjectMeta = *c.ObjectMeta.DeepCopy()
-	out.Spec = *c.Spec.DeepCopy()
-	out.Status = *c.Status.DeepCopy()
-	return out
-}
-
-func (c *altMockCluster) DeepCopyObject() k8sruntime.Object { return c.DeepCopy() }
-
-func (c *altMockCluster) GetSpec() *v1alpha1.GenericClusterSpec { return &c.Spec }
-
-func (c *altMockCluster) GetStatus() *v1alpha1.GenericClusterStatus { return &c.Status }
-
 // newAltCR creates a single-role-group alt-product cluster CR in the API server and registers
 // its teardown, returning the CR and the role group's resource name.
-func newAltCR(ctx context.Context, name string) (*altMockCluster, string) {
-	cr := &altMockCluster{
+func newAltCR(ctx context.Context, name string) (*testutil.AltMockCluster, string) {
+	cr := &testutil.AltMockCluster{
 		TypeMeta:   metav1.TypeMeta{Kind: altMockClusterGVK.Kind, APIVersion: altMockClusterGVK.GroupVersion().String()},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec: v1alpha1.GenericClusterSpec{
@@ -488,13 +455,13 @@ func newAltCR(ctx context.Context, name string) (*altMockCluster, string) {
 }
 
 // newAltReconciler builds a GenericReconciler for the minimal CR type.
-func newAltReconciler(registry *common.ExtensionRegistry[*altMockCluster]) *reconciler.GenericReconciler[*altMockCluster] {
-	r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*altMockCluster]{
+func newAltReconciler(registry *common.ExtensionRegistry[*testutil.AltMockCluster]) *reconciler.GenericReconciler[*testutil.AltMockCluster] {
+	r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.AltMockCluster]{
 		Client:            k8sClient,
 		Scheme:            testScheme,
 		Recorder:          recorder,
-		RoleGroupHandler:  testutil.NewMockRoleGroupHandlerFor[*altMockCluster](),
-		Prototype:         &altMockCluster{},
+		RoleGroupHandler:  testutil.NewMockRoleGroupHandlerFor[*testutil.AltMockCluster](),
+		Prototype:         &testutil.AltMockCluster{},
 		ExtensionRegistry: registry,
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -532,7 +499,7 @@ var _ = Describe("GenericReconciler minimal cluster contract", func() {
 
 		// The status landed on the stored CR, which is only possible if the object the reconciler
 		// fetched into and the object it wrote back are the same one.
-		persisted := &altMockCluster{}
+		persisted := &testutil.AltMockCluster{}
 		Expect(k8sClient.Get(ctx, req.NamespacedName, persisted)).To(Succeed())
 		Expect(persisted.Status.ObservedGeneration).To(Equal(cr.Generation))
 		Expect(persisted.Status.RoleGroups).To(HaveKey("broker"))
@@ -578,8 +545,8 @@ var _ = Describe("GenericReconciler extension registry ownership", func() {
 			BaseExtension: common.NewBaseExtension("main"), seen: &ran,
 		})
 
-		altRegistry := common.NewExtensionRegistry[*altMockCluster]()
-		altRegistry.RegisterClusterExtension(&namingExtension[*altMockCluster]{
+		altRegistry := common.NewExtensionRegistry[*testutil.AltMockCluster]()
+		altRegistry.RegisterClusterExtension(&namingExtension[*testutil.AltMockCluster]{
 			BaseExtension: common.NewBaseExtension("alt"), seen: &ran,
 		})
 

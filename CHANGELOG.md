@@ -186,6 +186,19 @@ changes are listed below.**
 
 ### tests
 
+- The CRDs envtest installs for the mock cluster resources are now **generated** from the Go types
+  by `make manifests` instead of being hand-written. The previous fixtures declared
+  `x-kubernetes-preserve-unknown-fields: true` for spec and status and no schema at all, so the API
+  server performed no defaulting, no validation and no pruning in ANY test in the repository: every
+  `+kubebuilder:default` and `+kubebuilder:validation:*` marker in `pkg/apis` was inert, and tests
+  that appeared to exercise defaulting were exercising Go zero values. `make test` now depends on
+  `manifests`, and `pkg/testutil/crd_schema_test.go` fails if the schema ever goes missing again.
+- Turning the schema on immediately caught one real defect: `UpdateStatusWithRetry`'s spec wrote a
+  `metav1.Condition` with no `lastTransitionTime`, which the API server rejects as a required
+  field. It had been persisting invalid conditions and reporting success.
+- `testutil.AltMockCluster` is exported (it was an unexported type inside a `pkg/reconciler` test
+  file), so controller-gen can generate its CRD.
+
 - `pkg/apis` tests now run in CI, and the reconciler suite gained envtest-backed integration and
   resilience specs (a second test CR type, `AltMockCluster`, covers per-CR-type isolation)
 
