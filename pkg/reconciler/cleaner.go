@@ -269,17 +269,19 @@ func (c *RoleGroupCleaner) Cleanup(
 	// Get orphaned role groups
 	orphanedGroups := status.GetOrphanedRoleGroups(spec.Roles)
 
-	// LOW-3: If gray-delete is enabled, clear AnnotationPendingDeletion from resources
-	// that are no longer orphaned (re-added to spec). This ensures the grace period is
-	// respected correctly on any future re-orphaning.
-	if c.grayDeleteGracePeriod > 0 {
-		for roleName, roleSpec := range spec.Roles {
-			for groupName := range roleSpec.RoleGroups {
-				resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
-				if err := c.clearGrayDeleteAnnotation(ctx, namespace, resourceName, ownerUID); err != nil {
-					logger.V(1).Info("Failed to clear gray-delete annotation from active resource",
-						"resource", resourceName, "error", err)
-				}
+	// Reset the teardown state machine's progress on every role group that IS in the spec, so a
+	// role group which was orphaned and then re-added starts its next teardown from scratch.
+	//
+	// Deliberately NOT gated on grayDeleteGracePeriod: AnnotationDrainStarted is stamped whether or
+	// not gray-delete is configured, so gating the reset on it — as this loop used to be — meant the
+	// drain deadline was never reset in the default configuration. Clearing a mark that was never
+	// written is a no-op, so running unconditionally costs a cached read per role group.
+	for roleName, roleSpec := range spec.Roles {
+		for groupName := range roleSpec.RoleGroups {
+			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
+			if err := c.clearTeardownProgress(ctx, namespace, resourceName, ownerUID); err != nil {
+				logger.V(1).Info("Failed to reset teardown progress on an active resource",
+					"resource", resourceName, "error", err)
 			}
 		}
 	}
@@ -980,39 +982,64 @@ func (c *RoleGroupCleaner) deleteService(ctx context.Context, namespace, name st
 	return err
 }
 
-// clearGrayDeleteAnnotation removes the AnnotationPendingDeletion annotation from a resource
-// (StatefulSet or ConfigMap) if it is present. Only modifies resources owned by ownerUID
-// to avoid mutating unrelated objects on name collision.
-func (c *RoleGroupCleaner) clearGrayDeleteAnnotation(ctx context.Context, namespace, name string, ownerUID types.UID) error {
-	// Try StatefulSet first
-	sts := &appsv1.StatefulSet{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, sts); err == nil {
-		if !isOwnedByCluster(sts, ownerUID) {
-			return nil
+// clearTeardownProgress removes the cleaner's per-teardown progress annotations from a role
+// group's primary resources, so a role group that comes BACK into the spec starts its next
+// teardown from scratch.
+//
+// It must visit BOTH primaries and BOTH annotations. The previous version cleared only
+// AnnotationPendingDeletion, and only on whichever primary it found first — returning as soon as
+// the StatefulSet was handled. Both halves of that were bugs, and both failed toward FASTER
+// destruction:
+//
+//   - checkOrMarkGrayDelete deliberately stamps the mark on every primary that exists, and treats
+//     "the mark of whichever primary already carries one" as authoritative. Clearing only the
+//     StatefulSet therefore left the ConfigMap holding the timestamp of the FIRST teardown. Remove
+//     a role group, re-add it, remove it again, and the grace period the operator asked for was
+//     evaluated against the original timestamp — usually already elapsed, so the resources were
+//     deleted immediately with no grace window at all.
+//
+//   - AnnotationDrainStarted was never cleared anywhere in the tree. It survives re-apply because
+//     copyDesiredState MERGES annotations (the framework's desired StatefulSet does not carry the
+//     key, so the live value wins), so the same re-add/re-remove sequence made drainDeadlineExpired
+//     read a timestamp from the previous teardown and force-delete the StatefulSet without waiting
+//     for the ordered drain.
+//
+// Only resources owned by ownerUID are modified, so a name collision with a foreign object cannot
+// make the cleaner mutate it. Per-primary failures are joined rather than returned on the first,
+// so one unwritable object does not leave the other still carrying stale progress.
+func (c *RoleGroupCleaner) clearTeardownProgress(ctx context.Context, namespace, name string, ownerUID types.UID) error {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	primaries := []client.Object{&appsv1.StatefulSet{}, &corev1.ConfigMap{}}
+
+	var errs []error
+	for _, primary := range primaries {
+		switch err := c.Client.Get(ctx, key, primary); {
+		case errors.IsNotFound(err):
+			continue
+		case err != nil:
+			errs = append(errs, err)
+			continue
 		}
-		if _, ok := sts.GetAnnotations()[AnnotationPendingDeletion]; ok {
-			annotations := sts.GetAnnotations()
-			delete(annotations, AnnotationPendingDeletion)
-			sts.SetAnnotations(annotations)
-			return c.Client.Update(ctx, sts)
+		if !isOwnedByCluster(primary, ownerUID) {
+			continue
 		}
-		return nil
-	} else if !errors.IsNotFound(err) {
-		return err
+
+		annotations := primary.GetAnnotations()
+		changed := false
+		for _, a := range []string{AnnotationPendingDeletion, AnnotationDrainStarted} {
+			if _, ok := annotations[a]; ok {
+				delete(annotations, a)
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		primary.SetAnnotations(annotations)
+		if err := c.Client.Update(ctx, primary); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
-	// Try ConfigMap as fallback
-	cm := &corev1.ConfigMap{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, cm); err == nil {
-		if !isOwnedByCluster(cm, ownerUID) {
-			return nil
-		}
-		if _, ok := cm.GetAnnotations()[AnnotationPendingDeletion]; ok {
-			annotations := cm.GetAnnotations()
-			delete(annotations, AnnotationPendingDeletion)
-			cm.SetAnnotations(annotations)
-			return c.Client.Update(ctx, cm)
-		}
-	}
-	return nil
+	return stderrors.Join(errs...)
 }

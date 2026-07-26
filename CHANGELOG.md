@@ -148,6 +148,16 @@ changes are listed below.**
 
 ### fix
 
+- The orphan state machine's progress annotations are now reset when a role group comes back into
+  the spec, so a re-orphaned group no longer inherits the previous teardown's timestamps. Two
+  separate leaks, both failing toward **faster destruction**: the gray-delete mark
+  (`orphan.zncdata.dev/pending-deletion`) is stamped on every primary but was cleared only on the
+  StatefulSet, leaving the ConfigMap's stale timestamp authoritative and skipping the grace period
+  entirely; and `orphan.zncdata.dev/drain-started` was cleared nowhere at all — it survives
+  re-apply because annotations are merged — so the drain deadline was evaluated against the
+  previous teardown and the StatefulSet was force-deleted without waiting for the ordered drain.
+  The reset is also no longer gated on `grayDeleteGracePeriod > 0`, which had meant the drain mark
+  was never reset in the default configuration.
 - Role and role group iteration is **best effort**: a failing role no longer aborts the whole
   reconcile. Orphan cleanup, the health check and the cluster PostReconcile hook now run even when
   a role failed, and the per-role errors are combined with `errors.Join` so the cluster still goes
