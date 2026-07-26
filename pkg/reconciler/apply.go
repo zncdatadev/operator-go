@@ -22,6 +22,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,7 +53,7 @@ import (
 // object, i.e. live == desired state already; every rule below is a no-op in that case, which
 // is exactly why desired-only-at-create fields (e.g. Service.Spec.ClusterIP) need no special
 // handling here.
-func copyDesiredState(desired, live client.Object) error {
+func copyDesiredState(desired, live client.Object) ([]string, error) {
 	// Labels: framework-owned, replaced wholesale.
 	live.SetLabels(desired.GetLabels())
 
@@ -72,41 +73,39 @@ func copyDesiredState(desired, live client.Object) error {
 	case *appsv1.StatefulSet:
 		desiredObj, err := desiredAs[*appsv1.StatefulSet](desired, live)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		copyStatefulSetState(desiredObj, liveObj)
-		return nil
+		return copyStatefulSetState(desiredObj, liveObj), nil
 	case *corev1.ConfigMap:
 		desiredObj, err := desiredAs[*corev1.ConfigMap](desired, live)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		// Data and BinaryData are replaced wholesale: keys removed by the product disappear
 		// from the live ConfigMap.
 		liveObj.Data = desiredObj.Data
 		liveObj.BinaryData = desiredObj.BinaryData
-		return nil
+		return nil, nil
 	case *corev1.Service:
 		desiredObj, err := desiredAs[*corev1.Service](desired, live)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		copyServiceState(desiredObj, liveObj)
-		return nil
+		return copyServiceState(desiredObj, liveObj), nil
 	case *corev1.ServiceAccount:
 		// A ServiceAccount has no spec the framework owns; labels/annotations (above) and the
 		// controller owner reference (set by the caller) are the whole desired state. Never
 		// touch Secrets/ImagePullSecrets — the token controller manages them.
-		return nil
+		return nil, nil
 	case *policyv1.PodDisruptionBudget:
 		desiredObj, err := desiredAs[*policyv1.PodDisruptionBudget](desired, live)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		liveObj.Spec = desiredObj.Spec
-		return nil
+		return nil, nil
 	default:
-		return copyGenericState(desired, live)
+		return nil, copyGenericState(desired, live)
 	}
 }
 
@@ -135,11 +134,33 @@ func desiredAs[T client.Object](desired, live client.Object) (T, error) {
 // migration (delete/recreate of the StatefulSet), documented as part of the upgrade path in
 // issue #526. Everything else — Replicas, Template, UpdateStrategy, MinReadySeconds,
 // PersistentVolumeClaimRetentionPolicy, ... — comes from desired.
-func copyStatefulSetState(desired, live *appsv1.StatefulSet) {
+//
+// It RETURNS the field paths whose desired value differed from the live one, so the caller can
+// tell the user their change was dropped. Preserving these fields silently is what made a
+// storage resize look successful: the CR reported ReconcileComplete while the PVC never moved,
+// and nothing in the API said why.
+func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	selector := live.Spec.Selector
 	serviceName := live.Spec.ServiceName
 	volumeClaimTemplates := live.Spec.VolumeClaimTemplates
 	podManagementPolicy := live.Spec.PodManagementPolicy
+
+	// Compared BEFORE the spec is overwritten. Only a desired value the handler actually set
+	// counts: an unset field is the handler declining to have an opinion, not a change request.
+	var ignored []string
+	if desired.Spec.Selector != nil && !apiequality.Semantic.DeepEqual(desired.Spec.Selector, selector) {
+		ignored = append(ignored, "spec.selector")
+	}
+	if desired.Spec.ServiceName != "" && desired.Spec.ServiceName != serviceName {
+		ignored = append(ignored, "spec.serviceName")
+	}
+	if len(desired.Spec.VolumeClaimTemplates) > 0 &&
+		!apiequality.Semantic.DeepEqual(desired.Spec.VolumeClaimTemplates, volumeClaimTemplates) {
+		ignored = append(ignored, "spec.volumeClaimTemplates")
+	}
+	if desired.Spec.PodManagementPolicy != "" && desired.Spec.PodManagementPolicy != podManagementPolicy {
+		ignored = append(ignored, "spec.podManagementPolicy")
+	}
 
 	live.Spec = desired.Spec
 
@@ -147,6 +168,8 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) {
 	live.Spec.ServiceName = serviceName
 	live.Spec.VolumeClaimTemplates = volumeClaimTemplates
 	live.Spec.PodManagementPolicy = podManagementPolicy
+
+	return ignored
 }
 
 // copyServiceState copies the desired Service spec onto the live one, preserving the fields the
@@ -167,7 +190,7 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) {
 // AllocateLoadBalancerNodePorts, TrafficDistribution, and any field a future Kubernetes version
 // adds — comes from desired. Assigning the spec wholesale (as copyStatefulSetState does) is what
 // makes new mutable fields converge by default instead of silently sticking at their live value.
-func copyServiceState(desired, live *corev1.Service) {
+func copyServiceState(desired, live *corev1.Service) []string {
 	livePorts := live.Spec.Ports
 	clusterIP := live.Spec.ClusterIP
 	clusterIPs := live.Spec.ClusterIPs
@@ -175,6 +198,19 @@ func copyServiceState(desired, live *corev1.Service) {
 	ipFamilyPolicy := live.Spec.IPFamilyPolicy
 	healthCheckNodePort := live.Spec.HealthCheckNodePort
 	loadBalancerClass := live.Spec.LoadBalancerClass
+
+	// Only clusterIP is reported. The rest of the preserved set is allocated BY the API server
+	// (IP families, the LoadBalancer health-check node port) or is empty in a handler-built
+	// object, so a difference there is the framework declining to fight the allocator, not a
+	// user's change being dropped — reporting it would be pure noise on every reconcile.
+	//
+	// clusterIP is different: it is the one the handler states deliberately, and it encodes
+	// headless ("None") versus virtual-IP. Flipping a Service between the two is exactly the
+	// change Kubernetes refuses and the user needs told about.
+	var ignored []string
+	if desired.Spec.ClusterIP != "" && desired.Spec.ClusterIP != clusterIP {
+		ignored = append(ignored, "spec.clusterIP")
+	}
 
 	live.Spec = desired.Spec
 
@@ -196,6 +232,8 @@ func copyServiceState(desired, live *corev1.Service) {
 		}
 	}
 	live.Spec.Ports = ports
+
+	return ignored
 }
 
 // findServicePort finds the live port corresponding to a desired port: by name when the
