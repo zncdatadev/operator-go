@@ -18,12 +18,18 @@ package vector
 
 // vectorConfigTemplate is the stable (v0.12.6) Vector agent pipeline, ported faithfully:
 //
-//   - api binds 127.0.0.1:<APIPort>; data_dir is /kubedoop/vector/var (the sidecar's data
-//     volume mount). The API is Vector's unauthenticated GraphQL endpoint — `vector tap` over it
-//     streams the log events flowing through the pipeline, which for these products means
-//     application logs — so it must not be reachable from the pod network. It stays enabled rather
-//     than disabled so `kubectl exec` + `vector top` remains available for debugging inside the
-//     pod, where loopback is reachable.
+//   - api binds 0.0.0.0:<APIPort>; data_dir is /kubedoop/vector/var (the sidecar's data volume
+//     mount).
+//
+//     Note that this is a departure from Vector's own defaults, which are api.enabled false and
+//     api.address 127.0.0.1:8686, and that the API is unauthenticated GraphQL over which
+//     `vector tap` streams the event payloads flowing through the pipeline — for these products,
+//     application logs. Whether the framework should expose it on the pod network is a security
+//     question about this endpoint, to be settled on its own terms; it is deliberately NOT decided
+//     here as a side effect of probe placement, which is how the wildcard bind was introduced in
+//     the first place (to let a kubelet httpGet readiness probe against the pod IP reach /health).
+//     The container's liveness probe no longer touches the API at all — see the Vector provider.
+//
 //   - the internal_metrics source and the prometheus_exporter "metrics" sink expose the agent's
 //     OWN metrics on 0.0.0.0:<MetricsPort>. Without them the pipeline's only sink is the aggregator
 //     it may have lost, so an agent that has stopped shipping is undetectable;
@@ -32,15 +38,19 @@ package vector
 //     counters and gauges about the pipeline (component throughput, errors, buffer depth), never
 //     log content. It is also what the container's liveness probe targets, since serving it
 //     requires the topology to be running — the API's /health reports only that the API is up.
+//
 //   - log_schema.host_key is "pod" so the host field of every event is named "pod".
+//
 //   - sources glob per-container log files ("<LogDir><container>/<file>"), one source per
 //     producer format: plain stdout/stderr, log4j 1.x XMLLayout events, log4j2 XMLLayout
 //     events, python JSON lines and airlift JSON lines. The suffix of each framework glob comes
 //     from productlogging.LogFileSuffix (the "logSuffix" template helper), the same constant the
 //     file appenders are named from, so the collector and the producers cannot drift.
+//
 //   - the processed_files_* transforms parse each format at the edge and normalize every
 //     event to the stable schema: .timestamp / .logger / .level / .message, collecting
 //     parse problems in .errors instead of dropping events.
+//
 //   - extended_logs_files extracts .container / .file from the source path;
 //     extended_logs stamps the flat .namespace / .cluster / .role / .roleGroup fields.
 //
@@ -53,7 +63,7 @@ package vector
 // transform or sink — kept for parity with the stable pipeline.
 const vectorConfigTemplate = `api:
   enabled: true
-  address: 127.0.0.1:{{APIPort}}
+  address: 0.0.0.0:{{APIPort}}
   playground: false
 data_dir: /kubedoop/vector/var
 log_schema:

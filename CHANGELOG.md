@@ -99,11 +99,6 @@ changes are listed below.**
   namespace enforcing the restricted Pod Security Standard rejected the whole workload — the
   sidecars were the reason the pod could not be admitted. An explicit
   `SidecarConfig.SecurityContext` still replaces the default wholesale.
-- The Vector agent's API no longer binds `0.0.0.0`. It is Vector's unauthenticated GraphQL
-  endpoint, and `vector tap` over it streams the log events flowing through the pipeline — the
-  product's application logs — so it was reachable from anywhere in the pod network. It now binds
-  `127.0.0.1` and stays enabled for in-pod debugging (`kubectl exec` + `vector top`).
-
 - The oauth2-proxy session cookie secret is no longer inlined into the PodSpec as an env `value`.
   It signs every session the proxy trusts, so anyone able to `get pod` could forge a session and
   bypass authentication; it was additionally derived (via SHA-256) from a caller-supplied seed that

@@ -658,9 +658,10 @@ func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 // it delivers the guarantee readiness cannot: a wedged agent is recovered instead of merely being
 // visible. Deleting the probe outright, as the previous iteration did, left the agent with neither.
 //
-// It must target the metrics endpoint, not the API's /health: the kubelet executes httpGet probes
-// against the POD IP from outside the pod's network namespace, and the API binds 127.0.0.1 so that
-// `vector tap` — which streams application logs — is not reachable from the pod network.
+// It must target the metrics endpoint, not the API's /health, because serving the exporter requires
+// Vector's topology to be running while /health reports merely that the API server is up. That holds
+// regardless of what address the API binds — the API's exposure is a separate security question, and
+// letting probe placement settle it is what put the API on the wildcard address to begin with.
 func TestProvider_Inject_LivenessNotReadinessProbe(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
@@ -691,7 +692,7 @@ func TestProvider_Inject_LivenessNotReadinessProbe(t *testing.T) {
 		t.Fatalf("liveness probe = %+v, want an httpGet handler", probe)
 	}
 	if got := probe.HTTPGet.Port.IntValue(); got != VectorMetricsPort {
-		t.Errorf("liveness probe port = %d, want %d (the metrics endpoint; the API is on loopback and unreachable to the kubelet)",
+		t.Errorf("liveness probe port = %d, want %d: the metrics endpoint proves the topology is running, the API's /health only that the API is up",
 			got, VectorMetricsPort)
 	}
 	// The literal, not VectorMetricsPath: Vector hardcodes the prometheus_exporter path, so a

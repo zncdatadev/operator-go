@@ -75,23 +75,20 @@ const (
 	// VectorDefaultConfigMapName is the default ConfigMap name for Vector config.
 	VectorDefaultConfigMapName = "vector-config"
 
-	// VectorAPIPort is the port the Vector API listens on. It is bound to 127.0.0.1 (see
-	// vectorConfigTemplate), so it is reachable from inside the pod only and is deliberately not
-	// declared as a container port.
+	// VectorAPIPort is the port the Vector API listens on (see vectorConfigTemplate for the address
+	// it binds and the security question that address raises). It is deliberately not declared as a
+	// container port, and nothing in the framework calls the API.
 	VectorAPIPort = 8686
 
-	// VectorHealthEndpoint is the health endpoint of the Vector API. It reports that the API server
-	// is up, not that the pipeline is running, which is why the container's liveness probe targets
-	// the prometheus_exporter endpoint below instead. (It is also reachable from inside the pod
-	// only, the API being bound to 127.0.0.1, and the kubelet probes the POD IP from outside the
-	// pod's netns — but the weaker signal is the reason, not the bind.)
+	// VectorHealthEndpoint is the health endpoint of the Vector API. The container's liveness probe
+	// deliberately does NOT use it: it reports that the API server is up, not that the pipeline is
+	// running, so the prometheus_exporter endpoint below is the stronger signal.
 	VectorHealthEndpoint = "/health"
 
 	// VectorMetricsPort is the port the rendered pipeline's prometheus_exporter sink listens on
-	// (Vector's own default for that sink). It binds 0.0.0.0 because it carries only the agent's
-	// internal metrics — component throughput, error counters, buffer depth — and no log content,
-	// so it is ordinary Prometheus-grade exposure like any metrics endpoint. Two things depend on
-	// it being reachable: scraping the agent, and the container's liveness probe.
+	// (Vector's own default for that sink). Two things depend on it being reachable: scraping the
+	// agent, and the container's liveness probe. Unlike the API it carries only the agent's internal
+	// metrics — component throughput, error counters, buffer depth — and no log content.
 	VectorMetricsPort = 9598
 
 	// VectorMetricsPortName names the metrics container port. Container port names must be unique

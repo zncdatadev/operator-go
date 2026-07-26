@@ -559,8 +559,10 @@ Per-provider specifics:
   (`vector_component_sent_events_total`, `vector_buffer_events`); it exposes component throughput,
   error counters and buffer depth, never log content. The port is declared as a container port but is
   **not** overridable via `SidecarConfig.Ports`, because it is baked into the rendered `vector.yaml`.
-  (Independently of all this, the Vector *API* binds `127.0.0.1` — a security decision about `vector
-  tap`, unrelated to probe design.)
+  The probe target is independent of what address the Vector *API* binds (`0.0.0.0`, as it always
+  has) — whether that unauthenticated GraphQL endpoint should be reachable from the pod network is a
+  security question about that endpoint, and letting probe placement decide it is what put it on the
+  wildcard address in the first place.
 - **JMX exporter** — `livenessProbe` `httpGet` `/metrics`, with deliberately forgiving timings
   (`timeoutSeconds: 10`, ~3 minutes to failure). Scraping makes the exporter collect from the JVM
   over JMX, so its response time tracks the product's GC; a readiness-grade 5s timeout is what made

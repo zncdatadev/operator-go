@@ -351,34 +351,27 @@ func TestRenderVectorConfig_APIDefaults(t *testing.T) {
 		t.Fatalf("RenderVectorConfig() error = %v", err)
 	}
 
-	// Enabled, so `kubectl exec` + `vector top` still works for in-pod debugging.
 	if !strings.Contains(result, "enabled: true") {
 		t.Error("RenderVectorConfig() API should be enabled")
 	}
-	// ...but bound to loopback. Vector's API is unauthenticated GraphQL, and `vector tap` over
-	// it streams the log events flowing through the pipeline — application logs, for these
-	// products. On 0.0.0.0 that endpoint was reachable from anywhere in the pod network.
-	if !strings.Contains(result, "address: 127.0.0.1:8686") {
-		t.Error("RenderVectorConfig() API address should be 127.0.0.1:8686")
-	}
-	// Scoped to the api block, not the whole document: the prometheus_exporter sink binds the
-	// wildcard on purpose, and it is a different proposition — internal counters, never log
-	// content. A document-wide assertion would have to be relaxed the moment any sink listens,
-	// which is exactly when it stops guarding the API.
-	apiBlock := result[:strings.Index(result, "data_dir:")] //nolint:gocritic // fails loudly if absent
-	if strings.Contains(apiBlock, "0.0.0.0") {
-		t.Errorf("RenderVectorConfig() API must not bind a wildcard address, got block:\n%s", apiBlock)
+	// The wildcard bind is the framework's long-standing behaviour and is asserted here so a change
+	// to it is a deliberate, visible decision rather than a side effect of something else. It is a
+	// departure from Vector's own defaults (api.enabled false, api.address 127.0.0.1:8686) and the
+	// API is unauthenticated GraphQL that `vector tap` streams event payloads over, so whether to
+	// keep exposing it belongs to a security review of this endpoint — not to probe placement, which
+	// is what introduced the wildcard in the first place.
+	if !strings.Contains(result, "address: 0.0.0.0:8686") {
+		t.Error("RenderVectorConfig() API address should be 0.0.0.0:8686")
 	}
 	if !strings.Contains(result, "playground: false") {
 		t.Error("RenderVectorConfig() API playground should be disabled")
 	}
 }
 
-// TestRenderVectorConfig_SelfMetrics guards the agent's own observability. It is the endpoint the
-// Vector container's liveness probe targets — the API's /health is unreachable to the kubelet,
-// which probes the pod IP from outside the pod's network namespace — and the only thing that makes
-// "the agent stopped shipping" alertable, since the pipeline's other sink is the aggregator it may
-// have lost.
+// TestRenderVectorConfig_SelfMetrics guards the agent's own observability: it is the only thing that
+// makes "the agent stopped shipping" detectable, since the pipeline's other sink is the aggregator it
+// may have lost. It is also what the Vector container's liveness probe targets, because serving it
+// requires the topology to be running while the API's /health reports merely that the API is up.
 func TestRenderVectorConfig_SelfMetrics(t *testing.T) {
 	data := defaultConfigData()
 	result, err := RenderVectorConfig(data)

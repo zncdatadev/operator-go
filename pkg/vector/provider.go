@@ -193,12 +193,12 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 		// product outage caused by the log pipeline. A liveness failure restarts only this
 		// container, so the guarantee "a wedged agent is recovered" costs the product nothing.
 		//
-		// It targets the prometheus_exporter endpoint rather than the API's /health because that is
-		// the stronger check: serving it requires Vector's topology to be running, whereas /health
-		// reports only that the API server is up. (The API is separately bound to 127.0.0.1, which
-		// is a decision about `vector tap` streaming application logs and would also put it out of
-		// the kubelet's reach — the kubelet probes the POD IP from outside the pod's netns — but
-		// that is not why this probe points where it does.)
+		// It targets the prometheus_exporter endpoint rather than the API's /health for one reason
+		// only: serving it requires Vector's topology to be running, whereas /health reports merely
+		// that the API server is up. The choice is independent of what address the API binds — the
+		// probe would still point here if the API were reachable, and the API's exposure is a
+		// separate security question that must not be settled by probe placement (which is exactly
+		// how the API came to bind the wildcard in the first place).
 		//
 		// Timings are forgiving on purpose. Restarting a log agent drops whatever is in its
 		// in-memory buffer, so a restart must be reserved for an agent that is genuinely gone
