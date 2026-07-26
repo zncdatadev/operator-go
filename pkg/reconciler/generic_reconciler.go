@@ -1244,6 +1244,9 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 	// and then runs this mutate func, so this is the only point where it can be read; after the
 	// call obj holds whatever the API server returned.
 	var liveResourceVersion string
+	// Field paths whose desired value the API server will not let the framework change. Collected
+	// inside the mutate func because that is the only place both states are in hand.
+	var ignoredImmutable []string
 	result, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
 		liveResourceVersion = obj.GetResourceVersion()
 		// Set ownership
@@ -1252,13 +1255,27 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 		}
 		// Copy the desired state onto the live object; without this the apply path is
 		// create-only (see the doc comment above and copyDesiredState).
-		return copyDesiredState(desired, obj)
+		var copyErr error
+		ignoredImmutable, copyErr = copyDesiredState(desired, obj)
+		return copyErr
 	})
 	if err != nil {
 		if errors.IsTooManyRequests(err) {
 			return NewRateLimitError(r.rateLimitRetryAfter, err)
 		}
 		return err
+	}
+
+	// Tell the user their change was dropped. The framework preserving an immutable field is
+	// correct — the alternative is an Update the API server rejects on every reconcile — but
+	// doing it silently is what let a storage resize be accepted, reported as
+	// ReconcileComplete=True, and never applied. Kubernetes aggregates repeated identical events
+	// into one entry with a count, so this stays visible in `kubectl describe` for as long as the
+	// spec and the live object disagree, without flooding.
+	if len(ignoredImmutable) > 0 {
+		r.eventManager.EmitWarningEvent(owner, "ImmutableFieldIgnored", fmt.Sprintf(
+			"%s %q: %s cannot be changed after creation, so the live value is kept and the spec has no effect. Recreate the resource to apply it.",
+			r.resourceKind(obj), obj.GetName(), strings.Join(ignoredImmutable, ", ")))
 	}
 
 	switch result {

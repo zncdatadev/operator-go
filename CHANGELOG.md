@@ -140,6 +140,13 @@ changes are listed below.**
 
 ### fix
 
+- An immutable field the apply path refuses to change now produces an `ImmutableFieldIgnored`
+  Warning event on the CR, naming the resource and the field paths. Preserving
+  `volumeClaimTemplates`, `selector`, `serviceName` and `podManagementPolicy` is correct — the
+  alternative is an Update the API server rejects every reconcile — but doing it silently meant a
+  storage resize was accepted, reported as `ReconcileComplete=True`, and never applied, with
+  nothing in the API explaining why. Only a field the handler actually set is reported, so a
+  settled cluster stays quiet.
 - **A role group overriding one leaf of `config.resources` no longer discards the role's siblings.**
   `MergeRoleGroupConfig` merged `resources` struct-by-struct, so a group that set only
   `storage.storageClass` — or only `cpu.min` — dropped every other value the role had configured,

@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -2249,6 +2250,62 @@ var _ = Describe("GenericReconciler update propagation (issue #526)", func() {
 		Expect(sts.Spec.ServiceName).To(Equal(originalServiceName))
 		// The mutable template change still propagates.
 		Expect(sts.Spec.Template.Labels).To(HaveKeyWithValue("version", "v2"))
+	})
+
+	It("warns that a storage resize was dropped instead of reporting success", func() {
+		// The scenario that motivated this: a user grows config.resources.storage. The framework
+		// correctly refuses to send an Update Kubernetes would reject — volumeClaimTemplates are
+		// immutable — but doing so SILENTLY meant the CR reported ReconcileComplete=True while the
+		// PVC never moved, with nothing in the API explaining why. Editing the CR back does not
+		// help either: the live value is authoritative from here on.
+		capacity := "10Gi"
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			sts := testutil.NewTestStatefulSet(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{Name: "data"},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)},
+					},
+				},
+			}}
+			return &reconciler.RoleGroupResources{StatefulSet: sts}
+		})
+
+		reconcile(r)
+		drainEvents()
+
+		capacity = "100Gi"
+		reconcile(r)
+
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ImmutableFieldIgnored"),
+			ContainSubstring("spec.volumeClaimTemplates"),
+		)), "the user must be told the resize had no effect")
+
+		// And the live PVC template is genuinely unchanged — the warning is not cosmetic.
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, sts)).To(Succeed())
+		stored := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(stored.String()).To(Equal("10Gi"))
+	})
+
+	It("stays quiet when nothing immutable drifted", func() {
+		// The warning repeats for as long as spec and live disagree, so it must not fire on the
+		// steady state — every reconcile of every role group would carry one.
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			return &reconciler.RoleGroupResources{
+				StatefulSet: testutil.NewTestStatefulSet(buildCtx.ResourceName, buildCtx.ClusterNamespace),
+			}
+		})
+
+		reconcile(r)
+		drainEvents()
+		reconcile(r)
+
+		Expect(drainEvents()).NotTo(ContainElement(ContainSubstring("ImmutableFieldIgnored")))
 	})
 })
 
