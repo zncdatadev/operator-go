@@ -1908,3 +1908,168 @@ var _ = Describe("RoleGroupCleaner rate limit mapping", func() {
 		Expect(reconciler.IsRateLimitError(err)).To(BeTrue(), "expected a RateLimitError, got %v", err)
 	})
 })
+
+var _ = Describe("RoleGroupCleaner teardown progress reset", func() {
+	var ctx context.Context
+	var namespace string
+	const ownerUID = types.UID("teardown-reset-owner-uid")
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		namespace = cleanerTestNamespace
+	})
+
+	ownerRef := func(clusterName string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{
+			APIVersion: "test.zncdata.dev/v1alpha1",
+			Kind:       "TestCluster",
+			Name:       clusterName,
+			UID:        ownerUID,
+			Controller: ptr.To(true),
+		}}
+	}
+
+	// newPrimaries creates the StatefulSet and ConfigMap of a role group, both carrying the given
+	// teardown progress annotations, and registers their teardown.
+	newPrimaries := func(clusterName, resourceName string, annotations map[string]string) {
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: resourceName, Namespace: namespace,
+				OwnerReferences: ownerRef(clusterName),
+				Annotations:     cloneAnnotations(annotations),
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": resourceName}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": resourceName}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: resourceName, Namespace: namespace,
+				OwnerReferences: ownerRef(clusterName),
+				Annotations:     cloneAnnotations(annotations),
+			},
+			Data: map[string]string{"key": "value"},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, sts)
+			_ = k8sClient.Delete(ctx, cm)
+		})
+	}
+
+	// runCleanupWithGroupInSpec runs a cleanup pass in which the role group IS declared, i.e. the
+	// role group came back after having been orphaned.
+	runCleanupWithGroupInSpec := func(cleaner *reconciler.RoleGroupCleaner, clusterName, groupName string) {
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+				groupName: {Replicas: ptr.To(int32(1))},
+			}}},
+		}
+		status := &v1alpha1.GenericClusterStatus{}
+		_, err := cleaner.Cleanup(ctx, namespace, clusterName, spec, status, ownerUID, nil)
+		Expect(err).To(Succeed())
+	}
+
+	annotationsOf := func(obj client.Object, resourceName string) map[string]string {
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resourceName}, obj)).To(Succeed())
+		return obj.GetAnnotations()
+	}
+
+	It("clears the gray-delete mark from BOTH primaries, not just the StatefulSet", func() {
+		// checkOrMarkGrayDelete stamps every primary that exists and treats whichever primary
+		// already carries a mark as authoritative. Clearing only the StatefulSet left the ConfigMap
+		// holding the FIRST teardown's timestamp, so the next teardown evaluated an already-elapsed
+		// grace period and deleted immediately — no grace window at all.
+		clusterName, groupName := "reset-graydelete", "grp"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
+		stale := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+		newPrimaries(clusterName, resourceName, map[string]string{
+			reconciler.AnnotationPendingDeletion: stale,
+		})
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithGrayDeleteGracePeriod(30 * time.Minute)
+		runCleanupWithGroupInSpec(cleaner, clusterName, groupName)
+
+		Expect(annotationsOf(&appsv1.StatefulSet{}, resourceName)).
+			NotTo(HaveKey(reconciler.AnnotationPendingDeletion))
+		Expect(annotationsOf(&corev1.ConfigMap{}, resourceName)).
+			NotTo(HaveKey(reconciler.AnnotationPendingDeletion),
+				"the ConfigMap's stale mark is what the next teardown would read as authoritative")
+	})
+
+	It("clears the drain-started mark, which nothing used to clear at all", func() {
+		// AnnotationDrainStarted survives re-apply because copyDesiredState MERGES annotations, so
+		// a re-added-then-re-removed role group had drainDeadlineExpired read a timestamp from the
+		// previous teardown and force-delete without waiting for the ordered drain.
+		clusterName, groupName := "reset-drain", "grp"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
+		newPrimaries(clusterName, resourceName, map[string]string{
+			reconciler.AnnotationDrainStarted: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+		})
+
+		// Gray-delete deliberately OFF: the drain mark is written regardless of it, so its reset
+		// must not be gated on it — which is exactly how the reset loop used to be gated.
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+		runCleanupWithGroupInSpec(cleaner, clusterName, groupName)
+
+		Expect(annotationsOf(&appsv1.StatefulSet{}, resourceName)).
+			NotTo(HaveKey(reconciler.AnnotationDrainStarted))
+	})
+
+	It("leaves annotations it does not own alone", func() {
+		clusterName, groupName := "reset-foreign-annos", "grp"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
+		newPrimaries(clusterName, resourceName, map[string]string{
+			reconciler.AnnotationDrainStarted:                  time.Now().UTC().Format(time.RFC3339),
+			"kubectl.kubernetes.io/last-applied-configuration": "{}",
+		})
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+		runCleanupWithGroupInSpec(cleaner, clusterName, groupName)
+
+		annos := annotationsOf(&appsv1.StatefulSet{}, resourceName)
+		Expect(annos).NotTo(HaveKey(reconciler.AnnotationDrainStarted))
+		Expect(annos).To(HaveKeyWithValue("kubectl.kubernetes.io/last-applied-configuration", "{}"))
+	})
+
+	It("does not touch a resource owned by someone else", func() {
+		// A name collision with a foreign object must not make the cleaner mutate it.
+		clusterName, groupName := "reset-foreign-owner", "grp"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", groupName)
+		stale := time.Now().UTC().Format(time.RFC3339)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: resourceName, Namespace: namespace,
+				Annotations: map[string]string{reconciler.AnnotationDrainStarted: stale},
+				// no OwnerReferences — belongs to nobody this cleaner knows about
+			},
+			Data: map[string]string{"key": "value"},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, cm) })
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+		runCleanupWithGroupInSpec(cleaner, clusterName, groupName)
+
+		Expect(annotationsOf(&corev1.ConfigMap{}, resourceName)).
+			To(HaveKeyWithValue(reconciler.AnnotationDrainStarted, stale))
+	})
+})
+
+// cloneAnnotations copies an annotation map so each fixture object gets its own.
+func cloneAnnotations(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
