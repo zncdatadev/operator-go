@@ -182,6 +182,32 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
 
 Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile.
 
+**A `configOverrides` change does not roll the pods by itself — the platform restarter does.**
+Editing `configOverrides` makes the framework rewrite the role group ConfigMap, and stop there: the
+pod template is byte-identical, so the StatefulSet controller has no reason to roll anything, and
+none of these products re-read their configuration files at runtime.
+
+Delivering that change to the running processes is **commons-operator's restarter**, not this SDK.
+Label the workload `restarter.kubedoop.dev/enable=true` (`constant.LabelRestarterEnable` /
+`LabelRestarterEnableValue`) and, whenever a ConfigMap or Secret **mounted as a volume** in the pod
+changes, the restarter writes `configmap.restarter.kubedoop.dev/<name>` (or
+`secret.restarter.kubedoop.dev/<name>`) into the workload's pod template; the StatefulSet controller
+then rolls the pods. **The SDK writes neither annotation** — those prefixes exist in
+`pkg/constant/restarter.go` to document the restarter's half of the contract, not for the framework
+to emit. The same component also restarts pods whose secret-operator TLS/Kerberos secrets have
+passed the expiry recorded in `restarter.kubedoop.dev/expires-at.<...>`.
+
+The framework already satisfies the restarter's precondition: the role group ConfigMap is mounted as
+the `config` volume. What it does **not** do is set the label — that is a per-product decision, and
+without it a `configOverrides` change simply does not roll. A product opts in through
+`BaseRoleGroupHandler.ExtraLabels`; note those labels land on both the StatefulSet metadata and the
+pod template, and the restarter only needs the former.
+
+This applies to `configOverrides` alone. `envOverrides` and `cliOverrides` reach the container as
+env vars and args through `MergedConfig` (`StatefulSetBuilder.WithConfig`), and `podOverrides`
+patches the template directly — all three change the pod template, so they roll natively with no
+restarter involved.
+
 **Role iteration is best-effort.** A failing role does not stop the others, and a failing role group does not stop its siblings, the role-level PDB, or the role's PostReconcile hook. Steps 8-10 (orphan cleanup, health, cluster PostReconcile) run regardless. Roles and role groups are independent workloads: aborting at the first failure meant one unparsable value on the alphabetically-first role indefinitely blocked the *deletion* of an unrelated role group, the health of every other role, and the discovery ConfigMap a product publishes from PostReconcile. The per-role errors are combined with `errors.Join` and returned once, so the cluster still goes `Degraded` and the workqueue still backs off. Iteration stays **sorted** so that aggregated message is byte-stable across cycles — an unstable message would defeat the no-op guard in `updateStatus` and make the controller reschedule itself forever. The single exception is a 429: a `*RateLimitError` aborts the pass immediately, because pushing the remaining roles through would only deepen the backlog.
 
 **Requeue cadence.** A successful reconcile returns `ctrl.Result{RequeueAfter: HealthCheckInterval}` (`DefaultHealthCheckInterval` = 120s; a negative value disables the periodic wakeup), or the cleaner's earliest pending wakeup when that is sooner — a remaining gray-delete deadline, or the drain poll interval of an orphan deletion in flight. Watches only cover the kinds the framework owns, so anything that changes without producing an event — a product `ServiceHealthCheck` probe, a grace period running out, a StatefulSet finishing its drain — depends on this timer.
