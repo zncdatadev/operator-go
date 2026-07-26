@@ -5,8 +5,8 @@
 
 Architecture review follow-up: four waves of correctness fixes across the reconcile loop, the
 builders, config/logging rendering and the CSI wiring, followed by three API redesigns that shrink
-the contracts a product operator implements. **Downstream operators must migrate — see
-[docs/UPGRADING.md](docs/UPGRADING.md) for the step-by-step guide.**
+the contracts a product operator implements. **Downstream operators must migrate — the breaking
+changes are listed below.**
 
 ### BREAKING CHANGES
 
@@ -135,7 +135,6 @@ the contracts a product operator implements. **Downstream operators must migrate
 
 ### docs
 
-- Added `docs/UPGRADING.md`, the migration guide for a product operator moving onto this version
 - Re-verified every concrete claim in `docs/architecture.md`, `docs/architecture_zh.md` and the
   `AGENTS.md` files against the code; see `docs/DOC_CHANGELOG.md` for the itemized list
 

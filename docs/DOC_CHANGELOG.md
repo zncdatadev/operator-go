@@ -52,29 +52,6 @@ edits.
   cleanup as a multi-pass state machine with per-group error isolation, 429 backoff and the role-PDB
   label reclaim.
 
-### Upgrade Guide (`docs/UPGRADING.md`)
-
-- **Added a "Which before this guide describes" note.** Removed symbols are checked against `main`
-  before the v0.13.0 work — *not* against the last tag: v0.12.6 predates the framework entirely (no
-  `pkg/common`, no `GenericReconciler`, no `pkg/sidecar`/`pkg/vector`/`pkg/security`, and
-  `pkg/constants` rather than `pkg/constant`), so an operator on v0.12.6 is adopting the framework,
-  not upgrading it.
-- **Four "Removed" rows cited symbols that never shipped.** `common.NewExtensionRegistry()`
-  (non-generic), `common.AsClusterExtension`/`AsRoleExtension`/`AsRoleGroupExtension` and
-  `RegisterClusterExtensionWithOptions` exist nowhere in `git show main:pkg/common/`; the
-  `RoleGroupCleaner.Cleanup` row invented a five-parameter "before" when only the return type
-  changed. The §4 worked example's "Before" block cited two of the phantom symbols and is now the
-  code `main` actually had. Added the two genuine registry behaviour changes a reader must know
-  about (`WithStopOnError` defaults, and same-priority extensions now running in registration order
-  where `sort.Slice` on priority alone used to leave them arbitrary).
-- **§2 named the removed Python logging file but not its replacement.** It is `log_config.py`
-  (`productlogging.pythonGenerator.DefaultFileName`), with the sites a product must repoint and a
-  checklist item; the Vector-collected rolling log file (`<container>.py.json`) is unaffected.
-
----
-
-## [2026-07-25] (second pass — three breaking redesigns)
-
 ### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
 
 Follow-up to the consistency pass below, covering three breaking API redesigns that landed after it.
