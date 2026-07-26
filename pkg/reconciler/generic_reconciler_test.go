@@ -2290,7 +2290,7 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
 		mockCR = testutil.NewMockCluster(crName, namespace).WithRoles(map[string]v1alpha1.RoleSpec{
 			"server": {
 				RoleConfig: &v1alpha1.RoleConfigSpec{
-					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{Enabled: true, MaxUnavailable: &maxUnavailable},
+					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true), MaxUnavailable: &maxUnavailable},
 				},
 				RoleGroups: map[string]v1alpha1.RoleGroupSpec{
 					"default":   {Replicas: ptr.To(int32(2))},

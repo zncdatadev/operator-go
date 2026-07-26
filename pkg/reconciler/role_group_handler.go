@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -297,18 +298,21 @@ func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []pro
 	return data, nil
 }
 
-// MergeRoleGroupConfig merges a role-level RoleGroupConfigSpec into a role group's config,
-// the group winning per field (resources merge per sub-field; logging deep-merges per
-// container via productlogging.MergeLoggingSpec). The inputs are never mutated; the result
-// is always a fresh copy (or nil when both inputs are nil). GenericReconciler applies this
-// when building the RoleGroupBuildContext, so role-wide config defaults reach every group.
+// MergeRoleGroupConfig merges a role-level RoleGroupConfigSpec into a role group's config, the
+// group winning per LEAF (not per struct). The inputs are never mutated; the result is always a
+// fresh copy (or nil when both inputs are nil). GenericReconciler applies this when building the
+// RoleGroupBuildContext, so role-wide config defaults reach every group.
 //
-// Caveat — gracefulShutdownTimeout: the commons CRD schema defaults this field to "30s", and
-// the API server stamps that default into EVERY config block that exists. A role-level value
-// therefore only reaches groups that declare no config block at all; a group with any config
-// (e.g. just resources) carries the server-stamped "30s", which wins here — indistinguishable
-// from an explicit group-level "30s". Fixing this properly means dropping the CRD-level
-// default (or making the field a *string) across the product CRDs.
+// Leaf granularity is the whole point. Merging `resources` struct-by-struct meant a group that
+// set one leaf — a storageClass, a cpu.min — discarded every sibling the role had configured,
+// because the group's enclosing struct was non-nil and the role's was therefore never consulted.
+// Overriding one knob is the normal way to use this API, and it silently dropped the rest.
+//
+// This works only because the fields are pointers with no CRD-level default. Structural
+// defaulting fills a field as soon as its enclosing object exists, so a `+kubebuilder:default`
+// on a leaf makes "unset here" indistinguishable from "explicitly the default" and the role's
+// value can never win. Defaults therefore live at consumption time — StorageResource.GetCapacity,
+// RoleGroupConfigSpec.GetGracefulShutdownTimeout — not in the schema.
 func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.RoleGroupConfigSpec {
 	switch {
 	case role == nil && group == nil:
@@ -323,27 +327,62 @@ func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.R
 	if merged.Affinity == nil {
 		merged.Affinity = role.Affinity.DeepCopy()
 	}
-	if merged.GracefulShutdownTimeout == "" {
+	if merged.GracefulShutdownTimeout == nil {
 		merged.GracefulShutdownTimeout = role.GracefulShutdownTimeout
 	}
 	// MergeLoggingSpec may return one of its inputs unchanged (e.g. a nil counterpart);
 	// deep-copy so the merged config never aliases the live CR spec.
 	merged.Logging = productlogging.MergeLoggingSpec(role.Logging, group.Logging).DeepCopy()
-	if role.Resources != nil {
-		if merged.Resources == nil {
-			merged.Resources = role.Resources.DeepCopy()
-		} else {
-			if merged.Resources.CPU == nil {
-				merged.Resources.CPU = role.Resources.CPU.DeepCopy()
-			}
-			if merged.Resources.Memory == nil {
-				merged.Resources.Memory = role.Resources.Memory.DeepCopy()
-			}
-			if merged.Resources.Storage == nil {
-				merged.Resources.Storage = role.Resources.Storage.DeepCopy()
-			}
+	merged.Resources = mergeResources(role.Resources, group.Resources)
+	return merged
+}
+
+// mergeResources folds the role's resources into the group's, leaf by leaf.
+func mergeResources(role, group *v1alpha1.ResourcesSpec) *v1alpha1.ResourcesSpec {
+	switch {
+	case role == nil && group == nil:
+		return nil
+	case role == nil:
+		return group.DeepCopy()
+	case group == nil:
+		return role.DeepCopy()
+	}
+
+	merged := group.DeepCopy()
+
+	switch {
+	case merged.CPU == nil:
+		merged.CPU = role.CPU.DeepCopy()
+	case role.CPU != nil:
+		if merged.CPU.Min == nil {
+			merged.CPU.Min = copyQuantity(role.CPU.Min)
+		}
+		if merged.CPU.Max == nil {
+			merged.CPU.Max = copyQuantity(role.CPU.Max)
 		}
 	}
+
+	switch {
+	case merged.Memory == nil:
+		merged.Memory = role.Memory.DeepCopy()
+	case role.Memory != nil:
+		if merged.Memory.Limit == nil {
+			merged.Memory.Limit = copyQuantity(role.Memory.Limit)
+		}
+	}
+
+	switch {
+	case merged.Storage == nil:
+		merged.Storage = role.Storage.DeepCopy()
+	case role.Storage != nil:
+		if merged.Storage.Capacity == nil {
+			merged.Storage.Capacity = copyQuantity(role.Storage.Capacity)
+		}
+		if merged.Storage.StorageClass == "" {
+			merged.Storage.StorageClass = role.Storage.StorageClass
+		}
+	}
+
 	return merged
 }
 
@@ -388,3 +427,14 @@ func (f *RoleGroupHandlerFuncs[CR]) BuildResources(ctx context.Context, k8sClien
 
 // Verify that RoleGroupHandlerFuncs implements RoleGroupHandler.
 var _ RoleGroupHandler[common.ClusterInterface] = &RoleGroupHandlerFuncs[common.ClusterInterface]{}
+
+// copyQuantity deep-copies a quantity pointer, preserving nil. resource.Quantity.DeepCopy has a
+// VALUE receiver, so calling it through a nil *Quantity dereferences and panics — which is exactly
+// the case this merge hits whenever a role leaves one leaf of a resource block unset.
+func copyQuantity(q *resource.Quantity) *resource.Quantity {
+	if q == nil {
+		return nil
+	}
+	out := q.DeepCopy()
+	return &out
+}

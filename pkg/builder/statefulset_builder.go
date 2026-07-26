@@ -211,20 +211,21 @@ func (b *StatefulSetBuilder) WithResources(resources *v1alpha1.ResourcesSpec) *S
 		Limits:   make(corev1.ResourceList),
 	}
 
+	// Nil means unset, and only an unset field is skipped. An explicit zero is honoured: a user
+	// who writes `min: "0"` is asking for no CPU request, which is a legitimate thing to ask for
+	// on a burstable workload, and the previous IsZero() check silently ignored it.
 	if resources.CPU != nil {
-		if !resources.CPU.Min.IsZero() {
-			req.Requests[corev1.ResourceCPU] = resources.CPU.Min
+		if resources.CPU.Min != nil {
+			req.Requests[corev1.ResourceCPU] = *resources.CPU.Min
 		}
-		if !resources.CPU.Max.IsZero() {
-			req.Limits[corev1.ResourceCPU] = resources.CPU.Max
+		if resources.CPU.Max != nil {
+			req.Limits[corev1.ResourceCPU] = *resources.CPU.Max
 		}
 	}
 
-	if resources.Memory != nil {
-		if !resources.Memory.Limit.IsZero() {
-			req.Limits[corev1.ResourceMemory] = resources.Memory.Limit
-			req.Requests[corev1.ResourceMemory] = resources.Memory.Limit
-		}
+	if resources.Memory != nil && resources.Memory.Limit != nil {
+		req.Limits[corev1.ResourceMemory] = *resources.Memory.Limit
+		req.Requests[corev1.ResourceMemory] = *resources.Memory.Limit
 	}
 
 	b.Resources = req
@@ -348,7 +349,12 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 					},
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: storage.Capacity,
+							// GetCapacity applies DefaultStorageCapacity when the user set none.
+							// The default lives here rather than in the CRD schema: a
+							// `+kubebuilder:default` is stamped in as soon as the storage block
+							// exists, so overriding only storageClass would silently downgrade the
+							// capacity the role asked for.
+							corev1.ResourceStorage: storage.GetCapacity(),
 						},
 					},
 				},

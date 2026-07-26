@@ -20,6 +20,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// DefaultStorageCapacity is the capacity the framework uses for a data PVC whose role and role
+// group both leave it unset. It is applied at CONSUMPTION time (StorageResource.GetCapacity), not
+// as a `+kubebuilder:default`: a CRD default is stamped in by the API server as soon as the
+// enclosing object exists, which would make "the group did not set a capacity" indistinguishable
+// from "the group asked for 10Gi" and silently override the role's value. See the package
+// AGENTS.md rule — defaulted fields are pointers, not bare values.
+const DefaultStorageCapacity = "10Gi"
+
 type ResourcesSpec struct {
 	// +kubebuilder:validation:Optional
 	CPU *CPUResource `json:"cpu,omitempty"`
@@ -31,24 +39,46 @@ type ResourcesSpec struct {
 	Storage *StorageResource `json:"storage,omitempty"`
 }
 
+// CPUResource bounds the container's CPU. Both fields are pointers so that "unset" is
+// representable: a bare resource.Quantity is a struct, which `omitempty` cannot omit and whose
+// MarshalJSON renders the zero value as "0", so a Go-constructed spec would transmit an explicit
+// zero and a role group would silently erase the role's value.
 type CPUResource struct {
 	// +kubebuilder:validation:Optional
-	Max resource.Quantity `json:"max,omitempty"`
+	Max *resource.Quantity `json:"max,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	Min resource.Quantity `json:"min,omitempty"`
+	Min *resource.Quantity `json:"min,omitempty"`
 }
 
+// MemoryResource bounds the container's memory. Limit is a pointer for the same reason as
+// CPUResource's fields.
 type MemoryResource struct {
 	// +kubebuilder:validation:Optional
-	Limit resource.Quantity `json:"limit,omitempty"`
+	Limit *resource.Quantity `json:"limit,omitempty"`
 }
 
+// StorageResource describes the role group's data PVC.
 type StorageResource struct {
+	// Capacity of the data volume. Unset means DefaultStorageCapacity.
+	//
+	// It carries no `+kubebuilder:default`: the enclosing storage block exists as soon as a user
+	// overrides ANY leaf of it (a storageClass, say), and a CRD default would then be stamped into
+	// that block and win the role/roleGroup merge — turning a one-line storageClass override into
+	// a silent downgrade of the role's capacity, baked into a StatefulSet volumeClaimTemplate that
+	// Kubernetes will not let the operator change afterwards.
+	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default="10Gi"
-	Capacity resource.Quantity `json:"capacity,omitempty"`
+	Capacity *resource.Quantity `json:"capacity,omitempty"`
 
 	// +kubebuilder:validation:Optional
 	StorageClass string `json:"storageClass,omitempty"`
+}
+
+// GetCapacity returns the configured capacity, or DefaultStorageCapacity when unset.
+func (s *StorageResource) GetCapacity() resource.Quantity {
+	if s == nil || s.Capacity == nil {
+		return resource.MustParse(DefaultStorageCapacity)
+	}
+	return *s.Capacity
 }

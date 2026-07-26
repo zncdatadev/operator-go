@@ -480,11 +480,11 @@ var _ = Describe("StatefulSetBuilder", func() {
 			memLimit := resource.MustParse("512Mi")
 			resourcesSpec := &v1alpha1.ResourcesSpec{
 				CPU: &v1alpha1.CPUResource{
-					Max: maxCPU,
-					Min: minCPU,
+					Max: &maxCPU,
+					Min: &minCPU,
 				},
 				Memory: &v1alpha1.MemoryResource{
-					Limit: memLimit,
+					Limit: &memLimit,
 				},
 			}
 			result := stsBuilder.WithResources(resourcesSpec)
@@ -508,7 +508,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			maxCPU := resource.MustParse("500m")
 			resourcesSpec := &v1alpha1.ResourcesSpec{
 				CPU: &v1alpha1.CPUResource{
-					Max: maxCPU,
+					Max: &maxCPU,
 				},
 			}
 			stsBuilder.WithResources(resourcesSpec)
@@ -523,11 +523,11 @@ var _ = Describe("StatefulSetBuilder", func() {
 			memLimit := resource.MustParse("512Mi")
 			resourcesSpec := &v1alpha1.ResourcesSpec{
 				CPU: &v1alpha1.CPUResource{
-					Max: maxCPU,
-					Min: minCPU,
+					Max: &maxCPU,
+					Min: &minCPU,
 				},
 				Memory: &v1alpha1.MemoryResource{
-					Limit: memLimit,
+					Limit: &memLimit,
 				},
 			}
 			sts := stsBuilder.
@@ -1031,7 +1031,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 		It("should set storage configuration", func() {
 			capacity := resource.MustParse("10Gi")
 			storage := &v1alpha1.StorageResource{
-				Capacity:     capacity,
+				Capacity:     &capacity,
 				StorageClass: "fast-ssd",
 			}
 			mountPath := "/data"
@@ -1053,7 +1053,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 		It("should build StatefulSet with volume claim templates", func() {
 			capacity := resource.MustParse("10Gi")
 			storage := &v1alpha1.StorageResource{
-				Capacity:     capacity,
+				Capacity:     &capacity,
 				StorageClass: "fast-ssd",
 			}
 			sts := stsBuilder.
@@ -1070,7 +1070,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 		It("should add volume mount for storage", func() {
 			capacity := resource.MustParse("10Gi")
 			storage := &v1alpha1.StorageResource{
-				Capacity: capacity,
+				Capacity: &capacity,
 			}
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).
@@ -1086,7 +1086,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 		It("should not set storage class if empty", func() {
 			capacity := resource.MustParse("10Gi")
 			storage := &v1alpha1.StorageResource{
-				Capacity: capacity,
+				Capacity: &capacity,
 			}
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).

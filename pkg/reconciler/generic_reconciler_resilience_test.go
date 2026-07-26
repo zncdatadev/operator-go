@@ -1065,7 +1065,7 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget lifecycle", func() 
 			return v1alpha1.RoleSpec{
 				RoleConfig: &v1alpha1.RoleConfigSpec{
 					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-						Enabled:        true,
+						Enabled:        ptr.To(true),
 						MaxUnavailable: ptr.To(int32(1)),
 					},
 				},

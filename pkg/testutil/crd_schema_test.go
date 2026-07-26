@@ -23,7 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -96,18 +95,20 @@ var _ = Describe("Generated test CRD schema", func() {
 		Expect(k8sClient.Status().Update(ctx, stored)).NotTo(Succeed())
 	})
 
-	// The next two reproduce, at the harness level, the defaulting behaviour that
-	// reconciler.MergeRoleGroupConfig documents as a known caveat. Both were structurally
-	// impossible to observe before: without a schema the API server stamped nothing, so the
-	// merge logic was only ever tested against inputs that do not occur in production.
-	It("stamps gracefulShutdownTimeout into every config block that exists", func() {
+	// These three pin the FIX for the defaulting bug the harness made observable. Before it, the
+	// API server stamped CRD defaults into any config block that existed, which made "the group
+	// did not set this" indistinguishable from "the group asked for the default" — so a role-level
+	// value could never reach a group that declared a config block for any other reason.
+	//
+	// The defaults now live at consumption time (GetGracefulShutdownTimeout, GetCapacity), so the
+	// stored spec faithfully records what the user actually wrote.
+	It("does not stamp gracefulShutdownTimeout into a group that did not set it", func() {
 		stored := createCluster(v1alpha1.GenericClusterSpec{
 			Roles: map[string]v1alpha1.RoleSpec{
 				"broker": {
-					// Role level declares the value the operator intends to inherit.
-					Config: &v1alpha1.RoleGroupConfigSpec{GracefulShutdownTimeout: "5m"},
+					Config: &v1alpha1.RoleGroupConfigSpec{GracefulShutdownTimeout: ptr.To("5m")},
 					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
-						// The group declares a config block for an unrelated reason.
+						// A config block declared for an unrelated reason.
 						"default": {Config: &v1alpha1.RoleGroupConfigSpec{
 							Resources: &v1alpha1.ResourcesSpec{},
 						}},
@@ -117,19 +118,16 @@ var _ = Describe("Generated test CRD schema", func() {
 		})
 
 		group := stored.Spec.Roles["broker"].RoleGroups["default"]
-		Expect(group.Config.GracefulShutdownTimeout).To(Equal("30s"),
-			"the API server stamps the CRD default into the group's config block, which is then "+
-				"indistinguishable from an explicit group-level value and wins the merge over the "+
-				"role's 5m")
+		Expect(group.Config.GracefulShutdownTimeout).To(BeNil(),
+			"nil is what lets the role's 5m win the merge; a stamped default would win instead")
+		Expect(group.Config.GetGracefulShutdownTimeout()).To(Equal("30s"),
+			"the framework default is still available, just applied when the value is consumed")
 	})
 
-	// Storage capacity has TWO distinct failure modes, and which one fires depends on how the CR
-	// was written. Both lose the role-level value; only the first is reachable with kubectl.
-	It("stamps the storage capacity default into a YAML-authored group that sets only storageClass", func() {
+	It("does not stamp a storage capacity into a YAML-authored group that sets only storageClass", func() {
 		counter++
 		name := fmt.Sprintf("schema-storage-yaml-%d", counter)
-		// Built as unstructured on purpose: this is the kubectl/GitOps path, where `capacity` is
-		// genuinely ABSENT from the request, so structural defaulting fills it.
+		// Unstructured on purpose: the kubectl/GitOps path, where `capacity` is genuinely absent.
 		cr := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "test.zncdata.dev/v1alpha1",
 			"kind":       "MockCluster",
@@ -146,7 +144,6 @@ var _ = Describe("Generated test CRD schema", func() {
 							"default": map[string]any{
 								"config": map[string]any{
 									"resources": map[string]any{
-										// Only a storageClass. The user is overriding one leaf.
 										"storage": map[string]any{"storageClass": "fast-ssd"},
 									},
 								},
@@ -164,19 +161,15 @@ var _ = Describe("Generated test CRD schema", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: crdSchemaNamespace, Name: name}, stored)).To(Succeed())
 
 		group := stored.Spec.Roles["broker"].RoleGroups["default"]
-		Expect(group.Config.Resources.Storage.Capacity.String()).To(Equal("10Gi"),
-			"the group asked only for a storageClass, but the API server filled capacity with the "+
-				"CRD default — the role's 500Gi never reaches it, and copyStatefulSetState then "+
-				"pins the resulting PVC template forever")
+		Expect(group.Config.Resources.Storage.Capacity).To(BeNil(),
+			"overriding one leaf must not silently downgrade the capacity the role asked for")
+		Expect(group.Config.Resources.Storage.StorageClass).To(Equal("fast-ssd"))
 	})
 
-	It("sends an explicit zero capacity from a Go client, so the default never applies", func() {
+	It("omits an unset capacity from a Go-constructed spec", func() {
 		stored := createCluster(v1alpha1.GenericClusterSpec{
 			Roles: map[string]v1alpha1.RoleSpec{
 				"broker": {
-					Config: &v1alpha1.RoleGroupConfigSpec{Resources: &v1alpha1.ResourcesSpec{
-						Storage: &v1alpha1.StorageResource{Capacity: resource.MustParse("500Gi")},
-					}},
 					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
 						"default": {Config: &v1alpha1.RoleGroupConfigSpec{
 							Resources: &v1alpha1.ResourcesSpec{
@@ -188,13 +181,14 @@ var _ = Describe("Generated test CRD schema", func() {
 			},
 		})
 
-		// The second failure mode, and the nastier one. Capacity is a bare resource.Quantity, so
-		// `omitempty` cannot omit it (encoding/json does not treat a struct as empty) and its
-		// MarshalJSON renders the zero value as "0". The field is therefore PRESENT in the
-		// request, structural defaulting skips it, and the group keeps a zero capacity that then
-		// wins the role/roleGroup merge.
+		// As a bare resource.Quantity this transmitted "0": `omitempty` cannot omit a struct, and
+		// Quantity.MarshalJSON renders the zero value. The field was therefore always present, the
+		// API server never defaulted it, and a group persisted an explicit zero capacity. As a
+		// pointer it is genuinely absent.
 		group := stored.Spec.Roles["broker"].RoleGroups["default"]
-		Expect(group.Config.Resources.Storage.Capacity.String()).To(Equal("0"),
-			"a Go-constructed spec persists capacity 0, not the 10Gi default and not the role's 500Gi")
+		Expect(group.Config.Resources.Storage.Capacity).To(BeNil())
+		capacity := group.Config.Resources.Storage.GetCapacity()
+		Expect(capacity.String()).To(Equal("10Gi"),
+			"the framework default applies at consumption time")
 	})
 })

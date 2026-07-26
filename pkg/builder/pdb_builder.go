@@ -79,7 +79,7 @@ func (b *PDBBuilder) WithSpec(spec *v1alpha1.PodDisruptionBudgetSpec) *PDBBuilde
 		return b
 	}
 
-	b.Enabled = spec.Enabled
+	b.Enabled = spec.IsEnabled()
 
 	if spec.MaxUnavailable != nil {
 		b.MaxUnavailable = &intstr.IntOrString{
