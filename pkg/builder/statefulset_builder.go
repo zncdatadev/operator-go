@@ -17,7 +17,8 @@ limitations under the License.
 package builder
 
 import (
-	"encoding/json"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -27,7 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/utils/ptr"
 )
 
 // StatefulSetBuilder constructs StatefulSet resources.
@@ -230,9 +231,10 @@ func (b *StatefulSetBuilder) WithResources(resources *v1alpha1.ResourcesSpec) *S
 	return b
 }
 
-// WithPorts sets the container ports.
+// WithPorts sets the container ports. The slice is copied, so a later AddPort cannot append into
+// the caller's backing array (callers commonly pass a slice they keep, e.g. a per-role port list).
 func (b *StatefulSetBuilder) WithPorts(ports []corev1.ContainerPort) *StatefulSetBuilder {
-	b.Ports = ports
+	b.Ports = cloneSlice(ports)
 	return b
 }
 
@@ -285,9 +287,10 @@ func (b *StatefulSetBuilder) AddInitContainer(container corev1.Container) *State
 	return b
 }
 
-// WithInitContainers replaces the init containers.
+// WithInitContainers replaces the init containers. The slice is copied for the same reason as
+// WithPorts.
 func (b *StatefulSetBuilder) WithInitContainers(containers []corev1.Container) *StatefulSetBuilder {
-	b.InitContainers = containers
+	b.InitContainers = cloneSlice(containers)
 	return b
 }
 
@@ -354,7 +357,8 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 	}
 
 	if storage.StorageClass != "" {
-		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = &storage.StorageClass
+		// Copy rather than point into the caller's spec, which the caller still owns.
+		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = ptr.To(storage.StorageClass)
 	}
 
 	// Add volume mount for data
@@ -460,25 +464,31 @@ func (b *StatefulSetBuilder) DisableStartupProbe() *StatefulSetBuilder {
 }
 
 // Build creates the StatefulSet.
+//
+// The returned object shares no mutable state with the builder: every map and slice is copied,
+// and ObjectMeta gets a copy independent of the pod template's. Callers mutate the result (the
+// reconciler injects sidecar containers and volumes into the pod template, and Build itself
+// rewrites the template when pod overrides are applied), so sharing would let a pod-level change
+// contaminate ObjectMeta, the immutable .spec.selector, or a second Build() from the same builder.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      b.Labels,
-			Annotations: b.Annotations,
+			Labels:      maps.Clone(b.Labels),
+			Annotations: maps.Clone(b.Annotations),
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:            &b.Replicas,
+			Replicas:            ptr.To(b.Replicas),
 			ServiceName:         b.Name + "-headless",
 			PodManagementPolicy: appsv1.ParallelPodManagement,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: b.selectorMatchLabels(),
+				MatchLabels: maps.Clone(b.selectorMatchLabels()),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      b.Labels,
-					Annotations: b.Annotations,
+					Labels:      maps.Clone(b.Labels),
+					Annotations: maps.Clone(b.Annotations),
 				},
 				Spec: b.buildPodSpec(),
 			},
@@ -487,7 +497,7 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 
 	// Add volume claim templates if storage is configured
 	if b.StorageConfig != nil {
-		sts.Spec.VolumeClaimTemplates = b.StorageConfig.VolumeClaimTemplates
+		sts.Spec.VolumeClaimTemplates = cloneSlice(b.StorageConfig.VolumeClaimTemplates)
 	}
 
 	// Apply pod overrides
@@ -502,11 +512,11 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	spec := corev1.PodSpec{
 		ServiceAccountName:            b.ServiceAccountName,
-		TerminationGracePeriodSeconds: b.TerminationGracePeriodSeconds,
-		SecurityContext:               b.PodSecurityContext,
-		Affinity:                      b.Affinity,
-		Volumes:                       b.Volumes,
-		InitContainers:                b.InitContainers,
+		TerminationGracePeriodSeconds: clonePtr(b.TerminationGracePeriodSeconds),
+		SecurityContext:               b.PodSecurityContext.DeepCopy(),
+		Affinity:                      b.Affinity.DeepCopy(),
+		Volumes:                       cloneSlice(b.Volumes),
+		InitContainers:                cloneSlice(b.InitContainers),
 		Containers: []corev1.Container{
 			b.buildContainer(),
 		},
@@ -515,7 +525,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	// Only set EnableServiceLinks when explicitly configured, so direct builder users that never
 	// call WithEnableServiceLinks are unaffected (k8s applies its own default of true).
 	if b.EnableServiceLinks != nil {
-		spec.EnableServiceLinks = b.EnableServiceLinks
+		spec.EnableServiceLinks = clonePtr(b.EnableServiceLinks)
 	}
 
 	return spec
@@ -527,22 +537,22 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 		Name:            b.primaryContainerName(),
 		Image:           b.Image,
 		ImagePullPolicy: b.ImagePullPolicy,
-		Ports:           b.Ports,
-		VolumeMounts:    b.VolumeMounts,
-		SecurityContext: b.SecurityContext,
+		Ports:           cloneSlice(b.Ports),
+		VolumeMounts:    cloneSlice(b.VolumeMounts),
+		SecurityContext: b.SecurityContext.DeepCopy(),
 	}
 
 	// Set resources if provided
 	if b.Resources != nil {
-		container.Resources = *b.Resources
+		container.Resources = *b.Resources.DeepCopy()
 	}
 
 	// Set command and args
 	if len(b.Command) > 0 {
-		container.Command = b.Command
+		container.Command = slices.Clone(b.Command)
 	}
 	if len(b.Args) > 0 {
-		container.Args = b.Args
+		container.Args = slices.Clone(b.Args)
 	}
 
 	// Add environment variables from merged config. Iterate in sorted key order: EnvVars is a
@@ -569,11 +579,11 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 	}
 
 	// Add explicit env vars (these override config env vars)
-	container.Env = append(container.Env, b.EnvVars...)
+	container.Env = append(container.Env, cloneSlice(b.EnvVars)...)
 
 	// Apply lifecycle hooks
 	if b.lifecycle != nil {
-		container.Lifecycle = b.lifecycle
+		container.Lifecycle = b.lifecycle.DeepCopy()
 	}
 
 	// Setup probes
@@ -590,7 +600,7 @@ func (b *StatefulSetBuilder) buildLivenessProbe() *corev1.Probe {
 		return nil
 	}
 	if b.livenessProbe != nil {
-		return b.livenessProbe
+		return b.livenessProbe.DeepCopy()
 	}
 	return b.buildDefaultTCPLivenessProbe()
 }
@@ -620,7 +630,7 @@ func (b *StatefulSetBuilder) buildReadinessProbe() *corev1.Probe {
 		return nil
 	}
 	if b.readinessProbe != nil {
-		return b.readinessProbe
+		return b.readinessProbe.DeepCopy()
 	}
 	return b.buildDefaultTCPReadinessProbe()
 }
@@ -651,7 +661,7 @@ func (b *StatefulSetBuilder) buildStartupProbe() *corev1.Probe {
 		return nil
 	}
 	if b.startupProbe != nil {
-		return b.startupProbe
+		return b.startupProbe.DeepCopy()
 	}
 	return nil
 }
@@ -667,9 +677,14 @@ func (b *StatefulSetBuilder) buildStartupProbe() *corev1.Probe {
 // config-declared gracefulShutdownTimeout, and enableServiceLinks still wins over the framework
 // default, only when actually set).
 //
-// Security contexts now deep-merge per field rather than being replaced wholesale: an override
+// Security contexts deep-merge per field rather than being replaced wholesale: an override
 // stating only runAsUser keeps the framework-hardened remainder. Overrides that need to unset a
 // field must state it explicitly.
+//
+// Kubernetes' mutually exclusive ("one of") structs are the exception: an override that states a
+// different volume source, probe handler, lifecycle handler or env var source than the framework
+// replaces it wholesale instead of merging into it (see clearSupersededUnions), because a merged
+// object with two members set is rejected by the API server.
 //
 // After the merge the selector labels are re-asserted on the pod template, so an override can
 // never break the invariant that the immutable .spec.selector matches the template labels.
@@ -695,7 +710,14 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 		}
 	}
 
-	merged, err := strategicMergePodTemplate(&sts.Spec.Template, override)
+	// Resolve on a copy the one-of collisions the patch format cannot express, so an override
+	// naming a framework-owned volume (or probe handler, or env var source) replaces it instead of
+	// producing an object with two members set. The copy keeps the fallback below meaningful: a
+	// failed merge must fall back to the fully built template, not to a stripped one.
+	base := sts.Spec.Template.DeepCopy()
+	clearSupersededUnions(base, override)
+
+	merged, err := strategicMergePodTemplate(base, override)
 	if err != nil {
 		// Structurally valid templates cannot realistically fail to marshal or patch; if it ever
 		// happens, keep the built template rather than emitting a half-merged one.
@@ -711,32 +733,6 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	for k, v := range b.selectorMatchLabels() {
 		sts.Spec.Template.Labels[k] = v
 	}
-}
-
-// strategicMergePodTemplate merges the override pod template onto the base using the same
-// strategic-merge-patch machinery Kubernetes applies to pod templates.
-func strategicMergePodTemplate(base, override *corev1.PodTemplateSpec) (*corev1.PodTemplateSpec, error) {
-	baseBytes, err := json.Marshal(base)
-	if err != nil {
-		return nil, err
-	}
-	overrideBytes, err := json.Marshal(override)
-	if err != nil {
-		return nil, err
-	}
-	patchMeta, err := strategicpatch.NewPatchMetaFromStruct(corev1.PodTemplateSpec{})
-	if err != nil {
-		return nil, err
-	}
-	mergedBytes, err := strategicpatch.StrategicMergePatchUsingLookupPatchMeta(baseBytes, overrideBytes, patchMeta)
-	if err != nil {
-		return nil, err
-	}
-	var merged corev1.PodTemplateSpec
-	if err := json.Unmarshal(mergedBytes, &merged); err != nil {
-		return nil, err
-	}
-	return &merged, nil
 }
 
 // NamespacedName returns the NamespacedName for the StatefulSet.

@@ -28,6 +28,9 @@ import (
 
 // CatalogExtension is a ClusterExtension that validates and processes catalog configurations
 // This demonstrates the ClusterExtension extension point of operator-go SDK
+//
+// The hooks take *TrinoCluster, the CR type the extension is registered for, so the Trino-only
+// spec and status fields are reachable directly.
 type CatalogExtension struct {
 	common.BaseExtension
 }
@@ -43,19 +46,13 @@ func NewCatalogExtension() *CatalogExtension {
 func (e *CatalogExtension) PreReconcile(
 	ctx context.Context,
 	k8sClient client.Client,
-	cr common.ClusterInterface,
+	cr *trinov1alpha1.TrinoCluster,
 ) error {
 	logger := log.FromContext(ctx)
-	logger.Info("CatalogExtension PreReconcile", "cluster", cr.GetName())
-
-	// Cast to TrinoCluster for type-specific operations
-	trinoCR, ok := cr.(*trinov1alpha1.TrinoCluster)
-	if !ok {
-		return fmt.Errorf("expected *TrinoCluster, got %T", cr)
-	}
+	logger.Info("CatalogExtension PreReconcile", "cluster", cr.Name)
 
 	// Validate catalog configurations
-	if err := e.validateCatalogs(trinoCR); err != nil {
+	if err := e.validateCatalogs(cr); err != nil {
 		return fmt.Errorf("catalog validation failed: %w", err)
 	}
 
@@ -66,23 +63,17 @@ func (e *CatalogExtension) PreReconcile(
 func (e *CatalogExtension) PostReconcile(
 	ctx context.Context,
 	k8sClient client.Client,
-	cr common.ClusterInterface,
+	cr *trinov1alpha1.TrinoCluster,
 ) error {
 	logger := log.FromContext(ctx)
-	logger.Info("CatalogExtension PostReconcile", "cluster", cr.GetName())
-
-	// Cast to TrinoCluster for type-specific operations
-	trinoCR, ok := cr.(*trinov1alpha1.TrinoCluster)
-	if !ok {
-		return fmt.Errorf("expected *TrinoCluster, got %T", cr)
-	}
+	logger.Info("CatalogExtension PostReconcile", "cluster", cr.Name)
 
 	// Update status with ready catalogs
-	readyCatalogs := make([]string, 0, len(trinoCR.Spec.Catalogs))
-	for _, catalog := range trinoCR.Spec.Catalogs {
+	readyCatalogs := make([]string, 0, len(cr.Spec.Catalogs))
+	for _, catalog := range cr.Spec.Catalogs {
 		readyCatalogs = append(readyCatalogs, catalog.Name)
 	}
-	trinoCR.Status.CatalogsReady = readyCatalogs
+	cr.Status.CatalogsReady = readyCatalogs
 
 	return nil
 }
@@ -91,11 +82,11 @@ func (e *CatalogExtension) PostReconcile(
 func (e *CatalogExtension) OnReconcileError(
 	ctx context.Context,
 	k8sClient client.Client,
-	cr common.ClusterInterface,
+	cr *trinov1alpha1.TrinoCluster,
 	err error,
 ) error {
 	logger := log.FromContext(ctx)
-	logger.Error(err, "CatalogExtension OnReconcileError", "cluster", cr.GetName())
+	logger.Error(err, "CatalogExtension OnReconcileError", "cluster", cr.Name)
 	return nil
 }
 
@@ -131,4 +122,4 @@ func (e *CatalogExtension) validateCatalogs(cr *trinov1alpha1.TrinoCluster) erro
 }
 
 // Ensure interface implementation
-var _ common.ClusterExtension[common.ClusterInterface] = &CatalogExtension{}
+var _ common.ClusterExtension[*trinov1alpha1.TrinoCluster] = &CatalogExtension{}

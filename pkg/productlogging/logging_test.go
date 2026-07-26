@@ -52,24 +52,41 @@ var _ = Describe("LogConfigFromSpec", func() {
 	})
 })
 
-var _ = Describe("GeneratorFor", func() {
-	It("returns a generator for each supported framework", func() {
-		for _, fw := range []productlogging.LoggingFramework{
-			productlogging.LoggingFrameworkLogback,
+var _ = Describe("SupportedLoggingFrameworks", func() {
+	// The enumeration is what the collector-side guard (pkg/vector) ranges over, so it has to
+	// stay the complete list: a framework that is renderable but missing here would take its
+	// Vector source glob with it, silently shipping no logs.
+	It("lists every framework the package can render", func() {
+		Expect(productlogging.SupportedLoggingFrameworks()).To(ConsistOf(
 			productlogging.LoggingFrameworkLog4j,
 			productlogging.LoggingFrameworkLog4j2,
+			productlogging.LoggingFrameworkLogback,
 			productlogging.LoggingFrameworkPython,
-		} {
-			g, err := productlogging.GeneratorFor(fw)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(g).NotTo(BeNil())
-			Expect(g.DefaultFileName()).NotTo(BeEmpty())
-		}
+		))
 	})
 
-	It("errors for an unsupported framework", func() {
+	It("returns a stable order", func() {
+		Expect(productlogging.SupportedLoggingFrameworks()).To(Equal(productlogging.SupportedLoggingFrameworks()))
+	})
+
+	It("resolves each entry to a generator, a config file name and a log file name", func() {
+		for _, fw := range productlogging.SupportedLoggingFrameworks() {
+			g, err := productlogging.GeneratorFor(fw)
+			Expect(err).NotTo(HaveOccurred(), "framework %s", fw)
+			Expect(g).NotTo(BeNil(), "framework %s", fw)
+			Expect(g.DefaultFileName()).NotTo(BeEmpty(), "framework %s", fw)
+			Expect(productlogging.LogFileSuffix(fw)).NotTo(BeEmpty(), "framework %s", fw)
+			Expect(productlogging.ContainerLogFileName(fw, "main")).To(
+				Equal("main"+productlogging.LogFileSuffix(fw)), "framework %s", fw)
+		}
+	})
+})
+
+var _ = Describe("GeneratorFor", func() {
+	It("errors for a framework that is not enumerated", func() {
 		_, err := productlogging.GeneratorFor(productlogging.LoggingFramework("nope"))
 		Expect(err).To(HaveOccurred())
+		Expect(productlogging.LogFileSuffix(productlogging.LoggingFramework("nope"))).To(BeEmpty())
 	})
 })
 
@@ -78,12 +95,7 @@ var _ = Describe("RenderConfigFile file path", func() {
 	// ("<LogDir>/<lowercased container>/<container>.<framework suffix>") must collapse to a
 	// single slash (no "/kubedoop/log//main/...").
 	It("renders the framework-derived per-container file appender path with a single slash", func() {
-		for _, fw := range []productlogging.LoggingFramework{
-			productlogging.LoggingFrameworkLogback,
-			productlogging.LoggingFrameworkLog4j,
-			productlogging.LoggingFrameworkLog4j2,
-			productlogging.LoggingFrameworkPython,
-		} {
+		for _, fw := range productlogging.SupportedLoggingFrameworks() {
 			_, content, err := productlogging.RenderConfigFile(nil, productlogging.ContainerLogging{
 				Framework: fw,
 				Container: "Main", // mixed case: the directory is lowercased, the file keeps the name

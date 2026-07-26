@@ -1239,3 +1239,290 @@ var _ = Describe("StatefulSetBuilder", func() {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+var _ = Describe("StatefulSetBuilder Build isolation", func() {
+	const (
+		name      = "isolation-sts"
+		namespace = "test-namespace"
+	)
+
+	newBuilder := func() *builder.StatefulSetBuilder {
+		return builder.NewStatefulSetBuilder(name, namespace).
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithLabels(map[string]string{"app": "test"}).
+			WithSelectorLabels(map[string]string{"app.kubernetes.io/instance": "test"}).
+			WithAnnotations(map[string]string{"note": "test"}).
+			WithPorts([]corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}).
+			AddVolume(corev1.Volume{Name: "config"}).
+			AddVolumeMount(corev1.VolumeMount{Name: "config", MountPath: "/etc/config"}).
+			AddEnvVar("KEY", "value")
+	}
+
+	It("does not let a pod template mutation reach ObjectMeta or the selector", func() {
+		// The reconciler mutates the built pod template (sidecar injection), and .spec.selector is
+		// immutable once the StatefulSet exists.
+		sts := newBuilder().Build()
+
+		sts.Spec.Template.Labels["injected"] = "true"
+
+		Expect(sts.Labels).NotTo(HaveKey("injected"))
+		Expect(sts.Spec.Selector.MatchLabels).NotTo(HaveKey("injected"))
+	})
+
+	It("does not let a mutation of the built object reach a second Build", func() {
+		b := newBuilder()
+		first := b.Build()
+
+		first.Labels["extra"] = "true"
+		first.Spec.Template.Annotations["extra"] = "true"
+		first.Spec.Template.Spec.Volumes[0].Name = "renamed"
+		first.Spec.Template.Spec.Volumes = append(first.Spec.Template.Spec.Volumes,
+			corev1.Volume{Name: "sidecar-volume"})
+		first.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort = 9999
+		first.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath = "/elsewhere"
+		first.Spec.Template.Spec.Containers[0].Env[0].Value = "mutated"
+		*first.Spec.Replicas = 42
+
+		second := b.Build()
+
+		Expect(second.Labels).NotTo(HaveKey("extra"))
+		Expect(second.Spec.Template.Annotations).NotTo(HaveKey("extra"))
+		Expect(second.Spec.Template.Spec.Volumes).To(HaveLen(1))
+		Expect(second.Spec.Template.Spec.Volumes[0].Name).To(Equal("config"))
+		Expect(second.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(8080)))
+		Expect(second.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/etc/config"))
+		Expect(second.Spec.Template.Spec.Containers[0].Env[0].Value).To(Equal("value"))
+		Expect(*second.Spec.Replicas).To(Equal(int32(1)))
+	})
+
+	It("does not append into the caller's port slice", func() {
+		ports := make([]corev1.ContainerPort, 1, 4)
+		ports[0] = corev1.ContainerPort{Name: "http", ContainerPort: 8080}
+
+		builder.NewStatefulSetBuilder(name, namespace).
+			WithPorts(ports).
+			AddPort("metrics", 9090, corev1.ProtocolTCP)
+
+		Expect(ports[:cap(ports)]).To(HaveLen(4))
+		Expect(ports[:cap(ports)][1].Name).To(BeEmpty())
+	})
+})
+
+var _ = Describe("StatefulSetBuilder pointer isolation", func() {
+	It("does not share pointer fields between the builder and the built object", func() {
+		// A handler keeps one builder-configured SecurityContext for the process lifetime and
+		// builds every role group from it; a per-role-group mutation of the built object (e.g.
+		// applying podOverrides) must not reach the next role group.
+		securityContext := &corev1.SecurityContext{RunAsUser: ptr.To(int64(1000))}
+		probe := &corev1.Probe{InitialDelaySeconds: 5}
+
+		b := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("product:latest", corev1.PullIfNotPresent).
+			WithSecurityContext(securityContext, nil).
+			WithLivenessProbe(probe)
+
+		first := b.Build()
+		first.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser = ptr.To(int64(2000))
+		first.Spec.Template.Spec.Containers[0].LivenessProbe.InitialDelaySeconds = 99
+
+		Expect(*securityContext.RunAsUser).To(Equal(int64(1000)))
+		Expect(probe.InitialDelaySeconds).To(Equal(int32(5)))
+
+		second := b.Build()
+		Expect(*second.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(int64(1000)))
+		Expect(second.Spec.Template.Spec.Containers[0].LivenessProbe.InitialDelaySeconds).To(Equal(int32(5)))
+	})
+
+	It("does not share the scalar pod spec pointers between two built objects", func() {
+		b := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("product:latest", corev1.PullIfNotPresent).
+			WithTerminationGracePeriod(120).
+			WithEnableServiceLinks(false)
+
+		first := b.Build()
+		*first.Spec.Template.Spec.TerminationGracePeriodSeconds = 5
+		*first.Spec.Template.Spec.EnableServiceLinks = true
+
+		second := b.Build()
+		Expect(*second.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(120)))
+		Expect(*second.Spec.Template.Spec.EnableServiceLinks).To(BeFalse())
+	})
+})
+
+// A strategic merge patch built from a typed PodTemplateSpec carries no $retainKeys directive, so
+// the members of Kubernetes' mutually exclusive structs deep-merge into each other. Every spec
+// here asserts that the override's member ends up as the ONLY one set — an object with two
+// members set is rejected by the API server, which fails the whole role group opaquely.
+var _ = Describe("StatefulSetBuilder podOverrides on mutually exclusive fields", func() {
+	const (
+		name      = "union-sts"
+		namespace = "test-namespace"
+		image     = "test-image:latest"
+	)
+
+	newBuilder := func() *builder.StatefulSetBuilder {
+		return builder.NewStatefulSetBuilder(name, namespace).
+			WithImage(image, corev1.PullIfNotPresent)
+	}
+
+	It("replaces a framework volume whose source type the override changes", func() {
+		overrides := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{Name: "config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+		}
+		sts := newBuilder().
+			AddVolume(corev1.Volume{Name: "config", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "product-config"},
+				},
+			}}).
+			AddVolume(corev1.Volume{Name: "tls", VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: "product-tls"},
+			}}).
+			WithPodOverrides(overrides).
+			Build()
+
+		volumes := sts.Spec.Template.Spec.Volumes
+		Expect(volumes).To(HaveLen(2))
+		Expect(volumes[0].Name).To(Equal("config"), "the replaced volume keeps its position")
+		Expect(volumes[0].EmptyDir).NotTo(BeNil())
+		Expect(volumes[0].ConfigMap).To(BeNil(), "the framework source must not survive next to the override's")
+		Expect(volumes[1].Secret).NotTo(BeNil(), "volumes the override does not name are untouched")
+	})
+
+	It("still merges field by field when the override keeps the source type", func() {
+		overrides := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{Name: "config", VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{DefaultMode: ptr.To(int32(0o400))},
+					}},
+				},
+			},
+		}
+		sts := newBuilder().
+			AddVolume(corev1.Volume{Name: "config", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "product-config"},
+				},
+			}}).
+			WithPodOverrides(overrides).
+			Build()
+
+		cm := sts.Spec.Template.Spec.Volumes[0].ConfigMap
+		Expect(cm).NotTo(BeNil())
+		Expect(cm.Name).To(Equal("product-config"), "fields the override omits keep the built values")
+		Expect(*cm.DefaultMode).To(Equal(int32(0o400)))
+	})
+
+	It("keeps a framework volume the override does not name", func() {
+		overrides := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{Name: "extra", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				},
+			},
+		}
+		sts := newBuilder().
+			AddVolume(corev1.Volume{Name: "config", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "product-config"},
+				},
+			}}).
+			WithPodOverrides(overrides).
+			Build()
+
+		volumes := map[string]corev1.Volume{}
+		for _, v := range sts.Spec.Template.Spec.Volumes {
+			volumes[v.Name] = v
+		}
+		Expect(volumes).To(HaveLen(2))
+		Expect(volumes["config"].ConfigMap).NotTo(BeNil())
+		Expect(volumes["extra"].EmptyDir).NotTo(BeNil())
+	})
+
+	It("replaces the auto-generated probe handler the override changes", func() {
+		overrides := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name: name,
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt(8080)},
+							},
+						},
+					},
+				},
+			},
+		}
+		sts := newBuilder().
+			AddPort("http", 8080, corev1.ProtocolTCP).
+			WithPodOverrides(overrides).
+			Build()
+
+		probe := sts.Spec.Template.Spec.Containers[0].ReadinessProbe
+		Expect(probe).NotTo(BeNil())
+		Expect(probe.HTTPGet).NotTo(BeNil())
+		Expect(probe.TCPSocket).To(BeNil(), "the auto-generated TCP handler must not survive next to the override's")
+		Expect(probe.PeriodSeconds).To(Equal(int32(10)), "timing fields the override omits still merge")
+	})
+
+	It("replaces a built env var value with the override's valueFrom", func() {
+		overrides := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name: name,
+						Env: []corev1.EnvVar{
+							{Name: "PASSWORD", ValueFrom: &corev1.EnvVarSource{
+								SecretKeyRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "creds"},
+									Key:                  "password",
+								},
+							}},
+						},
+					},
+				},
+			},
+		}
+		sts := newBuilder().
+			AddEnvVar("PASSWORD", "built-in-plaintext").
+			WithPodOverrides(overrides).
+			Build()
+
+		env := sts.Spec.Template.Spec.Containers[0].Env
+		Expect(env).To(HaveLen(1))
+		Expect(env[0].ValueFrom).NotTo(BeNil())
+		Expect(env[0].Value).To(BeEmpty(), "value and valueFrom cannot both be set")
+	})
+
+	It("replaces a lifecycle handler the override changes", func() {
+		overrides := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name: name,
+						Lifecycle: &corev1.Lifecycle{
+							PreStop: &corev1.LifecycleHandler{
+								HTTPGet: &corev1.HTTPGetAction{Path: "/shutdown", Port: intstr.FromInt(8080)},
+							},
+						},
+					},
+				},
+			},
+		}
+		sts := newBuilder().
+			WithPreStopHook([]string{"/bin/stop"}).
+			WithPodOverrides(overrides).
+			Build()
+
+		preStop := sts.Spec.Template.Spec.Containers[0].Lifecycle.PreStop
+		Expect(preStop).NotTo(BeNil())
+		Expect(preStop.HTTPGet).NotTo(BeNil())
+		Expect(preStop.Exec).To(BeNil(), "the built exec handler must not survive next to the override's")
+	})
+})

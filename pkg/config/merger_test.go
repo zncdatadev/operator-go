@@ -308,6 +308,40 @@ var _ = Describe("ConfigMerger", func() {
 			Expect(result.PodOverrides).NotTo(BeNil())
 			Expect(result.PodOverrides.Spec.ServiceAccountName).To(Equal("valid-sa"))
 		})
+
+		// Dropping a layer the user wrote is not something the caller can infer from the merged
+		// result, so the failure has to be reported alongside it.
+		It("should record a dropped pod override layer instead of failing silently", func() {
+			malformed := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{Raw: []byte(`{not valid json`)},
+			}
+
+			result := merger.Merge(malformed)
+			Expect(result.PodOverrideErrors).To(HaveLen(1))
+			Expect(result.PodOverrideErrors[0].Error()).To(ContainSubstring("podOverrides layer is not a valid PodTemplateSpec"))
+		})
+
+		It("should record a layer whose JSON does not describe a pod template", func() {
+			// Valid JSON, wrong shape: "spec" is a string where a PodSpec is expected.
+			wrongShape := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{Raw: []byte(`{"spec":"not-an-object"}`)},
+			}
+
+			result := merger.Merge(wrongShape)
+			Expect(result.PodOverrideErrors).To(HaveLen(1))
+			Expect(result.PodOverrides).To(BeNil())
+		})
+
+		It("should report no pod override errors for well-formed layers", func() {
+			valid := &v1alpha1.OverridesSpec{
+				PodOverrides: &k8sruntime.RawExtension{
+					Raw: []byte(`{"spec":{"serviceAccountName":"valid-sa"}}`),
+				},
+			}
+
+			result := merger.Merge(valid, valid)
+			Expect(result.PodOverrideErrors).To(BeEmpty())
+		})
 	})
 })
 

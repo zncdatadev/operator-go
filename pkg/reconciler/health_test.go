@@ -26,6 +26,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	"github.com/zncdatadev/operator-go/pkg/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -653,5 +654,106 @@ var _ = Describe("HealthManager with ServiceHealthCheck", func() {
 		cond := status.GetCondition(v1alpha1.ConditionServiceHealthy)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("runs the service health check under the configured timeout", func() {
+		var deadline time.Time
+		var hasDeadline bool
+		hm := reconciler.NewHealthManager(k8sClient).
+			WithServiceHealthCheck(common.ServiceHealthCheckFunc(func(checkCtx context.Context, _ client.Client, _, _ string) (bool, error) {
+				deadline, hasDeadline = checkCtx.Deadline()
+				return true, nil
+			}))
+		hm.Timeout = 2 * time.Second
+
+		Expect(hm.Check(ctx, "default", "test-cluster", spec, status)).To(Succeed())
+		// Without a deadline a hanging probe would pin the reconcile worker forever.
+		Expect(hasDeadline).To(BeTrue())
+		Expect(deadline).To(BeTemporally("~", time.Now().Add(2*time.Second), time.Second))
+	})
+
+	It("leaves the context unbounded when the timeout is disabled", func() {
+		var hasDeadline bool
+		hm := reconciler.NewHealthManager(k8sClient).
+			WithServiceHealthCheck(common.ServiceHealthCheckFunc(func(checkCtx context.Context, _ client.Client, _, _ string) (bool, error) {
+				_, hasDeadline = checkCtx.Deadline()
+				return true, nil
+			}))
+		hm.Timeout = 0
+
+		Expect(hm.Check(ctx, "default", "test-cluster", spec, status)).To(Succeed())
+		Expect(hasDeadline).To(BeFalse())
+	})
+})
+
+var _ = Describe("HealthManager role group aggregation", func() {
+	var ctx context.Context
+	var status *v1alpha1.GenericClusterStatus
+	var namespace string
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		namespace = "default"
+		status = &v1alpha1.GenericClusterStatus{}
+	})
+
+	It("reports Available=False when a role group's StatefulSet cannot be read", func() {
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				"missing-role": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(3))},
+					},
+				},
+			},
+		}
+
+		hm := reconciler.NewHealthManager(k8sClient)
+		Expect(hm.Check(ctx, namespace, "health-missing-sts", spec, status)).To(Succeed())
+
+		// A StatefulSet that does not exist yet has no available replicas: claiming
+		// Available=True next to Degraded=True would misreport the cluster as usable.
+		available := status.GetCondition(v1alpha1.ConditionAvailable)
+		Expect(available).NotTo(BeNil())
+		Expect(available.Status).To(Equal(metav1.ConditionFalse))
+
+		degraded := status.GetCondition(v1alpha1.ConditionDegraded)
+		Expect(degraded).NotTo(BeNil())
+		Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
+		// The message names the offender instead of a generic "some replicas are unhealthy".
+		Expect(degraded.Message).To(ContainSubstring("missing-role/default"))
+	})
+
+	It("keeps a role group scaled to zero out of the Degraded condition", func() {
+		clusterName := "health-zero-replicas"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "default")
+		sts := testutil.NewTestStatefulSet(resourceName, namespace)
+		sts.Spec.Replicas = ptr.To(int32(0))
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, sts)).To(Succeed())
+		})
+
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				"worker": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(0))},
+					},
+				},
+			},
+		}
+
+		hm := reconciler.NewHealthManager(k8sClient)
+		Expect(hm.Check(ctx, namespace, clusterName, spec, status)).To(Succeed())
+
+		// 0 ready of 0 desired is exactly what was asked for, not a degradation.
+		degraded := status.GetCondition(v1alpha1.ConditionDegraded)
+		Expect(degraded).NotTo(BeNil())
+		Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
+
+		available := status.GetCondition(v1alpha1.ConditionAvailable)
+		Expect(available).NotTo(BeNil())
+		Expect(available.Status).To(Equal(metav1.ConditionTrue))
 	})
 })

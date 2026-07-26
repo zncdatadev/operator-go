@@ -35,7 +35,6 @@ var _ = Describe("EnsureDiscoveryConfigMap", func() {
 	var (
 		crName  string
 		mockCR  *testutil.MockCluster
-		owner   *testutil.ClusterWrapper
 		getCM   func(name string) *corev1.ConfigMap
 		cleanup []string
 	)
@@ -44,7 +43,6 @@ var _ = Describe("EnsureDiscoveryConfigMap", func() {
 		crName = fmt.Sprintf("discovery-cr-%d", time.Now().UnixNano())
 		mockCR = testutil.NewMockCluster(crName, namespace)
 		Expect(k8sClient.Create(ctx, mockCR)).To(Succeed())
-		owner = testutil.WrapMockCluster(mockCR, testScheme)
 		cleanup = nil
 
 		getCM = func(name string) *corev1.ConfigMap {
@@ -65,7 +63,7 @@ var _ = Describe("EnsureDiscoveryConfigMap", func() {
 
 	ensure := func(name string, data map[string]string, opts ...reconciler.DiscoveryConfigMapOption) error {
 		cleanup = append(cleanup, name)
-		return reconciler.EnsureDiscoveryConfigMap(ctx, k8sClient, testScheme, owner, name, data, opts...)
+		return reconciler.EnsureDiscoveryConfigMap(ctx, k8sClient, testScheme, mockCR, name, data, opts...)
 	}
 
 	It("creates the ConfigMap with a controller owner reference and canonical labels", func() {
@@ -160,7 +158,7 @@ var _ = Describe("EnsureDiscoveryConfigMap", func() {
 	})
 
 	It("rejects an empty ConfigMap name", func() {
-		err := reconciler.EnsureDiscoveryConfigMap(ctx, k8sClient, testScheme, owner, "", nil)
+		err := reconciler.EnsureDiscoveryConfigMap(ctx, k8sClient, testScheme, mockCR, "", nil)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("name must not be empty"))
 	})

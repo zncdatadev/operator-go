@@ -23,7 +23,7 @@ import (
 )
 
 // DefaultGenericClusterSpec applies common defaults to a GenericClusterSpec.
-// It is intended to be called from a product operator's DefaulterAdapter.Default().
+// It is intended to be called from a product operator's ProductDefaulter.Default().
 //
 //   - If spec.Image is nil and defaultImage is provided, spec.Image is initialized
 //     by copying the defaultImage values.

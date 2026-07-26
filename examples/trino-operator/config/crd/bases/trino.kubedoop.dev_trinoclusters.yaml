@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.19.0
   name: trinoclusters.trino.kubedoop.dev
 spec:
   group: trino.kubedoop.dev
@@ -123,6 +123,7 @@ spec:
                         x-kubernetes-preserve-unknown-fields: true
                       gracefulShutdownTimeout:
                         default: 30s
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                         type: string
                       logging:
                         properties:
@@ -331,6 +332,7 @@ spec:
                               x-kubernetes-preserve-unknown-fields: true
                             gracefulShutdownTimeout:
                               default: 30s
+                              pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                               type: string
                             logging:
                               properties:
@@ -551,6 +553,7 @@ spec:
                         x-kubernetes-preserve-unknown-fields: true
                       gracefulShutdownTimeout:
                         default: 30s
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                         type: string
                       logging:
                         properties:
@@ -754,6 +757,7 @@ spec:
                               x-kubernetes-preserve-unknown-fields: true
                             gracefulShutdownTimeout:
                               default: 30s
+                              pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                               type: string
                             logging:
                               properties:

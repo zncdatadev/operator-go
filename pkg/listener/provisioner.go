@@ -49,11 +49,17 @@ func NewProvisioner() *ListenerProvisioner {
 	}
 }
 
-// WithMountBasePath overrides the default mount base path.
+// WithMountBasePath overrides the default mount base path. An empty path leaves the default
+// (constant.KubedoopListenerDir) in place. The path must be absolute: a relative base would
+// compose into a relative container mountPath, which the API server rejects.
 func (p *ListenerProvisioner) WithMountBasePath(basePath string) *ListenerProvisioner {
-	if basePath != "" {
-		p.mountBasePath = path.Clean(basePath)
+	if basePath == "" {
+		return p
 	}
+	if !path.IsAbs(basePath) {
+		panic(fmt.Sprintf("listener mount base path %q must be absolute", basePath))
+	}
+	p.mountBasePath = path.Clean(basePath)
 	return p
 }
 

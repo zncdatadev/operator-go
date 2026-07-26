@@ -33,16 +33,6 @@ const (
 	ListenerClassExternalUnstable ListenerClass = "external-unstable"
 )
 
-// ListenerScope defines the scope of listener volumes provisioned by listener-operator.
-type ListenerScope string
-
-const (
-	// ListenerScopeNode limits listener discovery to the node level.
-	ListenerScopeNode ListenerScope = "Node"
-	// ListenerScopeCluster enables listener discovery across the cluster.
-	ListenerScopeCluster ListenerScope = "Cluster"
-)
-
 // Listener constants for listener-operator CSI integration.
 // All annotations and labels derive from KubedoopDomain for single source of truth.
 const (
@@ -54,8 +44,6 @@ const (
 	CSIDriverName = ListenerAPIGroup
 	// ListenerClassAnnotation specifies the listener class for PVC templates.
 	ListenerClassAnnotation = listenerAPIGroupPrefix + "class"
-	// ListenerScopeAnnotation specifies the listener scope for PVC templates.
-	ListenerScopeAnnotation = listenerAPIGroupPrefix + "scope"
 	// AnnotationListenerName identifies the listener. Defaults to pod name if unset.
 	AnnotationListenerName = listenerAPIGroupPrefix + "listenerName"
 )

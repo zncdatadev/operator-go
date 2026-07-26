@@ -24,6 +24,7 @@ package productlogging
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -53,25 +54,60 @@ type ContainerLogging struct {
 	LogFileName string
 }
 
+// LoggingFramework defines the logging framework type.
+type LoggingFramework string
+
+const (
+	LoggingFrameworkLog4j   LoggingFramework = "log4j"
+	LoggingFrameworkLog4j2  LoggingFramework = "log4j2"
+	LoggingFrameworkLogback LoggingFramework = "logback"
+	LoggingFrameworkPython  LoggingFramework = "python"
+)
+
+// loggingFrameworkSpec holds everything the framework layer derives from one logging framework.
+// A single table entry is the only registration a new framework needs, which is what lets
+// SupportedLoggingFrameworks act as the enumeration the drift guards range over.
+type loggingFrameworkSpec struct {
+	// logFileSuffix is the rolling log-file suffix the file appender writes and the Vector
+	// source globs on (see LogFileSuffix).
+	logFileSuffix string
+	// generator renders the framework's config file.
+	generator LogFileGenerator
+}
+
+var loggingFrameworks = map[LoggingFramework]loggingFrameworkSpec{
+	LoggingFrameworkLog4j:   {logFileSuffix: ".log4j.xml", generator: log4jGenerator{}},
+	LoggingFrameworkLogback: {logFileSuffix: ".log4j.xml", generator: logbackGenerator{}},
+	LoggingFrameworkLog4j2:  {logFileSuffix: ".log4j2.xml", generator: log4j2Generator{}},
+	LoggingFrameworkPython:  {logFileSuffix: ".py.json", generator: pythonGenerator{}},
+}
+
+// SupportedLoggingFrameworks returns every framework this package can generate a config file for,
+// in a stable order. It exists so the log-collection contract can be checked mechanically: the
+// Vector pipeline must carry a source glob for each framework's LogFileSuffix, and ranging over
+// this enumeration is what makes a newly registered framework fail those tests instead of
+// silently shipping no logs for it.
+func SupportedLoggingFrameworks() []LoggingFramework {
+	frameworks := make([]LoggingFramework, 0, len(loggingFrameworks))
+	for framework := range loggingFrameworks {
+		frameworks = append(frameworks, framework)
+	}
+	sort.Slice(frameworks, func(i, j int) bool { return frameworks[i] < frameworks[j] })
+	return frameworks
+}
+
 // LogFileSuffix returns the framework-owned rolling log-file suffix for a producer container.
-// The suffix selects the Vector source that parses the file at the edge (the stable pipeline
-// globs "<LogDir>*/*.<suffix>"):
+// The suffix selects the Vector source that parses the file at the edge: pkg/vector renders its
+// source globs ("<LogDir>*/*<suffix>") from this function, so adding a framework here without a
+// matching source fails the vector render.
+//
 //   - log4j and logback write log4j 1.x XMLLayout events -> ".log4j.xml" (files_log4j),
 //   - log4j2 writes log4j2 XMLLayout events -> ".log4j2.xml" (files_log4j2),
 //   - python writes JSON lines -> ".py.json" (files_py).
 //
 // Unknown frameworks return "" (RenderConfigFile rejects them via GeneratorFor first).
 func LogFileSuffix(framework LoggingFramework) string {
-	switch framework {
-	case LoggingFrameworkLog4j, LoggingFrameworkLogback:
-		return ".log4j.xml"
-	case LoggingFrameworkLog4j2:
-		return ".log4j2.xml"
-	case LoggingFrameworkPython:
-		return ".py.json"
-	default:
-		return ""
-	}
+	return loggingFrameworks[framework].logFileSuffix
 }
 
 // ContainerLogFileName returns the conventional rolling log-file name for a producer container
@@ -89,7 +125,8 @@ func ContainerLogFileName(framework LoggingFramework, container string) string {
 
 // ContainerLogDir returns the per-container log directory ("<KubedoopLogDir>/<lowercased
 // container>") under which the container's rolling log file is written. The Vector sidecar
-// pre-creates this directory (it starts first) and extracts the .container field from it.
+// calls it too, to pre-create the directory (it starts first), and extracts the .container
+// field from the same path.
 func ContainerLogDir(container string) string {
 	return path.Join(constant.KubedoopLogDir, strings.ToLower(container))
 }
@@ -232,18 +269,11 @@ type LogFileGenerator interface {
 
 // GeneratorFor returns the LogFileGenerator for a logging framework.
 func GeneratorFor(framework LoggingFramework) (LogFileGenerator, error) {
-	switch framework {
-	case LoggingFrameworkLogback:
-		return logbackGenerator{}, nil
-	case LoggingFrameworkLog4j:
-		return log4jGenerator{}, nil
-	case LoggingFrameworkLog4j2:
-		return log4j2Generator{}, nil
-	case LoggingFrameworkPython:
-		return pythonGenerator{}, nil
-	default:
+	spec, ok := loggingFrameworks[framework]
+	if !ok {
 		return nil, fmt.Errorf("unsupported logging framework: %s", framework)
 	}
+	return spec.generator, nil
 }
 
 type logbackGenerator struct{}
@@ -269,7 +299,11 @@ func (log4j2Generator) Render(cfg LogConfig, opts RenderOptions) (string, error)
 
 type pythonGenerator struct{}
 
-func (pythonGenerator) DefaultFileName() string { return "logging.py" }
+// The module must not be called "logging.py": the generated file is mounted into the product's
+// config directory, and a product that puts that directory on sys.path (the usual way a Python
+// app loads its config) would shadow the standard library's logging module with it, breaking
+// every "import logging" in the process.
+func (pythonGenerator) DefaultFileName() string { return "log_config.py" }
 func (pythonGenerator) Render(cfg LogConfig, opts RenderOptions) (string, error) {
 	return renderPython(cfg, opts)
 }

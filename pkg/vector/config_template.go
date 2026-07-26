@@ -23,7 +23,9 @@ package vector
 //   - log_schema.host_key is "pod" so the host field of every event is named "pod".
 //   - sources glob per-container log files ("<LogDir><container>/<file>"), one source per
 //     producer format: plain stdout/stderr, log4j 1.x XMLLayout events, log4j2 XMLLayout
-//     events, python JSON lines and airlift JSON lines.
+//     events, python JSON lines and airlift JSON lines. The suffix of each framework glob comes
+//     from productlogging.LogFileSuffix (the "logSuffix" template helper), the same constant the
+//     file appenders are named from, so the collector and the producers cannot drift.
 //   - the processed_files_* transforms parse each format at the edge and normalize every
 //     event to the stable schema: .timestamp / .logger / .level / .message, collecting
 //     parse problems in .errors instead of dropping events.
@@ -61,7 +63,7 @@ sources:
   files_log4j:
     type: file
     include:
-      - {{.LogDir}}*/*.log4j.xml
+      - {{.LogDir}}*/*{{logSuffix "log4j"}}
     line_delimiter: "\r\n"
     multiline:
       mode: halt_before
@@ -72,13 +74,13 @@ sources:
   files_log4j2:
     type: file
     include:
-      - {{.LogDir}}*/*.log4j2.xml
+      - {{.LogDir}}*/*{{logSuffix "log4j2"}}
     line_delimiter: "\r\n"
 
   files_py:
     type: file
     include:
-      - {{.LogDir}}*/*.py.json
+      - {{.LogDir}}*/*{{logSuffix "python"}}
 
   files_airlift:
     type: file
@@ -386,7 +388,7 @@ transforms:
       - processed_files_*
     type: remap
     source: |
-      . |= parse_regex!(.file, r'^{{.LogDir}}(?P<container>.*?)/(?P<file>.*?)$')
+      . |= parse_regex!(.file, r'^{{regexQuote .LogDir}}(?P<container>.*?)/(?P<file>.*?)$')
       del(.source_type)
 
   extended_logs:
@@ -394,15 +396,15 @@ transforms:
       - extended_logs_*
     type: remap
     source: |
-      .namespace = "{{.Namespace}}"
-      .cluster = "{{.ClusterName}}"
-      .role = "{{.RoleName}}"
-      .roleGroup = "{{.RoleGroupName}}"
+      .namespace = {{quote .Namespace}}
+      .cluster = {{quote .ClusterName}}
+      .role = {{quote .RoleName}}
+      .roleGroup = {{quote .RoleGroupName}}
 
 sinks:
   aggregator:
     inputs:
       - extended_logs
     type: vector
-    address: "{{.AggregatorAddress}}"
+    address: {{quote .AggregatorAddress}}
 `

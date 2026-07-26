@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -30,34 +31,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/exec"
 )
 
-// MockPodExecutor is a mock implementation of PodExecutor for testing
+// MockPodExecutor is a mock implementation of PodExecutor for testing. It replaces the exec
+// transport only, so every spec using it still runs the real pod selection, timeout and result
+// assembly of ExecUtil.
 type MockPodExecutor struct {
-	ExecuteWithTimeoutFunc   func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error)
-	ExecuteWithOutputFunc    func(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error
-	ExecuteWithTimeoutCalled bool
-	ExecuteWithOutputCalled  bool
-	LastNamespace            string
-	LastPodName              string
-	LastContainerName        string
-	LastCommand              []string
-	LastTimeout              time.Duration
-}
-
-// ExecuteWithTimeout implements PodExecutor interface
-func (m *MockPodExecutor) ExecuteWithTimeout(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-	m.ExecuteWithTimeoutCalled = true
-	m.LastNamespace = namespace
-	m.LastPodName = podName
-	m.LastContainerName = containerName
-	m.LastCommand = command
-	m.LastTimeout = timeout
-
-	if m.ExecuteWithTimeoutFunc != nil {
-		return m.ExecuteWithTimeoutFunc(ctx, namespace, podName, containerName, command, timeout)
-	}
-	return &util.ExecuteResult{Stdout: "mock output", Stderr: "", ExitCode: 0}, nil
+	ExecuteWithOutputFunc   func(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error
+	ExecuteWithOutputCalled bool
+	LastNamespace           string
+	LastPodName             string
+	LastContainerName       string
+	LastCommand             []string
+	LastDeadline            time.Time
 }
 
 // ExecuteWithOutput implements PodExecutor interface
@@ -67,12 +54,22 @@ func (m *MockPodExecutor) ExecuteWithOutput(ctx context.Context, namespace, podN
 	m.LastPodName = podName
 	m.LastContainerName = containerName
 	m.LastCommand = command
+	m.LastDeadline, _ = ctx.Deadline()
 
 	if m.ExecuteWithOutputFunc != nil {
 		return m.ExecuteWithOutputFunc(ctx, namespace, podName, containerName, command, stdout, stderr)
 	}
 	_, _ = stdout.Write([]byte("mock output"))
 	return nil
+}
+
+// writeOutput returns an executor func that writes the given streams and fails with err.
+func writeOutput(out, errOut string, err error) func(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr io.Writer) error {
+	return func(_ context.Context, _, _, _ string, _ []string, stdout, stderr io.Writer) error {
+		_, _ = stdout.Write([]byte(out))
+		_, _ = stderr.Write([]byte(errOut))
+		return err
+	}
 }
 
 // MockExitError is a mock error that implements ExitStatus() for testing extractExitCode
@@ -152,10 +149,7 @@ var _ = Describe("ExecUtil", func() {
 		})
 
 		It("should execute command with default timeout", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				Expect(timeout).To(Equal(30 * time.Second))
-				return &util.ExecuteResult{Stdout: "test output", Stderr: "", ExitCode: 0}, nil
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("test output", "", nil)
 
 			result, err := execUtil.Execute(ctx, "default", "test-pod", "container", []string{"echo", "hello"})
 			Expect(err).NotTo(HaveOccurred())
@@ -164,18 +158,49 @@ var _ = Describe("ExecUtil", func() {
 			Expect(mockExecutor.LastPodName).To(Equal("test-pod"))
 			Expect(mockExecutor.LastContainerName).To(Equal("container"))
 			Expect(mockExecutor.LastCommand).To(Equal([]string{"echo", "hello"}))
+			Expect(mockExecutor.LastDeadline).To(BeTemporally("~", time.Now().Add(30*time.Second), 5*time.Second))
 		})
 
 		It("should return error when executor fails", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return &util.ExecuteResult{Stdout: "", Stderr: "error output", ExitCode: 1}, errors.New("command failed")
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("", "error output", errors.New("command failed"))
 
 			result, err := execUtil.Execute(ctx, "default", "test-pod", "container", []string{"false"})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("command failed"))
 			Expect(result).NotTo(BeNil())
+			Expect(result.Stderr).To(Equal("error output"))
 			Expect(result.ExitCode).To(Equal(1))
+		})
+
+		// The exit code belongs to ExecUtil, not to the transport: a failing command must be
+		// reported with its own exit status, whichever executor produced the stream error.
+		It("should report the command's own exit status", func() {
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("", "boom", exec.CodeExitError{
+				Err:  errors.New("command terminated with exit code 42"),
+				Code: 42,
+			})
+
+			result, err := execUtil.Execute(ctx, "default", "test-pod", "container", []string{"false"})
+			Expect(err).To(HaveOccurred())
+			Expect(result.ExitCode).To(Equal(42))
+			Expect(result.Stderr).To(Equal("boom"))
+		})
+
+		It("should report the command's own exit status through a wrapped error", func() {
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("", "", fmt.Errorf("stream failed: %w",
+				exec.CodeExitError{Err: errors.New("terminated"), Code: 7}))
+
+			result, err := execUtil.Execute(ctx, "default", "test-pod", "container", []string{"false"})
+			Expect(err).To(HaveOccurred())
+			Expect(result.ExitCode).To(Equal(7))
+		})
+
+		It("should report exit code 0 for a command that succeeds", func() {
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("done", "", nil)
+
+			result, err := execUtil.Execute(ctx, "default", "test-pod", "container", []string{"true"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExitCode).To(Equal(0))
 		})
 	})
 
@@ -190,39 +215,31 @@ var _ = Describe("ExecUtil", func() {
 		})
 
 		It("should execute command with custom timeout", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				Expect(timeout).To(Equal(60 * time.Second))
-				return &util.ExecuteResult{Stdout: "output", Stderr: "", ExitCode: 0}, nil
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("output", "", nil)
 
 			result, err := execUtil.ExecuteWithTimeout(ctx, "ns", "pod", "cnt", []string{"ls"}, 60*time.Second)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Stdout).To(Equal("output"))
-			Expect(mockExecutor.LastTimeout).To(Equal(60 * time.Second))
+			Expect(mockExecutor.LastDeadline).To(BeTemporally("~", time.Now().Add(60*time.Second), 5*time.Second))
 		})
 
 		It("should handle context cancellation", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				default:
-					return &util.ExecuteResult{Stdout: "output", Stderr: "", ExitCode: 0}, nil
-				}
+			mockExecutor.ExecuteWithOutputFunc = func(ctx context.Context, _, _, _ string, _ []string, _, _ io.Writer) error {
+				return ctx.Err()
 			}
 
 			canceledCtx, cancel := context.WithCancel(context.Background())
 			cancel()
 
 			result, err := execUtil.ExecuteWithTimeout(canceledCtx, "ns", "pod", "cnt", []string{"ls"}, 30*time.Second)
-			Expect(err).To(Equal(context.Canceled))
-			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(context.Canceled))
+			// A transport failure carries no exit status of its own.
+			Expect(result).NotTo(BeNil())
+			Expect(result.ExitCode).To(Equal(1))
 		})
 
 		It("should capture stderr output", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return &util.ExecuteResult{Stdout: "stdout", Stderr: "stderr", ExitCode: 0}, nil
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("stdout", "stderr", nil)
 
 			result, err := execUtil.ExecuteWithTimeout(ctx, "ns", "pod", "cnt", []string{"cmd"}, 30*time.Second)
 			Expect(err).NotTo(HaveOccurred())
@@ -242,9 +259,7 @@ var _ = Describe("ExecUtil", func() {
 		})
 
 		It("should return only stdout on success", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return &util.ExecuteResult{Stdout: "simple output", Stderr: "", ExitCode: 0}, nil
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("simple output", "", nil)
 
 			output, err := execUtil.ExecuteSimple(ctx, "ns", "pod", "cnt", []string{"echo", "test"})
 			Expect(err).NotTo(HaveOccurred())
@@ -252,9 +267,7 @@ var _ = Describe("ExecUtil", func() {
 		})
 
 		It("should return error when execution fails", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return nil, errors.New("execution failed")
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("", "", errors.New("execution failed"))
 
 			output, err := execUtil.ExecuteSimple(ctx, "ns", "pod", "cnt", []string{"cmd"})
 			Expect(err).To(HaveOccurred())
@@ -262,18 +275,22 @@ var _ = Describe("ExecUtil", func() {
 			Expect(output).To(BeEmpty())
 		})
 
-		It("should return stdout even with error when result is available", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return &util.ExecuteResult{Stdout: "partial output", Stderr: "error", ExitCode: 1}, errors.New("failed")
-			}
+		It("should drop the partial output of a failed command, which Execute still reports", func() {
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("partial output", "error", errors.New("failed"))
 
 			output, err := execUtil.ExecuteSimple(ctx, "ns", "pod", "cnt", []string{"cmd"})
 			Expect(err).To(HaveOccurred())
-			Expect(output).To(Equal("partial output"))
+			Expect(output).To(BeEmpty())
+
+			result, err := execUtil.Execute(ctx, "ns", "pod", "cnt", []string{"cmd"})
+			Expect(err).To(HaveOccurred())
+			Expect(result.Stdout).To(Equal("partial output"))
 		})
 	})
 
 	Describe("ExecuteInPod", func() {
+		var runningPod *corev1.Pod
+
 		BeforeEach(func() {
 			config := testEnv.GetConfig()
 			var err error
@@ -281,26 +298,56 @@ var _ = Describe("ExecUtil", func() {
 			Expect(err).NotTo(HaveOccurred())
 			mockExecutor = &MockPodExecutor{}
 			execUtil.WithExecutor(mockExecutor)
+
+			runningPod = &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "exec-in-pod-target",
+					Namespace: "default",
+					Labels:    map[string]string{"app": "exec-in-pod"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "cnt", Image: "nginx"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, runningPod)).To(Succeed())
+			runningPod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, runningPod)).To(Succeed())
 		})
 
-		It("should execute command using mock executor", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return &util.ExecuteResult{Stdout: "in-pod output", Stderr: "", ExitCode: 0}, nil
-			}
+		AfterEach(func() {
+			_ = k8sClient.Delete(ctx, runningPod)
+		})
 
-			result, err := execUtil.ExecuteInPod(ctx, "ns", map[string]string{"app": "test"}, "cnt", []string{"ls"})
+		// A custom Executor replaces the exec transport only; the pod must still be selected by
+		// label from the API server, never substituted with a fixed name.
+		It("should execute in the pod selected by labels", func() {
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("in-pod output", "", nil)
+
+			result, err := execUtil.ExecuteInPod(ctx, "default", map[string]string{"app": "exec-in-pod"}, "cnt", []string{"ls"})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Stdout).To(Equal("in-pod output"))
+			Expect(mockExecutor.LastPodName).To(Equal("exec-in-pod-target"))
+			Expect(mockExecutor.LastNamespace).To(Equal("default"))
+			Expect(mockExecutor.LastContainerName).To(Equal("cnt"))
 		})
 
 		It("should return error when mock executor fails", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return nil, errors.New("pod not found")
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("", "", errors.New("exec stream failed"))
 
-			result, err := execUtil.ExecuteInPod(ctx, "ns", map[string]string{"app": "test"}, "cnt", []string{"ls"})
+			result, err := execUtil.ExecuteInPod(ctx, "default", map[string]string{"app": "exec-in-pod"}, "cnt", []string{"ls"})
 			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec stream failed"))
+			Expect(result.ExitCode).To(Equal(1))
+		})
+
+		It("should not reach the executor when no pod matches the labels", func() {
+			result, err := execUtil.ExecuteInPod(ctx, "default", map[string]string{"app": "no-such-app"}, "cnt", []string{"ls"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no pods found"))
 			Expect(result).To(BeNil())
+			Expect(mockExecutor.ExecuteWithOutputCalled).To(BeFalse())
 		})
 	})
 
@@ -357,20 +404,16 @@ var _ = Describe("ExecUtil", func() {
 		})
 
 		It("should copy file content from pod", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				Expect(command).To(Equal([]string{"cat", "/etc/config.conf"}))
-				return &util.ExecuteResult{Stdout: "file content", Stderr: "", ExitCode: 0}, nil
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("file content", "", nil)
 
 			data, err := execUtil.CopyFromPod(ctx, "ns", "pod", "cnt", "/etc/config.conf")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(data)).To(Equal("file content"))
+			Expect(mockExecutor.LastCommand).To(Equal([]string{"cat", "/etc/config.conf"}))
 		})
 
 		It("should return error when copy fails", func() {
-			mockExecutor.ExecuteWithTimeoutFunc = func(ctx context.Context, namespace, podName, containerName string, command []string, timeout time.Duration) (*util.ExecuteResult, error) {
-				return nil, errors.New("file not found")
-			}
+			mockExecutor.ExecuteWithOutputFunc = writeOutput("", "", errors.New("file not found"))
 
 			data, err := execUtil.CopyFromPod(ctx, "ns", "pod", "cnt", "/nonexistent")
 			Expect(err).To(HaveOccurred())

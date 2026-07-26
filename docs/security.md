@@ -9,11 +9,11 @@ This document outlines the security architecture integrated into the `operator-g
 
 # 2. Application Security (SecretClass & CSI)
 
-The core design philosophy is **"Zero-Touch Security"**. The Product Operator does not direct handle sensitive data but delegates provisioning to a specialized `secret-operator`.
+The core design philosophy is **"Zero-Touch Security"**. The Product Operator does not directly handle sensitive data; it delegates provisioning to a specialized `secret-operator`.
 
 ## 2.1 Core Concept: SecretClass
 
-`SecretClass` is a namespaced resource managed by `secret-operator`. It defines "how" to obtain security artifacts, while the workload (Pod) simply declares "what" it needs by referencing a `SecretClass`.
+`SecretClass` is a resource managed by `secret-operator`. It defines "how" to obtain security artifacts, while the workload (Pod) simply declares "what" it needs by referencing a `SecretClass` **by name**. The CRD itself — its scope and schema — is owned by the `secret-operator`, not by this SDK; `operator-go` only emits the `secrets.kubedoop.dev/class: <name>` annotation and never reads the object.
 
 This mechanism is implemented using the **Kubernetes CSI (Container Storage Interface)**. The `secret-operator` provides a CSI driver that intercepts volume mount requests, generates or retrieves the required secrets on-the-fly, and injects them into the container file system as files.
 
@@ -21,11 +21,78 @@ This mechanism is implemented using the **Kubernetes CSI (Container Storage Inte
 
 1. **Definition**: Admin creates a `SecretClass` containing the policy (e.g., "Issue certificates using ClusterIssuer 'my-ca'").
 2. **Reference**: The Product CR (e.g., HdfsCluster) specifies `secretClass: "hdfs-secret-class"`.
-3. **Mount**: The Operator SDK constructs the StatefulSet with a CSI Volume referencing this `SecretClass`.
-4. **Injection**: When a Pod starts, the CSI driver calls the backend to generate artifacts (TLS certs, Keytabs) and mounts them to `/etc/secret-volume`.
+3. **Declaration**: The Product Operator registers the need on a `security.SecretProvisioner` and
+   appends it to `RoleGroupBuildContext.VolumeProviders` (or calls `AutoInject(stsBuilder)`). The SDK
+   then emits, on the Pod template, a **generic ephemeral volume** whose `volumeClaimTemplate`
+   carries the secret-operator annotations (`secrets.kubedoop.dev/class`, and `…/scope`,
+   `…/format`, … when set) and the `secrets.kubedoop.dev` StorageClass. Kubernetes' ephemeral-volume
+   controller materializes one Pod-owned PVC per Pod, so the operator needs no PVC create RBAC and
+   the PVC lifecycle is Pod-bound. This step is **opt-in**: nothing is mounted unless the product
+   registers a volume.
+4. **Injection**: When a Pod starts, the CSI driver calls the backend to generate artifacts (TLS
+   certs, Keytabs) and mounts them **read-only** under the SDK's canonical base,
+   `/kubedoop/mount/<volumeName>` (`constant.KubedoopMountDir`, overridable per provisioner with
+   `SecretProvisioner.WithMountBasePath`).
+
+> **Never hardcode the mount path.** Ask the provisioner:
+> `provisioner.Path("server-tls")` (or `MustPath`) returns `/kubedoop/mount/server-tls`, and stays
+> correct when the base path is overridden. Some helpers deliberately use a different base — e.g.
+> `s3.ConnectionInfo.CredentialsProvisioner` mounts under `constant.KubedoopSecretDir`
+> (`/kubedoop/secret/<volume>`) — which is exactly why the path must come from the API.
+
+### 2.1.2 Declaring a Secret Volume
+
+`security` ships one constructor per common need. Each requests a 10Mi PVC and sets the scope shown
+below (`CredentialsVolume` deliberately sets none — credential secrets are usually class-resolved;
+add one with `WithScope`, e.g. from `ScopeString`):
+
+| Constructor | Format | Default scope |
+| --- | --- | --- |
+| `TLS(volumeName, secretClass)` | `tls-p12` | `pod,node` |
+| `TLSPEMFormat(volumeName, secretClass)` | `tls-pem` | `pod,node` |
+| `ServiceTLS(volumeName, secretClass, serviceName)` | `tls-p12` | `pod,node,service=<serviceName>` |
+| `KerberosVolume(volumeName, secretClass, serviceName, …)` | `kerberos` | `pod,node` |
+| `ListenerVolume(volumeName, secretClass, listenerVolumeName, format)` | caller-supplied | `listener-volume=<listenerVolumeName>` |
+| `Custom(volumeName, secretClass, format)` | caller-supplied | `pod,node` |
+| `CredentialsVolume(volumeName, secretClass)` | none | none |
+
+**Named scopes must carry a name.** The secret-operator parses `service` and `listener-volume`
+entries as `key=<value>` and unconditionally reads the value, so a bare `service` or
+`listener-volume` entry is unresolvable. The SDK refuses to build one:
+
+- `ListenerVolume` **requires** `listenerVolumeName` (the name of the Pod volume that mounts the
+  listener, which the secret-operator resolves to that listener's addresses) and panics on an empty
+  string. The emitted scope is `listener-volume=<listenerVolumeName>`.
+- `SecretVolumeRegistration.WithScope` and `SecretProvisioner.Register` panic on a scope whose
+  `service` / `listener-volume` entry has no value, and on an empty comma entry. Unknown scope keys
+  pass — the scope vocabulary belongs to the secret-operator and may grow ahead of this SDK.
+- `security.ScopeString(*commonsv1alpha1.CredentialsScope)` renders a CRD-declared scope
+  (`node`, `pod`, `services`, `listenerVolumes`) into that annotation value, emitting the `key=`
+  prefix for the named entries. It returns `""` for a nil/empty scope, in which case the annotation
+  is omitted.
+
+The default PKCS12 password (`changeit`) is stored as a **PVC template annotation** and is therefore
+readable by anyone with `get` on PVCs. Use `WithPassword` or `WithNoPassword`.
+
+Certificate rotation is configured on the registration (`WithCertLifetime`, `WithCertJitter`,
+`WithCertBuffer`), which the secret-operator honours when issuing the artifact.
+
+Listener volumes themselves are declared through `listener.NewVolume(name, class)` plus optional
+`.WithListenerName(name)` on a `listener.ListenerProvisioner`. **`pkg/listener` has no scope API** —
+there is no `WithScope`, no `ListenerScope` type and no `listeners.kubedoop.dev/scope` annotation on
+listener PVC templates. Scoping a *secret* to a listener is done on the secret side, with
+`ListenerVolume` above.
 
 ## 2.2 Supported Security Backends
-The SDK and `secret-operator` support multiple backends to address different security needs:
+
+The backends below are implemented by the `secret-operator`; the SDK's part is declaring the volume
+and its annotations (§2.1.2) and resolving the mount path. Backend selection is a property of the
+`SecretClass` the admin creates, not of the SDK call.
+
+> The mechanisms described in §2.2.1–§2.2.3 are **`secret-operator` behavior**, documented here so
+> product authors know what the platform provides. They are not implemented in `operator-go` and
+> cannot be verified against this repository — consult the `secret-operator` documentation for the
+> authoritative contract. Only the `security.*` API names and mount paths in §2.1 are SDK behavior.
 
 ### 2.2.1 AutoTLS (Automatic Certificate Management)
 
@@ -54,14 +121,33 @@ Searches and injects existing Kubernetes Secrets or ConfigMaps.
   - Searches for resources matching specific labels or names in the cluster.
   - **Security Benefit**: The Product Operator does not need `LIST/WATCH/GET Secret` permissions for the entire namespace. Only the privileged `secret-operator` accesses the data, minimizing the attack surface.
 
-### 2.2.4 OIDC (OpenID Connect) Integration
+## 2.3 OIDC (OpenID Connect) Integration
 
-Automates the injection of Identity Provider (IdP) credentials.
+Unlike §2.2, OIDC is **not** a secret-operator CSI backend in this SDK. It is delivered by the
+`sidecar.OAuth2ProxySidecarProvider`, which terminates the login flow in an oauth2-proxy sidecar in
+front of the product's HTTP port.
 
-- **Scenario**: Workloads requiring modern authentication (e.g., Trino interacting with external Data Lakes, or Presto Web UI login).
+- **Scenario**: Workloads requiring modern authentication (e.g., a product Web UI behind an IdP).
 - **Mechanism**:
-  - **Credential Injection**: The `secret-operator` mounts the OIDC client credentials (client-id, client-secret) from a reference secret into the container.
-  - **Configuration**: The Operator SDK automatically configures necessary environmental variables or JVM system properties (e.g., `-Dsolr.authentication.oidc.client.secret=...`) to enable the OIDC module in the application.
+  - **Configuration source**: an `AuthenticationClass` with an `OIDCProvider`
+    (`pkg/apis/authentication/v1alpha1`). The product resolves the class and passes the provider to
+    `sidecar.NewOAuth2ProxySidecarProvider(oidcProvider, clientCredentialsSecret, upstreamPort,
+    cookieSeed, opts...)`.
+  - **Credential injection**: a **plain Kubernetes Secret** named by `clientCredentialsSecret`,
+    carrying the keys `CLIENT_ID` and `CLIENT_SECRET` (`sidecar.OIDCClientIDKey` /
+    `OIDCClientSecretKey`). They reach the sidecar as `OAUTH2_PROXY_CLIENT_ID` /
+    `OAUTH2_PROXY_CLIENT_SECRET` env vars via `secretKeyRef` — the credentials are **not** mounted
+    through the secret-operator CSI driver, and they are never written into a config file.
+    `Validate` fails the reconcile before the StatefulSet is applied if that Secret is missing.
+  - **Configuration of the proxy**: the provider sets the `OAUTH2_PROXY_*` env vars (issuer URL,
+    scopes, provider hint, upstream, listen address, PKCE `S256`). The SDK does **not** inject JVM
+    system properties or configure the product application's own OIDC module — a product that needs
+    in-application OIDC generates that configuration itself.
+  - **Cookie secret**: derived deterministically from a caller-supplied seed (typically the CR's
+    UID) via `DeterministicCookieSecret`, so it does not churn pods across reconciles.
+  - **Readiness**: the sidecar deliberately has no readiness probe. As a native sidecar it would
+    otherwise gate the whole Pod's readiness, taking the product's non-auth ports out of every
+    Service during an IdP outage.
 
 ---
 
@@ -71,26 +157,52 @@ This layer focuses on how the Operator constructs the Kubernetes Pods and Resour
 
 ## 3.1 Workload Identity (Service Accounts)
 
-Every specific Product Cluster managed by the SDK operates with its own distinct identity.
+A Product Cluster managed by the SDK can operate with its own distinct identity.
 
-- **Automated Provisioning**: The SDK automatically creates a dedicated `ServiceAccount` for each Cluster instance (or specific RoleGroup, depending on configuration).
+- **Opt-in Provisioning**: ServiceAccount management is enabled by the operator author, not by
+  default. When `GenericReconcilerConfig.ServiceAccountNameFunc` or the static
+  `ServiceAccountName` resolves to a non-empty name, the reconciler creates (or updates) that
+  `ServiceAccount` in the CR's namespace with the CR as controller owner, and propagates the name
+  through `RoleGroupBuildContext.ServiceAccountName` into the Pod template. When both are empty, SA
+  management is skipped entirely and Pods run as the namespace `default`.
+- **Granularity is per CR, not per RoleGroup.** The name is resolved once per cluster CR; there is
+  no per-role or per-role-group ServiceAccount.
 - **Per-CR Naming (recommended)**: Products should configure `GenericReconcilerConfig.ServiceAccountNameFunc` to derive the SA name from the CR (e.g. `"<product>-<cluster name>"`). Resolution order is: per-CR func result > static `ServiceAccountName` > empty (SA management skipped). A static name shared by two clusters of the same product in one namespace breaks isolation and reconciliation: the second cluster can never take controller ownership of the shared SA (the SDK surfaces a clear error naming both owners), and deleting the first cluster garbage-collects the SA out from under the second cluster's running pods.
 - **Scope**: Pods run as this ServiceAccount, meaning any audit logs in Kubernetes will reflect the specific application identity rather than a generic "default" account.
-- **Customization**: Users can override the generated ServiceAccount name in the CR Spec if integration with external IAM (like AWS IRSA or Google Workload Identity) is required.
+- **Customization**: the name is chosen by the operator author through the two config fields above —
+  the common CRD types (`GenericClusterSpec`) carry **no** `serviceAccountName` field, so there is no
+  SDK-level way for a user to override it in the CR. A product that needs external IAM integration
+  (AWS IRSA, Google Workload Identity) adds its own spec field and feeds it to
+  `ServiceAccountNameFunc`, and applies the IAM annotations to the SA itself.
 
 ## 3.2 RBAC Integration (Principle of Least Privilege)
 
 Workloads often need to interact with the Kubernetes API (e.g., Flink JobManager creating generic Jobs, Spark driver creating executor pods).
 
-- **Dynamic Binding**: The SDK allows Products to define the *exact* RBAC permissions required by their workloads. The Operator then creates `Role` and `RoleBinding` resources linking the workload's `ServiceAccount` to these permissions.
-- **Benefit**: No manual `kubectl create rolebinding` is needed, yet the permissions are scoped strictly to what the application declares it needs, preventing over-privileged pods.
+- **Builders, not automation**: the SDK ships `builder.RoleBuilder`, `RoleBindingBuilder`,
+  `ClusterRoleBuilder` and `ClusterRoleBindingBuilder`, including
+  `AddServiceAccountSubject(name, namespace)` for binding the workload's SA. The
+  `GenericReconciler` itself creates **no** RBAC object: a product that needs workload RBAC builds
+  the objects and ships them through `reconciler.RoleGroupResources.ExtraResources` (or from a
+  cluster extension), which gives them the same controller owner reference and garbage-collection
+  as any other framework-applied resource.
+- **Benefit**: no manual `kubectl create rolebinding` is needed, yet the permissions are declared in
+  the product's own code and scoped strictly to what the application needs, preventing
+  over-privileged pods.
+- **Caveat**: because these are `ExtraResources`, register their GVKs with
+  `SetupWithManagerOpts(mgr, SetupWithManagerOptions{ExtraOwns: ...})`, otherwise out-of-band edits
+  to a Role or RoleBinding produce no reconcile event and are not repaired until the next resync.
 
 ## 3.3 Pod Security Guidelines
 
 The SDK generates `PodSpecs` that adhere to modern container security best practices. The base
-role-group handler applies a **single, canonical default** pod/container `SecurityContext`
-unconditionally (no opt-in). This default hardcodes the kubedoop org-standard identity, because
-all kubedoop product images run as uid `1001`.
+role-group handler applies a **single, canonical default** pod/container `SecurityContext` with no
+opt-in required. This default hardcodes the kubedoop org-standard identity, because all kubedoop
+product images run as uid `1001`.
+
+The pod-level context lands on `.spec.template.spec.securityContext` (so it covers every container
+in the Pod); the container-level context is set on the **primary container** the base handler
+builds. Sidecar containers carry whatever `SidecarConfig.SecurityContext` their provider was given.
 
 ### 3.3.1 Default SecurityContext
 
@@ -118,7 +230,7 @@ all kubedoop product images run as uid `1001`.
 ### 3.3.2 Overriding via PodOverrides (strategic-merge semantics)
 
 Products customize the security context through `MergedConfig.PodOverrides`, which is applied
-as a Kubernetes **Strategic Merge Patch** (the merge strategy `docs/architecture.md` §2.6
+as a Kubernetes **Strategic Merge Patch** (the merge strategy `docs/architecture.md` §2.5
 documents for the whole pod template). **Security contexts deep-merge per field**: an override
 stating only `runAsUser` keeps the framework-hardened remainder (`runAsNonRoot`,
 `capabilities.drop`, `seccompProfile`, …).
@@ -126,12 +238,28 @@ stating only `runAsUser` keeps the framework-hardened remainder (`runAsNonRoot`,
 A field the override does not mention keeps its default, so an override must **explicitly
 restate** any default it wants to change — e.g. an image that must run as root sets both
 `runAsUser: 0` **and** `runAsNonRoot: false`; setting only `runAsUser: 0` inherits
-`runAsNonRoot: true` and the kubelet refuses to start the container. The handler-wide
-`WithoutDefaultSecurityContext()` escape hatch disables the default entirely (the StatefulSet
-is then built with no SecurityContext unless `PodOverrides` supplies one).
+`runAsNonRoot: true` and the kubelet refuses to start the container.
+
+Two handler-wide escape hatches sit alongside the per-role-group overrides:
+`BaseRoleGroupHandler.WithSecurityContext(containerCtx, podCtx)` replaces the defaults for every
+role group, and `WithoutDefaultSecurityContext()` disables them entirely (the StatefulSet is then
+built with no SecurityContext unless `PodOverrides` supplies one).
 
 ## 3.4 Security Benefits Summary
 
 - **Access Isolation**: Product Operators operate with minimal RBAC privileges, reducing the blast radius if an operator is compromised.
-- **Lifecycle Management**: Certificates are automatically renewed by the `secret-operator` without restarting Pods (if the application supports hot-reload) or via simple rolling restarts.
 - **Consistency**: Standardizes security configurations across all data products (HDFS, Hive, Trino, etc.).
+- **Lifecycle Management**: certificate *issuance* and *renewal* are the `secret-operator`'s job;
+  the SDK's part is the rotation annotations on the registration (`WithCertLifetime`,
+  `WithCertJitter`, `WithCertBuffer`). Propagating a renewal into a running Pod is handled by the
+  separate **restarter** component, whose contract `pkg/constant/restarter.go` defines
+  (`restarter.kubedoop.dev/enable=true` on the workload; `secret.restarter.kubedoop.dev/*` and
+  `configmap.restarter.kubedoop.dev/*` annotations; `restarter.kubedoop.dev/expires-at.*` for
+  expiry-driven Pod restarts).
+
+  > **Not applied by the SDK.** `pkg/constant` only declares these names — no builder or reconciler
+  > sets `restarter.kubedoop.dev/enable` on the StatefulSet. A product that wants automatic restarts
+  > on secret rotation or ConfigMap change must add the label itself (e.g. through
+  > `BaseRoleGroupHandler.ExtraLabels`) and deploy the restarter. Without both, a rotated
+  > certificate reaches the container only if the application hot-reloads it, or on the next manual
+  > rolling restart.

@@ -22,18 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// HealthCheckResult represents the result of a health check.
-type HealthCheckResult struct {
-	// Healthy indicates whether the health check passed.
-	Healthy bool
-
-	// Message provides additional information about the health check result.
-	Message string
-
-	// Error contains any error that occurred during the health check.
-	Error error
-}
-
 // ServiceHealthCheck defines the contract for business-level health checks.
 // Products implement this interface to provide custom health verification logic.
 //

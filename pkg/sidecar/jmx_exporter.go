@@ -19,7 +19,9 @@ package sidecar
 import (
 	"context"
 	"fmt"
+	"path"
 
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,8 +34,14 @@ const (
 	JMXExporterPort = 5556
 	// JMXExporterConfigVolumeName is the name of the config volume.
 	JMXExporterConfigVolumeName = "jmx-exporter-config"
-	// JMXExporterConfigMountPath is the mount path for config.
-	JMXExporterConfigMountPath = "/opt/jmx_exporter"
+	// JMXExporterJarPath is the in-image path of the jar the sidecar executes.
+	JMXExporterJarPath = "/opt/jmx_exporter/jmx_prometheus_httpserver.jar"
+	// JMXExporterConfigMountPath is the mount path for config. It must stay outside the
+	// directory holding JMXExporterJarPath: a ConfigMap volume replaces the whole directory it
+	// is mounted on, so overlaying the jar's directory would hide the jar from its own command.
+	JMXExporterConfigMountPath = constant.KubedoopConfigDirMount + JMXExporterSidecarName
+	// JMXExporterConfigFileName is the ConfigMap key holding the exporter configuration.
+	JMXExporterConfigFileName = "config.yaml"
 	// JMXExporterDefaultConfigMapName is the default ConfigMap name for JMX Exporter config.
 	JMXExporterDefaultConfigMapName = "jmx-exporter-config"
 )
@@ -122,9 +130,9 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 		Command: []string{
 			"java",
 			"-jar",
-			"/opt/jmx_exporter/jmx_prometheus_httpserver.jar",
+			JMXExporterJarPath,
 			fmt.Sprintf("%d", port),
-			JMXExporterConfigMountPath + "/config.yaml",
+			path.Join(JMXExporterConfigMountPath, JMXExporterConfigFileName),
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
@@ -185,6 +193,10 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 	}
 
 	AddVolumes(podSpec, volumes)
+
+	// Caller-supplied volumes back the caller-supplied VolumeMounts applied above; without them
+	// a config.VolumeMounts entry would reference a volume the pod does not declare.
+	AddVolumes(podSpec, config.Volumes)
 
 	return nil
 }

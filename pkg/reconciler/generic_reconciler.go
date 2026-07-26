@@ -22,12 +22,16 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
+	"maps"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/util"
@@ -35,16 +39,24 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// valueTrue is the canonical string form of a boolean carried by a Kubernetes label or
+// annotation, where values are always strings.
+const valueTrue = "true"
 
 // Default health check configuration.
 const (
@@ -55,9 +67,17 @@ const (
 )
 
 // GenericReconcilerConfig contains configuration for creating a GenericReconciler.
-type GenericReconcilerConfig[CR common.ClusterInterface] struct {
+type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// Client is the Kubernetes client.
 	Client client.Client
+
+	// APIReader reads directly from the API server, bypassing the manager's informer cache.
+	// It is used to refresh the resourceVersion after a conflicting status write: a conflict
+	// means the cache has not seen the competing write yet, so refreshing from the cache would
+	// retry with the same stale version. Pass mgr.GetAPIReader(). Optional; when unset the
+	// regular Client is used, which makes conflict recovery unreliable under a cached client.
+	// +optional
+	APIReader client.Reader
 
 	// Scheme is the runtime scheme for registering types.
 	Scheme *runtime.Scheme
@@ -68,12 +88,15 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// RoleGroupHandler is the product-specific handler for building resources.
 	RoleGroupHandler RoleGroupHandler[CR]
 
-	// HealthCheckInterval is the interval between health checks.
-	// Defaults to 120s if not specified.
+	// HealthCheckInterval is the interval between health checks. It is the cadence at which a
+	// successful reconcile requeues itself (ctrl.Result.RequeueAfter), so state that produces no
+	// watch event — a ServiceHealthCheck probe, a StatefulSet that never changes — is still
+	// re-evaluated. Defaults to 120s; set a negative value to disable periodic requeue entirely.
 	HealthCheckInterval time.Duration
 
-	// HealthCheckTimeout is the timeout for health checks.
-	// Defaults to 300s if not specified.
+	// HealthCheckTimeout bounds a single health check pass: the product-level ServiceHealthCheck
+	// runs under a context with this deadline, so a hanging probe cannot stall the reconcile
+	// worker indefinitely. Defaults to 300s; a non-positive value disables the deadline.
 	HealthCheckTimeout time.Duration
 
 	// ServiceHealthCheck is an optional product-level health check.
@@ -92,6 +115,21 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// When 0 (default), orphaned resources are deleted immediately.
 	// +optional
 	GrayDeleteGracePeriod time.Duration
+
+	// DrainPollInterval is how long a reconcile waits before resuming an orphan deletion it has
+	// already started (scale to zero -> drain -> delete -> confirm). It paces the state machine,
+	// not the pod termination itself. Defaults to DefaultDrainPollInterval (5s); products with a
+	// long terminationGracePeriodSeconds can raise it to poll less often.
+	// +optional
+	DrainPollInterval time.Duration
+
+	// DrainTimeout bounds how long an orphaned StatefulSet's ordered drain may block the rest of
+	// its role group's teardown. Once it elapses the StatefulSet is deleted regardless of the pods
+	// still reported, so a pod that cannot terminate (a stuck finalizer, an unreachable node)
+	// cannot strand the group's ConfigMap, Services and status entry indefinitely. Defaults to
+	// DefaultDrainTimeout (10m).
+	// +optional
+	DrainTimeout time.Duration
 
 	// ServiceAccountName is the static name of the ServiceAccount to create for the workload.
 	// When set (and ServiceAccountNameFunc is nil or returns ""), the GenericReconciler
@@ -136,6 +174,27 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 	// +optional
 	ProductConfig func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
 
+	// Dependencies, when set, returns the external objects the CR references (ConfigMaps and
+	// Secrets that the product does not create itself, e.g. a Kerberos keytab Secret or an
+	// authentication ConfigMap). They are verified to exist before any role is reconciled; a
+	// missing one aborts the cycle with a Degraded condition instead of producing pods that
+	// crash-loop on a missing mount.
+	//
+	// Opt-in: nil (the default) performs no checks, and an empty Dependency.Namespace defaults
+	// to the CR's namespace. Products that need richer validation call the DependencyResolver
+	// helpers (ValidateS3Connection, ValidateDatabaseConnection, ...) from their own code.
+	// +optional
+	Dependencies func(cr CR) []Dependency
+
+	// ExtensionRegistry is the extension registry this reconciler executes hooks from. It is
+	// typed for this reconciler's CR, so its extensions receive the product CR directly and no
+	// registry can be shared with a reconciler of another product. Build it with
+	// common.NewExtensionRegistry[CR]() and register the product's extensions on it.
+	//
+	// Optional: when unset the reconciler runs with an empty registry and every hook is a no-op.
+	// +optional
+	ExtensionRegistry *common.ExtensionRegistry[CR]
+
 	// Prototype is a zero-value instance of the CR type used for controller setup.
 	// This is required because Go generics don't allow creating new instances.
 	Prototype CR
@@ -171,7 +230,7 @@ type GenericReconcilerConfig[CR common.ClusterInterface] struct {
 //     g. PostReconcile Extensions
 //     h. Final Status Update
 //  4. Error handling: OnReconcileError hooks, set Degraded condition
-type GenericReconciler[CR common.ClusterInterface] struct {
+type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	client              client.Client
 	scheme              *runtime.Scheme
 	k8sUtil             *util.K8sUtil
@@ -180,19 +239,24 @@ type GenericReconciler[CR common.ClusterInterface] struct {
 	cleaner             *RoleGroupCleaner
 	eventManager        *EventManager
 	configMerger        *config.ConfigMerger
+	apiReader           client.Reader
 	roleGroupHandler    RoleGroupHandler[CR]
-	extensionRegistry   *common.ExtensionRegistry
+	extensionRegistry   *common.ExtensionRegistry[CR]
 	prototype           CR
 	rateLimitRetryAfter time.Duration
+	// healthCheckInterval is the cadence at which a successful reconcile requeues itself; <= 0
+	// disables periodic requeue (see reconcile's wakeup aggregation).
+	healthCheckInterval time.Duration
 	serviceAccountName  string
 	// serviceAccountNameFunc, when set, resolves a per-CR SA name that takes precedence over
 	// the static serviceAccountName (see resolveServiceAccountName).
 	serviceAccountNameFunc func(cr CR) string
 	productConfig          func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
+	dependencies           func(cr CR) []Dependency
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
-func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConfig[CR]) (*GenericReconciler[CR], error) {
+func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerConfig[CR]) (*GenericReconciler[CR], error) {
 	if cfg.Client == nil {
 		return nil, fmt.Errorf("client is required")
 	}
@@ -223,44 +287,80 @@ func NewGenericReconciler[CR common.ClusterInterface](cfg *GenericReconcilerConf
 		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
 	}
 
-	cleaner := NewRoleGroupCleaner(cfg.Client, cfg.Scheme)
-	if cfg.GrayDeleteGracePeriod > 0 {
-		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
-	}
+	eventManager := NewEventManager(cfg.Recorder)
 
 	rateLimitRetryAfter := cfg.RateLimitRetryAfter
 	if rateLimitRetryAfter == 0 {
 		rateLimitRetryAfter = 10 * time.Second
 	}
 
+	cleaner := NewRoleGroupCleaner(cfg.Client, cfg.Scheme)
+	cleaner.WithEventManager(eventManager)
+	// The cleanup path issues API writes like the apply path does, so it backs off on a 429 with
+	// the same delay instead of inventing its own.
+	cleaner.WithRateLimitRetryAfter(rateLimitRetryAfter)
+	// Pruning a role group from the status snapshot is irreversible — nothing enumerates the
+	// group afterwards — so that verdict is confirmed against the API server rather than a cache
+	// that may answer NotFound for an object that exists.
+	cleaner.WithAPIReader(cfg.APIReader)
+	cleaner.WithDrainPollInterval(cfg.DrainPollInterval)
+	cleaner.WithDrainTimeout(cfg.DrainTimeout)
+	if cfg.GrayDeleteGracePeriod > 0 {
+		cleaner.WithGrayDeleteGracePeriod(cfg.GrayDeleteGracePeriod)
+	}
+
+	// An empty registry rather than nil keeps the hook call sites unconditional; a product that
+	// registers no extensions pays an empty loop per hook.
+	extensionRegistry := cfg.ExtensionRegistry
+	if extensionRegistry == nil {
+		extensionRegistry = common.NewExtensionRegistry[CR]()
+	}
+
 	return &GenericReconciler[CR]{
 		client:                 cfg.Client,
+		apiReader:              cfg.APIReader,
 		scheme:                 cfg.Scheme,
 		k8sUtil:                util.NewK8sUtil(cfg.Client, cfg.Scheme),
 		healthManager:          healthManager,
 		dependencyResolver:     NewDependencyResolver(cfg.Client),
 		cleaner:                cleaner,
-		eventManager:           NewEventManager(cfg.Recorder),
+		eventManager:           eventManager,
 		configMerger:           config.NewConfigMerger(),
 		roleGroupHandler:       cfg.RoleGroupHandler,
-		extensionRegistry:      common.GetExtensionRegistry(),
+		extensionRegistry:      extensionRegistry,
 		prototype:              cfg.Prototype,
 		rateLimitRetryAfter:    rateLimitRetryAfter,
+		healthCheckInterval:    healthCheckInterval,
 		serviceAccountName:     cfg.ServiceAccountName,
 		serviceAccountNameFunc: cfg.ServiceAccountNameFunc,
 		productConfig:          cfg.ProductConfig,
+		dependencies:           cfg.Dependencies,
 	}, nil
 }
 
 // Reconcile implements controller-runtime's Reconciler interface.
 // It is the entry point for reconciliation requests.
-func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+//
+// The results are named so the deferred panic recovery can turn a recovered panic into a
+// returned error: swallowing it would report the cycle as successful and the workqueue would
+// neither requeue nor back off. The status is deliberately left untouched on this path — an
+// internal error says nothing about the cluster's actual state (docs/architecture.md §4.8.2).
+func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
+
+	// panicSubject is the object the Warning event is attached to. It is only known once the CR
+	// has been fetched; before that a panic is reported through the returned error alone.
+	var panicSubject client.Object
 
 	// Panic recovery
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			logger.Error(fmt.Errorf("panic: %v", recovered), "Panic recovered in reconciliation")
+			result = ctrl.Result{}
+			err = fmt.Errorf("panic in reconciliation: %v", recovered)
+			logger.Error(err, "Panic recovered in reconciliation", "stack", string(debug.Stack()))
+			if panicSubject != nil {
+				r.eventManager.EmitWarningEvent(panicSubject, "ReconcilePanic", err.Error())
+			}
 		}
 	}()
 
@@ -273,9 +373,16 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		return ctrl.Result{}, err
 	}
+	panicSubject = cr
+
+	// Snapshot the object exactly as stored, before any step mutates its status. Every status
+	// write this cycle is compared against it, so a cycle that computes nothing new costs a read
+	// instead of a write (and, since the controller watches its own CR, does not schedule itself
+	// again).
+	stored := cr.DeepCopy()
 
 	// Perform reconciliation
-	result, err := r.reconcile(ctx, cr)
+	result, err = r.reconcile(ctx, cr, stored)
 	if err != nil {
 		// Handle 429 rate limit: back off without setting Degraded or emitting an error event
 		var rateLimitErr *RateLimitError
@@ -287,17 +394,20 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 		// Execute error hooks
 		r.executeErrorHooks(ctx, cr, err)
 
-		// Set degraded condition
+		// Set degraded condition. ReconcileComplete has to be falsified here too: it is otherwise
+		// only ever set to True, so a cluster that succeeded once would keep advertising a
+		// completed reconcile next to Degraded=True for every subsequent failure.
 		status := cr.GetStatus()
 		status.SetDegraded(true, v1alpha1.ReasonReconcileError, err.Error())
+		status.SetReconcileComplete(false, v1alpha1.ReasonReconcileError, err.Error())
 
 		// Update status
-		if updateErr := r.updateStatus(ctx, cr); updateErr != nil {
+		if updateErr := r.updateStatus(ctx, cr, stored); updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after reconciliation error")
 		}
 
 		// Emit error event
-		r.eventManager.EmitErrorEvent(cr.GetName(), r.getAsClientObject(cr), err)
+		r.eventManager.EmitErrorEvent(cr.GetName(), cr, err)
 
 		return ctrl.Result{}, err
 	}
@@ -311,27 +421,26 @@ func (r *GenericReconciler[CR]) fetchCR(ctx context.Context, key types.Namespace
 	// Create a new instance of the CR type by deep copying the prototype.
 	// Using r.prototype instead of a zero value prevents a nil pointer panic
 	// when CR is a pointer type (e.g. *TrinoCluster), where var zero CR yields nil.
-	cr := r.prototype.DeepCopyCluster().(CR)
+	cr := r.prototype.DeepCopy()
 
-	// Get the client.Object for the fetch
-	obj := r.getAsClientObject(cr)
-	if err := r.client.Get(ctx, key, obj); err != nil {
+	if err := r.client.Get(ctx, key, cr); err != nil {
 		return zero, err
 	}
 
 	return cr, nil
 }
 
-// getAsClientObject converts CR to client.Object using the runtime.Object interface.
-func (r *GenericReconciler[CR]) getAsClientObject(cr CR) client.Object {
-	return cr.GetRuntimeObject().(client.Object)
-}
-
 // reconcile performs the main reconciliation logic.
-func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Result, error) {
+func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored client.Object) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	spec := cr.GetSpec()
 	status := cr.GetStatus()
+
+	// Record the generation this cycle is computed from before any condition is written, so the
+	// conditions and the top-level observedGeneration always agree. The field means "observed",
+	// not "successfully reconciled" — that distinction is carried by ReconcileComplete, which the
+	// error path sets to False.
+	status.SetObservedGeneration(cr.GetGeneration())
 
 	// ClusterOperation gate — evaluated FIRST, before any resource mutation (ServiceAccount
 	// provisioning, PreReconcile extensions, role reconciliation). reconciliationPaused must fully
@@ -349,7 +458,12 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 		if op.ReconciliationPaused {
 			logger.Info("Reconciliation is paused")
 			status.SetDegraded(true, v1alpha1.ReasonReconciliationPaused, "Reconciliation is paused")
-			_ = r.updateStatus(ctx, cr) //nolint:errcheck
+			// Surfacing the pause is the only thing this cycle does, so a failed write must be
+			// retried rather than dropped — otherwise the CR keeps advertising the last running
+			// cycle's status and nothing reschedules it.
+			if err := r.updateStatus(ctx, cr, stored); err != nil {
+				return ctrl.Result{}, NewReconcileError("StatusUpdate", "failed to record the paused state", err)
+			}
 			return ctrl.Result{}, nil
 		}
 	}
@@ -368,23 +482,37 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 		return ctrl.Result{}, NewReconcileError("PreReconcile", "extension hook failed", err)
 	}
 
-	// 2. Validate dependencies
-	if err := r.dependencyResolver.Validate(ctx, spec); err != nil {
+	// 2. Validate dependencies declared by the product (no-op when the hook is unset)
+	if err := r.validateDependencies(ctx, cr); err != nil {
 		return ctrl.Result{}, NewReconcileError("DependencyValidation", "dependency validation failed", err)
 	}
 
 	// 3. Process each role
-	for roleName, roleSpec := range spec.Roles {
+	r.warnOnUnknownConfiguredRoles(ctx, cr, spec)
+	// Sorted, not map order: the first failing role aborts the cycle and its error text becomes
+	// the Degraded message. With map order, a cluster with several broken role groups reports a
+	// different one every cycle, so the status never settles and each write schedules the next
+	// reconcile.
+	for _, roleName := range slices.Sorted(maps.Keys(spec.Roles)) {
+		roleSpec := spec.Roles[roleName]
 		if err := r.reconcileRole(ctx, cr, roleName, &roleSpec); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	// 4. Cleanup orphaned resources
-	owner := r.getAsClientObject(cr)
-	if err := r.cleaner.Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status, owner.GetUID(), owner.GetAnnotations()); err != nil {
+	// 4. Cleanup orphaned resources. The returned duration is the earliest wakeup the cleanup needs
+	// (a pending gray-delete deadline, or the next poll of a deletion in flight); it feeds the
+	// wakeup aggregation below so the deletion state machine advances on time.
+	cleanupRequeue, err := r.cleaner.Cleanup(ctx, cr.GetNamespace(), cr.GetName(), spec, status, cr.GetUID(), cr.GetAnnotations())
+	if err != nil {
+		// Throttling is not a cleanup problem: the API server is rejecting this operator's
+		// requests, so the whole cycle has to back off rather than push the remaining writes
+		// through. Every other cleanup failure stays non-fatal — the cluster's own resources are
+		// reconciled, only the leftovers of a removed role group are not.
+		if IsRateLimitError(err) {
+			return ctrl.Result{}, err
+		}
 		logger.Error(err, "Failed to cleanup orphaned resources")
-		// Don't fail reconciliation for cleanup errors
 	}
 
 	// 5. Update health status
@@ -400,14 +528,74 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR) (ctrl.Resu
 
 	// 7. Final status update
 	status.SetReconcileComplete(true, v1alpha1.ReasonReconcileComplete, "Reconciliation completed successfully")
-	status.ObservedGeneration = r.getAsClientObject(cr).GetGeneration()
 
-	if err := r.updateStatus(ctx, cr); err != nil {
+	if err := r.updateStatus(ctx, cr, stored); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	// 8. Schedule the next wakeup. Watches only cover the resources the framework owns, so
+	// anything that changes without producing an event — a ServiceHealthCheck probe, a
+	// gray-delete grace period running out — needs a timed requeue. Both sources collapse into
+	// a single RequeueAfter (the earliest one); zero means "no periodic wakeup".
+	requeueAfter := earliestRequeue(r.healthCheckInterval, cleanupRequeue)
+
 	logger.Info("Reconciliation completed successfully")
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// earliestRequeue returns the smallest strictly positive duration, or 0 when there is none.
+// Non-positive candidates mean "this source has nothing pending" and are ignored.
+func earliestRequeue(candidates ...time.Duration) time.Duration {
+	next := time.Duration(0)
+	for _, d := range candidates {
+		if d <= 0 {
+			continue
+		}
+		if next == 0 || d < next {
+			next = d
+		}
+	}
+	return next
+}
+
+// validateDependencies verifies that every external object the product declares for this CR
+// exists. Returns a *DependencyError (which the caller turns into a Degraded condition and a
+// requeue) for the first missing one. No-op when the Dependencies hook is unset.
+func (r *GenericReconciler[CR]) validateDependencies(ctx context.Context, cr CR) error {
+	if r.dependencies == nil {
+		return nil
+	}
+
+	for _, dep := range r.dependencies(cr) {
+		namespace := dep.Namespace
+		if namespace == "" {
+			namespace = cr.GetNamespace()
+		}
+		if dep.Name == "" {
+			return &DependencyError{
+				Type:    "InvalidDependency",
+				Message: fmt.Sprintf("%s dependency declared with an empty name", dep.Kind),
+			}
+		}
+
+		switch dep.Kind {
+		case DependencyConfigMap:
+			if err := r.dependencyResolver.ValidateConfigMap(ctx, namespace, dep.Name); err != nil {
+				return err
+			}
+		case DependencySecret:
+			if err := r.dependencyResolver.ValidateSecret(ctx, namespace, dep.Name); err != nil {
+				return err
+			}
+		default:
+			return &DependencyError{
+				Type:    "UnsupportedDependencyKind",
+				Message: fmt.Sprintf("dependency %s/%s has unsupported kind %q", namespace, dep.Name, dep.Kind),
+			}
+		}
+	}
+
+	return nil
 }
 
 // reconcileRole reconciles a single role.
@@ -419,12 +607,20 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 		return NewReconcileError("RolePreReconcile", fmt.Sprintf("role %s extension hook failed", roleName), err)
 	}
 
-	// Process each role group
+	// Process each role group.
+	//
+	// Sorted, not map order, for the same reason the role loop is (see reconcile): the first
+	// failing group aborts the role and its error text becomes the Degraded message, so with map
+	// order a cluster with several broken groups reports a different one every cycle and the
+	// status never settles.
+	//
 	// Note: groupSpec is deep copied because it may be modified during reconciliation.
 	// roleSpec is passed directly as read-only (used for configuration lookup only);
 	// it originates from spec.Roles which is re-fetched from the API server each reconcile,
 	// so any accidental modifications would not persist and would be corrected on next reconcile.
-	for groupName, groupSpec := range roleSpec.GetRoleGroups() {
+	roleGroups := roleSpec.GetRoleGroups()
+	for _, groupName := range slices.Sorted(maps.Keys(roleGroups)) {
+		groupSpec := roleGroups[groupName]
 		groupSpecCopy := *groupSpec.DeepCopy()
 		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy); err != nil {
 			return err
@@ -465,19 +661,27 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 		return nil
 	}
 
-	owner := r.getAsClientObject(cr)
 	name := RoleResourceName(cr.GetName(), roleName)
 
-	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, cr.GetLabels(), roleSpec)
+	// cr.GetLabels() hands out the live CR's map; the handler is free to build its label set on
+	// top of the argument, which would otherwise mutate the CR object itself.
+	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, maps.Clone(cr.GetLabels()), roleSpec)
 	if pdb == nil {
-		// PDB unset or disabled: remove any role PDB we previously created (ownership-checked).
-		if err := r.cleaner.deletePDB(ctx, cr.GetNamespace(), name, owner.GetUID()); err != nil {
+		// PDB unset or disabled: remove the role PDB we previously created. Gated on the slot
+		// label, not on ownership: a product's own PDB may legitimately be named "<cluster>-<role>"
+		// and carries the same controller owner reference, so ownership cannot tell them apart.
+		if err := r.reclaimRolePDB(ctx, cr.GetNamespace(), name, roleName, cr.GetUID(), cr.GetName()); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", cr.GetNamespace(), name, "failed to delete disabled PDB", err)
 		}
 		return nil
 	}
 
-	if err := r.applyResource(ctx, owner, pdb); err != nil {
+	// Stamp the role slot before applying. This branch only runs for roles the spec declares, so
+	// nothing here reclaims the PDB of a role that was deleted outright; the label is what lets
+	// the cleaner find it afterwards without confusing it with a product's own PDB.
+	markRolePodDisruptionBudget(pdb, roleName)
+
+	if err := r.applyResource(ctx, cr, pdb); err != nil {
 		return NewResourceApplyError("PodDisruptionBudget", cr.GetNamespace(), name, "failed to apply", err)
 	}
 	return nil
@@ -495,6 +699,15 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	// Build context
 	buildCtx := r.buildRoleGroupContext(cr, roleName, roleSpec, groupName, groupSpec)
 
+	// A podOverrides layer that fails to decode is dropped by the merger so the rest of the
+	// configuration still applies, but dropping a user's override silently is worse than a
+	// partially applied one: surface it on the CR where the author will see it.
+	for _, overrideErr := range buildCtx.MergedConfig.PodOverrideErrors {
+		logger.Error(overrideErr, "Ignoring undecodable podOverrides layer", "role", roleName, "roleGroup", groupName)
+		r.eventManager.EmitWarningEvent(cr, "PodOverrideIgnored",
+			fmt.Sprintf("role %s group %s: %v", roleName, groupName, overrideErr))
+	}
+
 	// Resolve the Vector aggregator address (if the CR exposes it) so the framework can own
 	// vector.yaml generation. Must run before building resources / the ConfigMap.
 	if err := r.resolveVectorAggregatorAddress(ctx, cr, buildCtx); err != nil {
@@ -505,7 +718,7 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	// the registered sidecars by BaseRoleGroupHandler.BuildResources — after the product's
 	// BuildResources override has resolved the CR-driven image — so both plain and embedding
 	// handlers are covered without a concrete-type assertion here.
-	buildCtx.SidecarManager = r.buildSidecarManager(ctx, buildCtx)
+	buildCtx.SidecarManager = r.buildSidecarManager(ctx, cr, buildCtx)
 
 	// Delegate to handler for resource building
 	resources, err := r.roleGroupHandler.BuildResources(ctx, r.client, cr, buildCtx)
@@ -586,14 +799,16 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 	return &RoleGroupBuildContext{
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
-		ClusterLabels:    cr.GetLabels(),
-		ClusterSpec:      cr.GetSpec(),
-		RoleName:         roleName,
-		RoleSpec:         roleSpec,
-		RoleGroupName:    groupName,
-		RoleGroupSpec:    *mergedGroupSpec,
-		MergedConfig:     mergedConfig,
-		ResourceName:     resourceName,
+		// Cloned: GetLabels hands out the live CR's map, and a handler that adds an entry to
+		// ClusterLabels would mutate the object this cycle's status write is computed from.
+		ClusterLabels: maps.Clone(cr.GetLabels()),
+		ClusterSpec:   cr.GetSpec(),
+		RoleName:      roleName,
+		RoleSpec:      roleSpec,
+		RoleGroupName: groupName,
+		RoleGroupSpec: *mergedGroupSpec,
+		MergedConfig:  mergedConfig,
+		ResourceName:  resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
 		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
 		// empty when no SA is configured (backward compatible).
@@ -609,8 +824,15 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 // have a SidecarManager to register their own containers with (e.g. init containers via
 // StaticContainerProvider), so pod container injection always flows through the manager
 // rather than being mutated directly.
-func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
+//
+// It also records the resolved Vector decision on buildCtx (VectorLogPipelineActive), so the
+// logging renderers gate the rolling file appender on the sidecar that is really injected rather
+// than on the enablement flag they cannot fully evaluate.
+func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
 	mgr := sidecar.NewSidecarManager()
+	// Every early return below leaves the shared log volume unbuilt, so the pipeline is inactive
+	// unless the registration at the end of this function is reached.
+	buildCtx.VectorLogPipelineActive = ptr.To(false)
 
 	// Logging was deep-merged once in buildRoleGroupContext.
 	logging := buildCtx.MergedConfig.Logging
@@ -640,6 +862,24 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 		return mgr
 	}
 
+	// The sidecar runs "vector --config <mount>/vector.yaml", so it is only injected when
+	// something actually writes that key into the role group ConfigMap: the framework does it for
+	// a CR implementing VectorAggregatorProvider, otherwise the handler must claim the file
+	// through VectorConfigProvider. With neither, registering the provider would fail sidecar
+	// validation on every cycle and abort the whole cluster's reconcile over a product that is
+	// simply not wired for Vector — so this is reported as the product-configuration mistake it
+	// is, and the rest of the cluster keeps converging.
+	if !r.vectorConfigIsProvided(cr, buildCtx.RoleName) {
+		message := fmt.Sprintf(
+			"role %s group %s enables the vector agent, but neither the cluster resource implements VectorAggregatorProvider "+
+				"nor the role group handler implements VectorConfigProvider; no vector.yaml would be generated, so the sidecar is skipped",
+			buildCtx.RoleName, buildCtx.RoleGroupName)
+		log.FromContext(ctx).Info("Skipping vector sidecar: no source for vector.yaml",
+			"role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
+		r.eventManager.EmitWarningEvent(cr, "VectorSidecarSkipped", message)
+		return mgr
+	}
+
 	// The role-group ConfigMap name (buildCtx.ResourceName) is passed at construction so the
 	// Vector container mounts the right config. The image is propagated later via
 	// SidecarManager.SetProductImage (Vector ships inside the product image), so an empty image
@@ -657,8 +897,24 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, buildCt
 		}
 	}
 	mgr.Register(vector.NewVectorSidecarProvider("", opts...), &sidecar.SidecarConfig{Enabled: true})
+	buildCtx.VectorLogPipelineActive = ptr.To(true)
 
 	return mgr
+}
+
+// vectorConfigIsProvided reports whether anything will write vector.yaml into the role group
+// ConfigMap: the framework generates it for a CR exposing an aggregator ConfigMap
+// (VectorAggregatorProvider, see resolveVectorAggregatorAddress), and a product that builds the
+// file itself says so through VectorConfigProvider on its handler. It gates Vector sidecar
+// registration, so the two sides of the contract cannot drift apart.
+func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, roleName string) bool {
+	if _, ok := any(cr).(VectorAggregatorProvider); ok {
+		return true
+	}
+	if provider, ok := r.roleGroupHandler.(VectorConfigProvider); ok {
+		return provider.ProvidesVectorConfig(roleName)
+	}
+	return false
 }
 
 // producerContainerNames extracts the container names from a log-producer declaration list.
@@ -716,25 +972,24 @@ func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Conte
 // Each resource is created when absent and updated to the handler-built desired state when it
 // already exists (see applyResource / copyDesiredState for the exact update semantics).
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
-	owner := r.getAsClientObject(cr)
 
 	// 1. Apply ConfigMap
 	if resources.ConfigMap != nil {
-		if err := r.applyResource(ctx, owner, resources.ConfigMap); err != nil {
+		if err := r.applyResource(ctx, cr, resources.ConfigMap); err != nil {
 			return NewResourceApplyError("ConfigMap", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
 
 	// 2. Apply Headless Service
 	if resources.HeadlessService != nil {
-		if err := r.applyResource(ctx, owner, resources.HeadlessService); err != nil {
+		if err := r.applyResource(ctx, cr, resources.HeadlessService); err != nil {
 			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, buildCtx.ResourceName+"-headless", "failed to apply headless service", err)
 		}
 	}
 
 	// 3. Apply Service
 	if resources.Service != nil {
-		if err := r.applyResource(ctx, owner, resources.Service); err != nil {
+		if err := r.applyResource(ctx, cr, resources.Service); err != nil {
 			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
@@ -748,14 +1003,23 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 		if extra == nil {
 			continue
 		}
-		if err := r.applyResource(ctx, owner, extra); err != nil {
+		if err := r.applyResource(ctx, cr, extra); err != nil {
 			return NewResourceApplyError(r.resourceKind(extra), extra.GetNamespace(), extra.GetName(), "failed to apply extra resource", err)
 		}
 	}
 
+	// 4b. Validate sidecar dependencies before the workload is applied, so a missing external
+	// object fails the reconcile instead of producing pods that crash-loop on a broken mount.
+	// It runs here, not before step 1: the built-in providers (Vector, JMX exporter) point at
+	// the role group ConfigMap, and products may ship a provider's dependency as an extra
+	// resource — both are in place by now, on the very first reconcile too.
+	if err := r.validateSidecars(ctx, buildCtx); err != nil {
+		return err
+	}
+
 	// 5. Apply StatefulSet
 	if resources.StatefulSet != nil {
-		if err := r.applyResource(ctx, owner, resources.StatefulSet); err != nil {
+		if err := r.applyResource(ctx, cr, resources.StatefulSet); err != nil {
 			return NewResourceApplyError("StatefulSet", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
@@ -763,24 +1027,156 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	// 6. Apply the custom per-group PodDisruptionBudget (escape hatch), or reclaim the legacy
 	// per-role-group PDB. The framework's own PDB is now role-level (reconcileRolePodDisruptionBudget);
 	// a product may still ship a custom per-group PDB via RoleGroupResources.PodDisruptionBudget.
-	// When it does not, delete any PDB named "<cluster>-<role>-<group>" left behind by older
-	// framework versions (ownership-checked, no-op if absent) so upgraded clusters converge to
-	// exactly one role-level PDB instead of retaining stale per-group constraints.
+	// When it does not, delete the PDB named "<cluster>-<role>-<group>" left behind by older
+	// framework versions (no-op if absent) so upgraded clusters converge to exactly one role-level
+	// PDB instead of retaining stale per-group constraints.
 	if resources.PodDisruptionBudget != nil {
-		if err := r.applyResource(ctx, owner, resources.PodDisruptionBudget); err != nil {
+		// The reclaim below deletes by derived name; stamping the slot marks this object as the
+		// framework's per-group PDB, so turning the escape hatch off later actually removes it.
+		markRoleGroupPodDisruptionBudget(resources.PodDisruptionBudget, buildCtx.RoleGroupName)
+		if err := r.applyResource(ctx, cr, resources.PodDisruptionBudget); err != nil {
 			return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
-	} else if err := r.cleaner.deletePDB(ctx, buildCtx.ClusterNamespace, buildCtx.ResourceName, owner.GetUID()); err != nil {
+	} else if err := r.reclaimRoleGroupPDB(ctx, buildCtx, cr.GetUID()); err != nil {
 		return NewResourceApplyError("PodDisruptionBudget", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to delete legacy per-group PDB", err)
 	}
 
-	// 7. Apply MetricsService
+	// 7. Apply the metrics Service, or reclaim it when metrics are turned off — mirroring the
+	// PDB branch above, so disabling metrics actually removes the stale Service instead of
+	// leaving a scrape target pointing at pods nobody exports metrics from.
+	metricsName := buildCtx.ResourceName + "-metrics"
 	if resources.MetricsService != nil {
-		if err := r.applyResource(ctx, owner, resources.MetricsService); err != nil {
-			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, buildCtx.ResourceName+"-metrics", "failed to apply metrics service", err)
+		// The reclaim below deletes by derived name, and "<resource>-metrics" is also a legal
+		// resource name for a role group literally called "<group>-metrics". Stamping the slot
+		// here is what lets the reclaim tell "the metrics Service this framework applied" apart
+		// from a sibling role group's Service, or a product's own object of the same name.
+		markMetricsService(resources.MetricsService)
+		if err := r.applyResource(ctx, cr, resources.MetricsService); err != nil {
+			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, metricsName, "failed to apply metrics service", err)
 		}
+	} else if err := r.reclaimMetricsService(ctx, buildCtx.ClusterNamespace, metricsName, cr.GetUID(), buildCtx.ClusterName); err != nil {
+		return NewResourceApplyError("Service", buildCtx.ClusterNamespace, metricsName, "failed to delete disabled metrics service", err)
 	}
 
+	return nil
+}
+
+// LabelMetricsService marks a Service as the framework's per-role-group metrics slot. Only
+// Services carrying it are reclaimed when a role group stops producing a MetricsService.
+const LabelMetricsService = "metrics." + constant.KubedoopDomain + "/service"
+
+// markMetricsService stamps the metrics slot label on a handler-built metrics Service.
+func markMetricsService(svc *corev1.Service) {
+	if svc.Labels == nil {
+		svc.Labels = map[string]string{}
+	}
+	svc.Labels[LabelMetricsService] = valueTrue
+}
+
+// markRolePodDisruptionBudget stamps the role slot label, carrying the role the PDB covers, on a
+// handler-built role PodDisruptionBudget. See LabelRolePodDisruptionBudget and the cleaner's
+// cleanupOrphanedRolePDBs for why the role name has to travel on the object.
+func markRolePodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, roleName string) {
+	if pdb.Labels == nil {
+		pdb.Labels = map[string]string{}
+	}
+	pdb.Labels[LabelRolePodDisruptionBudget] = roleName
+}
+
+// markRoleGroupPodDisruptionBudget stamps the role group slot label on the per-group PDB a product
+// ships through RoleGroupResources.PodDisruptionBudget. See LabelRoleGroupPodDisruptionBudget.
+func markRoleGroupPodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, roleGroupName string) {
+	if pdb.Labels == nil {
+		pdb.Labels = map[string]string{}
+	}
+	pdb.Labels[LabelRoleGroupPodDisruptionBudget] = roleGroupName
+}
+
+// reclaimRolePDB deletes the role's PodDisruptionBudget when its config is unset or disabled, but
+// only when the live object is the one this framework applied as the role slot. Deleting purely by
+// derived name would also hit a product's own PDB named "<cluster>-<role>" (shipped through
+// RoleGroupResources.ExtraResources, say), which carries this CR's controller owner reference too —
+// ownership does not distinguish them, which is exactly why the slot label exists.
+func (r *GenericReconciler[CR]) reclaimRolePDB(ctx context.Context, namespace, name, roleName string, ownerUID types.UID, clusterName string) error {
+	pdb := &policyv1.PodDisruptionBudget{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, pdb); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if pdb.Labels[LabelRolePodDisruptionBudget] != roleName {
+		return nil
+	}
+	return r.cleaner.deletePDB(ctx, namespace, name, ownerUID, clusterName)
+}
+
+// reclaimRoleGroupPDB deletes the per-role-group PodDisruptionBudget named "<cluster>-<role>-<group>"
+// when the handler stops shipping one, but only when the live object is the framework's per-group
+// slot: the label this apply path stamps, or — for a cluster created before the PDB became a
+// role-level resource (issue #530), when no slot label existed — the pre-#530 framework
+// fingerprint. Without that check the reclaim would delete any owned PDB a product happens to ship
+// under the role group's own name.
+func (r *GenericReconciler[CR]) reclaimRoleGroupPDB(ctx context.Context, buildCtx *RoleGroupBuildContext, ownerUID types.UID) error {
+	pdb := &policyv1.PodDisruptionBudget{}
+	key := types.NamespacedName{Namespace: buildCtx.ClusterNamespace, Name: buildCtx.ResourceName}
+	if err := r.client.Get(ctx, key, pdb); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if !isFrameworkRoleGroupPDB(pdb, buildCtx.ClusterName, buildCtx.RoleGroupName) {
+		return nil
+	}
+	return r.cleaner.deletePDB(ctx, key.Namespace, key.Name, ownerUID, buildCtx.ClusterName)
+}
+
+// isFrameworkRoleGroupPDB reports whether a live PodDisruptionBudget under a role group's own name
+// is one the framework put there. Pre-#530 versions built it from the role group's descriptive
+// labels, which is the only fingerprint those objects carry: the framework's managed-by value plus
+// the role group marker label. Both are required — managed-by alone would also match the role-level
+// PDB of a differently named role group.
+func isFrameworkRoleGroupPDB(pdb *policyv1.PodDisruptionBudget, clusterName, roleGroupName string) bool {
+	if pdb.Labels[LabelRoleGroupPodDisruptionBudget] == roleGroupName {
+		return true
+	}
+	return pdb.Labels["app.kubernetes.io/managed-by"] == managedByValue &&
+		pdb.Labels[clusterName+"-"+roleGroupName] == valueTrue
+}
+
+// reclaimMetricsService deletes the role group's metrics Service, but only when the live object
+// is one this framework applied as the metrics slot. Deleting purely by derived name would also
+// hit the client Service of a role group named "<group>-metrics", and any object a product ships
+// under that name through RoleGroupResources.ExtraResources — both of which carry this CR's
+// controller owner reference, so ownership alone does not distinguish them.
+func (r *GenericReconciler[CR]) reclaimMetricsService(ctx context.Context, namespace, name string, ownerUID types.UID, clusterName string) error {
+	svc := &corev1.Service{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, svc); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if svc.Labels[LabelMetricsService] != valueTrue {
+		return nil
+	}
+	return r.cleaner.deleteService(ctx, namespace, name, ownerUID, clusterName)
+}
+
+// validateSidecars runs the registered sidecar providers' dependency checks for a role group.
+// The manager only validates once a client and namespace are wired (both are no-ops otherwise),
+// which is why the seam is closed here rather than at construction: the namespace is per CR.
+func (r *GenericReconciler[CR]) validateSidecars(ctx context.Context, buildCtx *RoleGroupBuildContext) error {
+	mgr := buildCtx.SidecarManager
+	if mgr == nil || !mgr.HasSidecars() {
+		return nil
+	}
+
+	mgr.WithClient(r.client, buildCtx.ClusterNamespace)
+	if err := mgr.ValidateAll(ctx); err != nil {
+		return NewValidationError("sidecar", buildCtx.RoleName, buildCtx.RoleGroupName, err)
+	}
 	return nil
 }
 
@@ -820,7 +1216,12 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 	if !ok {
 		return fmt.Errorf("failed to deep copy desired object %T: copy is not a client.Object", obj)
 	}
+	// The resourceVersion the live object carried before the write. CreateOrUpdate Gets into obj
+	// and then runs this mutate func, so this is the only point where it can be read; after the
+	// call obj holds whatever the API server returned.
+	var liveResourceVersion string
 	result, err := r.k8sUtil.CreateOrUpdate(ctx, obj, func() error {
+		liveResourceVersion = obj.GetResourceVersion()
 		// Set ownership
 		if err := controllerutil.SetControllerReference(owner, obj, r.scheme); err != nil {
 			return err
@@ -840,7 +1241,14 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 	case controllerutil.OperationResultCreated:
 		r.eventManager.EmitCreateEvent(owner.GetName(), obj)
 	case controllerutil.OperationResultUpdated:
-		r.eventManager.EmitUpdateEvent(owner.GetName(), obj)
+		// An Update is issued whenever the desired object differs from the live one in Go terms,
+		// which it always does once the API server has defaulted fields the handler omits. The
+		// server short-circuits such a write and returns the stored object unchanged, so the
+		// resourceVersion is what separates a real change from the steady state — without it a
+		// settled cluster emits a Normal "Updated" event per resource on every reconcile, forever.
+		if obj.GetResourceVersion() != liveResourceVersion {
+			r.eventManager.EmitUpdateEvent(owner.GetName(), obj)
+		}
 	}
 	return nil
 }
@@ -853,25 +1261,138 @@ func (r *GenericReconciler[CR]) executeErrorHooks(ctx context.Context, cr CR, re
 	}
 }
 
-// updateStatus updates the cluster status.
-func (r *GenericReconciler[CR]) updateStatus(ctx context.Context, cr CR) error {
-	return r.k8sUtil.UpdateStatus(ctx, r.getAsClientObject(cr))
+// updateStatus writes the in-memory status to the API server, retrying on conflict and skipping
+// the write entirely when this cycle computed nothing new.
+//
+// stored is the object as it was read at the start of the cycle. Comparing against the whole
+// object — rather than only the embedded GenericClusterStatus — is what lets a product's own
+// status fields participate in the decision: a CR's status typically embeds the generic struct
+// alongside product-specific fields that an extension hook filled in during this cycle, and
+// ClusterInterface exposes only the generic part.
+//
+// The write is issued from the in-memory object without re-fetching first, for the same reason:
+// a re-fetch replaces the whole status, discarding exactly those product-specific fields. On
+// conflict only the resourceVersion is refreshed and the write is retried, which is safe because
+// the controller is the sole writer of its CR's status.
+func (r *GenericReconciler[CR]) updateStatus(ctx context.Context, cr CR, stored client.Object) error {
+	// The controller watches its own CR, so an unconditional write would deliver a watch event
+	// and schedule another reconcile that writes again.
+	if stored != nil && apiequality.Semantic.DeepEqual(stored, cr) {
+		return nil
+	}
+
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		err := r.client.Status().Update(ctx, cr)
+		if !errors.IsConflict(err) {
+			return err
+		}
+		// Read the fresh resourceVersion through the uncached reader: a conflict means the
+		// informer has not observed the competing write yet, so the cache would hand back the
+		// same stale version and every retry would conflict again.
+		fresh := cr.DeepCopy()
+		if getErr := r.statusReader().Get(ctx, client.ObjectKeyFromObject(cr), fresh); getErr != nil {
+			return getErr
+		}
+		cr.SetResourceVersion(fresh.GetResourceVersion())
+		return err
+	})
+	// The CR was deleted while this cycle was running. There is nothing left to report on, and
+	// treating it as a failure would run the product's error hooks and emit a Warning event
+	// against an object that no longer exists.
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// statusReader returns the reader used to refresh a conflicting status write. It is the
+// configured uncached APIReader when available, falling back to the regular client.
+func (r *GenericReconciler[CR]) statusReader() client.Reader {
+	if r.apiReader != nil {
+		return r.apiReader
+	}
+	return r.client
+}
+
+// warnOnUnknownConfiguredRoles reports handler role configuration that no role in the CR claims.
+// Role names are bare strings that must match a key of spec.roles; a typo makes every per-role
+// lookup return nil, so the role group silently comes up with no ports, no image override and no
+// Service. It is only a warning, not a failure: a handler may legitimately be configured for
+// optional roles a given CR does not declare (an HA-only role, say).
+func (r *GenericReconciler[CR]) warnOnUnknownConfiguredRoles(ctx context.Context, cr CR, spec *v1alpha1.GenericClusterSpec) {
+	provider, ok := r.roleGroupHandler.(RoleNameProvider)
+	if !ok {
+		return
+	}
+	var unknown []string
+	for _, name := range provider.ConfiguredRoleNames() {
+		if _, declared := spec.Roles[name]; !declared {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return
+	}
+	message := fmt.Sprintf("handler configured for role(s) %s, which the cluster does not declare; their settings are ignored",
+		strings.Join(unknown, ", "))
+	log.FromContext(ctx).Info("Unknown configured role names", "roles", unknown)
+	r.eventManager.EmitWarningEvent(cr, "UnknownConfiguredRole", message)
+}
+
+// SetupWithManagerOptions extends the controller's watch set with resources the framework does
+// not know about. RoleGroupResources.ExtraResources have arbitrary GVKs, and a GVK that is not
+// watched produces no reconcile event: out-of-band edits to such a resource are only repaired by
+// the informer resync or an unrelated CR event. Products that emit extras register them here.
+type SetupWithManagerOptions struct {
+	// ExtraOwns adds an Owns() watch for each object's GVK — the right choice for resources the
+	// reconciler creates with a controller owner reference (which is how ExtraResources are
+	// applied).
+	ExtraOwns []client.Object
+
+	// Watches registers arbitrary additional watches on the controller builder, for sources
+	// that are not owned by the CR (e.g. a shared ConfigMap mapped back to several clusters).
+	Watches []func(*builder.Builder) *builder.Builder
 }
 
 // SetupWithManager sets up the controller with the Manager.
 // The prototype must be set in the config during construction.
 func (r *GenericReconciler[CR]) SetupWithManager(mgr ctrl.Manager) error {
-	// Use the prototype for controller setup
-	prototype := r.getAsClientObject(r.prototype)
+	return r.SetupWithManagerOpts(mgr, SetupWithManagerOptions{})
+}
 
-	return ctrl.NewControllerManagedBy(mgr).
-		For(prototype).
+// SetupWithManagerOpts sets up the controller with the Manager, adding the product's own
+// watches to the framework's fixed set. It is the extension point for ExtraResources GVKs;
+// SetupWithManager is the zero-options form.
+func (r *GenericReconciler[CR]) SetupWithManagerOpts(mgr ctrl.Manager, opts SetupWithManagerOptions) error {
+	return r.ControllerBuilder(mgr, opts).Complete(r)
+}
+
+// ControllerBuilder returns the controller builder configured with the framework's watch set
+// (the CR plus the resource kinds the reconciler owns) and the caller's extra watches, without
+// completing it. Products needing full control over the controller — predicates, options,
+// a custom Reconciler wrapper — build on top of this and call Complete themselves.
+func (r *GenericReconciler[CR]) ControllerBuilder(mgr ctrl.Manager, opts SetupWithManagerOptions) *builder.Builder {
+	b := ctrl.NewControllerManagedBy(mgr).
+		For(r.prototype).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
-		Owns(&corev1.ServiceAccount{}).
-		Complete(r)
+		Owns(&corev1.ServiceAccount{})
+
+	for _, obj := range opts.ExtraOwns {
+		if obj == nil {
+			continue
+		}
+		b = b.Owns(obj)
+	}
+	for _, with := range opts.Watches {
+		if with == nil {
+			continue
+		}
+		b = with(b)
+	}
+	return b
 }
 
 // resolveServiceAccountName resolves the ServiceAccount name for a CR.
@@ -895,14 +1416,13 @@ func (r *GenericReconciler[CR]) resolveServiceAccountName(cr CR) string {
 // explicit error naming both owners, because it almost always means two CRs were configured to
 // share one static ServiceAccountName — the fix is per-CR naming via ServiceAccountNameFunc.
 func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR, name string) error {
-	owner := r.getAsClientObject(cr)
 	sa := &corev1.ServiceAccount{}
 	sa.Name = name
 	sa.Namespace = cr.GetNamespace()
 
 	_, err := r.k8sUtil.CreateOrUpdate(ctx, sa, func() error {
 		sa.Labels = cr.GetLabels()
-		if err := controllerutil.SetControllerReference(owner, sa, r.scheme); err != nil {
+		if err := controllerutil.SetControllerReference(cr, sa, r.scheme); err != nil {
 			var alreadyOwned *controllerutil.AlreadyOwnedError
 			if stderrors.As(err, &alreadyOwned) {
 				return fmt.Errorf(
@@ -911,7 +1431,7 @@ func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR,
 						"use per-CR naming (GenericReconcilerConfig.ServiceAccountNameFunc, e.g. \"<product>-<cluster>\"): %w",
 					sa.Namespace, sa.Name,
 					alreadyOwned.Owner.Kind, alreadyOwned.Owner.Name,
-					r.resourceKind(owner), owner.GetName(),
+					r.resourceKind(cr), cr.GetName(),
 					err,
 				)
 			}

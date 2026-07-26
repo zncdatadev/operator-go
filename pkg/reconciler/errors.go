@@ -140,6 +140,44 @@ func NewResourceApplyError(resourceType, namespace, resourceName, message string
 	}
 }
 
+// ValidationError represents a failed pre-apply validation of a role group's declared
+// dependencies (e.g. a sidecar provider referencing a ConfigMap that does not exist). It is
+// distinct from a build or apply failure: nothing was written, the desired state is simply not
+// satisfiable yet.
+type ValidationError struct {
+	Subject   string
+	RoleName  string
+	GroupName string
+	Cause     error
+}
+
+// Error implements error.
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("%s validation failed for role %q group %q: %v",
+		e.Subject, e.RoleName, e.GroupName, e.Cause)
+}
+
+// Unwrap returns the underlying error.
+func (e *ValidationError) Unwrap() error {
+	return e.Cause
+}
+
+// NewValidationError creates a new ValidationError.
+func NewValidationError(subject, roleName, groupName string, cause error) *ValidationError {
+	return &ValidationError{
+		Subject:   subject,
+		RoleName:  roleName,
+		GroupName: groupName,
+		Cause:     cause,
+	}
+}
+
+// IsValidationError checks if an error is or wraps a ValidationError.
+func IsValidationError(err error) bool {
+	var validationErr *ValidationError
+	return stderrors.As(err, &validationErr)
+}
+
 // IsReconcileError checks if an error is a ReconcileError.
 func IsReconcileError(err error) bool {
 	_, ok := err.(*ReconcileError)

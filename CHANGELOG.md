@@ -1,6 +1,148 @@
 <!-- markdownlint-disable -->
 # CHANGELOG
 
+## v0.13.0 (unreleased)
+
+Architecture review follow-up: four waves of correctness fixes across the reconcile loop, the
+builders, config/logging rendering and the CSI wiring, followed by three API redesigns that shrink
+the contracts a product operator implements. **Downstream operators must migrate — the breaking
+changes are listed below.**
+
+### BREAKING CHANGES
+
+- `common.ClusterInterface` shrank from twelve methods to `client.Object` plus `GetSpec` and
+  `GetStatus`. `GetName`, `GetNamespace`, `GetUID`, `GetLabels`, `GetAnnotations`, `SetStatus`,
+  `GetObjectMeta`, `GetScheme`, `DeepCopyCluster` and `GetRuntimeObject` are no longer declared, and
+  `common.ClusterObject` is removed. Product CRs delete those methods, embed
+  `metav1.TypeMeta`/`metav1.ObjectMeta`, and must be registered with the scheme — the CR is now the
+  object `client.Get` reads into. Status is mutated through the pointer `GetStatus` returns.
+- `reconciler.GenericReconciler`, `GenericReconcilerConfig` and `NewGenericReconciler` are
+  constrained by the new `common.ClusterResource[CR]` (`ClusterInterface` + `DeepCopy() CR`, which
+  `make generate` already emits) instead of `common.ClusterInterface`.
+- `common.ExtensionRegistry` is generic over the CR type: `common.NewExtensionRegistry[*MyCluster]()`.
+  Extension hooks receive the concrete CR, so `common.AsClusterExtension`, `AsRoleExtension` and
+  `AsRoleGroupExtension` are removed along with the erased registry they bridged.
+- `common.GetExtensionRegistry` and `common.ResetExtensionRegistry` are removed; there is no
+  process-wide registry. A reconciler executes only the registry passed as
+  `GenericReconcilerConfig.ExtensionRegistry`, and `Clear()` replaces the global reset.
+- The nine registration methods collapsed to three variadic ones:
+  `Register{Cluster,Role,RoleGroup}Extension(ext, opts ...RegistrationOption)`. The
+  `*WithPriority` and `*WithOptions` variants are removed; `WithPriority` and `WithStopOnError`
+  themselves are unchanged.
+- `config.ConfigFormat` is replaced by `config.ConfigMarshaler` (required, `Marshal`) and
+  `config.ConfigUnmarshaler` (optional, `Unmarshal`, discovered by interface upgrade).
+  `RegisterFormat`, `NewConfigGenerator` and `GetFormat` take/return `ConfigMarshaler`; parse through
+  `ConfigGenerator.Parse` or the new `MultiFormatConfigGenerator.Parse(filename, content)`.
+- Config adapter errors no longer wrap through `common.ConfigParseError`; emit failures read
+  "failed to serialize `<format>` configuration" and the generators wrap them with the file and
+  format. `config.ErrNoFormat` and `*config.UnsupportedParseError` are the typed checks.
+- A file name matching several registered extensions now selects the **longest** registration
+  instead of an arbitrary one.
+- Adapter output changed where it was wrong: `.env` values are quoted unless every character is
+  shell-inert (a generated file can no longer execute a config value when sourced), single-quoted
+  `.env` values read back literally, XML rejects C0 controls/non-UTF-8 and emits `&#13;` for CR,
+  `.properties` decodes `\uXXXX` and drops continuation indentation, and YAML rejects duplicate keys.
+- Removed dead exported API: `commons/v1alpha1.ZKConfig`, `GracefulShutdownSpec`,
+  `StorageResourceSpec`, the OIDC `ResponseType` enum, `common.HealthCheckResult`,
+  `common.RoleInterface`/`RoleInfo`/`RoleGroupInfo`, `common.PrioritizedExtension` and
+  `common.NoOpExtension`.
+- `security.ListenerVolume(volumeName, secretClass, listenerVolumeName string, format SecretFormat)`
+  gained the required `listenerVolumeName` parameter; it emits `listener-volume=<name>`, and an
+  empty name panics (as does any named scope key without a value).
+- `pkg/listener` lost its scope API: `VolumeRegistration.WithScope`, `ListenerScope`,
+  `ListenerScopeNode`, `ListenerScopeCluster` and `ListenerScopeAnnotation` are removed, and PVC
+  templates no longer carry the `listeners.kubedoop.dev/scope` annotation the listener-operator
+  never read.
+- `sidecar.SidecarConfig.MainContainerName` and `sidecar.FindMainContainer` are removed; use
+  `sidecar.FindContainer(podSpec, name)` and set the primary container name through
+  `BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName`.
+- `reconciler.RoleGroupCleaner.Cleanup` takes `ownerUID types.UID` and `crAnnotations map[string]string`
+  and returns `(time.Duration, error)` — the earliest pending wakeup plus the error.
+- `S3ConnectionStatus`, `S3BucketStatus` and `DatabaseConnectionStatus` serialize their conditions
+  under `.status.conditions` (was `.status.condition`); the CRDs must be re-applied.
+- `ListenerSpec.PublishNotReadyAddresses` is a `*bool` with the nil-safe accessor
+  `GetPublishNotReadyAddresses()`, so a Go client can express `false`.
+- `sidecar.JMXExporterConfigMountPath` moved from `/opt/jmx_exporter` to
+  `/kubedoop/mount/config/jmx-exporter`; the ConfigMap volume no longer shadows the directory
+  holding the jar the container executes. `sidecar.JMXExporterJarPath` is the new constant for the
+  jar.
+- `testutil.ClusterWrapper` and `testutil.WrapMockCluster` are removed; `testutil.MockCluster`
+  implements `common.ClusterInterface` directly and `testutil.MockRoleGroupHandler` is bound to
+  `*testutil.MockCluster`.
+
+### features
+
+- Split the config format contract into a required `ConfigMarshaler` and an optional
+  `ConfigUnmarshaler`, so a product that only emits a format no longer writes a parser nobody calls
+- Added `MultiFormatConfigGenerator.Parse(filename, content)` and the typed errors
+  `config.ErrNoFormat` / `*config.UnsupportedParseError`
+- Added `common.ClusterResource[T]`, the reconciler-facing constraint that adds `DeepCopy() T`
+- Made extension execution order deterministic: same-priority extensions run in registration order
+  via a per-entry sequence number, and `WithStopOnError` overrides the per-hook fault tolerance for
+  a single registration
+- A successful reconcile now requeues on `HealthCheckInterval` (default 120s, negative disables) or
+  the earliest pending gray-delete deadline, so state that produces no watch event still converges
+- Wired sidecar provider validation, declared dependency checks and `SetupWithManagerOpts.ExtraOwns`
+  into the reconcile loop
+- Added `VectorConfigProvider` so a handler can declare it supplies `vector.yaml`; with no source
+  the Vector sidecar is skipped with a `VectorSidecarSkipped` warning instead of failing the cluster
+- `SidecarManager` injects providers in dependency phases (`Producer` → `Default` → `Pipeline`), so
+  Vector always runs after the log producers whose volume it mounts
+- `ServiceBuilder` gained `AddServicePort`, `WithPorts` and `WithPublishNotReadyAddresses`
+- `productlogging.SupportedLoggingFrameworks()` enumerates the registered frameworks, so the
+  vector/productlogging drift guards range over a real table
+
+### fix
+
+- Orphan cleanup is a confirmed multi-pass state machine: scale to zero, wait for the ordered drain,
+  delete, and confirm each resource is gone before the next type is touched; per-group failures no
+  longer abort the pass, a 429 surfaces as `*RateLimitError` and backs off instead of marking the
+  cluster Degraded, and the role-level PDB of a removed role is reclaimed by label
+- A recovered panic returns an error (with a `ReconcilePanic` warning event) instead of recording
+  the cycle as a success
+- Status converges: role groups are pruned only after a real deletion, the write is skipped when
+  nothing changed, it is issued from the in-memory object so product status fields survive, and the
+  Degraded verdict is computed once per pass from a sorted role iteration
+- `GenericClusterStatus.SetCondition` preserves `LastTransitionTime` unless the status actually
+  flips, so a settled cluster stops rewriting its status every reconcile
+- `Build()` deep-copies every map, slice and pointer it hands out, so a built object can no longer
+  reach the builder or the next role group; a PDB built without a selector (which would block
+  eviction of every pod in the namespace) is rejected
+- `podOverrides` no longer collide with framework-owned one-of members: a strategic merge patch that
+  states another member of a mutually exclusive struct (volume sources, probe and lifecycle
+  handlers, `EnvVar` value/valueFrom) drops the framework's member instead of producing an object
+  the API server rejects; decode failures are recorded on `MergedConfig.PodOverrideErrors` and
+  re-emitted as a `PodOverrideIgnored` warning event
+- Generated log4j2 config binds its appender refs and uses consistent logger ids; Python logging no
+  longer emits every record twice, and its module is no longer named `logging.py`
+- Logger names from the CRD are escaped per target format, so a name containing a space, separator,
+  quote or line break can no longer re-shape the generated file
+- `.properties` round-trips exactly over the whole grammar (escaped separators, trailing
+  backslashes, edge whitespace, `#`/`!` in keys)
+- `K8sUtil.SetOwnerReference` resolves the GVK from the scheme; `ExecUtil` selects pods by label
+  even with a custom `Executor` injected and reports the command's real exit code
+- Vector validates the discovered aggregator address and escapes values interpolated into its config
+- The example operator's manager ClusterRole is generated from kubebuilder markers (it previously
+  granted only `pods get/list/watch`, so the deployed operator could not start its informers), and
+  `main.go` wires the metrics and webhook TLS flags it already parsed
+
+### refactor
+
+- Typed the extension registry per CR and removed the process-wide singleton and the adapter shims
+- Shrank `ClusterInterface` to `client.Object` + spec/status projection and removed both runtime
+  type assertions from the fetch/apply path
+- Removed dead exported API (see BREAKING CHANGES)
+
+### docs
+
+- Re-verified every concrete claim in `docs/architecture.md`, `docs/architecture_zh.md` and the
+  `AGENTS.md` files against the code; see `docs/DOC_CHANGELOG.md` for the itemized list
+
+### tests
+
+- `pkg/apis` tests now run in CI, and the reconciler suite gained envtest-backed integration and
+  resilience specs (a second test CR type, `AltMockCluster`, covers per-CR-type isolation)
+
 ## v0.12.6 2025-12-01
 
 ### features

@@ -57,9 +57,14 @@ var _ = BeforeSuite(func() {
 	Expect(v1alpha1.AddToScheme(testScheme)).To(Succeed())
 	// Add MockCluster to scheme for testing
 	Expect(testutil.AddToScheme(testScheme)).To(Succeed())
+	// AltMockCluster stands in for a second product's CR (see generic_reconciler_integration_test.go).
+	addAltMockClusterToScheme(testScheme)
 
 	By("bootstrapping test environment")
 	testEnv = testutil.NewTestEnv(nil)
+	// The env owns the scheme its client is built with, and the client has to know AltMockCluster
+	// to read one back; registering after Start would come too late.
+	addAltMockClusterToScheme(testEnv.Scheme)
 	Expect(testEnv.Start()).To(Succeed())
 
 	k8sClient = testEnv.GetClient()

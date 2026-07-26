@@ -17,6 +17,8 @@ limitations under the License.
 package builder
 
 import (
+	"maps"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -47,6 +49,11 @@ type ServiceBuilder struct {
 	Type        corev1.ServiceType
 	Ports       []corev1.ServicePort
 	Headless    bool
+
+	// PublishNotReadyAddresses exposes a pod's DNS record before it passes its readiness probe.
+	// Quorum systems need it: their members must resolve each other to form the quorum that makes
+	// them ready in the first place.
+	PublishNotReadyAddresses bool
 }
 
 // NewServiceBuilder creates a new ServiceBuilder.
@@ -102,6 +109,28 @@ func (b *ServiceBuilder) WithServiceType(svcType ServiceType) *ServiceBuilder {
 	return b
 }
 
+// WithPublishNotReadyAddresses sets .spec.publishNotReadyAddresses.
+func (b *ServiceBuilder) WithPublishNotReadyAddresses(publish bool) *ServiceBuilder {
+	b.PublishNotReadyAddresses = publish
+	return b
+}
+
+// AddServicePort appends a fully specified service port. Unlike AddPort it preserves every field
+// the caller set (nodePort, appProtocol, a named targetPort), so callers holding ready-made
+// corev1.ServicePort values do not silently lose them.
+func (b *ServiceBuilder) AddServicePort(port corev1.ServicePort) *ServiceBuilder {
+	b.Ports = append(b.Ports, *port.DeepCopy())
+	return b
+}
+
+// WithPorts appends the given fully specified service ports (see AddServicePort).
+func (b *ServiceBuilder) WithPorts(ports []corev1.ServicePort) *ServiceBuilder {
+	for _, port := range ports {
+		b.AddServicePort(port)
+	}
+	return b
+}
+
 // AddPort adds a service port.
 func (b *ServiceBuilder) AddPort(name string, port int32, targetPort intstr.IntOrString, protocol corev1.Protocol) *ServiceBuilder {
 	b.Ports = append(b.Ports, corev1.ServicePort{
@@ -118,19 +147,21 @@ func (b *ServiceBuilder) AddPortSimple(name string, port int32, protocol corev1.
 	return b.AddPort(name, port, intstr.FromInt(int(port)), protocol)
 }
 
-// Build creates the Service.
+// Build creates the Service. Like the other builders, the returned object shares no map or slice
+// with the builder, so mutating it (or building twice) cannot corrupt the builder's state.
 func (b *ServiceBuilder) Build() *corev1.Service {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      b.Labels,
-			Annotations: b.Annotations,
+			Labels:      maps.Clone(b.Labels),
+			Annotations: maps.Clone(b.Annotations),
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: b.Selector,
-			Ports:    b.Ports,
-			Type:     b.Type,
+			Selector:                 maps.Clone(b.Selector),
+			Ports:                    cloneSlice(b.Ports),
+			Type:                     b.Type,
+			PublishNotReadyAddresses: b.PublishNotReadyAddresses,
 		},
 	}
 
@@ -141,10 +172,12 @@ func (b *ServiceBuilder) Build() *corev1.Service {
 	return svc
 }
 
-// BuildHeadless creates a headless service.
+// BuildHeadless creates a headless Service. It does not reconfigure the builder: a Build() after
+// it still honors the configured service type, so the two calls cannot influence each other.
 func (b *ServiceBuilder) BuildHeadless() *corev1.Service {
-	b.Headless = true
-	return b.Build()
+	svc := b.Build()
+	svc.Spec.ClusterIP = corev1.ClusterIPNone
+	return svc
 }
 
 // NamespacedName returns the NamespacedName for the Service.

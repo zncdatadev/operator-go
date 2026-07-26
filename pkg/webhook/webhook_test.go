@@ -22,6 +22,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
 	"github.com/zncdatadev/operator-go/pkg/webhook"
 )
 
@@ -312,6 +315,16 @@ var _ = Describe("ValidateNonEmptyMap", func() {
 		Expect(err).To(HaveOccurred())
 	})
 })
+
+// The wiring contract documented on WebhookManager: a ProductDefaulter/ProductValidator is
+// typed on the CR and goes to the builder's WithDefaulter/WithValidator, while the adapters
+// are untyped and only fit the deprecated WithCustomDefaulter/WithCustomValidator.
+var (
+	_ admission.Defaulter[*TestRuntimeCR] = webhook.NewFuncDefaulter[*TestRuntimeCR](nil)
+	_ admission.Validator[*TestRuntimeCR] = webhook.NewFuncValidator[*TestRuntimeCR](nil)
+	_ admission.Defaulter[runtime.Object] = webhook.NewDefaulterAdapter[*TestRuntimeCR](nil)
+	_ admission.Validator[runtime.Object] = webhook.NewValidatorAdapter[*TestRuntimeCR](nil)
+)
 
 var _ = Describe("DefaulterAdapter", func() {
 	It("should delegate Default to inner ProductDefaulter", func() {

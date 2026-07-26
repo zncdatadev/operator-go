@@ -87,9 +87,4 @@ var _ = Describe("DiscoveryExtension", func() {
 		Expect(cm.Data).To(HaveKey(extensions.TrinoDiscoveryKey))
 	})
 
-	It("skips clusters of other products without error", func() {
-		c := fake.NewClientBuilder().WithScheme(scheme).Build()
-		ext := extensions.NewDiscoveryExtension(scheme)
-		Expect(ext.PostReconcile(context.Background(), c, nil)).To(Succeed())
-	})
 })

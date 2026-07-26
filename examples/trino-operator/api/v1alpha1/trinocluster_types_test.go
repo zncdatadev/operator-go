@@ -25,6 +25,7 @@ import (
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 func TestAPITypes(t *testing.T) {
@@ -165,33 +166,43 @@ var _ = Describe("TrinoCluster", func() {
 		})
 	})
 
-	Describe("GetStatus / SetStatus", func() {
+	Describe("GetStatus", func() {
 		It("should return a pointer to the embedded status", func() {
 			status := cr.GetStatus()
 			Expect(status).NotTo(BeNil())
 			Expect(status).To(BeIdenticalTo(&cr.Status.GenericClusterStatus))
 		})
 
-		It("should update status via SetStatus", func() {
-			newStatus := &commonsv1alpha1.GenericClusterStatus{}
-			newStatus.ObservedGeneration = 42
-			cr.SetStatus(newStatus)
+		It("should let the framework write generic status without touching product fields", func() {
+			cr.Status.RegisteredWorkers = 3
+			cr.Status.CatalogsReady = []string{"hive"}
+
+			cr.GetStatus().ObservedGeneration = 42
+
 			Expect(cr.Status.ObservedGeneration).To(Equal(int64(42)))
+			Expect(cr.Status.RegisteredWorkers).To(Equal(int32(3)))
+			Expect(cr.Status.CatalogsReady).To(Equal([]string{"hive"}))
 		})
 	})
 
-	Describe("DeepCopyCluster", func() {
-		It("should return a deep copy implementing ClusterInterface", func() {
-			cr.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
-			copy := cr.DeepCopyCluster()
-			Expect(copy).NotTo(BeNil())
-			Expect(copy.GetName()).To(Equal(cr.GetName()))
+	Describe("ClusterInterface conformance", func() {
+		// The SDK reads a fetched CR straight into the object it deep-copied from the prototype,
+		// so the CR type itself is what has to be a client.Object and what DeepCopy has to
+		// return. Both come from the embedded ObjectMeta/TypeMeta and generated deep-copy code.
+		It("should satisfy the SDK contract without hand-written plumbing", func() {
+			var _ common.ClusterInterface = cr
+			var _ common.ClusterResource[*trinov1alpha1.TrinoCluster] = cr
+		})
 
-			// Verify it's a deep copy (not same pointer)
-			trinoCopy, ok := copy.(*trinov1alpha1.TrinoCluster)
-			Expect(ok).To(BeTrue())
-			Expect(trinoCopy).NotTo(BeIdenticalTo(cr))
-			Expect(trinoCopy.Spec.Image).To(Equal(cr.Spec.Image))
+		It("should deep copy into its own concrete type", func() {
+			cr.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "trinodb/trino:435"}
+
+			copied := cr.DeepCopy()
+
+			Expect(copied).NotTo(BeIdenticalTo(cr))
+			Expect(copied.GetName()).To(Equal(cr.GetName()))
+			Expect(copied.Spec.Image).To(Equal(cr.Spec.Image))
+			Expect(copied.Spec.Image).NotTo(BeIdenticalTo(cr.Spec.Image))
 		})
 	})
 

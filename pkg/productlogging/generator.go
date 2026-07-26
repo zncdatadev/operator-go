@@ -68,15 +68,33 @@ func escapeXML(s string) string {
 	return s
 }
 
-// LoggingFramework defines the logging framework type.
-type LoggingFramework string
-
-const (
-	LoggingFrameworkLog4j   LoggingFramework = "log4j"
-	LoggingFrameworkLog4j2  LoggingFramework = "log4j2"
-	LoggingFrameworkLogback LoggingFramework = "logback"
-	LoggingFrameworkPython  LoggingFramework = "python"
+// propertyKeyEscaper / propertyValueEscaper implement the java.util.Properties escaping the
+// generated log4j and log4j2 files are read back with (both configurators call Properties.load).
+// Logger names arrive as CRD map keys and are therefore unconstrained: an unescaped separator or
+// space would end the key early and turn the rest of the line into the value, and a line break
+// or a trailing backslash would splice entries together.
+var (
+	propertyKeyEscaper = strings.NewReplacer(
+		`\`, `\\`, "=", `\=`, ":", `\:`, " ", `\ `, "\t", `\t`, "\n", `\n`, "\r", `\r`)
+	propertyValueEscaper = strings.NewReplacer(
+		`\`, `\\`, "\t", `\t`, "\n", `\n`, "\r", `\r`)
 )
+
+// escapePropertyKey escapes a string used as (part of) a properties key.
+func escapePropertyKey(s string) string {
+	return propertyKeyEscaper.Replace(s)
+}
+
+// escapePropertyValue escapes a string used as a properties value. Only the value's leading
+// space needs escaping (a reader strips the padding after the separator); interior spaces stay
+// readable, which is what conversion patterns are made of.
+func escapePropertyValue(s string) string {
+	s = propertyValueEscaper.Replace(s)
+	if strings.HasPrefix(s, " ") {
+		return `\` + s
+	}
+	return s
+}
 
 // LogLevel defines the logging level.
 type LogLevel string
@@ -110,18 +128,11 @@ func NewLoggingGenerator(framework LoggingFramework) *LoggingGenerator {
 
 // Generate generates the logging configuration content based on the configured framework.
 func (g *LoggingGenerator) Generate(configs map[string]LoggerConfig) (string, error) {
-	switch g.framework {
-	case LoggingFrameworkLog4j:
-		return GenerateLog4j(configs)
-	case LoggingFrameworkLog4j2:
-		return GenerateLog4j2(configs)
-	case LoggingFrameworkLogback:
-		return GenerateLogback(configs)
-	case LoggingFrameworkPython:
-		return GeneratePythonLogging(configs)
-	default:
-		return "", fmt.Errorf("unsupported logging framework: %s", g.framework)
+	gen, err := GeneratorFor(g.framework)
+	if err != nil {
+		return "", err
 	}
+	return gen.Render(LogConfig{Loggers: loggerConfigsToLevels(configs)}, RenderOptions{})
 }
 
 // GenerateLog4j generates Log4j 1.x properties format (as consumed by log4j 1.2 / reload4j).
@@ -145,9 +156,9 @@ func GenerateLog4j(configs map[string]LoggerConfig) (string, error) {
 // appender.console.name=STDOUT
 // appender.console.layout.type=PatternLayout
 // appender.console.layout.pattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
-// loggers=com.example,org.apache
-// logger.com.example.name=com.example
-// logger.com.example.level=DEBUG
+// loggers=com_example,org_apache
+// logger.com_example.name=com.example
+// logger.com_example.level=DEBUG
 func GenerateLog4j2(configs map[string]LoggerConfig) (string, error) {
 	return renderLog4j2(LogConfig{Loggers: loggerConfigsToLevels(configs)}, RenderOptions{})
 }
@@ -276,7 +287,7 @@ func GenerateLogbackWithOptions(configs map[string]LoggerConfig, opts LogbackOpt
 	// Logger configurations
 	for _, name := range names {
 		config := configs[name]
-		fmt.Fprintf(&sb, "  <logger name=\"%s\" level=\"%s\" />\n", escapeXML(name), config.Level)
+		fmt.Fprintf(&sb, "  <logger name=\"%s\" level=\"%s\" />\n", escapeXML(name), escapeXML(string(config.Level)))
 	}
 
 	sb.WriteString("</configuration>\n")
@@ -298,12 +309,42 @@ func GeneratePythonLogging(configs map[string]LoggerConfig) (string, error) {
 	return renderPython(LogConfig{Loggers: loggerConfigsToLevels(configs)}, RenderOptions{})
 }
 
-// escapeLoggerName escapes special characters in logger names for use as property keys.
+// escapeLoggerName turns a logger name into a property identifier: log4j2 addresses each logger
+// as "logger.<id>.*", so the id has to be a bare key segment. Anything outside [A-Za-z0-9_]
+// (a dot or dash, but also a space, separator or line break a CRD map key may carry) would split
+// the key or comment the line out, so it becomes '_'.
 func escapeLoggerName(s string) string {
-	s = strings.ReplaceAll(s, ".", "_")
-	s = strings.ReplaceAll(s, "-", "_")
-	s = strings.ReplaceAll(s, "$", "_")
-	return s
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, s)
+}
+
+// log4j2LoggerIDs maps logger names (in the caller's order) to their property identifiers.
+// Sanitizing collapses distinct names onto the same id ("com.example" and "com-example"), which
+// would leave the second name overwriting the first's "logger.<id>.name" and one of the two
+// loggers unconfigured, so a collision is broken with a numeric suffix.
+func log4j2LoggerIDs(names []string) []string {
+	ids := make([]string, 0, len(names))
+	taken := make(map[string]bool, len(names))
+	for _, name := range names {
+		id := escapeLoggerName(name)
+		if id == "" {
+			// An empty name would produce "logger..name"; keep the key well-formed.
+			id = "logger"
+		}
+		unique := id
+		for i := 2; taken[unique]; i++ {
+			unique = id + "_" + strconv.Itoa(i)
+		}
+		taken[unique] = true
+		ids = append(ids, unique)
+	}
+	return ids
 }
 
 // toPythonLogLevel converts a LogLevel to Python logging level.
@@ -324,6 +365,33 @@ func toPythonLogLevel(level LogLevel) string {
 	default:
 		return "INFO"
 	}
+}
+
+// pythonQuote renders s as a single-quoted Python string literal. The generated dictConfig is a
+// Python module, so a logger name (an unconstrained CRD map key) carrying a quote, a backslash
+// or a line break would end the literal and make the whole module a SyntaxError — the product
+// would then start with no logging configuration at all.
+func pythonQuote(s string) string {
+	var sb strings.Builder
+	sb.WriteByte('\'')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			sb.WriteString(`\\`)
+		case '\'':
+			sb.WriteString(`\'`)
+		case '\n':
+			sb.WriteString(`\n`)
+		case '\r':
+			sb.WriteString(`\r`)
+		case '\t':
+			sb.WriteString(`\t`)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('\'')
+	return sb.String()
 }
 
 // loggerConfigsToLevels adapts the legacy LoggerConfig map to a plain name->level map.
@@ -392,18 +460,18 @@ func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("# Log4j Configuration\n")
 	if hasFile {
-		fmt.Fprintf(&sb, "log4j.rootLogger=%s, CONSOLE, FILE\n\n", rootLevel)
+		fmt.Fprintf(&sb, "log4j.rootLogger=%s, CONSOLE, FILE\n\n", escapePropertyValue(string(rootLevel)))
 	} else {
-		fmt.Fprintf(&sb, "log4j.rootLogger=%s, CONSOLE\n\n", rootLevel)
+		fmt.Fprintf(&sb, "log4j.rootLogger=%s, CONSOLE\n\n", escapePropertyValue(string(rootLevel)))
 	}
 
 	sb.WriteString("# Appenders\n")
 	sb.WriteString("log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender\n")
 	if cfg.ConsoleLevel != "" {
-		fmt.Fprintf(&sb, "log4j.appender.CONSOLE.Threshold=%s\n", cfg.ConsoleLevel)
+		fmt.Fprintf(&sb, "log4j.appender.CONSOLE.Threshold=%s\n", escapePropertyValue(string(cfg.ConsoleLevel)))
 	}
 	sb.WriteString("log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout\n")
-	fmt.Fprintf(&sb, "log4j.appender.CONSOLE.layout.ConversionPattern=%s\n", pattern)
+	fmt.Fprintf(&sb, "log4j.appender.CONSOLE.layout.ConversionPattern=%s\n", escapePropertyValue(pattern))
 
 	if hasFile {
 		// Bounded rollover (MaxFileSize + MaxBackupIndex) so the file cannot grow without limit.
@@ -412,9 +480,9 @@ func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
 		maxFileSize, maxHistory := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory)
 		sb.WriteString("\nlog4j.appender.FILE=org.apache.log4j.RollingFileAppender\n")
 		if cfg.FileLevel != "" {
-			fmt.Fprintf(&sb, "log4j.appender.FILE.Threshold=%s\n", cfg.FileLevel)
+			fmt.Fprintf(&sb, "log4j.appender.FILE.Threshold=%s\n", escapePropertyValue(string(cfg.FileLevel)))
 		}
-		fmt.Fprintf(&sb, "log4j.appender.FILE.File=%s\n", opts.FileOutputPath)
+		fmt.Fprintf(&sb, "log4j.appender.FILE.File=%s\n", escapePropertyValue(opts.FileOutputPath))
 		fmt.Fprintf(&sb, "log4j.appender.FILE.MaxFileSize=%s\n", maxFileSize)
 		fmt.Fprintf(&sb, "log4j.appender.FILE.MaxBackupIndex=%d\n", maxHistory)
 		sb.WriteString("log4j.appender.FILE.layout=org.apache.log4j.xml.XMLLayout\n")
@@ -424,8 +492,10 @@ func renderLog4j(cfg LogConfig, opts RenderOptions) (string, error) {
 		return sb.String(), nil
 	}
 	sb.WriteString("\n# Loggers\n")
+	// The logger name is part of the property KEY here, so it carries properties key escaping;
+	// PropertyConfigurator unescapes it back to the CRD's name.
 	for _, name := range sortedLoggerNames(cfg.Loggers) {
-		fmt.Fprintf(&sb, "log4j.logger.%s=%s\n", name, cfg.Loggers[name])
+		fmt.Fprintf(&sb, "log4j.logger.%s=%s\n", escapePropertyKey(name), escapePropertyValue(string(cfg.Loggers[name])))
 	}
 	return sb.String(), nil
 }
@@ -445,7 +515,7 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 
 	var sb strings.Builder
 	sb.WriteString("# Log4j2 Configuration\n")
-	fmt.Fprintf(&sb, "rootLogger.level=%s\n", rootLevel)
+	fmt.Fprintf(&sb, "rootLogger.level=%s\n", escapePropertyValue(string(rootLevel)))
 	// The appenderRefs line only declares reference identifiers; each identifier MUST be bound
 	// to an appender name via "rootLogger.appenderRef.<id>.ref=<AppenderName>", otherwise the
 	// root logger ends up with no appenders at all (no console output, empty log file).
@@ -467,10 +537,10 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 	sb.WriteString("appender.console.type=Console\n")
 	sb.WriteString("appender.console.name=STDOUT\n")
 	sb.WriteString("appender.console.layout.type=PatternLayout\n")
-	fmt.Fprintf(&sb, "appender.console.layout.pattern=%s\n", pattern)
+	fmt.Fprintf(&sb, "appender.console.layout.pattern=%s\n", escapePropertyValue(pattern))
 	if cfg.ConsoleLevel != "" {
 		sb.WriteString("appender.console.filter.threshold.type=ThresholdFilter\n")
-		fmt.Fprintf(&sb, "appender.console.filter.threshold.level=%s\n", cfg.ConsoleLevel)
+		fmt.Fprintf(&sb, "appender.console.filter.threshold.level=%s\n", escapePropertyValue(string(cfg.ConsoleLevel)))
 	}
 	sb.WriteString("\n")
 	if hasFile {
@@ -479,12 +549,12 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 		maxFileSize, maxHistory := boundedFileDefaults(opts.MaxFileSize, opts.MaxHistory)
 		sb.WriteString("appender.file.type=RollingFile\n")
 		sb.WriteString("appender.file.name=FILE\n")
-		fmt.Fprintf(&sb, "appender.file.fileName=%s\n", opts.FileOutputPath)
-		fmt.Fprintf(&sb, "appender.file.filePattern=%s.%%i\n", opts.FileOutputPath)
+		fmt.Fprintf(&sb, "appender.file.fileName=%s\n", escapePropertyValue(opts.FileOutputPath))
+		fmt.Fprintf(&sb, "appender.file.filePattern=%s.%%i\n", escapePropertyValue(opts.FileOutputPath))
 		sb.WriteString("appender.file.layout.type=XMLLayout\n")
 		if cfg.FileLevel != "" {
 			sb.WriteString("appender.file.filter.threshold.type=ThresholdFilter\n")
-			fmt.Fprintf(&sb, "appender.file.filter.threshold.level=%s\n", cfg.FileLevel)
+			fmt.Fprintf(&sb, "appender.file.filter.threshold.level=%s\n", escapePropertyValue(string(cfg.FileLevel)))
 		}
 		// Bounded rollover so the file cannot grow without limit.
 		sb.WriteString("appender.file.policies.type=Policies\n")
@@ -499,14 +569,20 @@ func renderLog4j2(cfg LogConfig, opts RenderOptions) (string, error) {
 		return sb.String(), nil
 	}
 	names := sortedLoggerNames(cfg.Loggers)
+	// The "loggers" list names the property identifiers, not the logger names: each entry must
+	// be the same id the "logger.<id>.*" keys below use, otherwise a property parser that reads
+	// the list (log4j2 < 2.6) finds no matching keys and drops every configured logger.
+	ids := log4j2LoggerIDs(names)
 	sb.WriteString("# Loggers\n")
 	sb.WriteString("loggers=")
-	sb.WriteString(strings.Join(names, ","))
+	sb.WriteString(strings.Join(ids, ","))
 	sb.WriteString("\n\n")
-	for _, name := range names {
-		safeName := escapeLoggerName(name)
-		fmt.Fprintf(&sb, "logger.%s.name=%s\n", safeName, name)
-		fmt.Fprintf(&sb, "logger.%s.level=%s\n\n", safeName, cfg.Loggers[name])
+	// The name is a value, not part of the key, so it keeps its original spelling (properties
+	// value escaping only neutralizes what would end the line).
+	for i, name := range names {
+		safeName := ids[i]
+		fmt.Fprintf(&sb, "logger.%s.name=%s\n", safeName, escapePropertyValue(name))
+		fmt.Fprintf(&sb, "logger.%s.level=%s\n\n", safeName, escapePropertyValue(string(cfg.Loggers[name])))
 	}
 	return sb.String(), nil
 }
@@ -558,7 +634,7 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 		sb.WriteString("        'file': {\n")
 		fmt.Fprintf(&sb, "            'level': '%s',\n", fileLevel)
 		sb.WriteString("            'class': 'logging.handlers.RotatingFileHandler',\n")
-		fmt.Fprintf(&sb, "            'filename': '%s',\n", opts.FileOutputPath)
+		fmt.Fprintf(&sb, "            'filename': %s,\n", pythonQuote(opts.FileOutputPath))
 		// Bound the file so rotation is actually enabled (maxBytes=0 would disable it).
 		fmt.Fprintf(&sb, "            'maxBytes': %d,\n", maxBytes)
 		fmt.Fprintf(&sb, "            'backupCount': %d,\n", maxHistory)
@@ -571,10 +647,12 @@ func renderPython(cfg LogConfig, opts RenderOptions) (string, error) {
 	if hasFile {
 		rootHandlers = "['console', 'file']"
 	}
+	// A named logger only carries its level: it propagates to the root logger, which owns the
+	// handlers. Attaching the root handlers here as well would emit every record twice (once
+	// per handler on the logger, once more after propagation).
 	for _, name := range sortedLoggerNames(cfg.Loggers) {
-		fmt.Fprintf(&sb, "        '%s': {\n", name)
+		fmt.Fprintf(&sb, "        %s: {\n", pythonQuote(name))
 		fmt.Fprintf(&sb, "            'level': '%s',\n", toPythonLogLevel(cfg.Loggers[name]))
-		fmt.Fprintf(&sb, "            'handlers': %s,\n", rootHandlers)
 		sb.WriteString("            'propagate': True,\n")
 		sb.WriteString("        },\n")
 	}

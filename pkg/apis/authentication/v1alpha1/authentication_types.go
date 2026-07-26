@@ -22,17 +22,10 @@ import (
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 )
 
-type ResponseType string
-
-const (
-	ResponseTypeCode  ResponseType = "code"
-	ResponseTypeToken ResponseType = "id_token"
-)
-
 // AuthenticationClassSpec defines the desired state of AuthenticationClass
 type AuthenticationClassSpec struct {
 	// +kubebuilder:validation:Required
-	AuthenticationProvider *AuthenticationProvider `json:"provider,omitempty"`
+	AuthenticationProvider *AuthenticationProvider `json:"provider"`
 }
 
 type AuthenticationProvider struct {
@@ -85,7 +78,7 @@ type OIDCProvider struct {
 }
 
 type OIDCTls struct {
-	// +kubebuilder:validation
+	// +kubebuilder:validation:Required
 	Verification *commonsv1alpha1.TLSVerificationSpec `json:"verification"`
 }
 

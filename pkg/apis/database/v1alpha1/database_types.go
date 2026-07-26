@@ -39,7 +39,7 @@ const (
 type DatabaseConnectionSpec struct {
 	// Host is the database server hostname.
 	// +kubebuilder:validation:Required
-	Host string `json:"host,omitempty"`
+	Host string `json:"host"`
 
 	// Port is the database server port.
 	// +kubebuilder:validation:Optional
@@ -49,7 +49,7 @@ type DatabaseConnectionSpec struct {
 
 	// Driver is the database driver type (mysql, postgres, mariadb).
 	// +kubebuilder:validation:Required
-	Driver DatabaseDriver `json:"driver,omitempty"`
+	Driver DatabaseDriver `json:"driver"`
 
 	// Database is the database name.
 	// +kubebuilder:validation:Optional
@@ -57,7 +57,7 @@ type DatabaseConnectionSpec struct {
 
 	// Credentials references the secret containing authentication credentials.
 	// +kubebuilder:validation:Required
-	Credentials *commonsv1alpha1.Credentials `json:"credentials,omitempty"`
+	Credentials *commonsv1alpha1.Credentials `json:"credentials"`
 
 	// TLS configuration for secure connections.
 	// +kubebuilder:validation:Optional
@@ -72,8 +72,12 @@ type TLS struct {
 
 // DatabaseConnectionStatus defines the observed state of DatabaseConnection.
 type DatabaseConnectionStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
 	// +kubebuilder:validation:Optional
-	Conditions []metav1.Condition `json:"condition,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // +kubebuilder:object:root=true

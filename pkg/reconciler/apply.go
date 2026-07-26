@@ -149,32 +149,41 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) {
 	live.Spec.PodManagementPolicy = podManagementPolicy
 }
 
-// copyServiceState copies the desired Service spec onto the live one:
+// copyServiceState copies the desired Service spec onto the live one, preserving the fields the
+// API server owns or declares immutable after creation:
 //
-//   - Mutable framework-owned fields come from desired: Type, Selector, Ports,
-//     PublishNotReadyAddresses, SessionAffinity(+Config), External/InternalTrafficPolicy,
-//     ExternalName, ExternalIPs, LoadBalancerSourceRanges.
-//   - Ports are replaced with desired's, but for every desired port with NodePort == 0 the
-//     live port's allocated NodePort is carried over (matched by port name, falling back to
-//     port number), so NodePort/LoadBalancer services keep their stable allocated node ports
-//     across reconciles (same precedent as zookeeper-operator's cluster_extension.go).
-//   - ClusterIP, ClusterIPs, IPFamilies and IPFamilyPolicy are NEVER touched: they are
-//     immutable/allocated by the API server. The desired ClusterIP ("None" for headless
-//     services) only matters at CREATE time, where the mutate func runs against the desired
-//     object itself and the value is already in place.
+//   - Spec.ClusterIP / Spec.ClusterIPs — allocated by the API server. The desired value ("None"
+//     for headless services) only matters at CREATE time, where the mutate func runs against
+//     the desired object itself and the value is already in place.
+//   - Spec.IPFamilies / Spec.IPFamilyPolicy — allocated, and rejected on update.
+//   - Spec.HealthCheckNodePort — allocated for a LoadBalancer with local external traffic policy.
+//   - Spec.LoadBalancerClass — immutable once set.
+//   - Per-port NodePorts: for every desired port with NodePort == 0 the live port's allocated
+//     NodePort is carried over (matched by port name, falling back to port number), so
+//     NodePort/LoadBalancer services keep their stable node ports across reconciles (same
+//     precedent as zookeeper-operator's cluster_extension.go).
+//
+// Everything else — Type, Selector, Ports, SessionAffinity, traffic policies,
+// AllocateLoadBalancerNodePorts, TrafficDistribution, and any field a future Kubernetes version
+// adds — comes from desired. Assigning the spec wholesale (as copyStatefulSetState does) is what
+// makes new mutable fields converge by default instead of silently sticking at their live value.
 func copyServiceState(desired, live *corev1.Service) {
 	livePorts := live.Spec.Ports
+	clusterIP := live.Spec.ClusterIP
+	clusterIPs := live.Spec.ClusterIPs
+	ipFamilies := live.Spec.IPFamilies
+	ipFamilyPolicy := live.Spec.IPFamilyPolicy
+	healthCheckNodePort := live.Spec.HealthCheckNodePort
+	loadBalancerClass := live.Spec.LoadBalancerClass
 
-	live.Spec.Type = desired.Spec.Type
-	live.Spec.Selector = desired.Spec.Selector
-	live.Spec.PublishNotReadyAddresses = desired.Spec.PublishNotReadyAddresses
-	live.Spec.SessionAffinity = desired.Spec.SessionAffinity
-	live.Spec.SessionAffinityConfig = desired.Spec.SessionAffinityConfig
-	live.Spec.ExternalTrafficPolicy = desired.Spec.ExternalTrafficPolicy
-	live.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
-	live.Spec.ExternalName = desired.Spec.ExternalName
-	live.Spec.ExternalIPs = desired.Spec.ExternalIPs
-	live.Spec.LoadBalancerSourceRanges = desired.Spec.LoadBalancerSourceRanges
+	live.Spec = desired.Spec
+
+	live.Spec.ClusterIP = clusterIP
+	live.Spec.ClusterIPs = clusterIPs
+	live.Spec.IPFamilies = ipFamilies
+	live.Spec.IPFamilyPolicy = ipFamilyPolicy
+	live.Spec.HealthCheckNodePort = healthCheckNodePort
+	live.Spec.LoadBalancerClass = loadBalancerClass
 
 	ports := make([]corev1.ServicePort, len(desired.Spec.Ports))
 	copy(ports, desired.Spec.Ports)

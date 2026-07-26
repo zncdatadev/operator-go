@@ -37,6 +37,22 @@ import (
 // aggregator address, and generates vector.yaml into the role group ConfigMap.
 var _ reconciler.VectorAggregatorProvider = (*trinov1alpha1.TrinoCluster)(nil)
 
+// RBAC for the resources the SDK GenericReconciler owns on behalf of a TrinoCluster. The
+// GenericReconciler watches the CR plus every kind it Owns() (StatefulSet, Service, ConfigMap,
+// ServiceAccount, PodDisruptionBudget), lists Pods for health status, and deletes orphaned PVCs
+// when a role group shrinks, so the manager ClusterRole has to cover all of them — the informers
+// fail to start otherwise. Regenerate config/rbac/role.yaml with `make manifests` after editing.
+//
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+
 // TrinoRoleGroupHandler builds Trino role group resources. It embeds the SDK's
 // BaseRoleGroupHandler so the framework owns the bulk of resource orchestration — ConfigMap
 // (rendered from the merged config, including the product config computed by
@@ -60,6 +76,10 @@ func NewTrinoRoleGroupHandler(scheme *runtime.Scheme) *TrinoRoleGroupHandler {
 	// per-container logging key below.
 	base.ConfigMountPath = "/etc/trino"
 	base.MainContainerName = constants.MainContainerName
+
+	// Opting into the product name lets the framework resolve spec.image itself, for the main
+	// container and for the sidecars that ship inside the product image alike.
+	base.ProductName = constants.ProductName
 
 	// Declarative logging: the framework renders the Log4j2 config file into the ConfigMap
 	// from the deep-merged CRD logging spec.
@@ -96,21 +116,6 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 	resources, err := h.BaseRoleGroupHandler.BuildResources(ctx, k8sClient, cr, buildCtx)
 	if err != nil {
 		return nil, err
-	}
-
-	// The image is declared in the CR spec (defaulted by the webhook) and resolved with the
-	// product name. The framework built the container with the operator's default image; set
-	// the CR-driven image on the primary container, looked up by name (it is renamed via
-	// base.MainContainerName) rather than by index so a future prepended sidecar can't shift it.
-	if cr.Spec.Image != nil && resources.StatefulSet != nil {
-		containers := resources.StatefulSet.Spec.Template.Spec.Containers
-		for i := range containers {
-			if containers[i].Name == constants.MainContainerName {
-				containers[i].Image = cr.Spec.Image.GetImage(constants.ProductName)
-				containers[i].ImagePullPolicy = cr.Spec.Image.GetPullPolicy()
-				break
-			}
-		}
 	}
 
 	if resources.ConfigMap != nil {

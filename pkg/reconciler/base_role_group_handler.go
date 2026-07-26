@@ -20,6 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -34,7 +37,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,6 +69,14 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
 	// ImagePullPolicy is the default image pull policy.
 	ImagePullPolicy corev1.PullPolicy
+
+	// ProductName is the kubedoop product name (e.g. "trino") used to resolve the cluster CR's
+	// spec.image into a concrete image reference: "{repo}/{ProductName}:{version}-kubedoop{v}".
+	// When set, the CR-declared image wins over RoleImages and Image for every role, so products
+	// no longer have to patch the built container themselves — a post-build patch would also miss
+	// the sidecars, which are told the image before the StatefulSet is built. Empty keeps the
+	// static Image/RoleImages behavior (backward compatible).
+	ProductName string
 
 	// RoleImages maps role names to specific images.
 	// If a role is not found here, the default Image is used.
@@ -127,7 +137,8 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// app.kubernetes.io/* labels. The product-domain prefix guarantees the selectors never
 	// match another product's pods, and decoupling from app.kubernetes.io/* keeps the
 	// immutable StatefulSet selector stable and free of user-mutable labels.
-	// When empty, selectors fall back to the descriptive labels (backward compatible).
+	// When empty, selectors fall back to the framework-owned app.kubernetes.io/* identity subset
+	// (see frameworkSelectorLabels).
 	LabelDomain string
 
 	// LoggingContainers declares, per container, how its logging config file is generated
@@ -141,8 +152,9 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// sidecar provider (via LoggingProducers()), which is the single owner of the shared log
 	// volume: it creates the size-limited log emptyDir, RW-mounts it on each producer container,
 	// and mounts it on itself (pre-creating each producer's per-container log directory before
-	// exec'ing vector). When Vector is disabled, no shared volume exists and no file
-	// appender is emitted (console-only).
+	// exec'ing vector). Whenever the sidecar does not land — Vector disabled, no producer, or no
+	// source for vector.yaml — no shared volume exists and no file appender is emitted
+	// (console-only); see RoleGroupBuildContext.VectorLogPipelineActive.
 	//
 	// Products whose primary container name (and therefore its logging key) differs per role set
 	// this per role via SetRoleLoggingContainers; the per-role value wins over this global list.
@@ -275,9 +287,16 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		if sidecarMgr == nil {
 			sidecarMgr = h.sidecarManager
 		}
-		if err := sidecarMgr.SetProductImage(h.containerImage(buildCtx.RoleName), h.ImagePullPolicy); err != nil {
+		image, pullPolicy := h.containerImage(buildCtx, buildCtx.RoleName)
+		if err := sidecarMgr.SetProductImage(image, pullPolicy); err != nil {
 			return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
 		}
+	}
+
+	// An ExtraLabel that collides with a selector key can never take effect, and on an existing
+	// StatefulSet it makes every update fail. Reject it before anything is built.
+	if err := h.validateExtraLabels(buildCtx); err != nil {
+		return nil, err
 	}
 
 	// Build labels
@@ -316,8 +335,8 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 }
 
 // vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on
-// the deep-merged logging spec. It is the single source of truth for both the producer (shared
-// log volume + RW mounts) and Option A (file-appender gating).
+// the deep-merged logging spec. It is the enablement FLAG only — whether the sidecar is really
+// injected is decided by vectorLogPipelineActive.
 func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 	if buildCtx == nil || buildCtx.MergedConfig == nil {
 		return false
@@ -325,6 +344,26 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 	// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and
 	// the consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
 	return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
+}
+
+// vectorLogPipelineActive reports whether the shared Vector log pipeline really exists for this
+// role group. The Vector provider is the sole owner of the shared log emptyDir and of its mounts,
+// and the reconciler skips it whenever the agent is enabled but the sidecar cannot run (no
+// declared producer, or nothing supplying vector.yaml). Everything that writes INTO that volume —
+// above all the rolling file appender — has to key off the same resolved decision, or the product
+// is pointed at a path no volume backs.
+//
+// A nil RoleGroupBuildContext.VectorLogPipelineActive means the context was not built by
+// GenericReconciler (a product assembling one by hand): the enablement flag is then all that is
+// known, which is the behavior such a caller already had.
+func vectorLogPipelineActive(buildCtx *RoleGroupBuildContext) bool {
+	if !vectorEnabledFor(buildCtx) {
+		return false
+	}
+	if buildCtx.VectorLogPipelineActive == nil {
+		return true
+	}
+	return *buildCtx.VectorLogPipelineActive
 }
 
 // LoggingProducers implements LoggingProducerProvider: it exposes the role's declared
@@ -377,12 +416,33 @@ func (h *BaseRoleGroupHandler[CR]) LogVolumeSizeLimit() string {
 	return h.LogVolumeSize
 }
 
-// containerImage returns the container image for a role.
-func (h *BaseRoleGroupHandler[CR]) containerImage(roleName string) string {
-	if image, ok := h.RoleImages[roleName]; ok {
-		return image
+// clusterImage resolves the image the cluster CR declares in spec.image. It returns "" unless the
+// product opted in by setting ProductName — spec.image is product-scoped
+// ("{repo}/{ProductName}:{version}"), so the framework cannot resolve it on its own.
+func (h *BaseRoleGroupHandler[CR]) clusterImage(buildCtx *RoleGroupBuildContext) (string, corev1.PullPolicy) {
+	if h.ProductName == "" || buildCtx == nil || buildCtx.ClusterSpec == nil || buildCtx.ClusterSpec.Image == nil {
+		return "", ""
 	}
-	return h.Image
+	image := buildCtx.ClusterSpec.Image.GetImage(h.ProductName)
+	if image == "" {
+		return "", ""
+	}
+	return image, buildCtx.ClusterSpec.Image.GetPullPolicy()
+}
+
+// containerImage returns the container image and pull policy for a role, in precedence order:
+// the CR's spec.image (when ProductName is set), then the per-role override, then the handler
+// default. Resolving it here — rather than leaving each product to patch the built container —
+// keeps the image the sidecars are told about (SetProductImage, e.g. the Vector agent, which ships
+// inside the product image) identical to the one the main container actually runs.
+func (h *BaseRoleGroupHandler[CR]) containerImage(buildCtx *RoleGroupBuildContext, roleName string) (string, corev1.PullPolicy) {
+	if image, pullPolicy := h.clusterImage(buildCtx); image != "" {
+		return image, pullPolicy
+	}
+	if image, ok := h.RoleImages[roleName]; ok {
+		return image, h.ImagePullPolicy
+	}
+	return h.Image, h.ImagePullPolicy
 }
 
 // containerPorts returns the container ports for a role group.
@@ -410,9 +470,9 @@ func RoleLabelKey(domain string) string { return domain + "/role" }
 // RoleGroupLabelKey returns the identity label key for the role group, under the given domain.
 func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
 
-// buildLabels creates the descriptive labels for resources. When LabelDomain is set, the
-// product-owned identity labels are added too (they are also used as selectors — see
-// buildSelectorLabels).
+// buildLabels creates the descriptive labels for resources. It is a superset of
+// buildSelectorLabels: the CR's own labels and the product's ExtraLabels are metadata (and pod
+// template) only, never selectors.
 func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	labels := make(map[string]string)
 
@@ -421,13 +481,11 @@ func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) 
 		labels[k] = v
 	}
 
-	// Add standard labels
-	labels["app.kubernetes.io/instance"] = buildCtx.ClusterName
-	labels["app.kubernetes.io/component"] = buildCtx.RoleName
-	labels["app.kubernetes.io/managed-by"] = managedByValue
-
-	// Role group label
-	labels[buildCtx.ClusterName+"-"+buildCtx.RoleGroupName] = "true"
+	// The framework-owned identity labels win over same-named cluster labels: they are what the
+	// selectors match on.
+	for k, v := range h.frameworkSelectorLabels(buildCtx) {
+		labels[k] = v
+	}
 
 	// Product-owned identity labels (also used for selectors).
 	for k, v := range h.identityLabels(buildCtx) {
@@ -454,13 +512,29 @@ func (h *BaseRoleGroupHandler[CR]) identityLabels(buildCtx *RoleGroupBuildContex
 	}
 }
 
+// frameworkSelectorLabels returns the framework-owned identity labels of a role group. They are
+// derived exclusively from the cluster/role/role group names, never from buildCtx.ClusterLabels or
+// h.ExtraLabels: a StatefulSet's .spec.selector is immutable after creation, so a user-mutable
+// label inside it would freeze at its creation-time value and every later edit of that label would
+// leave the live object unmatchable — and, because the pod template keeps carrying the current
+// value, permanently unpatchable.
+func (h *BaseRoleGroupHandler[CR]) frameworkSelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/instance":                        buildCtx.ClusterName,
+		"app.kubernetes.io/component":                       buildCtx.RoleName,
+		"app.kubernetes.io/managed-by":                      managedByValue,
+		buildCtx.ClusterName + "-" + buildCtx.RoleGroupName: valueTrue,
+	}
+}
+
 // buildSelectorLabels returns the labels used for resource selectors. When LabelDomain is
 // set, these are the product-owned identity labels (cluster + role + role-group), which are
-// product-namespaced and stable. Otherwise it falls back to the full descriptive labels for
-// backward compatibility.
+// product-namespaced and stable. Otherwise it falls back to the framework-owned identity subset
+// of buildLabels — a subset of the pod template labels, as the API server requires, but without
+// the user-mutable CR/extra labels.
 func (h *BaseRoleGroupHandler[CR]) buildSelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	if h.LabelDomain == "" {
-		return h.buildLabels(buildCtx)
+		return h.frameworkSelectorLabels(buildCtx)
 	}
 	return h.identityLabels(buildCtx)
 }
@@ -469,6 +543,38 @@ func (h *BaseRoleGroupHandler[CR]) buildSelectorLabels(buildCtx *RoleGroupBuildC
 // matching selectors for resources they add themselves (e.g. a metrics Service).
 func (h *BaseRoleGroupHandler[CR]) SelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	return h.buildSelectorLabels(buildCtx)
+}
+
+// validateExtraLabels rejects an ExtraLabel whose key is a selector key but whose value differs
+// from the selector's. Such a label is silently ineffective and actively harmful:
+//
+//   - buildLabels applies ExtraLabels last, but the StatefulSet builder re-writes the selector
+//     keys into the pod template AFTER the labels, so the product's value never reaches the pod.
+//   - The .spec.selector of a live StatefulSet is immutable. A cluster created while the selector
+//     still included the ExtraLabels carries the product's value there forever, and the pod
+//     template the framework now builds no longer satisfies it — every update is rejected by the
+//     API server, with nothing in the object to explain why.
+//
+// A collision that agrees with the selector value changes nothing and is allowed, so a product
+// restating e.g. app.kubernetes.io/managed-by keeps working.
+func (h *BaseRoleGroupHandler[CR]) validateExtraLabels(buildCtx *RoleGroupBuildContext) error {
+	selector := h.buildSelectorLabels(buildCtx)
+
+	var collisions []string
+	for key, value := range h.ExtraLabels {
+		if selectorValue, isSelector := selector[key]; isSelector && selectorValue != value {
+			collisions = append(collisions, fmt.Sprintf("%s (selector value %q, ExtraLabels value %q)",
+				key, selectorValue, value))
+		}
+	}
+	if len(collisions) == 0 {
+		return nil
+	}
+
+	slices.Sort(collisions)
+	return fmt.Errorf(
+		"ExtraLabels collide with the selector labels of role %q group %q: %s; a selector label is framework-owned and cannot be overridden",
+		buildCtx.RoleName, buildCtx.RoleGroupName, strings.Join(collisions, ", "))
 }
 
 // buildAnnotations creates the annotations for resources.
@@ -495,16 +601,11 @@ func (h *BaseRoleGroupHandler[CR]) configMountPath() string {
 
 // buildConfigMap creates the ConfigMap for the role group.
 func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContext, labels map[string]string) (*corev1.ConfigMap, error) {
-	// Build config data
+	// Build config data. The ConfigGenerator, when set, owns the rendering of every file it
+	// recognizes; the fallback below only fills the gaps, so the two paths can never disagree
+	// about the same filename.
 	data := make(map[string]string)
 
-	// Add config files from merged config
-	for filename, cfg := range buildCtx.MergedConfig.ConfigFiles {
-		// Convert config map to string format
-		data[filename] = h.configMapToString(cfg)
-	}
-
-	// Use ConfigGenerator if available
 	if h.ConfigGenerator != nil && len(buildCtx.MergedConfig.ConfigFiles) > 0 {
 		generatedData, err := h.ConfigGenerator.GenerateFiles(buildCtx.MergedConfig.ConfigFiles)
 		if err != nil {
@@ -513,6 +614,23 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 		for filename, content := range generatedData {
 			data[filename] = content
 		}
+	}
+
+	// Fallback rendering for files no generator produced. It goes through the properties adapter
+	// because that emits keys in sorted order (and escapes them properly): Go randomizes map
+	// iteration, so a hand-concatenated "k=v" rendering would produce different content on every
+	// reconcile. The apply path replaces ConfigMap.Data wholesale and the reconciler watches
+	// ConfigMaps, so that churn becomes a self-triggering reconcile loop.
+	propertiesAdapter := config.NewPropertiesAdapter()
+	for filename, cfg := range buildCtx.MergedConfig.ConfigFiles {
+		if _, exists := data[filename]; exists {
+			continue
+		}
+		content, err := propertiesAdapter.Marshal(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to render config file %q: %w", filename, err)
+		}
+		data[filename] = content
 	}
 
 	// Generate the logging-related ConfigMap entries: one config file per declared producer plus
@@ -530,58 +648,41 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 		data[filename] = content
 	}
 
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        buildCtx.ResourceName,
-			Namespace:   buildCtx.ClusterNamespace,
-			Labels:      labels,
-			Annotations: h.buildAnnotations(buildCtx),
-		},
-		Data: data,
-	}, nil
-}
+	cm := builder.NewConfigMapBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
+		WithLabels(labels).
+		WithAnnotations(h.buildAnnotations(buildCtx)).
+		WithConfigFiles(data).
+		Build()
 
-// configMapToString converts a config map to a string representation.
-func (h *BaseRoleGroupHandler[CR]) configMapToString(cfg map[string]string) string {
-	var result string
-	for k, v := range cfg {
-		result += fmt.Sprintf("%s=%s\n", k, v)
+	// The documented way to extend this handler is to call BuildResources and then customize the
+	// returned objects, and `resources.ConfigMap.Data[k] = v` is the obvious way to add a file.
+	// The builder leaves Data nil when a cluster declares no config at all, which would make that
+	// assignment panic, so the map is always present here.
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
 	}
-	return result
+	return cm, nil
 }
 
 // buildHeadlessService creates the headless service for StatefulSet.
 func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuildContext, labels map[string]string) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        buildCtx.ResourceName + "-headless",
-			Namespace:   buildCtx.ClusterNamespace,
-			Labels:      labels,
-			Annotations: h.buildAnnotations(buildCtx),
-		},
-		Spec: corev1.ServiceSpec{
-			ClusterIP:                corev1.ClusterIPNone,
-			PublishNotReadyAddresses: h.PublishNotReadyAddresses,
-			Selector:                 h.buildSelectorLabels(buildCtx),
-			Ports:                    h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName),
-		},
-	}
+	return builder.NewHeadlessServiceBuilder(buildCtx.ResourceName+"-headless", buildCtx.ClusterNamespace).
+		WithLabels(labels).
+		WithAnnotations(h.buildAnnotations(buildCtx)).
+		WithSelector(h.buildSelectorLabels(buildCtx)).
+		WithPublishNotReadyAddresses(h.PublishNotReadyAddresses).
+		WithPorts(h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName)).
+		Build()
 }
 
 // buildService creates the client-facing service.
 func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext, labels map[string]string, ports []corev1.ServicePort) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        buildCtx.ResourceName,
-			Namespace:   buildCtx.ClusterNamespace,
-			Labels:      labels,
-			Annotations: h.buildAnnotations(buildCtx),
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: h.buildSelectorLabels(buildCtx),
-			Ports:    ports,
-		},
-	}
+	return builder.NewServiceBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
+		WithLabels(labels).
+		WithAnnotations(h.buildAnnotations(buildCtx)).
+		WithSelector(h.buildSelectorLabels(buildCtx)).
+		WithPorts(ports).
+		Build()
 }
 
 // buildStatefulSet creates the StatefulSet for the role group.
@@ -608,11 +709,12 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	}
 
 	// Set basic properties
+	image, pullPolicy := h.containerImage(buildCtx, buildCtx.RoleName)
 	stsBuilder.WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithReplicas(replicas).
-		WithImage(h.containerImage(buildCtx.RoleName), h.ImagePullPolicy).
+		WithImage(image, pullPolicy).
 		WithConfig(buildCtx.MergedConfig).
 		WithPorts(h.containerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))
 
@@ -889,6 +991,37 @@ func (h *BaseRoleGroupHandler[CR]) SetRoleServicePorts(roleName string, ports []
 		h.RoleServicePorts = make(map[string][]corev1.ServicePort)
 	}
 	h.RoleServicePorts[roleName] = ports
+}
+
+// RoleNameProvider is implemented by handlers that carry per-role configuration keyed by role name
+// (BaseRoleGroupHandler's Set* methods). A role name is a bare string that has to match a key of
+// the CR's spec.roles; when it does not, every lookup silently returns nil — no ports, no image
+// override, and no Service at all. Exposing the configured keys lets the reconciler cross-check
+// them against the CR's declared roles and fail loudly on a typo instead.
+type RoleNameProvider interface {
+	ConfiguredRoleNames() []string
+}
+
+// ConfiguredRoleNames implements RoleNameProvider: the sorted union of the role names this handler
+// was configured for through the Set* methods.
+func (h *BaseRoleGroupHandler[CR]) ConfiguredRoleNames() []string {
+	names := make(map[string]struct{})
+	for name := range h.RoleImages {
+		names[name] = struct{}{}
+	}
+	for name := range h.RoleContainerPorts {
+		names[name] = struct{}{}
+	}
+	for name := range h.RoleServicePorts {
+		names[name] = struct{}{}
+	}
+	for name := range h.RoleMainContainerName {
+		names[name] = struct{}{}
+	}
+	for name := range h.RoleLoggingContainers {
+		names[name] = struct{}{}
+	}
+	return slices.Sorted(maps.Keys(names))
 }
 
 // FetchConfigMap fetches a ConfigMap from the cluster.

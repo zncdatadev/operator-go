@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -100,7 +99,10 @@ func (k *K8sUtil) Update(ctx context.Context, obj client.Object) error {
 	return nil
 }
 
-// UpdateStatus updates resource status with retry on conflict.
+// UpdateStatus updates resource status with a single write; it does NOT retry on conflict —
+// use UpdateStatusWithRetry for conflict-prone status writes. Retrying here is not possible:
+// the method takes no mutate func, so it could not re-apply the caller's status after the
+// re-Get a retry requires.
 func (k *K8sUtil) UpdateStatus(ctx context.Context, obj client.Object) error {
 	if err := k.Client.Status().Update(ctx, obj); err != nil {
 		return fmt.Errorf("failed to update status for %s/%s: %w", obj.GetNamespace(), obj.GetName(), err)
@@ -126,23 +128,13 @@ func (k *K8sUtil) ApplyOwnership(owner, owned client.Object) error {
 }
 
 // SetOwnerReference sets an owner reference (non-controller) on an object.
+// The owner's GroupVersionKind is resolved from the scheme rather than from its TypeMeta,
+// which a typed in-memory object leaves empty; an ownerReference without apiVersion/kind is
+// rejected by the API server.
 func (k *K8sUtil) SetOwnerReference(owner, owned client.Object) error {
-	gvk := owner.GetObjectKind().GroupVersionKind()
-	ref := metav1.OwnerReference{
-		APIVersion: gvk.GroupVersion().String(),
-		Kind:       gvk.Kind,
-		Name:       owner.GetName(),
-		UID:        owner.GetUID(),
+	if err := controllerutil.SetOwnerReference(owner, owned, k.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
 	}
-
-	refs := owned.GetOwnerReferences()
-	for _, r := range refs {
-		if r.UID == ref.UID {
-			return nil // Already set
-		}
-	}
-
-	owned.SetOwnerReferences(append(refs, ref))
 	return nil
 }
 

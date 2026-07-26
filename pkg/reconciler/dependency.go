@@ -30,6 +30,31 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// DependencyKind identifies the kind of an external object a cluster CR depends on.
+type DependencyKind string
+
+const (
+	// DependencyConfigMap is a ConfigMap the CR references but does not create.
+	DependencyConfigMap DependencyKind = "ConfigMap"
+	// DependencySecret is a Secret the CR references but does not create.
+	DependencySecret DependencyKind = "Secret"
+)
+
+// Dependency identifies one external object whose existence GenericReconciler verifies before
+// reconciling any role. Products declare them through GenericReconcilerConfig.Dependencies,
+// which is the only place the traversal of a product-specific spec can live: the generic spec
+// has no field describing where a product hides its references.
+//
+// An empty Namespace means the cluster CR's own namespace.
+type Dependency struct {
+	// Kind selects the object type to look up (ConfigMap or Secret).
+	Kind DependencyKind
+	// Namespace of the object; empty means the CR's namespace.
+	Namespace string
+	// Name of the object; must not be empty.
+	Name string
+}
+
 // DependencyResolver validates external dependencies.
 type DependencyResolver struct {
 	Client client.Client
@@ -40,16 +65,16 @@ func NewDependencyResolver(client client.Client) *DependencyResolver {
 	return &DependencyResolver{Client: client}
 }
 
-// Validate is intentionally a no-op for the generic cluster spec: it performs no checks and
-// always returns nil. It is kept as a stable hook in the reconcile flow.
+// Validate is a no-op kept for backward compatibility with operators that call it directly.
 //
-// Two things it does NOT do, by design:
-//   - ClusterOperation pause/stop: those flags are evaluated at the very top of the reconcile loop
-//     (GenericReconciler.reconcile), before any resource mutation, so a paused or stopped cluster
-//     never runs ServiceAccount provisioning or PreReconcile extensions.
-//   - Real external-dependency checks: callers invoke the specific ValidateConfigMap /
-//     ValidateSecret / ValidateS3Connection / ValidateDatabaseConnection helpers explicitly as
-//     needed; this method does not traverse them.
+// The reconcile flow no longer routes through it: dependency checking is declarative and
+// opt-in through GenericReconcilerConfig.Dependencies, which yields []Dependency and is
+// dispatched to ValidateConfigMap / ValidateSecret. Richer, product-shaped checks
+// (ValidateS3Connection, ValidateDatabaseConnection, ValidateZKConfig) remain explicit calls,
+// because only the product knows where those specs live.
+//
+// It also does NOT evaluate ClusterOperation pause/stop: those flags are handled at the very top
+// of the reconcile loop (GenericReconciler.reconcile), before any resource mutation.
 func (d *DependencyResolver) Validate(_ context.Context, _ interface{}) error {
 	return nil
 }

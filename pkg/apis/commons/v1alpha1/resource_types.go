@@ -31,10 +31,6 @@ type ResourcesSpec struct {
 	Storage *StorageResource `json:"storage,omitempty"`
 }
 
-type StorageResourceSpec struct {
-	Data *StorageResource `json:"data"`
-}
-
 type CPUResource struct {
 	// +kubebuilder:validation:Optional
 	Max resource.Quantity `json:"max,omitempty"`

@@ -26,7 +26,6 @@ package common_test
 
 import (
 	"context"
-	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -34,7 +33,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -73,34 +71,13 @@ type HdfsCluster struct {
 	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
 }
 
-// Implement common.ClusterInterface so HdfsCluster can be used with GenericReconciler.
+// Everything ClusterInterface needs beyond client.Object, which the embedded TypeMeta and
+// ObjectMeta already supply.
 
-func (h *HdfsCluster) GetName() string      { return h.Name }
-func (h *HdfsCluster) GetNamespace() string { return h.Namespace }
-func (h *HdfsCluster) GetUID() types.UID    { return h.UID }
-func (h *HdfsCluster) GetLabels() map[string]string {
-	if h.Labels == nil {
-		return map[string]string{}
-	}
-	return h.Labels
-}
-func (h *HdfsCluster) GetAnnotations() map[string]string {
-	if h.Annotations == nil {
-		return map[string]string{}
-	}
-	return h.Annotations
-}
-func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec           { return &h.Spec.GenericClusterSpec }
-func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus       { return &h.Status }
-func (h *HdfsCluster) SetStatus(status *v1alpha1.GenericClusterStatus) { h.Status = *status }
-func (h *HdfsCluster) GetObjectMeta() *metav1.ObjectMeta               { return &h.ObjectMeta }
-func (h *HdfsCluster) GetScheme() *runtime.Scheme                      { return nil }
-func (h *HdfsCluster) GetRuntimeObject() runtime.Object                { return nil }
-func (h *HdfsCluster) DeepCopyObject() runtime.Object                  { c := *h; return &c }
-func (h *HdfsCluster) DeepCopyCluster() common.ClusterInterface {
-	copy := *h
-	return &copy
-}
+func (h *HdfsCluster) GetSpec() *v1alpha1.GenericClusterSpec     { return &h.Spec.GenericClusterSpec }
+func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus { return &h.Status }
+func (h *HdfsCluster) DeepCopy() *HdfsCluster                    { c := *h; return &c }
+func (h *HdfsCluster) DeepCopyObject() runtime.Object            { return h.DeepCopy() }
 
 // ---------------------------------------------------------------------------
 // Product extension: JvmArgumentsExtension
@@ -110,6 +87,9 @@ func (h *HdfsCluster) DeepCopyCluster() common.ClusterInterface {
 // JvmArgumentsExtension is an HDFS-specific ClusterExtension that reads
 // JvmArgumentOverrides from the product CR and applies them (e.g., appends
 // to a ConfigMap or sets an env var).
+//
+// It is declared for *HdfsCluster, so the hooks receive the product CR itself and the product
+// field is reachable without any conversion or guard.
 type JvmArgumentsExtension struct {
 	common.BaseExtension
 	// appliedArgs captures what was processed, for test verification.
@@ -125,23 +105,18 @@ func NewJvmArgumentsExtension() *JvmArgumentsExtension {
 
 // PreReconcile reads JvmArgumentOverrides from the HdfsCluster CR and stores
 // them so the RoleGroupHandler can later render them into jvm.properties.
-func (e *JvmArgumentsExtension) PreReconcile(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
-	hdfs, ok := cr.(*HdfsCluster)
-	if !ok {
-		return fmt.Errorf("expected *HdfsCluster, got %T", cr)
-	}
-
-	if hdfs.Spec.NameNodes != nil && len(hdfs.Spec.NameNodes.JvmArgumentOverrides) > 0 {
-		e.appliedArgs["nameNodes"] = hdfs.Spec.NameNodes.JvmArgumentOverrides
+func (e *JvmArgumentsExtension) PreReconcile(ctx context.Context, c client.Client, cr *HdfsCluster) error {
+	if cr.Spec.NameNodes != nil && len(cr.Spec.NameNodes.JvmArgumentOverrides) > 0 {
+		e.appliedArgs["nameNodes"] = cr.Spec.NameNodes.JvmArgumentOverrides
 	}
 	return nil
 }
 
-func (e *JvmArgumentsExtension) PostReconcile(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
+func (e *JvmArgumentsExtension) PostReconcile(ctx context.Context, c client.Client, cr *HdfsCluster) error {
 	return nil
 }
 
-func (e *JvmArgumentsExtension) OnReconcileError(ctx context.Context, c client.Client, cr common.ClusterInterface, err error) error {
+func (e *JvmArgumentsExtension) OnReconcileError(ctx context.Context, c client.Client, cr *HdfsCluster, err error) error {
 	return nil
 }
 
@@ -151,15 +126,10 @@ func (e *JvmArgumentsExtension) OnReconcileError(ctx context.Context, c client.C
 
 var _ = Describe("Extension mechanism: product-specific fields pattern", func() {
 
-	var registry *common.ExtensionRegistry
+	var registry *common.ExtensionRegistry[*HdfsCluster]
 
 	BeforeEach(func() {
-		registry = common.GetExtensionRegistry()
-		registry.Clear()
-	})
-
-	AfterEach(func() {
-		registry.Clear()
+		registry = common.NewExtensionRegistry[*HdfsCluster]()
 	})
 
 	Describe("JvmArgumentOverrides via ClusterExtension", func() {
@@ -199,18 +169,6 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 			Expect(ext.appliedArgs).To(BeEmpty())
 		})
 
-		It("returns error when the CR is not of the expected product type", func() {
-			// Using a different ClusterInterface implementation (not HdfsCluster)
-			// demonstrates that extensions should guard with a type assertion.
-			otherCR := &MockClusterForProductTest{name: "other-cluster"}
-
-			ext := NewJvmArgumentsExtension()
-			registry.RegisterClusterExtension(ext)
-
-			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, otherCR)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("expected *HdfsCluster"))
-		})
 	})
 
 	Describe("RoleGroupExtension pattern: per-role-group JVM tuning", func() {
@@ -218,14 +176,10 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 			captured := map[string][]string{}
 
 			// A RoleGroupExtension that captures which JVM args were applied per group.
-			ext := &MockRoleGroupExtension{
-				PreReconcileFunc: func(ctx context.Context, c client.Client, cr common.ClusterInterface, roleName, groupName string) error {
-					hdfs, ok := cr.(*HdfsCluster)
-					if !ok {
-						return nil
-					}
-					if hdfs.Spec.NameNodes != nil && roleName == "nameNodes" {
-						captured[groupName] = hdfs.Spec.NameNodes.JvmArgumentOverrides
+			ext := &hdfsRoleGroupExtension{
+				PreReconcileFunc: func(ctx context.Context, c client.Client, cr *HdfsCluster, roleName, groupName string) error {
+					if cr.Spec.NameNodes != nil && roleName == "nameNodes" {
+						captured[groupName] = cr.Spec.NameNodes.JvmArgumentOverrides
 					}
 					return nil
 				},
@@ -252,23 +206,23 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 		It("executes extensions in highest-priority-first order", func() {
 			order := []string{}
 
-			low := &MockClusterExtension{
+			low := &hdfsClusterExtension{
 				NameFunc: func() string { return "low" },
-				PreReconcileFunc: func(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
+				PreReconcileFunc: func(ctx context.Context, c client.Client, cr *HdfsCluster) error {
 					order = append(order, "low")
 					return nil
 				},
 			}
-			high := &MockClusterExtension{
+			high := &hdfsClusterExtension{
 				NameFunc: func() string { return "high" },
-				PreReconcileFunc: func(ctx context.Context, c client.Client, cr common.ClusterInterface) error {
+				PreReconcileFunc: func(ctx context.Context, c client.Client, cr *HdfsCluster) error {
 					order = append(order, "high")
 					return nil
 				},
 			}
 
-			registry.RegisterClusterExtensionWithPriority(low, common.PriorityLow)
-			registry.RegisterClusterExtensionWithPriority(high, common.PriorityHigh)
+			registry.RegisterClusterExtension(low, common.WithPriority(common.PriorityLow))
+			registry.RegisterClusterExtension(high, common.WithPriority(common.PriorityHigh))
 
 			err := registry.ExecuteClusterPreReconcile(context.Background(), nil, nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -277,24 +231,16 @@ var _ = Describe("Extension mechanism: product-specific fields pattern", func() 
 	})
 })
 
-// MockClusterForProductTest is a minimal ClusterInterface for testing type-assertion guards.
+// MockClusterForProductTest is a minimal ClusterInterface standing in for a second product's CR,
+// so specs can exercise two registries typed for different products.
 type MockClusterForProductTest struct {
-	name string
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              v1alpha1.GenericClusterSpec   `json:"spec,omitempty"`
+	Status            v1alpha1.GenericClusterStatus `json:"status,omitempty"`
 }
 
-func (m *MockClusterForProductTest) GetName() string                   { return m.name }
-func (m *MockClusterForProductTest) GetNamespace() string              { return "default" }
-func (m *MockClusterForProductTest) GetUID() types.UID                 { return "uid-123" }
-func (m *MockClusterForProductTest) GetLabels() map[string]string      { return nil }
-func (m *MockClusterForProductTest) GetAnnotations() map[string]string { return nil }
-func (m *MockClusterForProductTest) GetSpec() *v1alpha1.GenericClusterSpec {
-	return &v1alpha1.GenericClusterSpec{}
-}
-func (m *MockClusterForProductTest) GetStatus() *v1alpha1.GenericClusterStatus {
-	return &v1alpha1.GenericClusterStatus{}
-}
-func (m *MockClusterForProductTest) SetStatus(_ *v1alpha1.GenericClusterStatus) {}
-func (m *MockClusterForProductTest) GetObjectMeta() *metav1.ObjectMeta          { return &metav1.ObjectMeta{} }
-func (m *MockClusterForProductTest) GetScheme() *runtime.Scheme                 { return nil }
-func (m *MockClusterForProductTest) GetRuntimeObject() runtime.Object           { return nil }
-func (m *MockClusterForProductTest) DeepCopyCluster() common.ClusterInterface   { c := *m; return &c }
+func (m *MockClusterForProductTest) GetSpec() *v1alpha1.GenericClusterSpec     { return &m.Spec }
+func (m *MockClusterForProductTest) GetStatus() *v1alpha1.GenericClusterStatus { return &m.Status }
+func (m *MockClusterForProductTest) DeepCopy() *MockClusterForProductTest      { c := *m; return &c }
+func (m *MockClusterForProductTest) DeepCopyObject() runtime.Object            { return m.DeepCopy() }

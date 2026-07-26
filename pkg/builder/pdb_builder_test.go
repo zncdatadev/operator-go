@@ -110,11 +110,32 @@ var _ = Describe("PDBBuilder", func() {
 		It("should build a PDB with custom maxUnavailable", func() {
 			max := intstr.FromInt(2)
 			pdb := pdbBuilder.
+				WithSelector(map[string]string{"app": "test-app"}).
 				WithMaxUnavailable(max).
 				Build()
 
 			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 			Expect(*pdb.Spec.MaxUnavailable).To(Equal(max))
+		})
+
+		// An empty selector is the one invalid object in this package the API server accepts: it
+		// selects every pod in the namespace and blocks their voluntary eviction.
+		It("should panic when no selector was set", func() {
+			Expect(func() {
+				pdbBuilder.WithMaxUnavailable(intstr.FromInt(1)).Build()
+			}).To(PanicWith(ContainSubstring("empty selector matches every pod")))
+		})
+
+		It("should not share the maxUnavailable pointer with the builder", func() {
+			b := pdbBuilder.
+				WithSelector(map[string]string{"app": "test-app"}).
+				WithMaxUnavailable(intstr.FromInt(2))
+
+			first := b.Build()
+			*first.Spec.MaxUnavailable = intstr.FromInt(99)
+
+			second := b.Build()
+			Expect(*second.Spec.MaxUnavailable).To(Equal(intstr.FromInt(2)))
 		})
 	})
 

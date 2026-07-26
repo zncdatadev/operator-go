@@ -18,6 +18,8 @@ package builder
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/zncdatadev/operator-go/pkg/config"
 	corev1 "k8s.io/api/core/v1"
@@ -85,6 +87,11 @@ func (b *ConfigMapBuilder) WithConfigFiles(files map[string]string) *ConfigMapBu
 
 // WithMergedConfig sets the data from a MergedConfig using the provided generator.
 // Returns an error if config generation fails to prevent creating ConfigMaps with incomplete data.
+//
+// The generator only ever emits, so a format registered with Marshal alone (a
+// config.ConfigMarshaler that is not a config.ConfigUnmarshaler) works here. A failure carries
+// the generator's message, which names the offending file and format, under the ConfigMap the
+// caller was building.
 func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator *config.MultiFormatConfigGenerator) (*ConfigMapBuilder, error) {
 	if cfg == nil || generator == nil {
 		return b, nil
@@ -92,7 +99,7 @@ func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator 
 
 	files, err := generator.GenerateFiles(cfg.ConfigFiles)
 	if err != nil {
-		return b, fmt.Errorf("failed to generate config files for %s: %w", b.Name, err)
+		return b, fmt.Errorf("failed to generate config files for ConfigMap %s/%s: %w", b.Namespace, b.Name, err)
 	}
 
 	for filename, content := range files {
@@ -102,23 +109,29 @@ func (b *ConfigMapBuilder) WithMergedConfig(cfg *config.MergedConfig, generator 
 	return b, nil
 }
 
-// Build creates the ConfigMap.
+// Build creates the ConfigMap. Like the other builders, the returned object shares no map with
+// the builder, so mutating it (or building twice) cannot corrupt the builder's state.
 func (b *ConfigMapBuilder) Build() *corev1.ConfigMap {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
 			Namespace:   b.Namespace,
-			Labels:      b.Labels,
-			Annotations: b.Annotations,
+			Labels:      maps.Clone(b.Labels),
+			Annotations: maps.Clone(b.Annotations),
 		},
 	}
 
 	if len(b.Data) > 0 {
-		cm.Data = b.Data
+		cm.Data = maps.Clone(b.Data)
 	}
 
 	if len(b.BinaryData) > 0 {
-		cm.BinaryData = b.BinaryData
+		// maps.Clone would copy the map but keep every []byte backing array shared with the
+		// builder, so a caller writing into a built entry would reach back into the builder.
+		cm.BinaryData = make(map[string][]byte, len(b.BinaryData))
+		for key, value := range b.BinaryData {
+			cm.BinaryData[key] = slices.Clone(value)
+		}
 	}
 
 	return cm

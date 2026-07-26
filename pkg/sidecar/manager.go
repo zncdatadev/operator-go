@@ -18,6 +18,7 @@ package sidecar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -30,6 +31,7 @@ import (
 type SidecarManager struct {
 	providers map[string]SidecarProvider
 	configs   map[string]*SidecarConfig
+	phases    map[string]int
 	client    client.Client
 	namespace string
 }
@@ -39,6 +41,7 @@ func NewSidecarManager() *SidecarManager {
 	return &SidecarManager{
 		providers: make(map[string]SidecarProvider),
 		configs:   make(map[string]*SidecarConfig),
+		phases:    make(map[string]int),
 	}
 }
 
@@ -78,19 +81,18 @@ func (m *SidecarManager) ValidateAll(ctx context.Context) error {
 		return nil
 	}
 
-	var errors []error
+	var errs []error
 	names := m.ListProviders()
 	sort.Strings(names)
 	for _, name := range names {
 		if err := m.ValidateProvider(ctx, name); err != nil {
-			errors = append(errors, common.CreateResourceError("sidecar", m.namespace, name, fmt.Errorf("provider %s: %w", name, err)))
+			errs = append(errs, common.CreateResourceError("sidecar", m.namespace, name, fmt.Errorf("provider %s: %w", name, err)))
 		}
 	}
 
-	if len(errors) > 0 {
-		return common.ConfigMergeError("sidecar validation", fmt.Errorf("validation errors: %v", errors))
-	}
-	return nil
+	// Join rather than wrap: every provider's failure stays individually inspectable with
+	// errors.As/Is by the caller, which a %v-formatted aggregate would flatten into a string.
+	return errors.Join(errs...)
 }
 
 // ValidateConfigMapExists validates that a ConfigMap exists.
@@ -113,16 +115,30 @@ func ValidateSecretExists(ctx context.Context, c client.Client, namespace, name 
 	return nil
 }
 
-// Register registers a sidecar provider with its configuration.
+// Register registers a sidecar provider with its configuration. The provider is injected at
+// the phase it reports through PhasedProvider, or at SidecarPhaseDefault when it reports none.
 func (m *SidecarManager) Register(provider SidecarProvider, config *SidecarConfig) {
 	m.providers[provider.Name()] = provider
 	m.configs[provider.Name()] = config
+	delete(m.phases, provider.Name())
+}
+
+// RegisterWithPhase registers a sidecar provider that must be injected at an explicit phase,
+// overriding any phase the provider reports itself. Use it when the dependency lives in the
+// product rather than in the provider — e.g. registering a bespoke init container whose log
+// files Vector collects at SidecarPhaseProducer, so it exists in the PodSpec by the time the
+// Vector provider mounts the shared log volume onto it.
+func (m *SidecarManager) RegisterWithPhase(provider SidecarProvider, config *SidecarConfig, phase int) {
+	m.providers[provider.Name()] = provider
+	m.configs[provider.Name()] = config
+	m.phases[provider.Name()] = phase
 }
 
 // Unregister removes a sidecar provider.
 func (m *SidecarManager) Unregister(name string) {
 	delete(m.providers, name)
 	delete(m.configs, name)
+	delete(m.phases, name)
 }
 
 // GetProvider returns a sidecar provider by name.
@@ -146,12 +162,43 @@ func (m *SidecarManager) ListProviders() []string {
 	return names
 }
 
-// InjectAll injects all enabled sidecars into the pod spec in deterministic order.
-func (m *SidecarManager) InjectAll(podSpec *corev1.PodSpec) error {
-	names := m.ListProviders()
-	sort.Strings(names)
+// Phase returns the injection phase of a registered provider: the phase passed to
+// RegisterWithPhase if any, otherwise the one the provider reports through PhasedProvider,
+// otherwise SidecarPhaseDefault. Unregistered names report SidecarPhaseDefault.
+func (m *SidecarManager) Phase(name string) int {
+	if phase, ok := m.phases[name]; ok {
+		return phase
+	}
+	if provider, ok := m.providers[name]; ok {
+		if phased, ok := provider.(PhasedProvider); ok {
+			return phased.Phase()
+		}
+	}
+	return SidecarPhaseDefault
+}
 
-	for _, name := range names {
+// injectionOrder returns the registered provider names ordered by (phase, name).
+func (m *SidecarManager) injectionOrder() []string {
+	names := m.ListProviders()
+	sort.Slice(names, func(i, j int) bool {
+		pi, pj := m.Phase(names[i]), m.Phase(names[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return names[i] < names[j]
+	})
+	return names
+}
+
+// InjectAll injects all enabled sidecars into the pod spec, ordered by (phase, name).
+//
+// The ordering is a guarantee providers may rely on: every provider in a lower phase has
+// already injected its containers and volumes when a later one runs, so a provider that wires
+// itself to another container (mounting a shared volume onto it, say) is certain to find that
+// container in the PodSpec. Within a phase the name order keeps injection deterministic, so a
+// pod template is byte-identical across reconciles. See SidecarPhaseProducer and friends.
+func (m *SidecarManager) InjectAll(podSpec *corev1.PodSpec) error {
+	for _, name := range m.injectionOrder() {
 		provider := m.providers[name]
 		config, exists := m.configs[name]
 		if !exists {
@@ -426,17 +473,5 @@ func (p *StaticContainerProvider) Inject(podSpec *corev1.PodSpec, _ *SidecarConf
 
 // Validate has no dependencies for a static container.
 func (p *StaticContainerProvider) Validate(_ context.Context, _ client.Client, _ string) error {
-	return nil
-}
-
-// FindMainContainer finds the main container for shared volume mounting.
-// Uses MainContainerName from config if set, otherwise defaults to the first container.
-func FindMainContainer(podSpec *corev1.PodSpec, mainContainerName string) *corev1.Container {
-	if mainContainerName != "" {
-		return FindContainer(podSpec, mainContainerName)
-	}
-	if len(podSpec.Containers) > 0 {
-		return &podSpec.Containers[0]
-	}
 	return nil
 }

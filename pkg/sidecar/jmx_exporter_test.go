@@ -17,6 +17,8 @@ limitations under the License.
 package sidecar_test
 
 import (
+	"path"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
@@ -132,6 +134,54 @@ var _ = Describe("JMXExporterSidecarProvider", func() {
 			Expect(volumeMounts[0].Name).To(Equal(sidecar.JMXExporterConfigVolumeName))
 			Expect(volumeMounts[0].MountPath).To(Equal(sidecar.JMXExporterConfigMountPath))
 			Expect(volumeMounts[0].ReadOnly).To(BeTrue())
+		})
+
+		It("should not mount the config over the directory holding the jar", func() {
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			jarDir := path.Dir(sidecar.JMXExporterJarPath)
+			for _, m := range podSpec.InitContainers[0].VolumeMounts {
+				Expect(m.MountPath).NotTo(Equal(jarDir))
+				Expect(jarDir).NotTo(HavePrefix(m.MountPath + "/"))
+			}
+		})
+
+		It("should run the jar and read the config from the mounted config path", func() {
+			config := &sidecar.SidecarConfig{Enabled: true, Image: testImage}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			command := podSpec.InitContainers[0].Command
+			Expect(command).To(ContainElement(sidecar.JMXExporterJarPath))
+			Expect(command).To(ContainElement(
+				sidecar.JMXExporterConfigMountPath + "/" + sidecar.JMXExporterConfigFileName,
+			))
+		})
+
+		It("should add caller-supplied volumes backing caller-supplied mounts", func() {
+			config := &sidecar.SidecarConfig{
+				Enabled: true,
+				Image:   testImage,
+				Volumes: []corev1.Volume{
+					{
+						Name:         "extra",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "extra", MountPath: "/extra"},
+				},
+			}
+			err := provider.Inject(podSpec, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			names := make([]string, 0, len(podSpec.Volumes))
+			for _, v := range podSpec.Volumes {
+				names = append(names, v.Name)
+			}
+			Expect(names).To(ContainElement("extra"))
 		})
 
 		It("should add config volume to pod", func() {
@@ -310,7 +360,9 @@ var _ = Describe("JMXExporter constants", func() {
 		Expect(sidecar.JMXExporterSidecarName).To(Equal("jmx-exporter"))
 		Expect(int32(sidecar.JMXExporterPort)).To(Equal(int32(5556)))
 		Expect(sidecar.JMXExporterConfigVolumeName).To(Equal("jmx-exporter-config"))
-		Expect(sidecar.JMXExporterConfigMountPath).To(Equal("/opt/jmx_exporter"))
+		Expect(sidecar.JMXExporterJarPath).To(Equal("/opt/jmx_exporter/jmx_prometheus_httpserver.jar"))
+		Expect(sidecar.JMXExporterConfigMountPath).To(Equal("/kubedoop/mount/config/jmx-exporter"))
+		Expect(sidecar.JMXExporterConfigFileName).To(Equal("config.yaml"))
 		Expect(sidecar.JMXExporterDefaultConfigMapName).To(Equal("jmx-exporter-config"))
 	})
 })
