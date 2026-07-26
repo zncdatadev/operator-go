@@ -225,7 +225,7 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			buildCtx.RoleSpec = &v1alpha1.RoleSpec{
 				RoleConfig: &v1alpha1.RoleConfigSpec{
 					PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{
-						Enabled:        true,
+						Enabled:        ptr.To(true),
 						MaxUnavailable: &maxUnavailable,
 					},
 				},
@@ -408,7 +408,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 	}
 
 	It("should name the PDB at role level (<cluster>-<role>), not per role group", func() {
-		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true})
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true)})
 
 		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
 		Expect(pdb).NotTo(BeNil())
@@ -418,7 +418,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 
 	It("should set maxUnavailable correctly", func() {
 		maxUnavailable := int32(2)
-		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true, MaxUnavailable: &maxUnavailable})
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true), MaxUnavailable: &maxUnavailable})
 
 		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
 		Expect(pdb).NotTo(BeNil())
@@ -426,7 +426,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 	})
 
 	It("should build a role-scoped selector without the role group label", func() {
-		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true})
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true)})
 
 		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role",
 			map[string]string{"app": "test"}, roleSpec)
@@ -439,7 +439,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 	})
 
 	It("should return nil when disabled", func() {
-		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: false})
+		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(false)})
 		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)).To(BeNil())
 	})
 
@@ -522,36 +522,36 @@ var _ = Describe("StatefulSet building", func() {
 		// resources/affinity/gracefulShutdownTimeout were silently dropped.
 		merged := reconciler.MergeRoleGroupConfig(
 			&v1alpha1.RoleGroupConfigSpec{
-				GracefulShutdownTimeout: "60s",
+				GracefulShutdownTimeout: ptr.To("60s"),
 				Resources: &v1alpha1.ResourcesSpec{
-					CPU: &v1alpha1.CPUResource{Max: resource.MustParse("2")},
+					CPU: &v1alpha1.CPUResource{Max: ptr.To(resource.MustParse("2"))},
 				},
 			},
 			nil,
 		)
 		Expect(merged).NotTo(BeNil())
-		Expect(merged.GracefulShutdownTimeout).To(Equal("60s"))
+		Expect(merged.GetGracefulShutdownTimeout()).To(Equal("60s"))
 		Expect(merged.Resources.CPU.Max.String()).To(Equal("2"))
 	})
 
 	It("lets role group config win per field over role config", func() {
 		merged := reconciler.MergeRoleGroupConfig(
 			&v1alpha1.RoleGroupConfigSpec{
-				GracefulShutdownTimeout: "60s",
+				GracefulShutdownTimeout: ptr.To("60s"),
 				Resources: &v1alpha1.ResourcesSpec{
-					CPU:    &v1alpha1.CPUResource{Max: resource.MustParse("2")},
-					Memory: &v1alpha1.MemoryResource{Limit: resource.MustParse("2Gi")},
+					CPU:    &v1alpha1.CPUResource{Max: ptr.To(resource.MustParse("2"))},
+					Memory: &v1alpha1.MemoryResource{Limit: ptr.To(resource.MustParse("2Gi"))},
 				},
 			},
 			&v1alpha1.RoleGroupConfigSpec{
 				Resources: &v1alpha1.ResourcesSpec{
-					CPU: &v1alpha1.CPUResource{Max: resource.MustParse("4")},
+					CPU: &v1alpha1.CPUResource{Max: ptr.To(resource.MustParse("4"))},
 				},
 			},
 		)
 		Expect(merged.Resources.CPU.Max.String()).To(Equal("4"), "group wins")
 		Expect(merged.Resources.Memory.Limit.String()).To(Equal("2Gi"), "role fills the gap")
-		Expect(merged.GracefulShutdownTimeout).To(Equal("60s"))
+		Expect(merged.GetGracefulShutdownTimeout()).To(Equal("60s"))
 	})
 
 	It("merges a podOverride addressing the renamed main container instead of appending a phantom", func() {
@@ -999,7 +999,7 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 
 	It("maps gracefulShutdownTimeout to terminationGracePeriodSeconds", func() {
 		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
-			GracefulShutdownTimeout: "30s",
+			GracefulShutdownTimeout: ptr.To("30s"),
 		}
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
@@ -1011,7 +1011,7 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 
 	It("fails the build loudly on an unparsable gracefulShutdownTimeout", func() {
 		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
-			GracefulShutdownTimeout: "not-a-duration",
+			GracefulShutdownTimeout: ptr.To("not-a-duration"),
 		}
 
 		_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
@@ -1024,7 +1024,7 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 	It("fails the build loudly on a zero or negative gracefulShutdownTimeout", func() {
 		for _, timeout := range []string{"0s", "-30s"} {
 			buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
-				GracefulShutdownTimeout: timeout,
+				GracefulShutdownTimeout: ptr.To(timeout),
 			}
 
 			_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
@@ -1035,9 +1035,9 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 		}
 	})
 
-	It("leaves affinity and terminationGracePeriodSeconds unset when the config fields are empty", func() {
-		// Config present but with neither affinity nor gracefulShutdownTimeout set. Backward
-		// compatible: products that post-process the built StatefulSet with
+	It("leaves affinity unset but writes the default grace period when the config fields are empty", func() {
+		// Config present but with neither affinity nor gracefulShutdownTimeout set. Affinity stays
+		// nil for backward compatibility: products that post-process the built StatefulSet with
 		// `if podSpec.Affinity == nil { ... }` default guards remain correct.
 		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{}
 
@@ -1045,17 +1045,23 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 		Expect(err).NotTo(HaveOccurred())
 		podSpec := resources.StatefulSet.Spec.Template.Spec
 		Expect(podSpec.Affinity).To(BeNil())
-		Expect(podSpec.TerminationGracePeriodSeconds).To(BeNil())
+		// The grace period IS written, explicitly. It used to come from the CRD default the API
+		// server stamped into every config block; removing that default (so a role-level value can
+		// reach its groups) would otherwise have silently changed the effective grace period of
+		// every existing cluster to whatever Kubernetes happens to default to.
+		Expect(podSpec.TerminationGracePeriodSeconds).NotTo(BeNil())
+		Expect(*podSpec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
 	})
 
-	It("leaves the pod spec untouched when the whole role group config is nil", func() {
+	It("writes the default grace period when the whole role group config is nil", func() {
 		Expect(buildCtx.RoleGroupSpec.Config).To(BeNil())
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		podSpec := resources.StatefulSet.Spec.Template.Spec
 		Expect(podSpec.Affinity).To(BeNil())
-		Expect(podSpec.TerminationGracePeriodSeconds).To(BeNil())
+		Expect(podSpec.TerminationGracePeriodSeconds).NotTo(BeNil())
+		Expect(*podSpec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
 	})
 
 	It("lets a PodOverrides affinity win over the config affinity", func() {
@@ -1094,7 +1100,7 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 
 	It("lets a PodOverrides terminationGracePeriodSeconds win over gracefulShutdownTimeout", func() {
 		buildCtx.RoleGroupSpec.Config = &v1alpha1.RoleGroupConfigSpec{
-			GracefulShutdownTimeout: "30s",
+			GracefulShutdownTimeout: ptr.To("30s"),
 		}
 		overrideGrace := int64(120)
 		buildCtx.MergedConfig = &config.MergedConfig{
@@ -1245,14 +1251,14 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 
 	It("should create PDB when MaxUnavailable is set and Enabled is true", func() {
 		maxUnavailable := int32(1)
-		pdb := buildRolePDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: true, MaxUnavailable: &maxUnavailable})
+		pdb := buildRolePDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true), MaxUnavailable: &maxUnavailable})
 		Expect(pdb).NotTo(BeNil())
 		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 	})
 
 	It("should not create PDB when Enabled is false", func() {
 		maxUnavailable := int32(1)
-		Expect(buildRolePDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: false, MaxUnavailable: &maxUnavailable})).To(BeNil())
+		Expect(buildRolePDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(false), MaxUnavailable: &maxUnavailable})).To(BeNil())
 	})
 
 	It("should not create PDB when PodDisruptionBudget is nil", func() {
@@ -1291,7 +1297,7 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		mockCR = testutil.NewMockCluster("test-cluster", "default")
-		buildCtx = newBuildCtx(&v1alpha1.StorageResource{Capacity: resource.MustParse("10Gi")})
+		buildCtx = newBuildCtx(&v1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse("10Gi"))})
 	})
 
 	It("creates a data PVC from storage when StorageMountPath is set", func() {

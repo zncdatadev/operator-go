@@ -760,19 +760,23 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		// docs/architecture.md §4.11.2 Graceful Shutdown). An unparsable or non-positive
 		// duration fails the build loudly rather than silently falling back. A positive
 		// sub-second duration rounds up to 1s so it never truncates to 0 (which would mean
-		// immediate SIGKILL). Empty leaves the pod spec untouched (k8s default of 30s applies).
-		if roleGroupConfig.GracefulShutdownTimeout != "" {
-			d, err := time.ParseDuration(roleGroupConfig.GracefulShutdownTimeout)
-			if err != nil {
-				return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): %w",
-					roleGroupConfig.GracefulShutdownTimeout, buildCtx.RoleName, buildCtx.RoleGroupName, err)
-			}
-			if d <= 0 {
-				return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): must be a positive duration",
-					roleGroupConfig.GracefulShutdownTimeout, buildCtx.RoleName, buildCtx.RoleGroupName)
-			}
-			stsBuilder.WithTerminationGracePeriod(int64((d + time.Second - 1) / time.Second))
+		// immediate SIGKILL).
+		//
+		// GetGracefulShutdownTimeout supplies DefaultGracefulShutdownTimeout when neither the role
+		// nor the group set one, so the value is always written explicitly rather than relying on
+		// the Kubernetes default — the field used to carry a CRD default, and removing it must not
+		// silently change the effective grace period of an existing cluster.
+		timeout := roleGroupConfig.GetGracefulShutdownTimeout()
+		d, err := time.ParseDuration(timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): %w",
+				timeout, buildCtx.RoleName, buildCtx.RoleGroupName, err)
 		}
+		if d <= 0 {
+			return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): must be a positive duration",
+				timeout, buildCtx.RoleName, buildCtx.RoleGroupName)
+		}
+		stsBuilder.WithTerminationGracePeriod(int64((d + time.Second - 1) / time.Second))
 	}
 
 	// Apply the security context (framework canonical default unless the product overrode it).

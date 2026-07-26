@@ -27,12 +27,35 @@ type RoleGroupConfigSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Type=object
 	Affinity *k8sruntime.RawExtension `json:"affinity,omitempty"`
+	// GracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds. Unset means
+	// DefaultGracefulShutdownTimeout.
+	//
+	// It is a pointer and carries no `+kubebuilder:default` on purpose. Structural defaulting
+	// fills a field as soon as its enclosing object exists, so with a CRD default every role group
+	// that declared a config block for ANY reason — just `resources`, say — was stamped with "30s",
+	// which is then indistinguishable from an explicit group value and wins the merge over the
+	// role's setting. A role-level graceful shutdown could therefore only ever reach groups with no
+	// config block at all.
+	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
-	// +kubebuilder:default="30s"
-	GracefulShutdownTimeout string `json:"gracefulShutdownTimeout,omitempty"`
+	GracefulShutdownTimeout *string `json:"gracefulShutdownTimeout,omitempty"`
 	// +kubebuilder:validation:Optional
 	Logging *LoggingSpec `json:"logging,omitempty"`
 	// +kubebuilder:validation:Optional
 	Resources *ResourcesSpec `json:"resources,omitempty"`
+}
+
+// DefaultGracefulShutdownTimeout is the termination grace period the framework applies when
+// neither the role nor the role group sets one. Applied at consumption time, not as a CRD default
+// — see the field doc above.
+const DefaultGracefulShutdownTimeout = "30s"
+
+// GetGracefulShutdownTimeout returns the configured timeout, or DefaultGracefulShutdownTimeout
+// when unset.
+func (c *RoleGroupConfigSpec) GetGracefulShutdownTimeout() string {
+	if c == nil || c.GracefulShutdownTimeout == nil {
+		return DefaultGracefulShutdownTimeout
+	}
+	return *c.GracefulShutdownTimeout
 }

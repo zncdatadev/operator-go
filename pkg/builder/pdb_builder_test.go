@@ -22,6 +22,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("PDBBuilder", func() {
@@ -169,7 +170,7 @@ var _ = Describe("PDBBuilder", func() {
 
 		It("should set enabled from spec", func() {
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled: false,
+				Enabled: ptr.To(false),
 			}
 			result := pdbBuilder.WithSpec(spec)
 
@@ -180,7 +181,7 @@ var _ = Describe("PDBBuilder", func() {
 		It("should set max unavailable from spec", func() {
 			maxUnavailable := int32(2)
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled:        true,
+				Enabled:        ptr.To(true),
 				MaxUnavailable: &maxUnavailable,
 			}
 			result := pdbBuilder.WithSpec(spec)
@@ -192,7 +193,7 @@ var _ = Describe("PDBBuilder", func() {
 
 		It("should handle spec with nil max unavailable", func() {
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled:        true,
+				Enabled:        ptr.To(true),
 				MaxUnavailable: nil,
 			}
 			result := pdbBuilder.WithSpec(spec)
@@ -204,7 +205,7 @@ var _ = Describe("PDBBuilder", func() {
 		It("should build PDB with spec values", func() {
 			maxUnavailable := int32(3)
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled:        true,
+				Enabled:        ptr.To(true),
 				MaxUnavailable: &maxUnavailable,
 			}
 			pdb := pdbBuilder.
@@ -220,7 +221,7 @@ var _ = Describe("PDBBuilder", func() {
 		It("should combine WithSpec with other builders", func() {
 			maxUnavailable := int32(1)
 			spec := &v1alpha1.PodDisruptionBudgetSpec{
-				Enabled:        true,
+				Enabled:        ptr.To(true),
 				MaxUnavailable: &maxUnavailable,
 			}
 			pdb := pdbBuilder.

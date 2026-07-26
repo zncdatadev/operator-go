@@ -128,7 +128,16 @@ spec:
                           type: object
                           x-kubernetes-preserve-unknown-fields: true
                         gracefulShutdownTimeout:
-                          default: 30s
+                          description: |-
+                            GracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds. Unset means
+                            DefaultGracefulShutdownTimeout.
+
+                            It is a pointer and carries no `+kubebuilder:default` on purpose. Structural defaulting
+                            fills a field as soon as its enclosing object exists, so with a CRD default every role group
+                            that declared a config block for ANY reason — just `resources`, say — was stamped with "30s",
+                            which is then indistinguishable from an explicit group value and wins the merge over the
+                            role's setting. A role-level graceful shutdown could therefore only ever reach groups with no
+                            config block at all.
                           pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                           type: string
                         logging:
@@ -218,6 +227,11 @@ spec:
                         resources:
                           properties:
                             cpu:
+                              description: |-
+                                CPUResource bounds the container's CPU. Both fields are pointers so that "unset" is
+                                representable: a bare resource.Quantity is a struct, which `omitempty` cannot omit and whose
+                                MarshalJSON renders the zero value as "0", so a Go-constructed spec would transmit an explicit
+                                zero and a role group would silently erase the role's value.
                               properties:
                                 max:
                                   anyOf:
@@ -233,6 +247,9 @@ spec:
                                   x-kubernetes-int-or-string: true
                               type: object
                             memory:
+                              description: |-
+                                MemoryResource bounds the container's memory. Limit is a pointer for the same reason as
+                                CPUResource's fields.
                               properties:
                                 limit:
                                   anyOf:
@@ -242,12 +259,21 @@ spec:
                                   x-kubernetes-int-or-string: true
                               type: object
                             storage:
+                              description: StorageResource describes the role group's
+                                data PVC.
                               properties:
                                 capacity:
                                   anyOf:
                                   - type: integer
                                   - type: string
-                                  default: 10Gi
+                                  description: |-
+                                    Capacity of the data volume. Unset means DefaultStorageCapacity.
+
+                                    It carries no `+kubebuilder:default`: the enclosing storage block exists as soon as a user
+                                    overrides ANY leaf of it (a storageClass, say), and a CRD default would then be stamped into
+                                    that block and win the role/roleGroup merge — turning a one-line storageClass override into
+                                    a silent downgrade of the role's capacity, baked into a StatefulSet volumeClaimTemplate that
+                                    Kubernetes will not let the operator change afterwards.
                                   pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                   x-kubernetes-int-or-string: true
                                 storageClass:
@@ -290,11 +316,14 @@ spec:
                              2. The allowed number of Pods to be unavailable (`maxUnavailable`)
                           properties:
                             enabled:
-                              default: true
                               description: |-
                                 Whether a PodDisruptionBudget should be written out for this role.
                                 Disabling this enables you to specify your own - custom - one.
                                 Defaults to true.
+
+                                A pointer, so that "unset" and "explicitly false" are distinguishable. As a bare bool with
+                                a CRD default it read as false in every Go-constructed spec — the zero value — which
+                                silently disabled the PDB for any caller that built the spec in code rather than YAML.
                               type: boolean
                             maxUnavailable:
                               description: |-
@@ -327,7 +356,16 @@ spec:
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
                               gracefulShutdownTimeout:
-                                default: 30s
+                                description: |-
+                                  GracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds. Unset means
+                                  DefaultGracefulShutdownTimeout.
+
+                                  It is a pointer and carries no `+kubebuilder:default` on purpose. Structural defaulting
+                                  fills a field as soon as its enclosing object exists, so with a CRD default every role group
+                                  that declared a config block for ANY reason — just `resources`, say — was stamped with "30s",
+                                  which is then indistinguishable from an explicit group value and wins the merge over the
+                                  role's setting. A role-level graceful shutdown could therefore only ever reach groups with no
+                                  config block at all.
                                 pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                                 type: string
                               logging:
@@ -417,6 +455,11 @@ spec:
                               resources:
                                 properties:
                                   cpu:
+                                    description: |-
+                                      CPUResource bounds the container's CPU. Both fields are pointers so that "unset" is
+                                      representable: a bare resource.Quantity is a struct, which `omitempty` cannot omit and whose
+                                      MarshalJSON renders the zero value as "0", so a Go-constructed spec would transmit an explicit
+                                      zero and a role group would silently erase the role's value.
                                     properties:
                                       max:
                                         anyOf:
@@ -432,6 +475,9 @@ spec:
                                         x-kubernetes-int-or-string: true
                                     type: object
                                   memory:
+                                    description: |-
+                                      MemoryResource bounds the container's memory. Limit is a pointer for the same reason as
+                                      CPUResource's fields.
                                     properties:
                                       limit:
                                         anyOf:
@@ -441,12 +487,21 @@ spec:
                                         x-kubernetes-int-or-string: true
                                     type: object
                                   storage:
+                                    description: StorageResource describes the role
+                                      group's data PVC.
                                     properties:
                                       capacity:
                                         anyOf:
                                         - type: integer
                                         - type: string
-                                        default: 10Gi
+                                        description: |-
+                                          Capacity of the data volume. Unset means DefaultStorageCapacity.
+
+                                          It carries no `+kubebuilder:default`: the enclosing storage block exists as soon as a user
+                                          overrides ANY leaf of it (a storageClass, say), and a CRD default would then be stamped into
+                                          that block and win the role/roleGroup merge — turning a one-line storageClass override into
+                                          a silent downgrade of the role's capacity, baked into a StatefulSet volumeClaimTemplate that
+                                          Kubernetes will not let the operator change afterwards.
                                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                         x-kubernetes-int-or-string: true
                                       storageClass:

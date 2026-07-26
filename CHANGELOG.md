@@ -69,6 +69,15 @@ changes are listed below.**
 - `testutil.ClusterWrapper` and `testutil.WrapMockCluster` are removed; `testutil.MockCluster`
   implements `common.ClusterInterface` directly and `testutil.MockRoleGroupHandler` is bound to
   `*testutil.MockCluster`.
+- Four commons API fields became pointers so that "unset" is representable, and lost their
+  `+kubebuilder:default`: `StorageResource.Capacity`, `CPUResource.Min`/`Max`,
+  `MemoryResource.Limit` (all `*resource.Quantity`), `RoleGroupConfigSpec.GracefulShutdownTimeout`
+  (`*string`) and `PodDisruptionBudgetSpec.Enabled` (`*bool`). The defaults moved to consumption
+  time via new accessors — `StorageResource.GetCapacity`,
+  `RoleGroupConfigSpec.GetGracefulShutdownTimeout`, `PodDisruptionBudgetSpec.IsEnabled` — and the
+  new constants `DefaultStorageCapacity` and `DefaultGracefulShutdownTimeout`. Product CRDs must
+  be regenerated; Go code constructing these specs takes a pointer (`ptr.To(...)`).
+
 - `sidecar.NewOAuth2ProxySidecarProvider` lost its `cookieSeed` parameter: the session cookie
   secret is now read from a Secret via `secretKeyRef` (the client-credentials Secret's
   `COOKIE_SECRET` key by default; relocate with `WithOAuth2ProxyCookieSecretRef`). Add that key to
@@ -131,6 +140,24 @@ changes are listed below.**
 
 ### fix
 
+- **A role group overriding one leaf of `config.resources` no longer discards the role's siblings.**
+  `MergeRoleGroupConfig` merged `resources` struct-by-struct, so a group that set only
+  `storage.storageClass` — or only `cpu.min` — dropped every other value the role had configured,
+  because the group's enclosing struct was non-nil and the role's was never consulted. Overriding
+  one knob is the ordinary way to use this API. The merge is now leaf-granular.
+- **A role-level `gracefulShutdownTimeout` now reaches its role groups.** The field carried a CRD
+  default of `30s`, and structural defaulting stamps a default into a block as soon as that block
+  exists — so any group declaring a `config` for an unrelated reason (just `resources`, say) was
+  given `30s`, indistinguishable from an explicit group value, and the role's setting lost. The
+  same shape applied to `storage.capacity`, where the consequence was worse: the resulting figure
+  is baked into a StatefulSet `volumeClaimTemplate`, which Kubernetes will not let the operator
+  change afterwards. Both were previously documented as a known caveat in a code comment.
+- `PodDisruptionBudgetSpec.Enabled` was a bare `bool` with a CRD default of `true`, so it read as
+  `false` — the zero value — in every Go-constructed spec, silently disabling the PDB for callers
+  that build the spec in code rather than YAML.
+- `StatefulSetBuilder.WithResources` now honours an explicit zero CPU request instead of skipping
+  it: `min: "0"` is a legitimate ask on a burstable workload, and the previous `IsZero()` check
+  could not tell it apart from "unset".
 - The Vector and JMX exporter sidecars no longer declare a readiness probe. Both are injected as
   native sidecars, and Kubernetes uses a sidecar container's readiness probe to determine the
   **Pod's** ready state, so an unreachable Vector aggregator or a failing metrics scrape pulled
