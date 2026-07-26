@@ -40,10 +40,22 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    controller watches its own CR, so an unconditional write would loop. Handlers and extensions
    contribute status by mutating `cr.GetStatus()` in place — they must never write the CR's status
    subresource themselves, or they will race the reconciler's own write.
-3. **Deletion / finalizers:** the SDK registers **no finalizer**, and nothing in `pkg/` references
-   one. CR deletion therefore executes **no SDK code**: every resource the framework applies carries
-   a controller owner reference to the CR, and Kubernetes garbage collection reclaims it. Two
-   consequences:
+3. **Deletion / finalizers:** the SDK registers **no finalizer** of its own, and nothing in `pkg/`
+   references one. Every resource the framework applies carries a controller owner reference to the
+   CR, and Kubernetes garbage collection reclaims it.
+
+   `Reconcile` recognises deletion **twice**, because a deleted CR is not necessarily an absent one:
+   - **Background propagation** (the `kubectl delete` default) removes the CR from etcd at once, so
+     the next event hits the `IsNotFound` branch and returns.
+   - **Foreground propagation** (`--cascade=foreground`) and any product-registered finalizer leave
+     the object *readable* with a `deletionTimestamp` until its dependents are gone. `Reconcile`
+     therefore checks `cr.GetDeletionTimestamp()` immediately after the fetch and returns before the
+     ClusterOperation gate and before any mutating step. Without that check the pass would re-create
+     every owned resource with `BlockOwnerDeletion: true`, which foreground deletion can never get
+     past, while each GC delete fired an `Owns()` watch event that scheduled the recreate again —
+     an un-backed-off recreate loop against a permanently `Terminating` CR.
+
+   Both paths run **no SDK teardown code**. Three consequences:
    - `AnnotationDeletePVCs` (`operator.zncdata.dev/delete-pvcs`) only affects the **orphan** path in
      `cleaner.go` — PVCs of a StatefulSet whose role group was removed or renamed in the spec. It
      has no effect when the whole cluster CR is deleted; those PVCs survive, because the SDK sets
@@ -51,7 +63,11 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
      owner reference for GC to follow.
    - Any external state a product creates outside owner-reference GC (objects in another namespace,
      cluster-scoped objects, non-Kubernetes resources) must be cleaned up by the product itself.
-     `Reconcile` short-circuits on `IsNotFound` after deletion, so there is no hook to do it in.
+     `GenericReconciler` offers no teardown hook: it returns on both deletion paths above.
+   - A product that needs teardown work registers **its own** finalizer and observes the same
+     `deletionTimestamp` from its own controller. The SDK's guard makes that safe — the framework
+     stops re-creating resources as soon as the timestamp is set, instead of fighting the product's
+     teardown for as long as the finalizer is held.
 4. **ServiceAccounts:** Prefer per-CR naming via `GenericReconcilerConfig.ServiceAccountNameFunc`
    (e.g. `"<product>-" + cr.GetName()`). The reconciler resolves the SA name per CR (func result >
    static `ServiceAccountName` > "" = skip), ensures the SA with the CR as controller owner

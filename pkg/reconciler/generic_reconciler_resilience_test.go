@@ -1127,3 +1127,125 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget lifecycle", func() 
 		Expect(k8sClient.Get(ctx, brokerPDBKey, &policyv1.PodDisruptionBudget{})).To(Succeed())
 	})
 })
+
+var _ = Describe("GenericReconciler deletion handling", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	newDeletionReconciler := func() *reconciler.GenericReconciler[*testutil.MockCluster] {
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return r
+	}
+
+	// newTerminatingCR creates a cluster CR held by a finalizer and deletes it, which is what
+	// foreground propagation looks like from the reconciler's side: the object keeps answering Get,
+	// with deletionTimestamp set, until its dependents are gone. Without a finalizer the API server
+	// would remove the object outright and the test would only exercise the IsNotFound branch.
+	newTerminatingCR := func(name string) (*testutil.MockCluster, string) {
+		cr, resourceName := newResilienceCR(ctx, name)
+
+		Expect(controllerutil.AddFinalizer(cr, "test.zncdata.dev/hold")).To(BeTrue())
+		Expect(k8sClient.Update(ctx, cr)).To(Succeed())
+		DeferCleanup(func() {
+			live := &testutil.MockCluster{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), live); err == nil {
+				controllerutil.RemoveFinalizer(live, "test.zncdata.dev/hold")
+				_ = k8sClient.Update(ctx, live)
+			}
+		})
+
+		Expect(k8sClient.Delete(ctx, cr)).To(Succeed())
+
+		terminating := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), terminating)).To(Succeed())
+		Expect(terminating.DeletionTimestamp.IsZero()).To(BeFalse())
+
+		return cr, resourceName
+	}
+
+	It("creates nothing for a CR that is already terminating", func() {
+		cr, resourceName := newTerminatingCR(uniqueCRName("deleting-fresh"))
+		r := newDeletionReconciler()
+
+		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)})
+		Expect(err).NotTo(HaveOccurred())
+		// Nothing is pending, so nothing should be scheduled: a requeue here would poll a CR that
+		// is on its way out.
+		Expect(result.RequeueAfter).To(BeZero())
+
+		key := types.NamespacedName{Namespace: testNamespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, &appsv1.StatefulSet{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+		Expect(k8sClient.Get(ctx, key, &corev1.ConfigMap{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+	})
+
+	It("does not re-create a garbage-collected resource while the CR is terminating", func() {
+		// The regression this guards: under foreground propagation the CR stays readable, so a
+		// reconciler that only checks IsNotFound runs a full pass and re-creates every owned
+		// resource with BlockOwnerDeletion: true. Deletion can then never retire the CR, and each
+		// GC delete fires an Owns() watch event that schedules the recreate again — an
+		// un-backed-off loop against a permanently Terminating CR.
+		cr, resourceName := newResilienceCR(ctx, uniqueCRName("deleting-gc"))
+		r := newDeletionReconciler()
+		req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)}
+
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		key := types.NamespacedName{Namespace: testNamespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, &appsv1.StatefulSet{})).To(Succeed())
+
+		live := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, live)).To(Succeed())
+		Expect(controllerutil.AddFinalizer(live, "test.zncdata.dev/hold")).To(BeTrue())
+		Expect(k8sClient.Update(ctx, live)).To(Succeed())
+		DeferCleanup(func() {
+			remaining := &testutil.MockCluster{}
+			if err := k8sClient.Get(ctx, req.NamespacedName, remaining); err == nil {
+				controllerutil.RemoveFinalizer(remaining, "test.zncdata.dev/hold")
+				_ = k8sClient.Update(ctx, remaining)
+			}
+		})
+		Expect(k8sClient.Delete(ctx, live)).To(Succeed())
+
+		// Stand in for the garbage collector reclaiming a dependent.
+		Expect(k8sClient.Delete(ctx, &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
+		})).To(Succeed())
+
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, key, &appsv1.StatefulSet{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+	})
+
+	It("leaves the status of a terminating CR untouched", func() {
+		cr, _ := newTerminatingCR(uniqueCRName("deleting-status"))
+		r := newDeletionReconciler()
+
+		before := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), before)).To(Succeed())
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cr)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A status write on a terminating CR is pure noise: it cannot describe anything actionable,
+		// and because the controller watches its own CR it would schedule yet another pass.
+		after := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), after)).To(Succeed())
+		Expect(after.ResourceVersion).To(Equal(before.ResourceVersion))
+		Expect(after.Status.Conditions).To(HaveLen(len(before.Status.Conditions)))
+	})
+})
