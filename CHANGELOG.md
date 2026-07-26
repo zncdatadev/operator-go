@@ -224,6 +224,16 @@ changes are listed below.**
 
 ### docs
 
+- Documented how a `configOverrides` change reaches running processes, which was previously
+  described nowhere: the framework rewrites the role group ConfigMap, and **commons-operator's
+  restarter** rolls the pods when the workload carries `restarter.kubedoop.dev/enable=true` and a
+  mounted ConfigMap/Secret changes. The SDK does not set that label — it is a per-product decision —
+  and does not write the `configmap.restarter.kubedoop.dev/` or `secret.restarter.kubedoop.dev/`
+  annotations, which belong to the restarter. `docs/architecture.md` §2.6 previously claimed
+  `ProductConfig` "ensures operator upgrades propagate config changes to existing clusters"; it now
+  distinguishes recomputing the ConfigMap from delivering it to the processes. `envOverrides`,
+  `cliOverrides` and `podOverrides` are unaffected — they change the pod template and roll natively.
+
 - Re-verified every concrete claim in `docs/architecture.md`, `docs/architecture_zh.md` and the
   `AGENTS.md` files against the code; see `docs/DOC_CHANGELOG.md` for the itemized list
 
