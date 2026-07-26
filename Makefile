@@ -25,6 +25,15 @@ help: ## Display this help.
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./pkg/..."
 
+.PHONY: manifests
+manifests: controller-gen ## Generate the CRDs backing the test mock cluster resources.
+# This SDK ships API types, not CRDs — a product operator generates its own from the types it
+# embeds. The only CRDs generated here are the ones envtest installs for pkg/testutil's mock
+# cluster resources, and they are generated rather than hand-written on purpose: a hand-written
+# CRD drifts from the Go types, and the schema-free version this replaced meant the API server
+# performed no defaulting, validation or pruning in ANY test in the repository.
+	$(CONTROLLER_GEN) crd paths="./pkg/testutil/..." output:crd:artifacts:config=config/crd/bases
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -34,7 +43,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: generate fmt vet setup-envtest ## Run tests.
+test: generate manifests fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: lint

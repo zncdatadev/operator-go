@@ -71,6 +71,7 @@ Run these from the project root:
 | Command | Description |
 |---------|-------------|
 | `make generate` | Generate DeepCopy methods via `controller-gen` |
+| `make manifests` | Generate the test CRDs (`config/crd/bases/`) from `pkg/testutil` types |
 | `make fmt` | Run `go fmt` against code |
 | `make vet` | Run `go vet` against code |
 | `make test` | Run unit tests with coverage (uses envtest for K8s integration) |
@@ -640,10 +641,25 @@ All AI agents and developers working on this project **must** follow these rules
 - `pkg/testutil/` provides envtest helpers (`TestEnv`), object/CR builders, matchers, and mocks.
   `MockCluster` implements `common.ClusterInterface` directly (there is no wrapper type);
   `MockRoleGroupHandlerFor[CR]` is the generic handler mock and `MockRoleGroupHandler` is the alias
-  bound to `*MockCluster`. `TestEnv` installs every CRD in `config/crd/bases/` by default, which is
-  where the two test CRDs live: `test.zncdata.dev_mockclusters.yaml` (backing `testutil.MockCluster`)
-  and `test.zncdata.dev_altmockclusters.yaml` (backing the second CR type `pkg/reconciler`'s tests
-  use to prove per-CR-type isolation)
+  bound to `*MockCluster`. `testutil.AltMockCluster` is a second, deliberately minimal CR type,
+  used to prove per-CR-type isolation (one reconciler and one extension registry per CR type); it
+  lives in `pkg/testutil` rather than a `_test.go` file because controller-gen cannot generate a
+  CRD schema from an unexported type in a test file.
+- **The test CRDs are generated, not hand-written.** `make manifests` runs controller-gen over
+  `./pkg/testutil/...` and writes `config/crd/bases/test.zncdata.dev_{mock,altmock}clusters.yaml`,
+  which `TestEnv` installs. This is load-bearing rather than tidiness: those CRDs previously
+  declared `x-kubernetes-preserve-unknown-fields: true` for spec and status and nothing else, so
+  the API server performed **no defaulting, no validation and no pruning** anywhere in the suite —
+  every `+kubebuilder:default` and `+kubebuilder:validation:*` marker in `pkg/apis` was inert, and
+  any test that believed it exercised them was exercising Go zero values. `make test` depends on
+  `manifests`, and `pkg/testutil/crd_schema_test.go` asserts the schema is live; if those specs
+  fail, the CRDs have regressed to schema-free and the rest of the suite's guarantees are gone.
+- Adding a new root type to `pkg/testutil` needs `+kubebuilder:object:root=true` (plus
+  `+kubebuilder:subresource:status` for a cluster CR). A status struct that **embeds** another
+  status needs an explicit `+kubebuilder:object:generate=true`: embedding promotes the parent's
+  `DeepCopyInto`, so controller-gen concludes the type is already satisfied and emits nothing,
+  producing code that does not compile. The package deliberately carries no package-level
+  `generate=true` marker, which would drag in the mock handlers whose fields are funcs.
 - Run tests: `make test`
 - All tests must pass before any code is committed
 
