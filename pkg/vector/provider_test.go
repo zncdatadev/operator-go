@@ -645,7 +645,14 @@ func TestProvider_Inject_LogMountOnVectorContainer(t *testing.T) {
 	}
 }
 
-func TestProvider_Inject_ReadinessProbe(t *testing.T) {
+// TestProvider_Inject_NoReadinessProbe guards the availability property, not an implementation
+// detail. Kubernetes documents that for a sidecar container (an init container with
+// restartPolicy Always) "if a readinessProbe is specified for this init container, its result
+// will be used to determine the ready state of the Pod" — so a probe here would let an
+// unreachable aggregator or a slow Vector start pull every pod of the role group out of every
+// Service. It is also the precondition for the loopback API bind: an httpGet probe is executed
+// by the kubelet against the pod IP, which is why the API used to listen on 0.0.0.0.
+func TestProvider_Inject_NoReadinessProbe(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest")
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -658,22 +665,16 @@ func TestProvider_Inject_ReadinessProbe(t *testing.T) {
 		t.Fatalf("Inject() error = %v", err)
 	}
 
-	probe := vectorInitContainer(podSpec).ReadinessProbe
-	if probe == nil {
-		t.Fatal("readiness probe should not be nil")
-		return
+	container := vectorInitContainer(podSpec)
+	if container.ReadinessProbe != nil {
+		t.Errorf("readiness probe = %+v, want nil: a log shipper must not gate pod readiness",
+			container.ReadinessProbe)
 	}
-	if probe.HTTPGet == nil {
-		t.Fatal("readiness probe HTTPGet should not be nil")
+	if container.LivenessProbe != nil {
+		t.Errorf("liveness probe = %+v, want nil", container.LivenessProbe)
 	}
-	if probe.HTTPGet.Path != VectorHealthEndpoint {
-		t.Errorf("probe path = %q, want %q", probe.HTTPGet.Path, VectorHealthEndpoint)
-	}
-	if probe.InitialDelaySeconds != VectorReadinessInitialDelaySeconds {
-		t.Errorf("initial delay = %d, want %d", probe.InitialDelaySeconds, VectorReadinessInitialDelaySeconds)
-	}
-	if probe.PeriodSeconds != VectorReadinessPeriodSeconds {
-		t.Errorf("period = %d, want %d", probe.PeriodSeconds, VectorReadinessPeriodSeconds)
+	if container.StartupProbe != nil {
+		t.Errorf("startup probe = %+v, want nil", container.StartupProbe)
 	}
 }
 

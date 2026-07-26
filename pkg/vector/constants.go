@@ -75,18 +75,16 @@ const (
 	// VectorDefaultConfigMapName is the default ConfigMap name for Vector config.
 	VectorDefaultConfigMapName = "vector-config"
 
-	// VectorAPIPort is the port for the Vector API.
+	// VectorAPIPort is the port the Vector API listens on. It is bound to 127.0.0.1 (see
+	// vectorConfigTemplate), so it is reachable from inside the pod only and is deliberately not
+	// declared as a container port.
 	VectorAPIPort = 8686
 
-	// VectorHealthEndpoint is the health check endpoint for the Vector API.
+	// VectorHealthEndpoint is the health endpoint of the Vector API, reachable at
+	// 127.0.0.1:VectorAPIPort from inside the pod. The framework injects no probe against it —
+	// see the Vector provider for why a log shipper must not gate pod readiness.
 	VectorHealthEndpoint = "/health"
 
 	// VectorConfigFileName is the name of the Vector configuration file.
 	VectorConfigFileName = "vector.yaml"
-
-	// VectorReadinessInitialDelaySeconds is the initial delay for the readiness probe.
-	VectorReadinessInitialDelaySeconds int32 = 5
-
-	// VectorReadinessPeriodSeconds is the period for the readiness probe.
-	VectorReadinessPeriodSeconds int32 = 10
 )

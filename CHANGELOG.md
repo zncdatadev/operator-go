@@ -83,6 +83,18 @@ changes are listed below.**
 
 ### security
 
+- Every framework-injected sidecar now carries a hardened container security context by default
+  (`sidecar.DefaultSecurityContext()`: `runAsNonRoot`, `allowPrivilegeEscalation: false`,
+  `capabilities: drop ALL`, `seccompProfile: RuntimeDefault`). Previously oauth2-proxy and the JMX
+  exporter shipped with a nil security context while the product's own container was hardened, so a
+  namespace enforcing the restricted Pod Security Standard rejected the whole workload — the
+  sidecars were the reason the pod could not be admitted. An explicit
+  `SidecarConfig.SecurityContext` still replaces the default wholesale.
+- The Vector agent's API no longer binds `0.0.0.0`. It is Vector's unauthenticated GraphQL
+  endpoint, and `vector tap` over it streams the log events flowing through the pipeline — the
+  product's application logs — so it was reachable from anywhere in the pod network. It now binds
+  `127.0.0.1` and stays enabled for in-pod debugging (`kubectl exec` + `vector top`).
+
 - The oauth2-proxy session cookie secret is no longer inlined into the PodSpec as an env `value`.
   It signs every session the proxy trusts, so anyone able to `get pod` could forge a session and
   bypass authentication; it was additionally derived (via SHA-256) from a caller-supplied seed that
@@ -119,6 +131,15 @@ changes are listed below.**
 
 ### fix
 
+- The Vector and JMX exporter sidecars no longer declare a readiness probe. Both are injected as
+  native sidecars, and Kubernetes uses a sidecar container's readiness probe to determine the
+  **Pod's** ready state, so an unreachable Vector aggregator or a failing metrics scrape pulled
+  every pod of the role group out of every Service — an outage caused by the observability stack
+  rather than by the product. The oauth2-proxy provider already made this call; the other two now
+  match it. Removing Vector's probe is also what allows its API to bind loopback, since an
+  `httpGet` probe is executed by the kubelet against the pod IP.
+- `vector.VectorReadinessInitialDelaySeconds` and `vector.VectorReadinessPeriodSeconds` are removed
+  along with the probe they configured.
 - Orphan cleanup is a confirmed multi-pass state machine: scale to zero, wait for the ordered drain,
   delete, and confirm each resource is gone before the next type is touched; per-group failures no
   longer abort the pass, a 429 surfaces as `*RateLimitError` and backs off instead of marking the

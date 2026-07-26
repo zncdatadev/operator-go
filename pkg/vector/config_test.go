@@ -350,12 +350,18 @@ func TestRenderVectorConfig_APIDefaults(t *testing.T) {
 		t.Fatalf("RenderVectorConfig() error = %v", err)
 	}
 
+	// Enabled, so `kubectl exec` + `vector top` still works for in-pod debugging.
 	if !strings.Contains(result, "enabled: true") {
 		t.Error("RenderVectorConfig() API should be enabled")
 	}
-	// The API must bind 0.0.0.0 so the pod-IP readiness probe can reach /health.
-	if !strings.Contains(result, "address: 0.0.0.0:8686") {
-		t.Error("RenderVectorConfig() API address should be 0.0.0.0:8686")
+	// ...but bound to loopback. Vector's API is unauthenticated GraphQL, and `vector tap` over
+	// it streams the log events flowing through the pipeline — application logs, for these
+	// products. On 0.0.0.0 that endpoint was reachable from anywhere in the pod network.
+	if !strings.Contains(result, "address: 127.0.0.1:8686") {
+		t.Error("RenderVectorConfig() API address should be 127.0.0.1:8686")
+	}
+	if strings.Contains(result, "0.0.0.0") {
+		t.Error("RenderVectorConfig() must not bind any wildcard address")
 	}
 	if !strings.Contains(result, "playground: false") {
 		t.Error("RenderVectorConfig() API playground should be disabled")

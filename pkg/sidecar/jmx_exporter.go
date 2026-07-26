@@ -23,7 +23,6 @@ import (
 
 	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -141,17 +140,13 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 				ReadOnly:  true,
 			},
 		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/metrics",
-					Port: intstr.FromInt(int(port)),
-				},
-			},
-			InitialDelaySeconds: 10,
-			TimeoutSeconds:      5,
-			PeriodSeconds:       10,
-		},
+		// Deliberately no readiness probe. Kubernetes documents that for a sidecar container
+		// (an init container with restartPolicy Always) "if a readinessProbe is specified for
+		// this init container, its result will be used to determine the ready state of the Pod".
+		// A metrics exporter is not in the request path, so gating pod readiness on it would take
+		// the product's own ports out of every Service the moment scraping broke — an outage
+		// caused by the monitoring, not by the product. Same reasoning as the oauth2-proxy
+		// provider.
 	}
 
 	// Apply resources if provided
@@ -159,7 +154,10 @@ func (p *JMXExporterSidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 		container.Resources = *config.Resources
 	}
 
-	// Apply security context if provided
+	// Hardened by default, replaced wholesale (not merged) by an explicit SidecarConfig value.
+	// ReadOnlyRootFilesystem is deliberately left unset: this container runs a JVM, which writes
+	// hsperfdata into /tmp on startup.
+	container.SecurityContext = DefaultSecurityContext()
 	if config.SecurityContext != nil {
 		container.SecurityContext = config.SecurityContext
 	}
