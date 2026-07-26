@@ -75,10 +75,11 @@ changes are listed below.**
   the Secret, generating the value once with the new `sidecar.GenerateCookieSecret()`.
   `sidecar.DeterministicCookieSecret` and `WithOAuth2ProxyCookieSecret` are removed — both produced
   a value that ended up inlined in the PodSpec.
-- The oauth2-proxy provider now requires an explicit authorization policy. Pass
+- The oauth2-proxy provider now requires exactly one explicit authorization policy. Pass
   `WithOAuth2ProxyEmailDomains(...)` or `WithOAuth2ProxyAllowAllEmails()`; `Inject` and `Validate`
-  both fail without one. `OAUTH2_PROXY_WHITELIST_DOMAINS` is no longer emitted by default — declare
-  redirect targets with `WithOAuth2ProxyWhitelistDomains(...)`.
+  both fail with neither, and with both (allow-all would otherwise win and silently discard the
+  domain list). `OAUTH2_PROXY_WHITELIST_DOMAINS` is no longer emitted by default — declare redirect
+  targets with `WithOAuth2ProxyWhitelistDomains(...)`.
 
 ### security
 

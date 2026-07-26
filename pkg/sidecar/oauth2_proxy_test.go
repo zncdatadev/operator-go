@@ -288,6 +288,20 @@ var _ = Describe("OAuth2ProxySidecarProvider authorization policy", func() {
 		Expect(podSpec.InitContainers).To(BeEmpty(), "no container may be built")
 	})
 
+	It("rejects a conflicting authorization policy", func() {
+		// "*" would win over the domain list, so a caller adding WithOAuth2ProxyEmailDomains to an
+		// existing WithOAuth2ProxyAllowAllEmails call — the exact shape of "let me tighten this" —
+		// would change nothing and be told nothing.
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080,
+			sidecar.WithOAuth2ProxyAllowAllEmails(),
+			sidecar.WithOAuth2ProxyEmailDomains("example.com"))
+
+		Expect(provider.Inject(podSpec, nil)).To(
+			MatchError(ContainSubstring("conflicting authorization policy")))
+		Expect(podSpec.InitContainers).To(BeEmpty(), "no container may be built")
+	})
+
 	It("restricts logins to the declared email domains", func() {
 		provider := sidecar.NewOAuth2ProxySidecarProvider(
 			keycloakProvider(), "oidc-credentials", 18080,

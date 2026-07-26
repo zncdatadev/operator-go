@@ -154,9 +154,11 @@ front of the product's HTTP port.
   - **Authorization**: authenticating against an IdP is not authorization for this cluster. On a
     shared realm, every account the IdP can issue a token for would otherwise reach the product, so
     the provider requires an explicit policy — `WithOAuth2ProxyEmailDomains(...)` to restrict
-    logins, or `WithOAuth2ProxyAllowAllEmails()` to admit everyone deliberately. Building a proxy
-    without either fails. Post-login redirects are likewise closed by default (the proxy's own host
-    only); `WithOAuth2ProxyWhitelistDomains(...)` widens that, one domain at a time.
+    logins, or `WithOAuth2ProxyAllowAllEmails()` to admit everyone deliberately. **Exactly one**:
+    building a proxy with neither fails, and so does building one with both, because "allow all"
+    would otherwise win and silently discard the domain list. Post-login redirects are likewise
+    closed by default (the proxy's own host only); `WithOAuth2ProxyWhitelistDomains(...)` widens
+    that, one domain at a time.
   - **Readiness**: the sidecar deliberately has no readiness probe. As a native sidecar it would
     otherwise gate the whole Pod's readiness, taking the product's non-auth ports out of every
     Service during an IdP outage.

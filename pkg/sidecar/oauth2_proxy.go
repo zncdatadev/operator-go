@@ -104,7 +104,8 @@ func WithOAuth2ProxyCookieSecretRef(ref *corev1.SecretKeySelector) OAuth2ProxyOp
 // domains (OAUTH2_PROXY_EMAIL_DOMAINS). Authenticating against an identity provider is not the
 // same as being authorized for this cluster: on a shared IdP — a public provider, or a
 // corporate Keycloak carrying a customer realm — every account it can issue a token for would
-// otherwise reach the product. Either this or WithOAuth2ProxyAllowAllEmails is required.
+// otherwise reach the product. Exactly one of this and WithOAuth2ProxyAllowAllEmails is
+// required; setting both is an error rather than a silent widening.
 func WithOAuth2ProxyEmailDomains(domains ...string) OAuth2ProxyOption {
 	return func(p *OAuth2ProxySidecarProvider) { p.emailDomains = append(p.emailDomains, domains...) }
 }
@@ -112,7 +113,8 @@ func WithOAuth2ProxyEmailDomains(domains ...string) OAuth2ProxyOption {
 // WithOAuth2ProxyAllowAllEmails admits every account the identity provider authenticates
 // ("*"). This is the correct choice for an IdP realm dedicated to this cluster, and a serious
 // mistake for a shared one — it is spelled out as its own option so that it is a decision in
-// the product's code, greppable at review time, rather than a default nobody chose.
+// the product's code, greppable at review time, rather than a default nobody chose. Mutually
+// exclusive with WithOAuth2ProxyEmailDomains.
 func WithOAuth2ProxyAllowAllEmails() OAuth2ProxyOption {
 	return func(p *OAuth2ProxySidecarProvider) { p.allowAllEmails = true }
 }
@@ -206,9 +208,20 @@ func (p *OAuth2ProxySidecarProvider) Validate(ctx context.Context, c client.Clie
 	return nil
 }
 
-// validateAuthorization enforces that an authorization policy was chosen explicitly.
+// validateAuthorization enforces that exactly one authorization policy was chosen.
+//
+// Both directions are errors. Neither policy set would silently admit or reject depending on
+// oauth2-proxy's own defaults; both set would resolve to "*" and silently discard the domain
+// list, so a caller adding WithOAuth2ProxyEmailDomains to an existing
+// WithOAuth2ProxyAllowAllEmails call — the exact shape of "let me tighten this" — would change
+// nothing and be told nothing.
 func (p *OAuth2ProxySidecarProvider) validateAuthorization() error {
-	if len(p.emailDomains) == 0 && !p.allowAllEmails {
+	switch {
+	case len(p.emailDomains) > 0 && p.allowAllEmails:
+		return fmt.Errorf(
+			"oauth2-proxy: conflicting authorization policy; WithOAuth2ProxyEmailDomains(%s) and WithOAuth2ProxyAllowAllEmails are mutually exclusive — drop one, because admitting every account would silently override the domain list",
+			strings.Join(p.emailDomains, ", "))
+	case len(p.emailDomains) == 0 && !p.allowAllEmails:
 		return fmt.Errorf(
 			"oauth2-proxy: no authorization policy configured; pass WithOAuth2ProxyEmailDomains to restrict logins, or WithOAuth2ProxyAllowAllEmails to admit every account the identity provider authenticates")
 	}
@@ -389,8 +402,9 @@ func OAuth2ProxyProviderFor(providerHint string) string {
 	}
 }
 
-// emailDomainsValue renders OAUTH2_PROXY_EMAIL_DOMAINS. validateAuthorization has already
-// established that exactly one of the two sources is set.
+// emailDomainsValue renders OAUTH2_PROXY_EMAIL_DOMAINS. Both call sites run
+// validateAuthorization first, which rejects "neither set" and "both set", so exactly one of the
+// two branches below is reachable.
 func (p *OAuth2ProxySidecarProvider) emailDomainsValue() string {
 	if p.allowAllEmails {
 		return "*"
