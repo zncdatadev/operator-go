@@ -330,39 +330,48 @@ func (p *OAuth2ProxySidecarProvider) Inject(podSpec *corev1.PodSpec, config *Sid
 				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
-		// Startup and liveness, but deliberately NO readiness probe. As a native sidecar an
-		// unready oauth2-proxy would gate readiness of the WHOLE pod, so a runtime issuer (IdP)
-		// outage would take the product's non-auth ports out of every Service rather than just
-		// breaking the login flow.
+		// Readiness AND liveness — and deliberately NO startupProbe. This container is the one
+		// framework sidecar that sits IN THE DATA PATH: the Service sends client requests to its
+		// port and it forwards them to OAUTH2_PROXY_UPSTREAMS. That inverts the rule the
+		// observability sidecars follow.
 		//
-		// Not having a readiness probe is not the same as needing no probe, though. This
-		// container is the one framework sidecar that DOES terminate client traffic: the Service
-		// sends requests to its port, and it forwards to OAUTH2_PROXY_UPSTREAMS. Meanwhile pod
-		// readiness is decided by the MAIN container's probe on the product's own port, so
-		// without a gate here the pod is Ready — and receiving traffic — while the proxy has
-		// merely been launched and is not yet listening. Every rollout produced a window of
-		// refused connections.
+		// For Vector or the JMX exporter a readinessProbe is a lie: their failure does not mean
+		// the product cannot serve, so gating the pod on them empties Services for no reason. For
+		// this container it is the honest signal — a pod whose proxy is not listening genuinely
+		// cannot serve the port the Service routes to. Pod readiness is otherwise decided by the
+		// MAIN container's probe on the product's own port, so without this the pod was Ready, and
+		// receiving traffic, while the proxy had merely been launched: every rollout produced a
+		// window of refused connections. Istio's Envoy — the canonical data-path sidecar — makes
+		// the same call, with the same tunables.
 		//
-		// A startupProbe is the exact instrument: the kubelet starts the next init container (and
-		// so, eventually, the main container) only once this one has "started", which for a
-		// container with a startupProbe means once that probe has SUCCEEDED. It therefore turns
-		// the ordering this provider already claims — "so kubelet starts it before the main
-		// container" — from "the process was launched" into "the proxy is serving", and it stops
-		// mattering entirely once satisfied, so a later IdP outage is unaffected.
+		// A startupProbe would ALSO close that window, and it is the wrong tool. KEP-753: regular
+		// containers start once "all restartable init containers have started", and for a
+		// container with a startupProbe "started" means the probe SUCCEEDED. So a proxy that can
+		// never answer — IdP unreachable at pod creation, so oauth2-proxy exits during OIDC
+		// discovery before it ever serves; a wrong client secret; a NetworkPolicy — would block
+		// the product's own container from starting, forever, with no way back. That is a strictly
+		// larger blast radius than the one this whole design exists to avoid: readiness failure is
+		// reversible (the proxy recovers, the pod rejoins its Services), startup failure is not.
 		//
-		// Both probes target /ping, oauth2-proxy's basic health endpoint, NOT /ready: /ready is
-		// documented as a deep health check, which is precisely the dependency coupling the
-		// missing readiness probe exists to avoid.
-		StartupProbe: &corev1.Probe{
+		// Both probes target /ping, oauth2-proxy's basic health endpoint, NOT /ready, which
+		// oauth2-proxy documents as a DEEP health check. That is what keeps readiness safe here:
+		// /ping never contacts the IdP, so a runtime issuer outage cannot evict the pod — which
+		// was the actual fear behind this provider's original "no probe" reasoning.
+		//
+		// Timings follow the fast-start / slow-evict shape: a 2s period means the pod is Ready
+		// within seconds of the proxy serving, while 30 consecutive failures (~60s) are needed to
+		// evict it. 60s also exceeds the default 30s termination grace period, so a proxy being
+		// shut down cannot accumulate enough failures to be acted on mid-termination — sidecars
+		// are stopped AFTER the main container, so they are probed while draining.
+		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: OAuth2ProxyPingPath,
 					Port: intstr.FromInt(int(port)),
 				},
 			},
-			PeriodSeconds: 2,
-			// ~60s: OIDC discovery against a cold IdP is the slow step, and failing startup
-			// restarts the container, which would only re-run discovery.
+			PeriodSeconds:    2,
+			TimeoutSeconds:   2,
 			FailureThreshold: 30,
 		},
 		LivenessProbe: &corev1.Probe{

@@ -377,27 +377,15 @@ var _ = Describe("OAuth2ProxySidecarProvider authorization policy", func() {
 	})
 })
 
-var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
-	It("injects no readiness probe (an unready native sidecar would gate the whole pod)", func() {
-		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
-		provider := sidecar.NewOAuth2ProxySidecarProvider(
-			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
-
-		Expect(provider.Inject(podSpec, nil)).To(Succeed())
-		Expect(podSpec.InitContainers[0].ReadinessProbe).To(BeNil())
-	})
-
-	It("injects a startup probe so the pod is not Ready before the proxy can serve", func() {
-		// This container is the one framework sidecar in the request path: the Service targets
-		// its port and it forwards to the upstream. Pod readiness, meanwhile, is decided by the
-		// MAIN container's probe on the product's own port — so without a gate here the pod is
-		// Ready, and receiving traffic, while the proxy has merely been launched. Every rollout
-		// produced a window of refused connections.
-		//
-		// A startupProbe is what closes it: the kubelet starts the next init container (and so
-		// the main container) only once this one has started, which for a container with a
-		// startupProbe means once the probe SUCCEEDS. Unlike readiness it stops applying once
-		// satisfied, so a later IdP outage cannot evict the pod.
+var _ = Describe("OAuth2ProxySidecarProvider probes", func() {
+	It("injects a readiness probe, because this sidecar IS in the data path", func() {
+		// The inverse of the rule the observability sidecars follow, and deliberately so. For
+		// Vector or the JMX exporter a readinessProbe is a lie — their failure does not mean the
+		// product cannot serve — so gating the pod on them empties Services for no reason. This
+		// container is the one the Service actually routes to, forwarding to the upstream, so a
+		// proxy that is not listening genuinely means the pod cannot serve. Pod readiness is
+		// otherwise decided by the MAIN container's probe on the product's own port, which is why
+		// the pod was Ready and receiving traffic while the proxy had merely been launched.
 		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
 		provider := sidecar.NewOAuth2ProxySidecarProvider(
 			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
@@ -405,21 +393,39 @@ var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
 		Expect(provider.Inject(podSpec, nil)).To(Succeed())
 
 		container := podSpec.InitContainers[0]
-		probe := container.StartupProbe
+		probe := container.ReadinessProbe
 		Expect(probe).NotTo(BeNil(), "without this the pod serves traffic before the proxy listens")
 		Expect(probe.HTTPGet).NotTo(BeNil())
 		// The literal, deliberately not sidecar.OAuth2ProxyPingPath: the guarantee is the VALUE.
 		// oauth2-proxy documents /ready as a DEEP health check, so pointing the constant there
-		// would reintroduce exactly the IdP coupling the absent readiness probe exists to avoid —
+		// would make a runtime IdP outage evict the pod — the very coupling this design avoids —
 		// and an assertion against the constant would follow it there without complaining.
 		Expect(probe.HTTPGet.Path).To(Equal("/ping"))
 		Expect(probe.HTTPGet.Port.IntValue()).To(Equal(sidecar.OAuth2ProxyPort))
-		// OIDC discovery against a cold IdP is the slow step, and failing startup only restarts
-		// the container to re-run it.
+		// Fast-start, slow-evict: Ready within seconds of the proxy serving, but ~60s of sustained
+		// failure before the pod leaves its Services. 60s also exceeds the default 30s grace
+		// period, so a proxy being drained — sidecars stop AFTER the main container, so they are
+		// probed while terminating — cannot accumulate enough failures to be acted on.
+		Expect(probe.PeriodSeconds).To(BeNumerically("<=", 5), "startup must not wait on a slow probe period")
 		Expect(probe.PeriodSeconds * probe.FailureThreshold).To(BeNumerically(">=", 60))
 
 		Expect(container.LivenessProbe).NotTo(BeNil(), "a wedged proxy must be restarted")
 		Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/ping"))
+	})
+
+	It("injects no startup probe, which would block the product's own container forever", func() {
+		// KEP-753: regular containers start once "all restartable init containers have started",
+		// and for a container with a startupProbe "started" means the probe SUCCEEDED. A proxy
+		// that can never answer — IdP unreachable at pod creation, so oauth2-proxy exits during
+		// OIDC discovery before it ever serves — would therefore stop the product's container from
+		// ever starting, with no way back. That is a strictly larger blast radius than the one
+		// this design exists to avoid: a readiness failure is reversible, a startup failure is not.
+		podSpec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "node"}}}
+		provider := sidecar.NewOAuth2ProxySidecarProvider(
+			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
+
+		Expect(provider.Inject(podSpec, nil)).To(Succeed())
+		Expect(podSpec.InitContainers[0].StartupProbe).To(BeNil())
 	})
 
 	It("lets a product replace or remove the framework probes", func() {
@@ -427,8 +433,10 @@ var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
 		provider := sidecar.NewOAuth2ProxySidecarProvider(
 			keycloakProvider(), "oidc-credentials", 18080, sidecar.WithOAuth2ProxyAllowAllEmails())
 
+		// DisableReadiness is the escape hatch for a product that fronts only some of a pod's
+		// ports with the proxy, and so does not want the rest gated on it.
 		config := &sidecar.SidecarConfig{}
-		config.Probes.Startup = &corev1.Probe{
+		config.Probes.Readiness = &corev1.Probe{
 			ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}},
 			PeriodSeconds: 7,
 		}
@@ -436,9 +444,9 @@ var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
 		Expect(provider.Inject(podSpec, config)).To(Succeed())
 
 		container := podSpec.InitContainers[0]
-		Expect(container.StartupProbe).NotTo(BeNil())
-		Expect(container.StartupProbe.Exec).NotTo(BeNil())
-		Expect(container.StartupProbe.HTTPGet).To(BeNil(), "the override replaces wholesale, never merges")
+		Expect(container.ReadinessProbe).NotTo(BeNil())
+		Expect(container.ReadinessProbe.Exec).NotTo(BeNil())
+		Expect(container.ReadinessProbe.HTTPGet).To(BeNil(), "the override replaces wholesale, never merges")
 		Expect(container.LivenessProbe).To(BeNil())
 	})
 
@@ -454,7 +462,7 @@ var _ = Describe("OAuth2ProxySidecarProvider readiness coupling", func() {
 		})).To(Succeed())
 
 		container := podSpec.InitContainers[0]
-		Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(9999))
+		Expect(container.ReadinessProbe.HTTPGet.Port.IntValue()).To(Equal(9999))
 		Expect(container.LivenessProbe.HTTPGet.Port.IntValue()).To(Equal(9999))
 	})
 

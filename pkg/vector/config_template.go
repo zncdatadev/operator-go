@@ -25,14 +25,13 @@ package vector
 //     than disabled so `kubectl exec` + `vector top` remains available for debugging inside the
 //     pod, where loopback is reachable.
 //   - the internal_metrics source and the prometheus_exporter "metrics" sink expose the agent's
-//     OWN metrics on 0.0.0.0:<MetricsPort>. That endpoint, not the API, is what the container's
-//     liveness probe targets, because the kubelet executes httpGet probes against the POD IP from
-//     outside the pod's network namespace and so cannot reach a loopback-bound listener. Binding
-//     it publicly is a different proposition from binding the API publicly: it carries counters
-//     and gauges about the pipeline (component throughput, errors, buffer depth), never log
-//     content. It is also the endpoint that makes "the agent stopped shipping" alertable —
-//     vector_component_sent_events_total and vector_buffer_events say that; the API's /health,
-//     which reports only that the API itself is serving, never did.
+//     OWN metrics on 0.0.0.0:<MetricsPort>. Without them the pipeline's only sink is the aggregator
+//     it may have lost, so an agent that has stopped shipping is undetectable;
+//     vector_component_sent_events_total and vector_buffer_events are what make that alertable.
+//     Binding this publicly is a different proposition from binding the API publicly: it carries
+//     counters and gauges about the pipeline (component throughput, errors, buffer depth), never
+//     log content. It is also what the container's liveness probe targets, since serving it
+//     requires the topology to be running — the API's /health reports only that the API is up.
 //   - log_schema.host_key is "pod" so the host field of every event is named "pod".
 //   - sources glob per-container log files ("<LogDir><container>/<file>"), one source per
 //     producer format: plain stdout/stderr, log4j 1.x XMLLayout events, log4j2 XMLLayout
