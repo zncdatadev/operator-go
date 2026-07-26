@@ -99,6 +99,22 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// worker indefinitely. Defaults to 300s; a non-positive value disables the deadline.
 	HealthCheckTimeout time.Duration
 
+	// ConfigRevision controls whether the framework stamps a digest of the role group ConfigMap
+	// onto the StatefulSet's pod template (AnnotationConfigRevision), which is what makes a
+	// configuration change actually restart the pods that consume it.
+	//
+	// Without it, editing configOverrides updates the ConfigMap and stops there: the pod template
+	// is byte-identical, no rollout happens, and the operator reports ReconcileComplete=True while
+	// the processes keep serving the previous configuration.
+	//
+	// It defaults to ConfigRevisionDisabled ONLY because switching it on rolls every pod of every
+	// cluster this operator manages, exactly once, as the annotation appears for the first time.
+	// That is an operational event a cluster owner has to schedule, not one that should arrive
+	// with an operator upgrade. Products should turn it on deliberately; the default is expected
+	// to become ConfigRevisionEnabled in a future minor.
+	// +optional
+	ConfigRevision ConfigRevisionPolicy
+
 	// ServiceHealthCheck is an optional product-level health check.
 	// When set, it is called after pod-level health verification in each reconciliation cycle.
 	// Products use this to verify application readiness (e.g., HDFS SafeMode off).
@@ -247,6 +263,7 @@ type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	// healthCheckInterval is the cadence at which a successful reconcile requeues itself; <= 0
 	// disables periodic requeue (see reconcile's wakeup aggregation).
 	healthCheckInterval time.Duration
+	configRevision      ConfigRevisionPolicy
 	serviceAccountName  string
 	// serviceAccountNameFunc, when set, resolves a per-CR SA name that takes precedence over
 	// the static serviceAccountName (see resolveServiceAccountName).
@@ -331,6 +348,7 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 		prototype:              cfg.Prototype,
 		rateLimitRetryAfter:    rateLimitRetryAfter,
 		healthCheckInterval:    healthCheckInterval,
+		configRevision:         cfg.ConfigRevision,
 		serviceAccountName:     cfg.ServiceAccountName,
 		serviceAccountNameFunc: cfg.ServiceAccountNameFunc,
 		productConfig:          cfg.ProductConfig,
@@ -1081,6 +1099,14 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	// resource — both are in place by now, on the very first reconcile too.
 	if err := r.validateSidecars(ctx, buildCtx); err != nil {
 		return err
+	}
+
+	// 4c. Stamp the config revision onto the pod template. It must happen AFTER the ConfigMap is
+	// applied (step 1) and BEFORE the StatefulSet (step 5): the digest describes the ConfigMap
+	// this reconcile just wrote, so stamping it earlier would advertise a revision that is not
+	// yet in the cluster.
+	if r.configRevision == ConfigRevisionEnabled {
+		stampConfigRevision(resources.StatefulSet, resources.ConfigMap)
 	}
 
 	// 5. Apply StatefulSet

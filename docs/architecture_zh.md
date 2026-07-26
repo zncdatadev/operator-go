@@ -106,7 +106,9 @@ SDK 区分产品提供「非用户输入值」的**两种不同机制**,二者�
 | **派生自实时状态** | 冻结/过期 | **每轮重算** |
 
 - **`ProductDefaulter`** 适合稳定、用户可见的**强类型 Spec 默认值**(见 §4.3)。其值成为用户持久化 Spec 的一部分,`kubectl get` 可见。
-- **`ProductConfig`** 适合**产品内禀及派生的配置文件内容**——如按实际资源拼出的 ZooKeeper 连接串、按 Pod 序号生成的 quorum 列表、按 rolegroup 资源算出的 JVM 堆。它是*配置生成,而非默认*:在 reconcile 时计算(而非入场期焊进 Spec),保证算子升级能把配置变更传播到既有集群,且派生自可变状态的值始终新鲜。它作为最低合并层注入(§2.5),用户覆盖仍然胜出。
+- **`ProductConfig`** 适合**产品内禀及派生的配置文件内容**——如按实际资源拼出的 ZooKeeper 连接串、按 Pod 序号生成的 quorum 列表、按 rolegroup 资源算出的 JVM 堆。它是*配置生成,而非默认*:在 reconcile 时计算(而非入场期焊进 Spec),使算子升级能为既有集群重算配置,且派生自可变状态的值始终新鲜。它作为最低合并层注入(§2.5),用户覆盖仍然胜出。
+
+  但"重算 ConfigMap"只是传播的一半,而 SDK 长期只做了这一半:ConfigMap 收敛了,Pod 却仍在跑旧配置——Pod 模板逐字节相同,没有任何东西触发滚动。要真正到达运行中的进程,需要设置 `GenericReconcilerConfig.ConfigRevision: ConfigRevisionEnabled`,它会把渲染后 ConfigMap 的摘要写到 Pod 模板注解 `config.kubedoop.dev/revision` 上。当前是显式开启而非默认,因为打开它会让本算子管理的每个集群的每个 Pod **一次性滚动一遍**——这是集群负责人应当排期的运维事件,而不该随算子升级被动继承。**设计意图:它将成为默认值。** 在产品开启之前,上文的"升级传播"仅指 ConfigMap。
 
 # 3. 分层架构设计
 

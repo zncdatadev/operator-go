@@ -118,6 +118,22 @@ changes are listed below.**
 
 ### features
 
+- **A configuration change can now actually restart the pods that consume it.** Set the new
+  `GenericReconcilerConfig.ConfigRevision: reconciler.ConfigRevisionEnabled` and the framework
+  stamps a digest of the rendered role group ConfigMap onto the StatefulSet pod template as
+  `config.kubedoop.dev/revision`. Previously a `configOverrides` edit updated the ConfigMap and
+  stopped there: the pod template was byte-identical, no rollout happened, and the operator
+  reported `ReconcileComplete=True` while the processes kept serving the previous configuration —
+  and because the mounted files do eventually refresh, the next unrelated pod restart silently
+  split the role group across two configurations. `docs/architecture.md` §2.6 claimed
+  `ProductConfig` made operator upgrades propagate config to existing clusters; that claim now
+  states which half was true.
+
+  It is **opt-in** for this release. Enabling it rolls every pod of every cluster the operator
+  manages, exactly once, as the annotation appears for the first time — an operational event that
+  has to be scheduled, not inherited from an operator upgrade. The default is expected to become
+  enabled in a future minor.
+
 - Split the config format contract into a required `ConfigMarshaler` and an optional
   `ConfigUnmarshaler`, so a product that only emits a format no longer writes a parser nobody calls
 - Added `MultiFormatConfigGenerator.Parse(filename, content)` and the typed errors
