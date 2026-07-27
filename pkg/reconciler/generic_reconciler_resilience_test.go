@@ -881,13 +881,11 @@ func (h *clusterLabelWritingHandler) BuildResources(
 }
 
 func (h *clusterLabelWritingHandler) BuildRolePodDisruptionBudget(
-	clusterName, namespace, roleName string,
-	clusterLabels map[string]string,
-	roleSpec *v1alpha1.RoleSpec,
+	buildCtx *reconciler.RoleBuildContext,
 ) *policyv1.PodDisruptionBudget {
-	clusterLabels["injected-by-handler"] = "true"
-	h.rolePDBCRLabels = clusterLabels
-	return h.BaseRoleGroupHandler.BuildRolePodDisruptionBudget(clusterName, namespace, roleName, clusterLabels, roleSpec)
+	buildCtx.ClusterLabels["injected-by-handler"] = "true"
+	h.rolePDBCRLabels = buildCtx.ClusterLabels
+	return h.BaseRoleGroupHandler.BuildRolePodDisruptionBudget(buildCtx)
 }
 
 var _ = Describe("GenericReconciler cluster label ownership", func() {

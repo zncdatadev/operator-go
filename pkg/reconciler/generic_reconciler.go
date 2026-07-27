@@ -713,7 +713,7 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 // (e.g. *ZkRoleGroupHandler) still get a role-level PDB. The method signature does not depend on
 // CR, so the interface is non-generic.
 type rolePodDisruptionBudgetBuilder interface {
-	BuildRolePodDisruptionBudget(clusterName, namespace, roleName string, clusterLabels map[string]string, roleSpec *v1alpha1.RoleSpec) *policyv1.PodDisruptionBudget
+	BuildRolePodDisruptionBudget(buildCtx *RoleBuildContext) *policyv1.PodDisruptionBudget
 }
 
 // reconcileRolePodDisruptionBudget builds and applies the role's single PodDisruptionBudget.
@@ -729,9 +729,16 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 
 	name := RoleResourceName(cr.GetName(), roleName)
 
-	// cr.GetLabels() hands out the live CR's map; the handler is free to build its label set on
-	// top of the argument, which would otherwise mutate the CR object itself.
-	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, maps.Clone(cr.GetLabels()), roleSpec)
+	pdb := handler.BuildRolePodDisruptionBudget(&RoleBuildContext{
+		ClusterName:      cr.GetName(),
+		ClusterNamespace: cr.GetNamespace(),
+		// cr.GetLabels() hands out the live CR's map; the handler is free to build its label set
+		// on top of the argument, which would otherwise mutate the CR object itself.
+		ClusterLabels: maps.Clone(cr.GetLabels()),
+		ClusterSpec:   cr.GetSpec(),
+		RoleName:      roleName,
+		RoleSpec:      roleSpec,
+	})
 	if pdb == nil {
 		// PDB unset or disabled: remove the role PDB we previously created. Gated on the slot
 		// label, not on ownership: a product's own PDB may legitimately be named "<cluster>-<role>"

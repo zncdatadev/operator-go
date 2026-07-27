@@ -89,6 +89,13 @@ changes are listed below.**
   both fail with neither, and with both (allow-all would otherwise win and silently discard the
   domain list). `OAUTH2_PROXY_WHITELIST_DOMAINS` is no longer emitted by default — declare redirect
   targets with `WithOAuth2ProxyWhitelistDomains(...)`.
+- `BaseRoleGroupHandler.BuildRolePodDisruptionBudget` takes a single `*reconciler.RoleBuildContext`
+  instead of `(clusterName, namespace, roleName string, clusterLabels map[string]string, roleSpec
+  *v1alpha1.RoleSpec)`. The new struct is the role-scoped analogue of `RoleGroupBuildContext` and
+  additionally carries `ClusterSpec`, from which the `app.kubernetes.io/version` label is derived;
+  a later role-level input now needs no further signature change. Handlers that override the method
+  (it is detected through a method-set interface, so an override is a supported extension point)
+  update their signature to match.
 
 ### security
 
@@ -113,6 +120,25 @@ changes are listed below.**
 
 ### features
 
+- Framework-built resources now carry the **complete** Kubernetes recommended label set that
+  `pkg/constant/label.go` has always declared. `app.kubernetes.io/name` (from
+  `BaseRoleGroupHandler.ProductName`), `app.kubernetes.io/version` (from `spec.image.productVersion`)
+  and `app.kubernetes.io/role-group` join the instance/component/managed-by trio that was actually
+  emitted, on object metadata and pod template alike; the role-level PDB gets the same set minus
+  `role-group`, which spans every group by definition. Three of the six keys and
+  `constant.MatchingLabelsNames()` were previously documented API that nothing wrote, so
+  `kubectl get pods -l app.kubernetes.io/name=trino` returned nothing across every kubedoop
+  operator.
+  - `name` and `version` are omitted for a handler with no `ProductName`: that handler runs its
+    static `Image` and never reads `spec.image`, so publishing a version from there would label the
+    pods with a version they are not running.
+  - Either is also dropped when its value is not a legal label value. `productVersion` is free-form
+    user input and a legal image tag may still be an illegal label value (over 63 characters), and
+    that has to cost one cosmetic label rather than make every resource of the cluster rejected by
+    the API server.
+  - `.spec.selector` is **unchanged** — `version` changes on every product upgrade and a selector is
+    immutable. Existing clusters roll once as the pod template gains labels, and keep satisfying the
+    selector they froze.
 - `SidecarConfig.Probes` (`sidecar.SidecarProbes`) lets a product override the probes a provider
   sets: `Startup`/`Liveness`/`Readiness` replace one **wholesale** (probe handlers are a Kubernetes
   one-of, and a merged probe carrying two handlers is rejected by the API server), and
@@ -274,6 +300,15 @@ changes are listed below.**
   `ProductConfig` "ensures operator upgrades propagate config changes to existing clusters"; it now
   distinguishes recomputing the ConfigMap from delivering it to the processes. `envOverrides`,
   `cliOverrides` and `podOverrides` are unaffected — they change the pod template and roll natively.
+- Corrected that restarter documentation against commons-operator's actual implementation. It said
+  a product opts in "through `BaseRoleGroupHandler.ExtraLabels`", which put a **deployment**
+  decision at the operator's compile time; the label goes on the **cluster CR**, whose labels the
+  reconciler propagates into `StatefulSet.metadata.labels` — the only place the restarter's watch
+  predicate and its `MatchingLabels` list look, so `podOverrides` (pod template only) cannot enable
+  it. Also documented that env-var `valueFrom` references count alongside volume mounts, that
+  enabling the label always costs one rollout (the first pass stamps a template that had no
+  `<uid>/<resourceVersion>` annotation), and the upstream bug where only the first ConfigMap volume
+  of a pod is watched (zncdatadev/commons-operator#298).
 
 - Re-verified every concrete claim in `docs/architecture.md`, `docs/architecture_zh.md` and the
   `AGENTS.md` files against the code; see `docs/DOC_CHANGELOG.md` for the itemized list

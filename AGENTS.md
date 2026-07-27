@@ -190,19 +190,32 @@ none of these products re-read their configuration files at runtime.
 
 Delivering that change to the running processes is **commons-operator's restarter**, not this SDK.
 Label the workload `restarter.kubedoop.dev/enable=true` (`constant.LabelRestarterEnable` /
-`LabelRestarterEnableValue`) and, whenever a ConfigMap or Secret **mounted as a volume** in the pod
-changes, the restarter writes `configmap.restarter.kubedoop.dev/<name>` (or
-`secret.restarter.kubedoop.dev/<name>`) into the workload's pod template; the StatefulSet controller
-then rolls the pods. **The SDK writes neither annotation** — those prefixes exist in
+`LabelRestarterEnableValue`) and, whenever a ConfigMap or Secret the pod references — as a **volume**
+or through an env var's `valueFrom` — changes, the restarter writes
+`configmap.restarter.kubedoop.dev/<name>` (or `secret.restarter.kubedoop.dev/<name>`) into the
+workload's pod template; the StatefulSet controller then rolls the pods. The annotation's value is
+`<uid>/<resourceVersion>`, so **enabling the label always costs one rollout**: the first pass stamps
+a template that had no annotation. **The SDK writes neither annotation** — those prefixes exist in
 `pkg/constant/restarter.go` to document the restarter's half of the contract, not for the framework
 to emit. The same component also restarts pods whose secret-operator TLS/Kerberos secrets have
 passed the expiry recorded in `restarter.kubedoop.dev/expires-at.<...>`.
 
+The label goes on **`StatefulSet.metadata.labels`**, which is where the restarter's watch predicate
+and its `client.MatchingLabels` list both read it — a pod-template label does not enable anything,
+so `podOverrides` is not a way in. The framework's own channel is the **cluster CR's labels**: the
+reconciler passes `maps.Clone(cr.GetLabels())` as `RoleGroupBuildContext.ClusterLabels`, and
+`BaseRoleGroupHandler` merges them into every built resource's metadata (and pod template), so
+`kubectl label <cluster-cr> restarter.kubedoop.dev/enable=true` reaches the StatefulSet metadata the
+restarter watches. Opting in is a **deployment** decision by whoever runs the cluster, not something
+the operator's author hardcodes.
+
+> **Caveat (upstream bug).** commons-operator's `getRefConfigMapRefs` returns after the *first*
+> ConfigMap volume it finds, so a pod mounting several ConfigMaps only ever gets one of them
+> watched — see zncdatadev/commons-operator#298. The secret path (`getRefSecretRefs`) is correct.
+
 The framework already satisfies the restarter's precondition: the role group ConfigMap is mounted as
-the `config` volume. What it does **not** do is set the label — that is a per-product decision, and
-without it a `configOverrides` change simply does not roll. A product opts in through
-`BaseRoleGroupHandler.ExtraLabels`; note those labels land on both the StatefulSet metadata and the
-pod template, and the restarter only needs the former.
+the `config` volume. What it does **not** do is set the label, and without it a `configOverrides`
+change simply does not roll.
 
 This applies to `configOverrides` alone. `envOverrides` and `cliOverrides` reach the container as
 env vars and args through `MergedConfig` (`StatefulSetBuilder.WithConfig`), and `podOverrides`
@@ -229,7 +242,7 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 }
 ```
 
-`BaseRoleGroupHandler.BuildResources` returns a ConfigMap, a headless Service, a StatefulSet, and a client-facing Service **when the role declares service ports**. It does not return a PDB: the framework's PDB comes from `roleConfig.podDisruptionBudget` and is a **role-level** resource built by `BuildRolePodDisruptionBudget` and applied once per role by the reconciler (`RoleGroupResources.PodDisruptionBudget` remains an escape hatch for an extra per-group PDB). Product operators embed the base handler and override specific methods:
+`BaseRoleGroupHandler.BuildResources` returns a ConfigMap, a headless Service, a StatefulSet, and a client-facing Service **when the role declares service ports**. It does not return a PDB: the framework's PDB comes from `roleConfig.podDisruptionBudget` and is a **role-level** resource built by `BuildRolePodDisruptionBudget` and applied once per role by the reconciler (`RoleGroupResources.PodDisruptionBudget` remains an escape hatch for an extra per-group PDB). `BuildRolePodDisruptionBudget` takes a single `*RoleBuildContext` — the role-scoped analogue of `RoleGroupBuildContext`, carrying `ClusterName`, `ClusterNamespace`, `ClusterLabels`, `ClusterSpec`, `RoleName` and `RoleSpec` — so a later role-level input needs no new signature. Product operators embed the base handler and override specific methods:
 ```go
 handler := reconciler.NewBaseRoleGroupHandler[*v1alpha1.TrinoCluster](image, scheme)
 handler.ProductName = "trino" // resolves spec.image into "{repo}/trino:{version}-kubedoop{v}"
@@ -248,6 +261,20 @@ type RoleNameProvider interface {
 `ConfiguredRoleNames()` returns the sorted union of the role names the handler carries settings for (images, container ports, service ports, logging containers, main container names). The reconciler checks it against `spec.roles` and emits an `UnknownConfiguredRole` Warning event for names the CR does not declare — a typo there would otherwise silently produce a role group with no ports, no image override and no Service. It is a warning, not a failure, because a handler may legitimately be configured for optional roles.
 
 When building the StatefulSet, `BaseRoleGroupHandler` consumes the role group's `config` (commons `RoleGroupConfigSpec`): `resources` (requests/limits, plus an opt-in data PVC via `StorageMountPath`), `affinity` (a RawExtension unmarshaled into `corev1.Affinity` and set on the pod spec — invalid JSON fails the build), and `gracefulShutdownTimeout` (a Go duration mapped to `terminationGracePeriodSeconds` — unparsable or non-positive values fail the build). All of these are applied before `podOverrides`, so user pod overrides keep precedence. The framework sets affinity only when the config provides one, so products that post-process the built StatefulSet with `if podSpec.Affinity == nil {...}` default guards remain correct.
+
+**Labels.** Every resource the base handler builds carries the Kubernetes recommended set declared
+in `pkg/constant/label.go` — `app.kubernetes.io/{name,instance,version,component,role-group,managed-by}` —
+on both the object metadata and the pod template. `name` comes from `ProductName` and `version` from
+`spec.image.productVersion`, so both are omitted for a handler that declares no `ProductName` (it
+runs its static `Image` and never reads `spec.image`); `role-group` is absent on role-level
+resources, which span every group of the role. An illegal label value for `name`/`version` drops
+that one label rather than making every resource of the cluster unappliable.
+
+The `.spec.selector` of the StatefulSet, Services and PDBs stays **narrower**: instance, component,
+managed-by and the `<cluster>-<group>` marker (or the product's `LabelDomain` identity labels). A
+selector is immutable, and `version` changes on every product upgrade. Upgrading an existing cluster
+into this label set rolls its pods once, because the pod template gains labels; the frozen selector
+keeps matching. See `pkg/reconciler/AGENTS.md` §14.
 
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
 

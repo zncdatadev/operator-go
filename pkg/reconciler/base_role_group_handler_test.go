@@ -19,6 +19,7 @@ package reconciler_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -41,6 +42,7 @@ import (
 	k8slabels "k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -407,10 +409,20 @@ var _ = Describe("PodDisruptionBudget building", func() {
 		return &v1alpha1.RoleSpec{RoleConfig: &v1alpha1.RoleConfigSpec{PodDisruptionBudget: spec}}
 	}
 
+	roleCtx := func(roleSpec *v1alpha1.RoleSpec, clusterLabels map[string]string) *reconciler.RoleBuildContext {
+		return &reconciler.RoleBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			ClusterLabels:    clusterLabels,
+			RoleName:         "test-role",
+			RoleSpec:         roleSpec,
+		}
+	}
+
 	It("should name the PDB at role level (<cluster>-<role>), not per role group", func() {
 		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true)})
 
-		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
+		pdb := handler.BuildRolePodDisruptionBudget(roleCtx(roleSpec, nil))
 		Expect(pdb).NotTo(BeNil())
 		Expect(pdb.Name).To(Equal("test-cluster-test-role"))
 		Expect(pdb.Namespace).To(Equal("default"))
@@ -420,7 +432,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 		maxUnavailable := int32(2)
 		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true), MaxUnavailable: &maxUnavailable})
 
-		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
+		pdb := handler.BuildRolePodDisruptionBudget(roleCtx(roleSpec, nil))
 		Expect(pdb).NotTo(BeNil())
 		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(2)))
 	})
@@ -428,8 +440,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 	It("should build a role-scoped selector without the role group label", func() {
 		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true)})
 
-		pdb := handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role",
-			map[string]string{"app": "test"}, roleSpec)
+		pdb := handler.BuildRolePodDisruptionBudget(roleCtx(roleSpec, map[string]string{"app": "test"}))
 		Expect(pdb.Spec.Selector).NotTo(BeNil())
 		Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-cluster"))
 		Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "test-role"))
@@ -440,14 +451,17 @@ var _ = Describe("PodDisruptionBudget building", func() {
 
 	It("should return nil when disabled", func() {
 		roleSpec := roleWithPDB(&v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(false)})
-		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget(roleCtx(roleSpec, nil))).To(BeNil())
 	})
 
 	It("should return nil when PodDisruptionBudget or RoleConfig is unset", func() {
-		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil,
-			roleWithPDB(nil))).To(BeNil())
-		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil,
-			&v1alpha1.RoleSpec{})).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget(roleCtx(roleWithPDB(nil), nil))).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget(roleCtx(&v1alpha1.RoleSpec{}, nil))).To(BeNil())
+	})
+
+	It("should return nil rather than panic when the context or role spec is missing", func() {
+		Expect(handler.BuildRolePodDisruptionBudget(nil)).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget(roleCtx(nil, nil))).To(BeNil())
 	})
 })
 
@@ -1246,7 +1260,12 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 
 	buildRolePDB := func(spec *v1alpha1.PodDisruptionBudgetSpec) *policyv1.PodDisruptionBudget {
 		roleSpec := &v1alpha1.RoleSpec{RoleConfig: &v1alpha1.RoleConfigSpec{PodDisruptionBudget: spec}}
-		return handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil, roleSpec)
+		return handler.BuildRolePodDisruptionBudget(&reconciler.RoleBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         roleSpec,
+		})
 	}
 
 	It("should create PDB when MaxUnavailable is set and Enabled is true", func() {
@@ -1266,8 +1285,12 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 	})
 
 	It("should not create PDB when RoleConfig is nil", func() {
-		Expect(handler.BuildRolePodDisruptionBudget("test-cluster", "default", "test-role", nil,
-			&v1alpha1.RoleSpec{})).To(BeNil())
+		Expect(handler.BuildRolePodDisruptionBudget(&reconciler.RoleBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "test-role",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+		})).To(BeNil())
 	})
 })
 
@@ -2305,5 +2328,171 @@ var _ = Describe("BaseRoleGroupHandler ConfigMap data", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.ConfigMap).NotTo(BeNil())
 		Expect(resources.ConfigMap.Data).NotTo(BeNil())
+	})
+})
+
+var _ = Describe("Recommended label set", func() {
+	var mockCR *testutil.MockCluster
+
+	newHandler := func(productName string) *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
+		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("static-image:1", testScheme)
+		h.ProductName = productName
+		h.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
+		return h
+	}
+
+	newBuildCtx := func(image *v1alpha1.ImageSpec) *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: testNamespace,
+			ClusterSpec:      &v1alpha1.GenericClusterSpec{Image: image},
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+		}
+	}
+
+	kubedoopImage := func(productVersion string) *v1alpha1.ImageSpec {
+		return &v1alpha1.ImageSpec{
+			Repo:            "quay.io/kubedoop",
+			ProductVersion:  productVersion,
+			KubedoopVersion: "0.0.1",
+		}
+	}
+
+	BeforeEach(func() {
+		mockCR = testutil.NewMockCluster("test-cluster", testNamespace)
+	})
+
+	It("stamps the complete set on every role group resource and its pod template", func() {
+		handler := newHandler("trino")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(kubedoopImage("476")))
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := map[string]string{
+			constant.LabelKubernetesName:      "trino",
+			constant.LabelKubernetesInstance:  "test-cluster",
+			constant.LabelKubernetesVersion:   "476",
+			constant.LabelKubernetesComponent: "server",
+			constant.LabelKubernetesRoleGroup: "default",
+			constant.LabelKubernetesManagedBy: "operator-go",
+		}
+
+		objects := []client.Object{
+			resources.ConfigMap, resources.StatefulSet, resources.HeadlessService, resources.Service,
+		}
+		for _, obj := range objects {
+			Expect(obj).NotTo(BeNil())
+			for key, value := range expected {
+				Expect(obj.GetLabels()).To(HaveKeyWithValue(key, value),
+					"%T should carry %s=%s", obj, key, value)
+			}
+		}
+
+		// The pod template too: these labels are what makes `kubectl get pods -l
+		// app.kubernetes.io/role-group=default` work, and MatchingLabelsNames() promises pods
+		// are selectable by them.
+		for key, value := range expected {
+			Expect(resources.StatefulSet.Spec.Template.Labels).To(HaveKeyWithValue(key, value))
+		}
+	})
+
+	It("keeps the added labels out of the immutable StatefulSet selector", func() {
+		handler := newHandler("trino")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(kubedoopImage("476")))
+		Expect(err).NotTo(HaveOccurred())
+
+		// .spec.selector is a one-way door: whatever goes in can never be edited again. Version
+		// changes on every product upgrade and role-group is already covered by the marker key,
+		// so a cluster upgraded into this framework version must find its selector byte-identical.
+		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(Equal(map[string]string{
+			constant.LabelKubernetesInstance:  "test-cluster",
+			constant.LabelKubernetesComponent: "server",
+			constant.LabelKubernetesManagedBy: "operator-go",
+			"test-cluster-default":            "true",
+		}))
+		Expect(resources.HeadlessService.Spec.Selector).To(Equal(resources.StatefulSet.Spec.Selector.MatchLabels))
+
+		// And the wider template still satisfies the narrower selector.
+		Expect(k8slabels.SelectorFromSet(resources.StatefulSet.Spec.Selector.MatchLabels).
+			Matches(k8slabels.Set(resources.StatefulSet.Spec.Template.Labels))).To(BeTrue())
+	})
+
+	It("omits name and version for a handler that ignores spec.image", func() {
+		// No ProductName: the handler runs its static Image and never reads spec.image, so
+		// publishing a version from there would label the pods with something they do not run.
+		handler := newHandler("")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(kubedoopImage("476")))
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resources.StatefulSet.Labels).NotTo(HaveKey(constant.LabelKubernetesName))
+		Expect(resources.StatefulSet.Labels).NotTo(HaveKey(constant.LabelKubernetesVersion))
+		// role-group is derived from the build context, so it is unconditional.
+		Expect(resources.StatefulSet.Labels).To(HaveKeyWithValue(constant.LabelKubernetesRoleGroup, "default"))
+	})
+
+	It("publishes the declared productVersion even when a custom image overrides the reference", func() {
+		handler := newHandler("trino")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{Custom: "my-registry/trino:custom", ProductVersion: "476"}))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Custom replaces the image *reference*; productVersion still declares which product
+		// version that reference is expected to be.
+		Expect(resources.StatefulSet.Labels).To(HaveKeyWithValue(constant.LabelKubernetesVersion, "476"))
+	})
+
+	It("drops a productVersion that is not a legal label value instead of failing the build", func() {
+		handler := newHandler("trino")
+
+		// A legal image tag (up to 128 chars) that is not a legal label value (max 63).
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(kubedoopImage(strings.Repeat("9", 64))))
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resources.StatefulSet.Labels).NotTo(HaveKey(constant.LabelKubernetesVersion))
+		Expect(resources.StatefulSet.Labels).To(HaveKeyWithValue(constant.LabelKubernetesName, "trino"))
+
+		// The point of dropping it: every label the framework emits stays applyable, so one
+		// cosmetic label goes missing instead of the API server rejecting every resource.
+		for key, value := range resources.StatefulSet.Labels {
+			Expect(validation.IsValidLabelValue(value)).To(BeEmpty(), "label %s=%s", key, value)
+		}
+	})
+
+	It("stamps the set minus role-group on the role-level PodDisruptionBudget", func() {
+		handler := newHandler("trino")
+
+		pdb := handler.BuildRolePodDisruptionBudget(&reconciler.RoleBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: testNamespace,
+			ClusterSpec:      &v1alpha1.GenericClusterSpec{Image: kubedoopImage("476")},
+			RoleName:         "server",
+			RoleSpec: &v1alpha1.RoleSpec{RoleConfig: &v1alpha1.RoleConfigSpec{
+				PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true)},
+			}},
+		})
+		Expect(pdb).NotTo(BeNil())
+
+		Expect(pdb.Labels).To(HaveKeyWithValue(constant.LabelKubernetesName, "trino"))
+		Expect(pdb.Labels).To(HaveKeyWithValue(constant.LabelKubernetesVersion, "476"))
+		Expect(pdb.Labels).To(HaveKeyWithValue(constant.LabelKubernetesComponent, "server"))
+		// A role-level resource covers every group of the role.
+		Expect(pdb.Labels).NotTo(HaveKey(constant.LabelKubernetesRoleGroup))
+
+		// The selector must stay version-free: a version-scoped PDB would stop matching its pods
+		// the moment the label changed — i.e. during the upgrade rollout the PDB exists for.
+		Expect(pdb.Spec.Selector.MatchLabels).NotTo(HaveKey(constant.LabelKubernetesVersion))
+		Expect(pdb.Spec.Selector.MatchLabels).NotTo(HaveKey(constant.LabelKubernetesName))
 	})
 })

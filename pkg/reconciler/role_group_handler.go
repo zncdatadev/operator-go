@@ -99,6 +99,35 @@ type VolumeProvider interface {
 	VolumeMounts() []corev1.VolumeMount
 }
 
+// RoleBuildContext provides context for building role-level resources — those that cover every
+// pod of a role across all of its role groups (today: the role's single PodDisruptionBudget).
+// It is the role-scoped analogue of RoleGroupBuildContext and is built by GenericReconciler once
+// per role.
+//
+// It is a struct rather than a positional argument list because role-level resources need the
+// same identity inputs as role group ones — including ClusterSpec, from which the
+// app.kubernetes.io/version label is derived — and a struct lets a later input be added without
+// breaking every handler that builds a role-level resource.
+type RoleBuildContext struct {
+	// ClusterName is the name of the cluster CR.
+	ClusterName string
+
+	// ClusterNamespace is the namespace of the cluster CR.
+	ClusterNamespace string
+
+	// ClusterLabels are the labels from the cluster CR.
+	ClusterLabels map[string]string
+
+	// ClusterSpec is the generic cluster specification.
+	ClusterSpec *v1alpha1.GenericClusterSpec
+
+	// RoleName is the name of the role (e.g., "namenode", "datanode").
+	RoleName string
+
+	// RoleSpec is the role specification.
+	RoleSpec *v1alpha1.RoleSpec
+}
+
 // RoleGroupBuildContext provides context for building role group resources.
 // It contains all the information needed to construct Kubernetes resources.
 type RoleGroupBuildContext struct {

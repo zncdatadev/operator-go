@@ -39,6 +39,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -470,6 +471,51 @@ func RoleLabelKey(domain string) string { return domain + "/role" }
 // RoleGroupLabelKey returns the identity label key for the role group, under the given domain.
 func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
 
+// productVersion returns the value for app.kubernetes.io/version: spec.image.productVersion, but
+// only when the handler is CR-image driven. With ProductName unset the handler runs its static
+// Image and ignores spec.image entirely (see clusterImage), so publishing a version read from a
+// field that does not reach the container would label the pods with a version they are not
+// running.
+func (h *BaseRoleGroupHandler[CR]) productVersion(clusterSpec *v1alpha1.GenericClusterSpec) string {
+	if h.ProductName == "" || clusterSpec == nil || clusterSpec.Image == nil {
+		return ""
+	}
+	return clusterSpec.Image.ProductVersion
+}
+
+// recommendedLabels returns the Kubernetes recommended labels the framework stamps on every
+// resource it builds. roleGroupName is empty for role-level resources, which span every group of
+// the role and therefore carry no role-group label.
+//
+// name and version are conditional. app.kubernetes.io/name is the product name, which only a
+// handler that declared one has; app.kubernetes.io/version comes from productVersion above. Both
+// are dropped when the value is not a legal label value, because both are free-form input —
+// spec.image.productVersion is written by the user and constrained by nothing — and an
+// out-of-range value has to cost one cosmetic label rather than make every resource of the
+// cluster rejected by the API server. instance/component are deliberately not guarded the same
+// way: they also feed the StatefulSet's .spec.selector, so a value too long to be a label is
+// already fatal there and silently dropping it here would only hide where it failed.
+func (h *BaseRoleGroupHandler[CR]) recommendedLabels(
+	clusterName, roleName, roleGroupName string,
+	clusterSpec *v1alpha1.GenericClusterSpec,
+) map[string]string {
+	labels := map[string]string{
+		constant.LabelKubernetesInstance:  clusterName,
+		constant.LabelKubernetesComponent: roleName,
+		constant.LabelKubernetesManagedBy: managedByValue,
+	}
+	if roleGroupName != "" {
+		labels[constant.LabelKubernetesRoleGroup] = roleGroupName
+	}
+	if name := h.ProductName; name != "" && len(validation.IsValidLabelValue(name)) == 0 {
+		labels[constant.LabelKubernetesName] = name
+	}
+	if version := h.productVersion(clusterSpec); version != "" && len(validation.IsValidLabelValue(version)) == 0 {
+		labels[constant.LabelKubernetesVersion] = version
+	}
+	return labels
+}
+
 // buildLabels creates the descriptive labels for resources. It is a superset of
 // buildSelectorLabels: the CR's own labels and the product's ExtraLabels are metadata (and pod
 // template) only, never selectors.
@@ -478,6 +524,11 @@ func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) 
 
 	// Add cluster labels
 	for k, v := range buildCtx.ClusterLabels {
+		labels[k] = v
+	}
+
+	// The Kubernetes recommended set is framework-owned, so it is applied over the CR's labels.
+	for k, v := range h.recommendedLabels(buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName, buildCtx.ClusterSpec) {
 		labels[k] = v
 	}
 
@@ -518,11 +569,16 @@ func (h *BaseRoleGroupHandler[CR]) identityLabels(buildCtx *RoleGroupBuildContex
 // label inside it would freeze at its creation-time value and every later edit of that label would
 // leave the live object unmatchable — and, because the pod template keeps carrying the current
 // value, permanently unpatchable.
+//
+// This is a strict subset of the recommended set that recommendedLabels stamps on metadata, and
+// stays that way: app.kubernetes.io/version changes on every product upgrade and role-group is
+// already covered by the marker key below, so neither may enter a selector that can never be
+// edited again.
 func (h *BaseRoleGroupHandler[CR]) frameworkSelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/instance":                        buildCtx.ClusterName,
-		"app.kubernetes.io/component":                       buildCtx.RoleName,
-		"app.kubernetes.io/managed-by":                      managedByValue,
+		constant.LabelKubernetesInstance:                    buildCtx.ClusterName,
+		constant.LabelKubernetesComponent:                   buildCtx.RoleName,
+		constant.LabelKubernetesManagedBy:                   managedByValue,
 		buildCtx.ClusterName + "-" + buildCtx.RoleGroupName: valueTrue,
 	}
 }
@@ -896,19 +952,21 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 // role groups (name "<cluster>-<role>", selector on the cluster+role identity labels), so
 // exactly one is emitted per role. Returns nil when the PDB is unset or explicitly disabled.
 func (h *BaseRoleGroupHandler[CR]) BuildRolePodDisruptionBudget(
-	clusterName, namespace, roleName string,
-	clusterLabels map[string]string,
-	roleSpec *v1alpha1.RoleSpec,
+	buildCtx *RoleBuildContext,
 ) *policyv1.PodDisruptionBudget {
-	roleConfig := roleSpec.GetRoleConfig()
+	if buildCtx == nil || buildCtx.RoleSpec == nil {
+		return nil
+	}
+	roleConfig := buildCtx.RoleSpec.GetRoleConfig()
 	if roleConfig == nil || roleConfig.PodDisruptionBudget == nil {
 		return nil
 	}
 
-	b := builder.NewPDBBuilder(RoleResourceName(clusterName, roleName), namespace).
-		WithLabels(h.buildRoleLabels(clusterName, roleName, clusterLabels)).
+	b := builder.NewPDBBuilder(
+		RoleResourceName(buildCtx.ClusterName, buildCtx.RoleName), buildCtx.ClusterNamespace).
+		WithLabels(h.buildRoleLabels(buildCtx)).
 		WithAnnotations(h.ExtraAnnotations).
-		WithSelector(h.buildRoleSelectorLabels(clusterName, roleName)).
+		WithSelector(h.buildRoleSelectorLabels(buildCtx.ClusterName, buildCtx.RoleName)).
 		WithSpec(roleConfig.PodDisruptionBudget)
 
 	// Enabled defaults to true in the CRD; honor an explicit disable.
@@ -941,28 +999,29 @@ func (h *BaseRoleGroupHandler[CR]) buildRoleSelectorLabels(clusterName, roleName
 		// operator-go-managed pods and cannot accidentally match another operator's workloads
 		// that reuse the same instance/component labels.
 		return map[string]string{
-			"app.kubernetes.io/instance":   clusterName,
-			"app.kubernetes.io/component":  roleName,
-			"app.kubernetes.io/managed-by": managedByValue,
+			constant.LabelKubernetesInstance:  clusterName,
+			constant.LabelKubernetesComponent: roleName,
+			constant.LabelKubernetesManagedBy: managedByValue,
 		}
 	}
 	return h.roleIdentityLabels(clusterName, roleName)
 }
 
 // buildRoleLabels is the role-scoped analogue of buildLabels for metadata on role-level
-// resources: the standard recommended labels plus cluster/extra labels, but no role group marker.
-func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(clusterName, roleName string, clusterLabels map[string]string) map[string]string {
+// resources: the recommended labels plus cluster/extra labels, but no role group label — a
+// role-level resource covers every group of the role.
+func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(buildCtx *RoleBuildContext) map[string]string {
 	labels := make(map[string]string)
 
-	for k, v := range clusterLabels {
+	for k, v := range buildCtx.ClusterLabels {
 		labels[k] = v
 	}
 
-	labels["app.kubernetes.io/instance"] = clusterName
-	labels["app.kubernetes.io/component"] = roleName
-	labels["app.kubernetes.io/managed-by"] = managedByValue
+	for k, v := range h.recommendedLabels(buildCtx.ClusterName, buildCtx.RoleName, "", buildCtx.ClusterSpec) {
+		labels[k] = v
+	}
 
-	for k, v := range h.roleIdentityLabels(clusterName, roleName) {
+	for k, v := range h.roleIdentityLabels(buildCtx.ClusterName, buildCtx.RoleName) {
 		labels[k] = v
 	}
 

@@ -4,6 +4,41 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-27] (restarter contract re-verified against commons-operator; recommended label set)
+
+The restarter opt-in was documented from the SDK's side only, and got the audience wrong. Every
+claim below was re-read against `commons-operator/internal/controller/restart/statefulset_controller.go`.
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+- **§2.6 said "a ConfigMap or Secret mounted as a volume".** The restarter also follows env-var
+  `valueFrom` references (`getRefSecretRefs` / `getRefConfigMapRefs`), so a Secret reaching the pod
+  only as an env var is covered too. Both language versions updated.
+- **§2.6 left "labelling the workload" ambiguous about *who* labels it.** The restarter's watch
+  predicate and its `client.MatchingLabels` list both read **object metadata**, so the label belongs
+  on the cluster CR (whose labels the reconciler propagates into every built resource's metadata) —
+  a deployment decision, not an operator-code one.
+
+### Security Documentation (`security.md`)
+
+- The note on `restarter.kubedoop.dev/enable` told products to add the label "e.g. through
+  `BaseRoleGroupHandler.ExtraLabels`". That is the wrong layer: `ExtraLabels` is set when the
+  operator is *compiled*, while enabling restarts is decided when a cluster is *deployed*. Replaced
+  with the CR-label channel, plus why `podOverrides` cannot substitute (it reaches the pod template,
+  the restarter reads object metadata).
+
+### AGENTS.md files
+
+- Root `AGENTS.md`: the same `ExtraLabels` correction; added the one-rollout cost of enabling the
+  label (the annotation value is `<uid>/<resourceVersion>`, so the first stamp is itself a template
+  change) and the upstream single-ConfigMap bug (zncdatadev/commons-operator#298). Added a **Labels**
+  paragraph to §3 and the `RoleBuildContext` signature of `BuildRolePodDisruptionBudget`.
+- `pkg/reconciler/AGENTS.md`: new §14 tabulating the recommended label set, the conditions under
+  which `name`/`version` are omitted, and why `version`/`role-group` must stay out of the immutable
+  `.spec.selector`.
+
+---
+
 ## [2026-07-26] (adversarial review — six sections describing code that no longer exists)
 
 An adversarial re-read of the branch found the architecture document still describing pre-wave

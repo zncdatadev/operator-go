@@ -141,6 +141,30 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     build, naming the key: the builder re-writes selector keys into the pod template after the
     labels, so it could never take effect, and on an object created under the older, wider selector
     it would make every update fail.
+14. **The recommended label set is metadata, and wider than the selector.** Every resource the
+    framework builds carries the six keys declared in `pkg/constant/label.go`
+    (`constant.LabelKubernetes*`), on both the object metadata and the pod template:
+
+    | key | value | notes |
+    |---|---|---|
+    | `app.kubernetes.io/name` | `BaseRoleGroupHandler.ProductName` | omitted when the handler declares none |
+    | `app.kubernetes.io/instance` | cluster CR name | in the selector |
+    | `app.kubernetes.io/version` | `spec.image.productVersion` | omitted unless `ProductName` is set — without it the handler runs its static `Image` and never reads `spec.image` |
+    | `app.kubernetes.io/component` | role name | in the selector |
+    | `app.kubernetes.io/role-group` | role group name | absent on role-level resources, which span every group |
+    | `app.kubernetes.io/managed-by` | `operator-go` | in the selector |
+
+    `name` and `version` are dropped when the value is not a legal label value: `productVersion` is
+    free-form user input and a legal image tag may still be an illegal label value (>63 chars), and
+    that has to cost one cosmetic label rather than make every resource of the cluster rejected.
+    `instance`/`component` are deliberately *not* guarded that way — they also feed the selector, so
+    an over-long value is already fatal there and hiding it here would only move the failure.
+
+    **`version` and `role-group` are metadata only and must stay out of `.spec.selector`** (see
+    `frameworkSelectorLabels`): a StatefulSet selector is immutable, `version` changes on every
+    product upgrade, and the role group is already pinned by the `<cluster>-<group>` marker key.
+    Upgrading an existing cluster into this label set rolls its pods once (the pod template gains
+    labels) but leaves the frozen selector satisfied.
 
 ## Reconcile Flow
 

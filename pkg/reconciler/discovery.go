@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/zncdatadev/operator-go/pkg/common"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 )
 
 // DiscoveryConfigMapOptions carries the optional metadata for EnsureDiscoveryConfigMap.
@@ -135,10 +136,10 @@ func EnsureDiscoveryConfigMap(
 	}
 	// Canonical labels are framework-owned and set last, so extras cannot override them:
 	// consumers select discovery ConfigMaps by these keys.
-	labels["app.kubernetes.io/instance"] = owner.GetName()
-	labels["app.kubernetes.io/managed-by"] = managedByValue
+	labels[constant.LabelKubernetesInstance] = owner.GetName()
+	labels[constant.LabelKubernetesManagedBy] = managedByValue
 	if options.ProductName != "" {
-		labels["app.kubernetes.io/name"] = options.ProductName
+		labels[constant.LabelKubernetesName] = options.ProductName
 	}
 
 	cm := &corev1.ConfigMap{
