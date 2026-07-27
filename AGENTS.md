@@ -203,7 +203,7 @@ passed the expiry recorded in `restarter.kubedoop.dev/expires-at.<...>`.
 The label goes on **`StatefulSet.metadata.labels`**, which is where the restarter's watch predicate
 and its `client.MatchingLabels` list both read it — a pod-template label does not enable anything,
 so `podOverrides` is not a way in. The framework's own channel is the **cluster CR's labels**: the
-reconciler passes `maps.Clone(cr.GetLabels())` as `RoleGroupBuildContext.ClusterLabels`, and
+reconciler passes a writable clone of `cr.GetLabels()` as `RoleGroupBuildContext.ClusterLabels`, and
 `BaseRoleGroupHandler` merges them into every built resource's metadata (and pod template), so
 `kubectl label <cluster-cr> restarter.kubedoop.dev/enable=true` reaches the StatefulSet metadata the
 restarter watches. Opting in is a **deployment** decision by whoever runs the cluster, not something
@@ -275,6 +275,21 @@ managed-by and the `<cluster>-<group>` marker (or the product's `LabelDomain` id
 selector is immutable, and `version` changes on every product upgrade. Upgrading an existing cluster
 into this label set rolls its pods once, because the pod template gains labels; the frozen selector
 keeps matching. See `pkg/reconciler/AGENTS.md` §14.
+
+On top of that set the handler adds the **cluster CR's own labels**
+(`RoleGroupBuildContext.ClusterLabels`), applied *first* so the framework's identity labels win over
+a colliding key — which makes a colliding CR label inert rather than an error. This is the framework's
+**only** label channel: whatever an operator's user wants on the workloads, including platform
+opt-ins the SDK does not own such as `restarter.kubedoop.dev/enable`, is set by labelling the CR.
+`BaseRoleGroupHandler.ExtraLabels` and `ExtraAnnotations` no longer exist — they put a deployment-time
+decision in a compile-time field, and `ExtraLabels` mostly existed to supply the recommended labels
+the framework now emits itself.
+
+**The framework sets no annotations on the resources it builds**, and the CR's annotations are
+deliberately not propagated the way its labels are: that map carries
+`kubectl.kubernetes.io/last-applied-configuration` and the cleaner's `orphan.zncdata.dev/*` progress
+markers. A product needing e.g. cloud LoadBalancer annotations on the client Service has no
+supported way to set them today — tracked in zncdatadev/operator-go#553.
 
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
 

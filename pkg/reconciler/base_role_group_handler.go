@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -95,12 +94,6 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
 	// Scheme is the runtime scheme for ownership setup.
 	Scheme *runtime.Scheme
-
-	// Product-specific labels to add to all resources.
-	ExtraLabels map[string]string
-
-	// Product-specific annotations to add to all resources.
-	ExtraAnnotations map[string]string
 
 	// StorageMountPath, when non-empty, opts the role group into a data PVC. The base
 	// StatefulSet then gets a VolumeClaimTemplate built from RoleGroupConfig.Resources.Storage
@@ -205,8 +198,6 @@ func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *r
 		RoleMainContainerName: make(map[string]string),
 		RoleLoggingContainers: make(map[string][]productlogging.ContainerLogging),
 		Scheme:                scheme,
-		ExtraLabels:           make(map[string]string),
-		ExtraAnnotations:      make(map[string]string),
 	}
 }
 
@@ -292,12 +283,6 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		if err := sidecarMgr.SetProductImage(image, pullPolicy); err != nil {
 			return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
 		}
-	}
-
-	// An ExtraLabel that collides with a selector key can never take effect, and on an existing
-	// StatefulSet it makes every update fail. Reject it before anything is built.
-	if err := h.validateExtraLabels(buildCtx); err != nil {
-		return nil, err
 	}
 
 	// Build labels
@@ -517,12 +502,13 @@ func (h *BaseRoleGroupHandler[CR]) recommendedLabels(
 }
 
 // buildLabels creates the descriptive labels for resources. It is a superset of
-// buildSelectorLabels: the CR's own labels and the product's ExtraLabels are metadata (and pod
-// template) only, never selectors.
+// buildSelectorLabels: the CR's own labels are metadata (and pod template) only, never selectors.
 func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	labels := make(map[string]string)
 
-	// Add cluster labels
+	// The CR's own labels, which is how an operator's user propagates a label to the workloads —
+	// including the platform opt-ins the framework does not own, e.g.
+	// restarter.kubedoop.dev/enable.
 	for k, v := range buildCtx.ClusterLabels {
 		labels[k] = v
 	}
@@ -543,11 +529,6 @@ func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) 
 		labels[k] = v
 	}
 
-	// Add extra labels
-	for k, v := range h.ExtraLabels {
-		labels[k] = v
-	}
-
 	return labels
 }
 
@@ -565,10 +546,10 @@ func (h *BaseRoleGroupHandler[CR]) identityLabels(buildCtx *RoleGroupBuildContex
 
 // frameworkSelectorLabels returns the framework-owned identity labels of a role group. They are
 // derived exclusively from the cluster/role/role group names, never from buildCtx.ClusterLabels or
-// h.ExtraLabels: a StatefulSet's .spec.selector is immutable after creation, so a user-mutable
-// label inside it would freeze at its creation-time value and every later edit of that label would
-// leave the live object unmatchable — and, because the pod template keeps carrying the current
-// value, permanently unpatchable.
+// buildCtx.ClusterLabels: a StatefulSet's .spec.selector is immutable after creation, so a
+// user-mutable label inside it would freeze at its creation-time value and every later edit of that
+// label would leave the live object unmatchable — and, because the pod template keeps carrying the
+// current value, permanently unpatchable.
 //
 // This is a strict subset of the recommended set that recommendedLabels stamps on metadata, and
 // stays that way: app.kubernetes.io/version changes on every product upgrade and role-group is
@@ -599,50 +580,6 @@ func (h *BaseRoleGroupHandler[CR]) buildSelectorLabels(buildCtx *RoleGroupBuildC
 // matching selectors for resources they add themselves (e.g. a metrics Service).
 func (h *BaseRoleGroupHandler[CR]) SelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	return h.buildSelectorLabels(buildCtx)
-}
-
-// validateExtraLabels rejects an ExtraLabel whose key is a selector key but whose value differs
-// from the selector's. Such a label is silently ineffective and actively harmful:
-//
-//   - buildLabels applies ExtraLabels last, but the StatefulSet builder re-writes the selector
-//     keys into the pod template AFTER the labels, so the product's value never reaches the pod.
-//   - The .spec.selector of a live StatefulSet is immutable. A cluster created while the selector
-//     still included the ExtraLabels carries the product's value there forever, and the pod
-//     template the framework now builds no longer satisfies it — every update is rejected by the
-//     API server, with nothing in the object to explain why.
-//
-// A collision that agrees with the selector value changes nothing and is allowed, so a product
-// restating e.g. app.kubernetes.io/managed-by keeps working.
-func (h *BaseRoleGroupHandler[CR]) validateExtraLabels(buildCtx *RoleGroupBuildContext) error {
-	selector := h.buildSelectorLabels(buildCtx)
-
-	var collisions []string
-	for key, value := range h.ExtraLabels {
-		if selectorValue, isSelector := selector[key]; isSelector && selectorValue != value {
-			collisions = append(collisions, fmt.Sprintf("%s (selector value %q, ExtraLabels value %q)",
-				key, selectorValue, value))
-		}
-	}
-	if len(collisions) == 0 {
-		return nil
-	}
-
-	slices.Sort(collisions)
-	return fmt.Errorf(
-		"ExtraLabels collide with the selector labels of role %q group %q: %s; a selector label is framework-owned and cannot be overridden",
-		buildCtx.RoleName, buildCtx.RoleGroupName, strings.Join(collisions, ", "))
-}
-
-// buildAnnotations creates the annotations for resources.
-func (h *BaseRoleGroupHandler[CR]) buildAnnotations(_ *RoleGroupBuildContext) map[string]string {
-	annotations := make(map[string]string)
-
-	// Add extra annotations
-	for k, v := range h.ExtraAnnotations {
-		annotations[k] = v
-	}
-
-	return annotations
 }
 
 // configMountPath returns the directory where the config ConfigMap is mounted, defaulting
@@ -706,7 +643,6 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 
 	cm := builder.NewConfigMapBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
 		WithLabels(labels).
-		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithConfigFiles(data).
 		Build()
 
@@ -724,7 +660,6 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuildContext, labels map[string]string) *corev1.Service {
 	return builder.NewHeadlessServiceBuilder(buildCtx.ResourceName+"-headless", buildCtx.ClusterNamespace).
 		WithLabels(labels).
-		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
 		WithPublishNotReadyAddresses(h.PublishNotReadyAddresses).
 		WithPorts(h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName)).
@@ -735,7 +670,6 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext, labels map[string]string, ports []corev1.ServicePort) *corev1.Service {
 	return builder.NewServiceBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
 		WithLabels(labels).
-		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
 		WithPorts(ports).
 		Build()
@@ -768,7 +702,6 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	image, pullPolicy := h.containerImage(buildCtx, buildCtx.RoleName)
 	stsBuilder.WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
-		WithAnnotations(h.buildAnnotations(buildCtx)).
 		WithReplicas(replicas).
 		WithImage(image, pullPolicy).
 		WithConfig(buildCtx.MergedConfig).
@@ -965,7 +898,6 @@ func (h *BaseRoleGroupHandler[CR]) BuildRolePodDisruptionBudget(
 	b := builder.NewPDBBuilder(
 		RoleResourceName(buildCtx.ClusterName, buildCtx.RoleName), buildCtx.ClusterNamespace).
 		WithLabels(h.buildRoleLabels(buildCtx)).
-		WithAnnotations(h.ExtraAnnotations).
 		WithSelector(h.buildRoleSelectorLabels(buildCtx.ClusterName, buildCtx.RoleName)).
 		WithSpec(roleConfig.PodDisruptionBudget)
 
@@ -1022,10 +954,6 @@ func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(buildCtx *RoleBuildContext) m
 	}
 
 	for k, v := range h.roleIdentityLabels(buildCtx.ClusterName, buildCtx.RoleName) {
-		labels[k] = v
-	}
-
-	for k, v := range h.ExtraLabels {
 		labels[k] = v
 	}
 

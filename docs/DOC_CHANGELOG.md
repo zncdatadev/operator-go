@@ -4,6 +4,23 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-27b] (one label channel: ExtraLabels/ExtraAnnotations removed)
+
+### AGENTS.md files
+
+- Root `AGENTS.md` §3: the **Labels** paragraph now states that the cluster CR is the framework's
+  only label channel, that CR labels are applied *first* so a colliding key is inert rather than an
+  error, and that the framework sets **no** annotations — with the reason the CR's annotations are
+  not propagated the way its labels are (`kubectl.kubernetes.io/last-applied-configuration` and the
+  cleaner's `orphan.zncdata.dev/*` markers live there) and a pointer to
+  zncdatadev/operator-go#553 for the Service-annotation gap that leaves open.
+- `pkg/reconciler/AGENTS.md` §13 rewritten: the `ExtraLabels` selector-collision *rejection* is
+  replaced by the ordering that makes the collision impossible, and the old rule is kept as the
+  explanation of why a check was once needed. New §15 documents the single channel and the
+  annotation gap.
+
+---
+
 ## [2026-07-27] (restarter contract re-verified against commons-operator; recommended label set)
 
 The restarter opt-in was documented from the SDK's side only, and got the audience wrong. Every
