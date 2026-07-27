@@ -71,6 +71,21 @@ entries as `key=<value>` and unconditionally reads the value, so a bare `service
   prefix for the named entries. It returns `""` for a nil/empty scope, in which case the annotation
   is omitted.
 
+**A scope name may contain neither `,` nor `=`.** The annotation is one comma-delimited string of
+`key=value` entries with no escaping, so a name carrying either character does not quote itself —
+it **adds scopes**. `services: ["mysvc,node"]` renders `service=mysvc,node`, which the
+secret-operator reads as a service scope *and* a **node** scope: the CR author silently receives a
+certificate covering the node's hostname and IP, and a reviewer reading the CR sees nothing
+unusual. Two layers stop that:
+
+- `CredentialsScope.Services` and `.ListenerVolumes` carry `+kubebuilder:validation:items:Pattern`
+  (`^[^,=]+$`) and `items:MinLength=1`, so the **API server rejects it at `kubectl apply`** — where
+  the user sees the error and can fix it. This is the real defence.
+- `ScopeString` drops any entry it cannot render as itself, covering what admission cannot: a CR
+  stored before those markers existed, and a scope built in Go. Dropping is the safe direction —
+  splicing grants a *broader* credential than requested, invisibly, while dropping withholds a
+  requested scope, which surfaces as the application rejecting the certificate.
+
 The default PKCS12 password (`changeit`) is stored as a **PVC template annotation** and is therefore
 readable by anyone with `get` on PVCs. Use `WithPassword` or `WithNoPassword`.
 

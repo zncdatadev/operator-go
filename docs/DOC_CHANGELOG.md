@@ -4,6 +4,18 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-27f] (scope names cannot carry the annotation's own syntax)
+
+### Security Documentation (`security.md`)
+
+- The "Named scopes must carry a name" section covered the empty-name case but not the opposite
+  one: a name containing `,` or `=` does not quote itself, it **adds scopes**. Added the rule, the
+  concrete escalation (`services: ["mysvc,node"]` yields a node-scoped certificate nobody asked
+  for), and the two layers that now stop it — CRD `items:Pattern` at admission, and `ScopeString`
+  dropping unrenderable entries for what admission cannot reach.
+
+---
+
 ## [2026-07-27e] (event vocabulary; clusterConfig is product-owned)
 
 Two claims the docs made that the code does not support. Both were checked by enumerating the

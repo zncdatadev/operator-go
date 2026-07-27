@@ -80,3 +80,49 @@ var _ = Describe("ScopeString with empty list entries", func() {
 		})).To(Equal("pod,service=trino"))
 	})
 })
+
+// A scope name carrying the annotation's own syntax does not escape — it adds scopes. This is the
+// privilege half of the same problem the empty-entry specs above cover.
+var _ = Describe("ScopeString with delimiter-bearing names", func() {
+	It("drops a service name containing the delimiter instead of granting a second scope", func() {
+		// "mysvc,node" would render "service=mysvc,node", which the secret-operator parses as a
+		// service scope AND a node scope: the CR author silently receives a certificate covering
+		// the node's hostname and IP, and a reviewer reading the CR sees nothing unusual.
+		rendered := security.ScopeString(&commonsv1alpha1.CredentialsScope{
+			Services: []string{"mysvc,node"},
+		})
+
+		Expect(rendered).NotTo(ContainSubstring("node"))
+		Expect(rendered).To(BeEmpty())
+	})
+
+	It("drops a name containing the key separator", func() {
+		// "a=b" would render "service=a=b"; the secret-operator's Cut on the first "=" yields the
+		// value "a=b" for some parsers and "a" for others. Either way it is not what was asked for.
+		Expect(security.ScopeString(&commonsv1alpha1.CredentialsScope{
+			Services:        []string{"a=b"},
+			ListenerVolumes: []string{"c=d"},
+		})).To(BeEmpty())
+	})
+
+	It("keeps the well-formed entries alongside a dropped one", func() {
+		// Dropping is per entry: one malformed item must not cost the user the scopes that are
+		// fine, and the surviving scope is narrower than requested rather than wider.
+		Expect(security.ScopeString(&commonsv1alpha1.CredentialsScope{
+			Node:            true,
+			Services:        []string{"good", "bad,node"},
+			ListenerVolumes: []string{"lv-ok", "lv=bad"},
+		})).To(Equal("node,service=good,listener-volume=lv-ok"))
+	})
+
+	It("never emits a scope the CR did not ask for", func() {
+		// The property that matters, stated directly: whatever a user writes, the rendered
+		// annotation contains no entry beyond the ones their CR named.
+		for _, hostile := range []string{"x,node", "x,pod", "x=y", ",node", "node,"} {
+			rendered := security.ScopeString(&commonsv1alpha1.CredentialsScope{
+				Services: []string{hostile},
+			})
+			Expect(rendered).To(BeEmpty(), "input %q leaked a scope", hostile)
+		}
+	})
+})

@@ -112,6 +112,22 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### security (secret scopes)
+
+- **A CR-supplied scope name containing `,` or `=` no longer widens the credential it asks for.**
+  The secret-operator scope annotation is one comma-delimited string of `key=value` entries with no
+  escaping, and `scope.Services` / `scope.ListenerVolumes` were spliced into it verbatim. A value
+  of `mysvc,node` rendered `service=mysvc,node`, which the secret-operator parses as a service
+  scope **and a node scope** — the CR author silently received a certificate covering the node's
+  hostname and IP, and a reviewer reading the CR saw nothing unusual.
+  - `CredentialsScope.Services` and `.ListenerVolumes` now carry
+    `+kubebuilder:validation:items:Pattern=^[^,=]+$` and `items:MinLength=1`, so the **API server
+    rejects it at admission**, where the user is told about it. That is the real fix.
+  - `security.ScopeString` additionally drops any entry it cannot render as itself, covering what
+    admission cannot: a CR stored before those markers existed, and a scope built in Go. Dropping
+    is the safe direction — splicing grants a broader credential invisibly, while dropping
+    withholds a requested one, which surfaces as the application rejecting the certificate.
+
 ### fix (events)
 
 - `Created`/`Updated`/`Deleted` events now name the object's **Kind**. Everything the framework
