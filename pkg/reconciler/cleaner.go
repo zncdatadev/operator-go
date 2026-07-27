@@ -69,10 +69,10 @@ const (
 )
 
 // LabelRolePodDisruptionBudget marks a PodDisruptionBudget as the framework's role-level slot and
-// records the role it covers. Role GROUP orphans are found by diffing Status.RoleGroups, but a
-// role that disappears from the spec leaves nothing to diff against: its PDB is applied only while
-// the role is declared. The label is what lets the cleaner find that object without guessing from
-// the derived name — a product may ship its own PDB through RoleGroupResources.PodDisruptionBudget,
+// records the role it covers. Role GROUP orphans are discovered from their own resources (see
+// discoverOrphans), but a role-level PDB has no role group whose ConfigMap or StatefulSet would
+// lead the cleaner to it. The label is what lets it find that object without guessing from the
+// derived name — a product may ship its own PDB through RoleGroupResources.PodDisruptionBudget,
 // and that object carries the same controller owner reference.
 const LabelRolePodDisruptionBudget = "pdb." + constant.KubedoopDomain + "/role"
 
@@ -240,11 +240,13 @@ func (c *RoleGroupCleaner) emitDeleted(clusterName string, obj client.Object) {
 // left to the StatefulSet controller's ordered drain before it is deleted. A step that is still
 // in flight ends the pass for that role group and is resumed on a later reconcile.
 //
-// A role group is removed from status.RoleGroups only once its resources were really deleted, so
-// a deferred (gray-delete) or failed pass is retried on the next reconcile instead of silently
-// dropping the group from the status snapshot. A group that fails does not abort the pass for the
-// others: its error is collected and the remaining groups still make progress, so one wedged role
-// group cannot keep every other orphan in the status snapshot forever.
+// Orphans are discovered from the live cluster and from status.roleGroups (see discoverOrphans),
+// so a lost status entry no longer hides a role group's resources from this cleaner. A role group
+// is removed from status.RoleGroups only once its resources were really deleted, so a deferred
+// (gray-delete) or failed pass is retried on the next reconcile instead of silently dropping the
+// group from the status snapshot. A group that fails does not abort the pass for the others: its
+// error is collected and the remaining groups still make progress, so one wedged role group cannot
+// keep every other orphan alive forever.
 //
 // The returned duration is the earliest wakeup the cleanup needs (a remaining gray-delete grace
 // period, or the poll interval of a deletion in flight; 0 when nothing is pending). The caller
@@ -265,9 +267,6 @@ func (c *RoleGroupCleaner) Cleanup(
 	// Failures are collected instead of returned on the spot, so one unreclaimable resource never
 	// stops the cleanup of the rest.
 	var errs []error
-
-	// Get orphaned role groups
-	orphanedGroups := status.GetOrphanedRoleGroups(spec.Roles)
 
 	// Reset the teardown state machine's progress on every role group that IS in the spec, so a
 	// role group which was orphaned and then re-added starts its next teardown from scratch.
@@ -301,7 +300,19 @@ func (c *RoleGroupCleaner) Cleanup(
 		nextRequeue = c.pollInterval()
 	}
 
-	if len(orphanedGroups) == 0 {
+	orphans, err := c.discoverOrphans(ctx, namespace, clusterName, spec, status, ownerUID)
+	if err != nil {
+		if IsRateLimitError(err) {
+			return nextRequeue, err
+		}
+		// Deliberately NOT falling through to "no orphans": with no reliable inventory this pass
+		// cannot honestly clear ConditionOrphanCleanupPending, and reporting a converged cluster
+		// on the strength of a failed list is how an orphan stops being looked for.
+		errs = append(errs, err)
+		return earliestRequeue(nextRequeue, c.pollInterval()), stderrors.Join(errs...)
+	}
+
+	if len(orphans) == 0 {
 		setOrphanCleanupCondition(status, nil)
 		return nextRequeue, stderrors.Join(errs...)
 	}
@@ -313,44 +324,45 @@ func (c *RoleGroupCleaner) Cleanup(
 		}
 	}
 
-	logger.Info("Cleaning up orphaned role groups", "count", countOrphanedGroups(orphanedGroups))
+	logger.Info("Cleaning up orphaned role groups", "count", len(orphans))
 
 	// Role groups whose teardown has not finished this pass. They are reported on the CR so a
 	// deletion that cannot make progress is visible where an operator looks first.
 	var pending []string
 
-	// Sorted, not map order: the deletion pass is spread over several reconciles, so a stable
-	// order makes the sequence of events (and the logs) reproducible.
-	for _, roleName := range slices.Sorted(maps.Keys(orphanedGroups)) {
-		for _, groupName := range orphanedGroups[roleName] {
-			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
-
-			deleted, retryAfter, err := c.cleanupRoleGroup(ctx, namespace, resourceName, ownerUID, deletePVCs, clusterName, liveResourceNames)
-			if err != nil {
-				// A 429 is the API server throttling this operator as a whole; the remaining
-				// groups would only add to the requests it is rejecting.
-				if IsRateLimitError(err) {
-					return nextRequeue, err
-				}
-				// Every other failure is confined to its own role group: aborting the whole pass
-				// here would let one wedged group keep every other orphan alive indefinitely.
-				errs = append(errs, fmt.Errorf("failed to cleanup role group %s/%s: %w", roleName, groupName, err))
-				nextRequeue = earliestRequeue(nextRequeue, c.pollInterval())
-				pending = append(pending, roleName+"/"+groupName)
-				continue
+	// discoverOrphans returns them sorted by resource name, so the sequence of events across the
+	// several reconciles a teardown spans is reproducible.
+	for _, orphan := range orphans {
+		deleted, retryAfter, err := c.cleanupRoleGroup(ctx, namespace, orphan.resourceName, ownerUID, deletePVCs, clusterName, liveResourceNames)
+		if err != nil {
+			// A 429 is the API server throttling this operator as a whole; the remaining
+			// groups would only add to the requests it is rejecting.
+			if IsRateLimitError(err) {
+				return nextRequeue, err
 			}
-			if !deleted {
-				nextRequeue = earliestRequeue(nextRequeue, retryAfter)
-				pending = append(pending, roleName+"/"+groupName)
-				continue
-			}
-
-			// Prune the status snapshot only for a role group whose resources were really
-			// deleted, so Status.RoleGroups converges to the desired set (docs/architecture.md
-			// §4.4.2 step 5) without dropping groups whose deletion is still pending.
-			status.RemoveRoleGroup(roleName, groupName)
-			logger.Info("Cleaned up orphaned role group", "role", roleName, "group", groupName)
+			// Every other failure is confined to its own role group: aborting the whole pass
+			// here would let one wedged group keep every other orphan alive indefinitely.
+			errs = append(errs, fmt.Errorf("failed to cleanup role group %s: %w", orphan.describe(), err))
+			nextRequeue = earliestRequeue(nextRequeue, c.pollInterval())
+			pending = append(pending, orphan.describe())
+			continue
 		}
+		if !deleted {
+			nextRequeue = earliestRequeue(nextRequeue, retryAfter)
+			pending = append(pending, orphan.describe())
+			continue
+		}
+
+		// Prune the status snapshot only for a role group whose resources were really deleted, so
+		// Status.RoleGroups converges to the desired set (docs/architecture.md §4.4.2 step 5)
+		// without dropping groups whose deletion is still pending. A live orphan found without
+		// role-group labels has no ledger entry to prune — that is precisely the case the ledger
+		// had already lost.
+		if orphan.roleName != "" {
+			status.RemoveRoleGroup(orphan.roleName, orphan.groupName)
+		}
+		logger.Info("Cleaned up orphaned role group",
+			"role", orphan.roleName, "group", orphan.groupName, "resource", orphan.resourceName)
 	}
 
 	setOrphanCleanupCondition(status, pending)
@@ -436,13 +448,175 @@ func (c *RoleGroupCleaner) cleanupOrphanedRolePDBs(
 	return state, nil
 }
 
-// countOrphanedGroups counts total orphaned groups.
-func countOrphanedGroups(orphaned map[string][]string) int {
-	count := 0
-	for _, groups := range orphaned {
-		count += len(groups)
+// orphanRef identifies one orphaned role group's resource slot.
+//
+// resourceName is the base name every resource of the group derives from, and is the only field
+// the teardown itself needs. roleName/groupName are the ledger coordinates: known when the orphan
+// came from status.roleGroups or when the live objects carry the role-group labels, empty for a
+// live object created by a framework version that predates them — in which case there is no
+// status entry to prune either.
+type orphanRef struct {
+	resourceName string
+	roleName     string
+	groupName    string
+}
+
+// describe names the orphan the way an operator would look for it: by role group when that is
+// known, else by the resource name, which is all the live objects reveal.
+func (r orphanRef) describe() string {
+	if r.roleName == "" {
+		return r.resourceName
 	}
-	return count
+	return r.roleName + "/" + r.groupName
+}
+
+// discoverOrphans returns the role group slots this cluster owns that its spec no longer declares,
+// unioning two sources: the LIVE cluster, and status.roleGroups.
+//
+// The ledger used to be the only source, and it is a record the operator must first have
+// successfully written. Anything that loses it makes the resources it named invisible to this
+// cleaner *forever* — nothing else ever enumerates them, so they hold their PVCs, their PDB and
+// their pods until someone deletes them by hand. It is lost when the process dies between
+// applying a role group's resources and writing the CR status, when a backup tool restores the CR
+// without its status subresource, and whenever a `kubectl replace` drops it.
+//
+// Reading the live cluster removes that dependency for every resource created by a framework
+// version that stamps app.kubernetes.io/role-group. The ledger stays in the union to cover the
+// ones created before it, whose (role, role group) cannot be recovered from their labels — and
+// because it costs nothing: a union can only widen what gets reclaimed.
+//
+// A live object is claimed only when it is unambiguously the framework's own role group slot: the
+// full instance/managed-by/component/role-group label set, a controller owner reference to this
+// CR, AND a name equal to what RoleGroupResourceName would produce for those coordinates.
+// Ownership and labels alone are not enough — a discovery ConfigMap carries the same
+// instance/managed-by pair, and a product's RoleGroupResources.ExtraResources may carry the
+// handler's entire label set.
+func (c *RoleGroupCleaner) discoverOrphans(
+	ctx context.Context,
+	namespace, clusterName string,
+	spec *v1alpha1.GenericClusterSpec,
+	status *v1alpha1.GenericClusterStatus,
+	ownerUID types.UID,
+) ([]orphanRef, error) {
+	refs := make(map[string]orphanRef)
+
+	// The ledger goes in first: it carries role/group coordinates, which a pre-labels live object
+	// cannot supply. Both sources derive the name identically, so they can never disagree.
+	for roleName, groups := range status.GetOrphanedRoleGroups(spec.Roles) {
+		for _, groupName := range groups {
+			name := RoleGroupResourceName(clusterName, roleName, groupName)
+			refs[name] = orphanRef{resourceName: name, roleName: roleName, groupName: groupName}
+		}
+	}
+
+	live, err := c.discoverLiveOrphans(ctx, namespace, clusterName, spec, ownerUID)
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range live {
+		if _, alreadyKnown := refs[ref.resourceName]; !alreadyKnown {
+			refs[ref.resourceName] = ref
+		}
+	}
+
+	orphans := slices.Collect(maps.Values(refs))
+	// Sorted, not map order: the deletion pass is spread over several reconciles, so a stable
+	// order makes the sequence of events (and the logs) reproducible, and keeps the pending
+	// condition's message byte-stable across cycles.
+	slices.SortFunc(orphans, func(a, b orphanRef) int { return strings.Compare(a.resourceName, b.resourceName) })
+	return orphans, nil
+}
+
+// discoverLiveOrphans lists the role group ConfigMaps and StatefulSets this cluster owns and
+// returns the slots the spec no longer declares.
+//
+// Both kinds are listed because the teardown deletes the StatefulSet before the ConfigMap: a pass
+// interrupted in between leaves a ConfigMap whose StatefulSet is already gone, and looking only at
+// StatefulSets would never see it again. Services are derived by suffix from the same base name,
+// so they add no slot these two do not already cover.
+func (c *RoleGroupCleaner) discoverLiveOrphans(
+	ctx context.Context,
+	namespace, clusterName string,
+	spec *v1alpha1.GenericClusterSpec,
+	ownerUID types.UID,
+) ([]orphanRef, error) {
+	// Without an owner to match, every labelled object in the namespace — including a sibling
+	// cluster's, which shares this cluster's name only by accident but not its UID — would look
+	// like this cluster's. Same rule as the role PDB reclaim.
+	if ownerUID == "" {
+		return nil, nil
+	}
+
+	listOpts := []client.ListOption{
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			constant.LabelKubernetesInstance:  clusterName,
+			constant.LabelKubernetesManagedBy: managedByValue,
+		},
+	}
+
+	stsList := &appsv1.StatefulSetList{}
+	if err := c.Client.List(ctx, stsList, listOpts...); err != nil {
+		return nil, c.apiError(fmt.Errorf("failed to list StatefulSets for orphan discovery: %w", err))
+	}
+	cmList := &corev1.ConfigMapList{}
+	if err := c.Client.List(ctx, cmList, listOpts...); err != nil {
+		return nil, c.apiError(fmt.Errorf("failed to list ConfigMaps for orphan discovery: %w", err))
+	}
+
+	candidates := make([]metav1.Object, 0, len(stsList.Items)+len(cmList.Items))
+	for i := range stsList.Items {
+		candidates = append(candidates, &stsList.Items[i])
+	}
+	for i := range cmList.Items {
+		candidates = append(candidates, &cmList.Items[i])
+	}
+
+	var orphans []orphanRef
+	seen := make(map[string]struct{})
+	for _, obj := range candidates {
+		ref, isSlot := roleGroupSlotOf(obj, clusterName, ownerUID)
+		if !isSlot {
+			continue
+		}
+		if roleSpec, declared := spec.Roles[ref.roleName]; declared {
+			if _, stillLive := roleSpec.GetRoleGroups()[ref.groupName]; stillLive {
+				continue
+			}
+		}
+		if _, duplicate := seen[ref.resourceName]; duplicate {
+			continue
+		}
+		seen[ref.resourceName] = struct{}{}
+		orphans = append(orphans, ref)
+	}
+	return orphans, nil
+}
+
+// roleGroupSlotOf reports which role group slot a live object occupies, and whether it occupies
+// one at all. Every condition is load-bearing — see discoverOrphans.
+func roleGroupSlotOf(obj metav1.Object, clusterName string, ownerUID types.UID) (orphanRef, bool) {
+	// Defence in depth rather than the sole guard: every deletion step re-checks ownership on its
+	// own, and checkOrMarkGrayDelete refuses to annotate a foreign primary. Filtering here keeps
+	// the *inventory* honest — a foreign object is not this cluster's orphan — and saves the six
+	// per-resource reads a full teardown pass would spend discovering that on every reconcile.
+	if !isOwnedByCluster(obj, ownerUID) {
+		return orphanRef{}, false
+	}
+	labels := obj.GetLabels()
+	roleName := labels[constant.LabelKubernetesComponent]
+	groupName := labels[constant.LabelKubernetesRoleGroup]
+	if roleName == "" || groupName == "" {
+		return orphanRef{}, false
+	}
+	// The decisive check. A discovery ConfigMap is named "<cluster>" and carries no component or
+	// role-group label; a product's extra resource may carry the full label set but is named
+	// whatever the product chose. Only an object the framework itself would have named this way
+	// for these coordinates is one of its slots.
+	if obj.GetName() != RoleGroupResourceName(clusterName, roleName, groupName) {
+		return orphanRef{}, false
+	}
+	return orphanRef{resourceName: obj.GetName(), roleName: roleName, groupName: groupName}, true
 }
 
 // cleanupRoleGroup cleans up all resources for a single role group.

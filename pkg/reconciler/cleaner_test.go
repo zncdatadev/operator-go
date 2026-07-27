@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -2073,3 +2074,233 @@ func cloneAnnotations(in map[string]string) map[string]string {
 	}
 	return out
 }
+
+var _ = Describe("RoleGroupCleaner live orphan discovery", func() {
+	var ctx context.Context
+	var cleaner *reconciler.RoleGroupCleaner
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		cleaner = reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+	})
+
+	// slotLabels are what BaseRoleGroupHandler stamps on a role group's resources.
+	slotLabels := func(clusterName, groupName string) map[string]string {
+		return map[string]string{
+			constant.LabelKubernetesInstance:  clusterName,
+			constant.LabelKubernetesManagedBy: "operator-go",
+			constant.LabelKubernetesComponent: "worker",
+			constant.LabelKubernetesRoleGroup: groupName,
+		}
+	}
+
+	ownedBy := func(uid types.UID) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{
+			APIVersion: "test.zncdata.dev/v1alpha1",
+			Kind:       "MockCluster",
+			Name:       "owner",
+			UID:        uid,
+			Controller: ptr.To(true),
+		}}
+	}
+
+	newConfigMap := func(name string, labels map[string]string, uid types.UID) *corev1.ConfigMap {
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            name,
+				Namespace:       cleanerTestNamespace,
+				Labels:          labels,
+				OwnerReferences: ownedBy(uid),
+			},
+			Data: map[string]string{"key": "value"},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, cm) })
+		return cm
+	}
+
+	exists := func(obj client.Object) bool {
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj.DeepCopyObject().(client.Object))
+		return err == nil
+	}
+
+	It("reclaims a role group whose status ledger entry was lost", func() {
+		// THE regression this whole change exists for. status.roleGroups is a record the operator
+		// has to have successfully written; when the process dies between applying a role group's
+		// resources and updating the CR, or a backup tool restores the CR without its status, the
+		// ledger no longer names the group — and before live discovery, nothing else ever did.
+		clusterName := "ledger-lost"
+		ownerUID := types.UID("ledger-lost-uid")
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "removed")
+
+		orphan := newConfigMap(resourceName, slotLabels(clusterName, "removed"), ownerUID)
+
+		spec := &v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{
+			"worker": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"kept": {Replicas: ptr.To(int32(1))}}},
+		}}
+		// The ledger knows nothing: an empty status is exactly what a lost status write leaves.
+		status := &v1alpha1.GenericClusterStatus{}
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec, status, ownerUID, nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(orphan)).To(BeFalse(), "the orphan must be reclaimed from the live cluster")
+	})
+
+	It("does not touch a role group the spec still declares", func() {
+		clusterName := "live-kept"
+		ownerUID := types.UID("live-kept-uid")
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "default")
+
+		kept := newConfigMap(resourceName, slotLabels(clusterName, "default"), ownerUID)
+
+		spec := &v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{
+			"worker": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+		}}
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, spec,
+			&v1alpha1.GenericClusterStatus{}, ownerUID, nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(kept)).To(BeTrue())
+	})
+
+	It("does not touch the cluster's discovery ConfigMap", func() {
+		// EnsureDiscoveryConfigMap stamps instance + managed-by and the same controller owner
+		// reference, and is named "<cluster>". Claiming live objects on those two labels alone
+		// would delete the discovery data of every cluster on every reconcile.
+		clusterName := "discovery-safe"
+		ownerUID := types.UID("discovery-safe-uid")
+
+		discovery := newConfigMap(clusterName, map[string]string{
+			constant.LabelKubernetesInstance:  clusterName,
+			constant.LabelKubernetesManagedBy: "operator-go",
+			constant.LabelKubernetesName:      "trino",
+		}, ownerUID)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{}},
+			&v1alpha1.GenericClusterStatus{}, ownerUID, nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(discovery)).To(BeTrue())
+	})
+
+	It("does not touch a product's extra resource that carries the full label set", func() {
+		// RoleGroupResources.ExtraResources go through the same apply path, so a product may ship
+		// an object with the handler's entire label set and this CR's owner reference. Only the
+		// derived name says whether the framework itself would have created it.
+		clusterName := "extras-safe"
+		ownerUID := types.UID("extras-safe-uid")
+
+		extra := newConfigMap(clusterName+"-worker-default-catalog",
+			slotLabels(clusterName, "default"), ownerUID)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{}},
+			&v1alpha1.GenericClusterStatus{}, ownerUID, nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(extra)).To(BeTrue())
+	})
+
+	It("leaves another cluster's role group alone", func() {
+		clusterName := "foreign-slot"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "removed")
+
+		// Same name and labels, a different cluster's UID: two CRs of the same name in different
+		// namespaces are ordinary, and a re-created CR keeps its name but not its UID.
+		foreign := newConfigMap(resourceName, slotLabels(clusterName, "removed"),
+			types.UID("a-completely-different-cluster"))
+
+		status := &v1alpha1.GenericClusterStatus{}
+		requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{}},
+			status, types.UID("foreign-slot-uid"), nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(foreign)).To(BeTrue())
+
+		// Survival alone is guarded several times over (deleteOwned and checkOrMarkGrayDelete both
+		// re-check ownership), so these two assert the outward behaviour instead: a foreign object
+		// must not make this cluster report an orphan it does not own, nor keep it requeueing to
+		// retry a teardown that concerns someone else.
+		Expect(status.GetCondition(reconciler.ConditionOrphanCleanupPending)).To(BeNil())
+		Expect(requeue).To(BeZero())
+	})
+
+	It("discovers nothing when it has no owner UID to match on", func() {
+		// Without an owner, every labelled object in the namespace — including a sibling
+		// cluster's — would look like this cluster's. Same rule as the role PDB reclaim.
+		clusterName := "no-owner"
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "removed")
+
+		orphan := newConfigMap(resourceName, slotLabels(clusterName, "removed"),
+			types.UID("no-owner-uid"))
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{}},
+			&v1alpha1.GenericClusterStatus{}, "", nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(orphan)).To(BeTrue())
+	})
+
+	It("finds a StatefulSet-less remnant of an interrupted teardown", func() {
+		// The teardown deletes the StatefulSet before the ConfigMap. A pass interrupted in between
+		// leaves a ConfigMap with no StatefulSet, which a StatefulSet-only inventory never sees.
+		clusterName := "half-torn"
+		ownerUID := types.UID("half-torn-uid")
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "removed")
+
+		remnant := newConfigMap(resourceName, slotLabels(clusterName, "removed"), ownerUID)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{}},
+			&v1alpha1.GenericClusterStatus{}, ownerUID, nil)
+		Expect(err).To(Succeed())
+
+		Expect(exists(remnant)).To(BeFalse())
+	})
+
+	It("reports a live-discovered orphan on the pending condition while it drains", func() {
+		clusterName := "live-pending"
+		ownerUID := types.UID("live-pending-uid")
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "worker", "removed")
+
+		newConfigMap(resourceName, slotLabels(clusterName, "removed"), ownerUID)
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            resourceName,
+				Namespace:       cleanerTestNamespace,
+				Labels:          slotLabels(clusterName, "removed"),
+				OwnerReferences: ownedBy(ownerUID),
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(2)),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": resourceName}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": resourceName}},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{
+						{Name: "c", Image: "busybox"},
+					}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, sts) })
+
+		status := &v1alpha1.GenericClusterStatus{}
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{}},
+			status, ownerUID, nil)
+		Expect(err).To(Succeed())
+
+		// The StatefulSet is scaled to zero and drains over later passes; the wait must be visible
+		// on the CR, named by the role group the labels revealed.
+		condition := status.GetCondition(reconciler.ConditionOrphanCleanupPending)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(condition.Message).To(ContainSubstring("worker/removed"))
+	})
+})

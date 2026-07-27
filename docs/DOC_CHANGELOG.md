@@ -4,6 +4,26 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-27c] (orphan discovery reads the live cluster)
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+- **§4.4.2 steps 2-3 described the status ledger as the only inventory.** Rewritten: the actual
+  role group list is the union of a live-cluster query and `Status.RoleGroups`, with the four
+  conditions a live object must satisfy and why each is required (the discovery ConfigMap and a
+  product's `ExtraResources` both survive labels-and-ownership alone; only the derived name
+  identifies the framework's slot), why both ConfigMaps and StatefulSets are listed, and why an
+  empty owner UID disables the live half.
+
+### AGENTS.md files
+
+- Root `AGENTS.md`: new paragraph on live orphan discovery ahead of the state-machine one.
+- `pkg/reconciler/AGENTS.md`: new §12 for the two-source discovery; §11's "pruning is terminal —
+  nothing enumerates it afterwards" claim corrected, since the live inventory now does. Subsequent
+  sections renumbered (§13-§16).
+
+---
+
 ## [2026-07-27b] (one label channel: ExtraLabels/ExtraAnnotations removed)
 
 ### AGENTS.md files

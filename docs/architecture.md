@@ -351,8 +351,16 @@ Deletion is a **state machine driven across several reconciles**, not a single p
 ### 4.4.2 Execution Process
 
 1. Get the desired role group list (`desiredGroups`) of roles from Spec. Each role group reconciled in this cycle is recorded in `Status.RoleGroups`.
-2. Get the historical actual role group list (`oldActualGroups`) from `Status.RoleGroups`.
-3. Calculate orphaned role groups: `orphanedGroups = oldActualGroups - desiredGroups`.
+2. Get the actual role group list from **two** sources and union them:
+   - the **live cluster** — the role group ConfigMaps and StatefulSets in the CR's namespace carrying `app.kubernetes.io/instance` and `app.kubernetes.io/managed-by`, controller-owned by this CR, whose `app.kubernetes.io/component` + `app.kubernetes.io/role-group` labels reconstruct exactly the object's own name via `RoleGroupResourceName`;
+   - `Status.RoleGroups`, the ledger the operator writes for itself.
+3. Calculate orphaned role groups: `orphanedGroups = actualGroups - desiredGroups`.
+
+   > **Why the live cluster and not the ledger alone.** `Status.RoleGroups` is a record the operator must first have *successfully written*. Anything that loses it — the process dying between applying a role group's resources and updating the CR, a backup tool restoring the CR without its status subresource, a `kubectl replace` — makes the resources it named invisible to the cleaner permanently, because nothing else ever enumerates them. They keep their PVCs, their PDB and their pods until a human notices. Reading the live cluster removes that dependency; the ledger stays in the union to cover resources created before the framework stamped `app.kubernetes.io/role-group`, whose role group cannot be recovered from their labels.
+   >
+   > All four conditions on a live object are required. A discovery ConfigMap (§ discovery) carries the same instance/managed-by pair and the same owner reference, and a product's `RoleGroupResources.ExtraResources` may carry the handler's entire label set — only a name equal to what `RoleGroupResourceName` would produce for those labels identifies the framework's own slot. Both kinds are listed because the teardown deletes the StatefulSet before the ConfigMap: a pass interrupted in between leaves a ConfigMap a StatefulSet-only inventory would never see again.
+   >
+   > An empty owner UID disables live discovery entirely, exactly as it disables the role-PDB reclaim: with no owner to match, every labelled object in the namespace — including a sibling cluster's — would look like this cluster's.
 4. Reclaim the **role-level PDBs of roles that vanished from the Spec entirely** (see "Removed roles" below). This runs before — and independently of — the group loop, which returns early when `orphanedGroups` is empty: a role's groups are pruned from the status snapshot as they are deleted, so by the time its PDB needs a retry there may be no orphaned group left to carry the pass.
 5. For each orphaned role group — roles in sorted order, so the sequence of events is reproducible across the several cycles a deletion spans — advance the deletion state machine one pass: gray-delete gate, then `PDB → StatefulSet (scale to zero → drain → delete) → ConfigMap → Service → headless Service → metrics Service`, stopping at the first step that is still in flight.
 6. Remove from `Status.RoleGroups` **only those role groups whose resources were really deleted** — every step settled in this pass. A group still inside its gray-delete grace period, one whose drain is still running, and one whose pass failed all stay in the status snapshot and are retried on the next reconcile instead of being silently forgotten. The pruned map is persisted by the reconcile's final status update (step 7 of the loop).
