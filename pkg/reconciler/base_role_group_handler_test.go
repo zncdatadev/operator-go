@@ -1210,7 +1210,7 @@ var _ = Describe("ConfigGenerator integration", func() {
 	})
 })
 
-var _ = Describe("BaseRoleGroupHandler extra labels and annotations", func() {
+var _ = Describe("BaseRoleGroupHandler CR label propagation", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
 	var buildCtx *reconciler.RoleGroupBuildContext
 
