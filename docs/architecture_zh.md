@@ -690,12 +690,13 @@ K8s Events 提供集群内重要事件的时间顺序日志。与 Status Conditi
 
 ### 4.14.2 核心实现
 
-- **统一记录器**：SDK 把 Kubernetes `EventRecorder` 封装为 `EventManager` 并注入到 Reconciler 上下文中。
+- **统一记录器**：SDK 把 Kubernetes `EventRecorder` 封装为 `EventManager`，作为 reconciler 的字段持有，并传给 `RoleGroupCleaner`。它**不会**放进 `context` —— 需要发事件的 hook 或 handler 自行构造 `NewEventManager(recorder, scheme)`。
 - **自动化生命周期事件**：
-  - **资源操作**：SDK 在创建、更新或删除子资源（StatefulSet、Service、ConfigMap、PDB）时发出 `Normal` 事件，确保可审计性而无需样板代码。孤儿清理在接好 `EventManager`（`RoleGroupCleaner.WithEventManager`）后，会为每个被删除的资源发出 `Deleted` 事件。
-  - **调和里程碑**：为调和开始（调试级别）、完成和关键失败发出事件。
-- **错误集成**：从调和循环（包括扩展）冒泡的任何触发 `Degraded` 状态的错误都会自动生成带有错误原因的 `Warning` 事件。
-- **劣化输入的告警**：有些输入有问题但不致命，它们会单独产生 `Warning` 事件而不是被静默丢弃——解析或 patch 失败的 `podOverrides` 层（`MergedConfig.PodOverrideErrors`），以及被捕获的 panic（`ReconcilePanic`）。
+  - **资源操作**：框架应用或回收子资源（StatefulSet、Service、ConfigMap、PDB）时发出 `Created` / `Updated` / `Deleted` `Normal` 事件，无需样板代码即可审计。孤儿清理在接好 `EventManager`（`RoleGroupCleaner.WithEventManager`）后，会为每个被删除的资源发出 `Deleted`。每条消息都会点名对象的 **Kind**，通过 scheme 解析得到：`pkg/builder` 产出的强类型对象不带 `TypeMeta`，Kind 无法从对象自身读出，而它恰恰是区分一个 role group 的 Service、headless Service 与 metrics Service 的关键。
+  - **不存在调和开始/完成事件**。一次成功的调和在开始和结束时都不发任何事件；进度通过 **status conditions** 报告，那才是 controller 应该被观测的地方。不要基于"调和完成"事件建告警。
+- **错误集成**：冒泡到循环顶层的错误（包括来自扩展的）会置 `Degraded`，**并**发出携带错误文本的 `ReconcileError` `Warning`。
+- **劣化输入的告警**：有些输入有问题但不致命，它们会单独产生 `Warning` 而不是被静默丢弃。框架实际发出的完整事件词表：`ReconcileError`、`ReconcilePanic`（被捕获的 panic）、`PodOverrideIgnored`（解析或 patch 失败的 `podOverrides` 层 —— `MergedConfig.PodOverrideErrors`）、`UnknownConfiguredRole`（handler 为 CR 未声明的 role 做了配置）、`ImmutableFieldIgnored`（对被保留的不可变字段提出了变更）、`VectorSidecarSkipped`（agent 已启用但没有任何来源提供 `vector.yaml`），外加上面三个资源操作 `Normal` 事件。
+- **面向产品的辅助方法**：`EmitWarningEvent`、`EmitNormalEvent`、`LogAndEmitError` 和 `LogAndEmitInfo` 可供扩展与产品代码使用；框架自身只调用前两个。
 
 ### 4.14.3 核心价值
 

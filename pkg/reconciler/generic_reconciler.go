@@ -287,7 +287,7 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
 	}
 
-	eventManager := NewEventManager(cfg.Recorder)
+	eventManager := NewEventManager(cfg.Recorder, cfg.Scheme)
 
 	rateLimitRetryAfter := cfg.RateLimitRetryAfter
 	if rateLimitRetryAfter == 0 {

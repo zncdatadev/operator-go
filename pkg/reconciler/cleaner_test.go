@@ -1226,7 +1226,7 @@ var _ = Describe("RoleGroupCleaner metrics Service and events", func() {
 
 		fakeRecorder := record.NewFakeRecorder(100)
 		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
-			WithEventManager(reconciler.NewEventManager(fakeRecorder))
+			WithEventManager(reconciler.NewEventManager(fakeRecorder, testScheme))
 
 		spec := &v1alpha1.GenericClusterSpec{
 			Roles: map[string]v1alpha1.RoleSpec{"role": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{}}},

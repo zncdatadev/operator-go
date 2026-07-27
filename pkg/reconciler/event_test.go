@@ -25,14 +25,23 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 )
 
 var _ = Describe("EventManager", func() {
 	var eventManager *reconciler.EventManager
+	var events chan string
 	var testPod *corev1.Pod
 
+	// A drained recorder of its own, so each spec reads exactly the events it emitted. The suite's
+	// shared `recorder` is never drained, which is why the specs here used to assert nothing:
+	// "we can't easily verify the exact content with fake recorder" was never true of
+	// record.FakeRecorder — it publishes every event on a channel.
 	BeforeEach(func() {
-		eventManager = reconciler.NewEventManager(recorder)
+		fake := record.NewFakeRecorder(16)
+		events = fake.Events
+		eventManager = reconciler.NewEventManager(fake, testScheme)
 		Expect(eventManager).NotTo(BeNil())
 
 		testPod = &corev1.Pod{
@@ -43,80 +52,80 @@ var _ = Describe("EventManager", func() {
 		}
 	})
 
+	// emitted returns the single event the spec produced, failing if there is none.
+	emitted := func() string {
+		var got string
+		Eventually(events).Should(Receive(&got))
+		return got
+	}
+
 	Describe("NewEventManager", func() {
 		It("should create an EventManager with recorder", func() {
-			Expect(eventManager.Recorder).To(Equal(recorder))
+			Expect(eventManager.Recorder).NotTo(BeNil())
 		})
 	})
 
-	Describe("EmitCreateEvent", func() {
-		It("should emit a create event", func() {
+	Describe("resource events", func() {
+		It("names the object's Kind, which the typed object itself does not carry", func() {
+			// Everything the framework applies is a typed struct from pkg/builder round-tripped
+			// through the typed client, so TypeMeta is empty and the message used to read
+			// "Created  default/test-pod" — a hole exactly where the disambiguator belongs
+			// between a Service, its headless Service and its metrics Service.
+			Expect(testPod.GetObjectKind().GroupVersionKind().Kind).To(BeEmpty())
+
 			eventManager.EmitCreateEvent("test-cluster", testPod)
-			// Event should be recorded (we can't easily verify the exact content with fake recorder)
+			Expect(emitted()).To(ContainSubstring("Created Pod default/test-pod for cluster test-cluster"))
 		})
-	})
 
-	Describe("EmitUpdateEvent", func() {
-		It("should emit an update event", func() {
+		It("names the Kind on update and delete too", func() {
 			eventManager.EmitUpdateEvent("test-cluster", testPod)
-		})
-	})
+			Expect(emitted()).To(ContainSubstring("Updated Pod default/test-pod"))
 
-	Describe("EmitDeleteEvent", func() {
-		It("should emit a delete event", func() {
 			eventManager.EmitDeleteEvent("test-cluster", testPod)
+			Expect(emitted()).To(ContainSubstring("Deleted Pod default/test-pod"))
+		})
+
+		It("falls back to the Go type for an object the scheme does not know", func() {
+			// A product may ship an extra resource whose type is not in the reconciler's scheme;
+			// an empty kind is worse than an approximate one.
+			unknown := reconciler.NewEventManager(record.NewFakeRecorder(4), runtime.NewScheme())
+			Expect(func() { unknown.EmitCreateEvent("test-cluster", testPod) }).NotTo(Panic())
 		})
 	})
 
 	Describe("EmitErrorEvent", func() {
-		It("should emit an error event", func() {
-			testErr := errors.New("test error")
-			eventManager.EmitErrorEvent("test-cluster", testPod, testErr)
+		It("should emit an error event naming the cluster and the cause", func() {
+			eventManager.EmitErrorEvent("test-cluster", testPod, errors.New("boom"))
+			Expect(emitted()).To(ContainSubstring("Reconciliation failed for cluster test-cluster: boom"))
 		})
 	})
 
 	Describe("EmitWarningEvent", func() {
 		It("should emit a warning event", func() {
 			eventManager.EmitWarningEvent(testPod, "TestWarning", "This is a warning")
+			Expect(emitted()).To(ContainSubstring("Warning TestWarning This is a warning"))
 		})
 	})
 
 	Describe("EmitNormalEvent", func() {
 		It("should emit a normal event", func() {
 			eventManager.EmitNormalEvent(testPod, "TestNormal", "This is normal")
+			Expect(emitted()).To(ContainSubstring("Normal TestNormal This is normal"))
 		})
 	})
 
-	Describe("EmitProgressingEvent", func() {
-		It("should emit a progressing event", func() {
-			eventManager.EmitProgressingEvent(testPod, "Cluster is progressing")
-		})
-	})
-
-	Describe("EmitAvailableEvent", func() {
-		It("should emit an available event", func() {
-			eventManager.EmitAvailableEvent(testPod, "test-cluster")
-		})
-	})
-
-	Describe("EmitDegradedEvent", func() {
-		It("should emit a degraded event", func() {
-			eventManager.EmitDegradedEvent(testPod, "TestDegraded", "Cluster is degraded")
-		})
-	})
-
+	// LogAndEmitError/LogAndEmitInfo are product-facing helpers the framework never calls itself.
 	Describe("LogAndEmitError", func() {
 		It("should log and emit an error event", func() {
-			ctx := context.Background()
-			testErr := errors.New("test error")
-			eventManager.LogAndEmitError(ctx, testPod, testErr, "Operation failed")
+			eventManager.LogAndEmitError(context.Background(), testPod, errors.New("boom"), "Operation failed")
+			Expect(emitted()).To(ContainSubstring("Warning Error Operation failed: boom"))
 		})
 	})
 
 	Describe("LogAndEmitInfo", func() {
 		It("should log and emit an info event", func() {
-			ctx := context.Background()
-			eventManager.LogAndEmitInfo(ctx, testPod, "TestReason", "Operation succeeded")
+			eventManager.LogAndEmitInfo(context.Background(), testPod, "TestReason", "Operation succeeded")
+			Expect(emitted()).To(ContainSubstring("Normal TestReason Operation succeeded"))
 		})
 	})
 })
