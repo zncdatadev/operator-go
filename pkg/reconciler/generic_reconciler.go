@@ -707,13 +707,28 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 	return nil
 }
 
+// handlerWritableLabels returns the CR's labels as a map a handler may both read and write.
+//
+// It is cloned because cr.GetLabels() hands out the live object's map, and a handler that adds an
+// entry to ClusterLabels would otherwise mutate the object this cycle's status write is computed
+// from. It is materialized because maps.Clone preserves nil and a CR carrying no labels is
+// perfectly ordinary: RoleGroupBuildContext.ClusterLabels and RoleBuildContext.ClusterLabels are
+// documented as the handler's to build on, and writing to a nil map panics.
+func handlerWritableLabels(labels map[string]string) map[string]string {
+	cloned := maps.Clone(labels)
+	if cloned == nil {
+		cloned = make(map[string]string)
+	}
+	return cloned
+}
+
 // rolePodDisruptionBudgetBuilder is satisfied by BaseRoleGroupHandler (and any handler that
 // embeds it, via the promoted method). Asserting on this method-set interface — rather than the
 // concrete *BaseRoleGroupHandler[CR] — is what lets product handlers that embed the base handler
 // (e.g. *ZkRoleGroupHandler) still get a role-level PDB. The method signature does not depend on
 // CR, so the interface is non-generic.
 type rolePodDisruptionBudgetBuilder interface {
-	BuildRolePodDisruptionBudget(clusterName, namespace, roleName string, clusterLabels map[string]string, roleSpec *v1alpha1.RoleSpec) *policyv1.PodDisruptionBudget
+	BuildRolePodDisruptionBudget(buildCtx *RoleBuildContext) *policyv1.PodDisruptionBudget
 }
 
 // reconcileRolePodDisruptionBudget builds and applies the role's single PodDisruptionBudget.
@@ -729,9 +744,14 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 
 	name := RoleResourceName(cr.GetName(), roleName)
 
-	// cr.GetLabels() hands out the live CR's map; the handler is free to build its label set on
-	// top of the argument, which would otherwise mutate the CR object itself.
-	pdb := handler.BuildRolePodDisruptionBudget(cr.GetName(), cr.GetNamespace(), roleName, maps.Clone(cr.GetLabels()), roleSpec)
+	pdb := handler.BuildRolePodDisruptionBudget(&RoleBuildContext{
+		ClusterName:      cr.GetName(),
+		ClusterNamespace: cr.GetNamespace(),
+		ClusterLabels:    handlerWritableLabels(cr.GetLabels()),
+		ClusterSpec:      cr.GetSpec(),
+		RoleName:         roleName,
+		RoleSpec:         roleSpec,
+	})
 	if pdb == nil {
 		// PDB unset or disabled: remove the role PDB we previously created. Gated on the slot
 		// label, not on ownership: a product's own PDB may legitimately be named "<cluster>-<role>"
@@ -865,16 +885,14 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 	return &RoleGroupBuildContext{
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
-		// Cloned: GetLabels hands out the live CR's map, and a handler that adds an entry to
-		// ClusterLabels would mutate the object this cycle's status write is computed from.
-		ClusterLabels: maps.Clone(cr.GetLabels()),
-		ClusterSpec:   cr.GetSpec(),
-		RoleName:      roleName,
-		RoleSpec:      roleSpec,
-		RoleGroupName: groupName,
-		RoleGroupSpec: *mergedGroupSpec,
-		MergedConfig:  mergedConfig,
-		ResourceName:  resourceName,
+		ClusterLabels:    handlerWritableLabels(cr.GetLabels()),
+		ClusterSpec:      cr.GetSpec(),
+		RoleName:         roleName,
+		RoleSpec:         roleSpec,
+		RoleGroupName:    groupName,
+		RoleGroupSpec:    *mergedGroupSpec,
+		MergedConfig:     mergedConfig,
+		ResourceName:     resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
 		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
 		// empty when no SA is configured (backward compatible).

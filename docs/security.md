@@ -279,8 +279,10 @@ built with no SecurityContext unless `PodOverrides` supplies one).
   expiry-driven Pod restarts).
 
   > **Not applied by the SDK.** `pkg/constant` only declares these names — no builder or reconciler
-  > sets `restarter.kubedoop.dev/enable` on the StatefulSet. A product that wants automatic restarts
-  > on secret rotation or ConfigMap change must add the label itself (e.g. through
-  > `BaseRoleGroupHandler.ExtraLabels`) and deploy the restarter. Without both, a rotated
-  > certificate reaches the container only if the application hot-reloads it, or on the next manual
-  > rolling restart.
+  > sets `restarter.kubedoop.dev/enable` on the StatefulSet. Enabling it is a deployment decision:
+  > label the **cluster CR**, and the reconciler propagates the CR's labels into every resource it
+  > builds, including the `StatefulSet.metadata.labels` the restarter watches. (Its watch predicate
+  > and its `MatchingLabels` list both read object metadata, so a pod-template-only label —
+  > everything `podOverrides` can reach — enables nothing.) Without the label *and* a deployed
+  > restarter, a rotated certificate reaches the container only if the application hot-reloads it,
+  > or on the next manual rolling restart.
