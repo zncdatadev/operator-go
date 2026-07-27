@@ -112,6 +112,25 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (podOverrides)
+
+- A `podOverrides` volumeMount at a **mountPath the framework already owns** now fails the role
+  group with a `*reconciler.ValidationError` instead of silently unmounting the framework's volume.
+  Strategic merge patch keys `volumeMounts` by `mountPath`, not by `name`, so such a mount does not
+  join the framework's — it *replaces* it:
+  - when the override also declares its own volume the result is a perfectly valid pod spec that
+    the API server accepts, with the generated ConfigMap mounted **nowhere**. The product comes up
+    on an empty config directory and crash-loops, or silently runs on its built-in defaults, and
+    nothing anywhere reports a problem. This is the case the change exists for;
+  - when the override declares only the mount, the API server rejects the StatefulSet naming
+    `spec.template.spec.containers[0].volumeMounts[0].name` — a field the user never wrote, with no
+    mention of `podOverrides`.
+  The error names the mountPath, the volume that displaced the framework's, and `podOverrides`.
+  Mounting at a path the framework does **not** own is unaffected — that is what users normally
+  mean, and it still appends.
+- `StatefulSetBuilder.PodOverrideViolations()` exposes the same findings to products driving the
+  builder directly (`Build()` cannot return an error, so they are read back after it).
+
 ### fix (orphan discovery)
 
 - Orphaned role groups are now discovered from the **live cluster** as well as from

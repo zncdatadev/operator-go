@@ -10,7 +10,7 @@ Every non-test file in this package:
 
 | File | Purpose |
 |------|---------|
-| `statefulset_builder.go` | `StatefulSetBuilder` — the workload builder, including `WithPodOverrides` and the strategic-merge-patch application of pod overrides |
+| `statefulset_builder.go` | `StatefulSetBuilder` — the workload builder, including `WithPodOverrides`, the strategic-merge-patch application of pod overrides, and `PodOverrideViolations()` (the framework mounts an override displaced; `Build()` cannot return an error, so they are read back afterwards) |
 | `service_builder.go` | `ServiceBuilder` / `HeadlessServiceBuilder` and the `ServiceType` constants |
 | `configmap_builder.go` | `ConfigMapBuilder`, including `WithMergedConfig(cfg *config.MergedConfig, generator *config.MultiFormatConfigGenerator) (*ConfigMapBuilder, error)` |
 | `pdb_builder.go` | PodDisruptionBudget builder |

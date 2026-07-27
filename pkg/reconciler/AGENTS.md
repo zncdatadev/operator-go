@@ -110,6 +110,15 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     a handler may be configured for optional roles). A `podOverrides` layer that fails to decode is
     recorded on `config.MergedConfig.PodOverrideErrors` and re-emitted as a `PodOverrideIgnored`
     Warning event, so a dropped override is visible on the CR.
+
+    A `podOverrides` volumeMount at a **mountPath the framework already owns** fails the role group
+    with a `*ValidationError`. Strategic merge keys volumeMounts by `mountPath`, not by `name`, so
+    such a mount *replaces* the framework's instead of joining it. If the override also declares
+    its volume the pod spec stays valid and the API server accepts it — the config ConfigMap ends
+    up mounted nowhere and the product reads an empty config directory, with nothing anywhere
+    reporting a problem. `StatefulSetBuilder.PodOverrideViolations()` reports it (plus any mount
+    left referencing no declared volume) and `BaseRoleGroupHandler.buildStatefulSet` raises it.
+    Mounting at a new path is untouched.
 11. **Orphan cleanup is a state machine, not a single pass:** each role group advances one step per
     reconcile — the orphaned StatefulSet is scaled to zero, then left to the StatefulSet
     controller's ordered drain (`.status.replicas` back to 0), then deleted; every deletion is

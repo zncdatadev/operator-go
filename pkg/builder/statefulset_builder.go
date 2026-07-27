@@ -86,6 +86,11 @@ type StatefulSetBuilder struct {
 	// Pod overrides from merged config
 	PodOverrides *corev1.PodTemplateSpec
 
+	// podOverrideViolations records the framework invariants the applied podOverrides broke.
+	// Build() cannot return an error, so they are collected here and read back through
+	// PodOverrideViolations() by the caller, which fails the role group.
+	podOverrideViolations []error
+
 	// Graceful shutdown timeout
 	TerminationGracePeriodSeconds *int64
 
@@ -324,6 +329,21 @@ func (b *StatefulSetBuilder) WithEnableServiceLinks(enable bool) *StatefulSetBui
 	return b
 }
 
+// PodOverrideViolations returns the framework invariants the applied podOverrides broke — a
+// framework-owned volume mount displaced or deleted, or a mount left referencing no declared
+// volume. It is populated by Build() — which resets it first, so the result always describes the
+// most recent build — so call it afterwards. Empty means the merge preserved everything the
+// framework mounted.
+//
+// The slice is copied out, like every other value Build() hands back: the builder must not share
+// mutable state with its callers.
+func (b *StatefulSetBuilder) PodOverrideViolations() []error {
+	if len(b.podOverrideViolations) == 0 {
+		return nil
+	}
+	return append([]error(nil), b.podOverrideViolations...)
+}
+
 // WithPodOverrides sets the pod template overrides.
 func (b *StatefulSetBuilder) WithPodOverrides(overrides *corev1.PodTemplateSpec) *StatefulSetBuilder {
 	b.PodOverrides = overrides
@@ -506,7 +526,10 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 		sts.Spec.VolumeClaimTemplates = cloneSlice(b.StorageConfig.VolumeClaimTemplates)
 	}
 
-	// Apply pod overrides
+	// Apply pod overrides. The violation list describes THIS build, so it is reset first —
+	// unconditionally, or a builder reused after dropping its overrides would keep reporting the
+	// previous build's, and a second Build() would report each violation twice.
+	b.podOverrideViolations = nil
 	if b.PodOverrides != nil {
 		b.applyPodOverrides(sts)
 	}
@@ -730,6 +753,11 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 		return
 	}
 	sts.Spec.Template = *merged
+
+	// The merge keys volumeMounts by mountPath, so an override can displace a framework mount
+	// without ever naming it. Record what it broke; the caller decides what to do about it.
+	b.podOverrideViolations = append(b.podOverrideViolations,
+		checkPodOverrideMountInvariants(base, merged, sts.Spec.VolumeClaimTemplates)...)
 
 	// Re-assert the selector labels: the override may have replaced or removed labels the
 	// immutable .spec.selector matches on.

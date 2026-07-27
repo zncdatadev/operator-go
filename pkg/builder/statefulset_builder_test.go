@@ -1526,3 +1526,159 @@ var _ = Describe("StatefulSetBuilder podOverrides on mutually exclusive fields",
 		Expect(preStop.Exec).To(BeNil(), "the built exec handler must not survive next to the override's")
 	})
 })
+
+var _ = Describe("StatefulSetBuilder podOverrides mount invariants", func() {
+	const frameworkPath = "/kubedoop/config"
+
+	// newBuilder mirrors what BaseRoleGroupHandler assembles before the override merge: the
+	// framework's config volume, mounted at the path the product reads its configuration from.
+	newBuilder := func() *builder.StatefulSetBuilder {
+		return builder.NewStatefulSetBuilder("mounts", "default").
+			WithMainContainerName("product").
+			WithImage("product:1", corev1.PullIfNotPresent).
+			AddVolume(corev1.Volume{
+				Name: "config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "mounts"},
+					},
+				},
+			}).
+			AddVolumeMount(corev1.VolumeMount{Name: "config", MountPath: frameworkPath})
+	}
+
+	It("reports an override that displaces the framework's mount while staying valid", func() {
+		// The dangerous shape, because NOTHING else catches it. Strategic merge keys volumeMounts
+		// by mountPath, so this does not add a mount — it rewrites the framework's entry to point
+		// at "extra". The override declares that volume too, so the pod spec is valid and the API
+		// server accepts it: the pods come up with the config ConfigMap mounted nowhere.
+		b := newBuilder().WithPodOverrides(&corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{
+					Name:         "extra",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}},
+				Containers: []corev1.Container{{
+					Name:         "product",
+					VolumeMounts: []corev1.VolumeMount{{Name: "extra", MountPath: frameworkPath}},
+				}},
+			},
+		})
+
+		sts := b.Build()
+
+		// Reproduce the damage first, so the test documents what it is protecting against.
+		mounts := sts.Spec.Template.Spec.Containers[0].VolumeMounts
+		Expect(mounts).To(HaveLen(1))
+		Expect(mounts[0].Name).To(Equal("extra"), "the framework's config mount is gone")
+
+		violations := b.PodOverrideViolations()
+		Expect(violations).To(HaveLen(1))
+		Expect(violations[0].Error()).To(ContainSubstring("displaced"))
+		Expect(violations[0].Error()).To(ContainSubstring(frameworkPath))
+		Expect(violations[0].Error()).To(ContainSubstring(`"config"`))
+		Expect(violations[0].Error()).To(ContainSubstring("podOverrides"))
+	})
+
+	It("reports an override whose mount references no volume", func() {
+		// The loud variant: the API server would reject this too, but its message names
+		// spec.template.spec.containers[0].volumeMounts[0].name — a field the user never wrote —
+		// and never mentions podOverrides.
+		b := newBuilder().WithPodOverrides(&corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name:         "product",
+				VolumeMounts: []corev1.VolumeMount{{Name: "undeclared", MountPath: frameworkPath}},
+			}}},
+		})
+
+		b.Build()
+
+		var joined string
+		for _, v := range b.PodOverrideViolations() {
+			joined += v.Error() + "\n"
+		}
+		Expect(joined).To(ContainSubstring("undeclared"))
+		Expect(joined).To(ContainSubstring("podOverrides"))
+	})
+
+	It("accepts an override that mounts at a path the framework does not own", func() {
+		// The case users actually mean, and the one that must keep working.
+		b := newBuilder().WithPodOverrides(&corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{
+					Name:         "extra",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}},
+				Containers: []corev1.Container{{
+					Name:         "product",
+					VolumeMounts: []corev1.VolumeMount{{Name: "extra", MountPath: "/kubedoop/extra"}},
+				}},
+			},
+		})
+
+		sts := b.Build()
+
+		Expect(b.PodOverrideViolations()).To(BeEmpty())
+		Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts).To(HaveLen(2))
+	})
+
+	It("does not mistake a volumeClaimTemplate for an undeclared volume", func() {
+		// A StatefulSet's volumeClaimTemplates are mountable by name and never appear in
+		// .spec.volumes — the framework's own data PVC among them.
+		b := newBuilder().
+			AddVolumeMount(corev1.VolumeMount{Name: "data", MountPath: "/kubedoop/data"}).
+			WithPodOverrides(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: "product",
+					Env:  []corev1.EnvVar{{Name: "EXTRA", Value: "1"}},
+				}}},
+			})
+		b.StorageConfig = &builder.StorageConfig{
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{Name: "data"},
+			}},
+		}
+
+		b.Build()
+
+		Expect(b.PodOverrideViolations()).To(BeEmpty())
+	})
+
+	It("reports nothing when there is no override at all", func() {
+		b := newBuilder()
+		b.Build()
+		Expect(b.PodOverrideViolations()).To(BeEmpty())
+	})
+
+	It("describes the most recent build only, and hands back a copy", func() {
+		displacing := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{
+					Name:         "extra",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}},
+				Containers: []corev1.Container{{
+					Name:         "product",
+					VolumeMounts: []corev1.VolumeMount{{Name: "extra", MountPath: frameworkPath}},
+				}},
+			},
+		}
+
+		b := newBuilder().WithPodOverrides(displacing)
+
+		// Building twice must not report the same violation twice.
+		b.Build()
+		b.Build()
+		Expect(b.PodOverrideViolations()).To(HaveLen(1))
+
+		// Mutating the returned slice must not reach the builder.
+		got := b.PodOverrideViolations()
+		got[0] = nil
+		Expect(b.PodOverrideViolations()[0]).To(HaveOccurred())
+
+		// Dropping the override and rebuilding must clear the previous build's findings.
+		b.PodOverrides = nil
+		b.Build()
+		Expect(b.PodOverrideViolations()).To(BeEmpty())
+	})
+})

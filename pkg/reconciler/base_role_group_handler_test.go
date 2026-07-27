@@ -524,6 +524,65 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(err).To(MatchError(ContainSubstring(`main container: "node"`)))
 	})
 
+	It("fails the role group when a podOverride displaces the framework's config mount", func() {
+		// Strategic merge keys volumeMounts by mountPath, so a mount declared at the config path
+		// REPLACES the framework's rather than being added next to it. With the override also
+		// declaring its volume, the pod spec stays valid and the API server accepts it — the pods
+		// would come up with the generated ConfigMap mounted nowhere and read an empty config
+		// directory. Refusing to build is the only thing that stops that being silent.
+		handler.MainContainerName = "node"
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{{
+						Name:         "my-overlay",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					}},
+					Containers: []corev1.Container{{
+						Name: "node",
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "my-overlay", MountPath: constant.KubedoopConfigDirMount},
+						},
+					}},
+				},
+			},
+		}
+
+		_, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).To(HaveOccurred())
+		Expect(reconciler.IsValidationError(err)).To(BeTrue(),
+			"a broken podOverride is a validation failure, not an opaque build error")
+		Expect(err).To(MatchError(ContainSubstring("displaced")))
+		Expect(err).To(MatchError(ContainSubstring(constant.KubedoopConfigDirMount)))
+		Expect(err).To(MatchError(ContainSubstring("podOverrides")))
+	})
+
+	It("accepts a podOverride that mounts at a path the framework does not own", func() {
+		handler.MainContainerName = "node"
+		buildCtx.MergedConfig = &config.MergedConfig{
+			PodOverrides: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{{
+						Name:         "my-overlay",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					}},
+					Containers: []corev1.Container{{
+						Name: "node",
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "my-overlay", MountPath: "/kubedoop/overlay"},
+						},
+					}},
+				},
+			},
+		}
+
+		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		mounts := resources.StatefulSet.Spec.Template.Spec.Containers[0].VolumeMounts
+		Expect(mounts).To(ContainElement(HaveField("MountPath", constant.KubedoopConfigDirMount)))
+		Expect(mounts).To(ContainElement(HaveField("MountPath", "/kubedoop/overlay")))
+	})
+
 	It("does not alias the live CR spec through the merged logging config", func() {
 		roleCfg := &v1alpha1.RoleGroupConfigSpec{
 			Logging: &v1alpha1.LoggingSpec{
