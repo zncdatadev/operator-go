@@ -702,6 +702,13 @@ driver to resolve, so an empty argument panics. The same rule is enforced for ev
 secret-operator. `security.ScopeString(*commonsv1alpha1.CredentialsScope)` renders a CRD scope into
 that annotation value.
 
+A scope **name** may contain neither `,` nor `=`: the annotation has no escaping, so such a name
+does not quote itself — it adds scopes. `services: ["mysvc,node"]` would render `service=mysvc,node`
+and hand the CR author a **node-scoped** certificate covering the node's hostname and IP. The CRD
+rejects it at admission (`items:Pattern` on `CredentialsScope.Services`/`.ListenerVolumes`), and
+`ScopeString` drops any entry it cannot render as itself for the cases admission cannot reach (a CR
+stored before those markers, a scope built in Go).
+
 `pkg/listener` has **no scope API**: `VolumeRegistration.WithScope`, the `ListenerScope` type,
 `ListenerScopeNode`, `ListenerScopeCluster` and `ListenerScopeAnnotation` do not exist, and listener
 PVC templates carry no `listeners.kubedoop.dev/scope` annotation. A listener volume is declared with
