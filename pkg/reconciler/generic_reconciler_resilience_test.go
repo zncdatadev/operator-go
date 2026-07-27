@@ -939,6 +939,50 @@ var _ = Describe("GenericReconciler cluster label ownership", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: crName}, fetched)).To(Succeed())
 		Expect(fetched.GetLabels()).NotTo(HaveKey("injected-by-handler"))
 	})
+
+	It("hands handlers a writable map even when the CR carries no labels at all", func() {
+		crName := uniqueCRName("label-nil")
+		cr := testutil.NewMockCluster(crName, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{
+				"broker": {RoleGroups: map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(1))}}},
+			})
+		// A CR with no labels is perfectly ordinary — NewMockCluster just happens to set some.
+		// GetLabels then returns nil, and maps.Clone preserves nil, so a handler doing the
+		// documented thing (adding an entry to ClusterLabels) would panic on a nil map.
+		cr.Labels = nil
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		resourceName := reconciler.RoleGroupResourceName(crName, "broker", "default")
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, cr)
+			for _, suffix := range []string{"", "-headless"} {
+				meta := metav1.ObjectMeta{Name: resourceName + suffix, Namespace: testNamespace}
+				_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+				_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: meta})
+				_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: meta})
+			}
+		})
+
+		handler := &clusterLabelWritingHandler{
+			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme),
+		}
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: handler,
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A panic in a handler is recovered into a returned error, so this asserts on the error
+		// rather than on the panic itself.
+		_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: crName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
+		Expect(sts.Labels).To(HaveKeyWithValue("injected-by-handler", "true"))
+	})
 })
 
 var _ = Describe("GenericReconciler orphan drain wiring", func() {

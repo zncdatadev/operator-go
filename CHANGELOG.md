@@ -139,6 +139,11 @@ changes are listed below.**
   - `.spec.selector` is **unchanged** — `version` changes on every product upgrade and a selector is
     immutable. Existing clusters roll once as the pod template gains labels, and keep satisfying the
     selector they froze.
+  - `RoleGroupBuildContext.ClusterLabels` and `RoleBuildContext.ClusterLabels` are now always a
+    non-nil map. Both are documented as the handler's to build on, but they were produced by
+    `maps.Clone(cr.GetLabels())`, which preserves nil — so a CR carrying no labels at all (perfectly
+    ordinary) made a handler adding an entry to `ClusterLabels` panic with "assignment to entry in
+    nil map". Found by Copilot's review of #554.
 - `SidecarConfig.Probes` (`sidecar.SidecarProbes`) lets a product override the probes a provider
   sets: `Startup`/`Liveness`/`Readiness` replace one **wholesale** (probe handlers are a Kubernetes
   one-of, and a merged probe carrying two handlers is rejected by the API server), and
