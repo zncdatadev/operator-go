@@ -4,6 +4,19 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-27d] (podOverrides volumeMount merge key)
+
+### AGENTS.md files
+
+- Root `AGENTS.md`: new paragraph under "Validation failures are loud" documenting that strategic
+  merge patch keys `volumeMounts` by **`mountPath`**, not by `name` — so a `podOverrides` mount at
+  a framework-owned path replaces the framework's rather than joining it, silently when the
+  override also declares its volume — and that this is now a build failure.
+- `pkg/reconciler/AGENTS.md` §10 and `pkg/builder/AGENTS.md`: the same, plus
+  `StatefulSetBuilder.PodOverrideViolations()`.
+
+---
+
 ## [2026-07-27c] (orphan discovery reads the live cluster)
 
 ### Architecture Documentation (`architecture.md`, `architecture_zh.md`)

@@ -18,6 +18,7 @@ package builder
 
 import (
 	"encoding/json"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -178,3 +179,94 @@ func findByKey[T any](items []T, key func(T) string, want string) (*T, bool) {
 func volumeName(v corev1.Volume) string       { return v.Name }
 func containerName(c corev1.Container) string { return c.Name }
 func envVarName(e corev1.EnvVar) string       { return e.Name }
+
+// checkPodOverrideMountInvariants reports the framework-owned volume mounts a podOverrides layer
+// displaced, and any mount left pointing at a volume that does not exist.
+//
+// Strategic merge patch keys volumeMounts by **mountPath**, not by name. A user adding a mount at
+// a path the framework already owns therefore does not append a second mount — it REWRITES the
+// framework's entry to point at a different volume. Both outcomes are invisible in the override
+// the user actually wrote:
+//
+//   - the override also declares that volume: the pod spec stays perfectly valid and the API
+//     server accepts it, while the framework's ConfigMap (or CSI secret, or shared log volume) is
+//     no longer mounted anywhere. The product starts with an empty config directory and
+//     crash-loops, or silently runs on its built-in defaults. Nothing anywhere reports a problem;
+//   - the override declares only the mount: the API server rejects the StatefulSet with
+//     `volumeMounts[i].name: Not found`, naming a field the user never wrote, with no mention of
+//     podOverrides.
+//
+// Only the framework knows which volume was supposed to be at that path, so only the framework
+// can say what went wrong. Both cases are reported against the pre-merge template.
+func checkPodOverrideMountInvariants(
+	base, merged *corev1.PodTemplateSpec,
+	claims []corev1.PersistentVolumeClaim,
+) []error {
+	declared := make(map[string]struct{}, len(merged.Spec.Volumes)+len(claims))
+	for _, v := range merged.Spec.Volumes {
+		declared[v.Name] = struct{}{}
+	}
+	// A StatefulSet's volumeClaimTemplates are mountable by name without ever appearing in
+	// .spec.volumes — the framework's own data PVC among them.
+	for _, c := range claims {
+		declared[c.Name] = struct{}{}
+	}
+
+	var errs []error
+
+	// Displaced or deleted framework mounts, walked in the built template's order so the report is
+	// stable across reconciles.
+	for _, baseContainer := range allPodContainers(base) {
+		mergedContainer, found := findByKey(allPodContainers(merged), containerName, baseContainer.Name)
+		if !found {
+			// The override deleted the container outright. That is a different (and loud) kind of
+			// mistake; this check is about mounts.
+			continue
+		}
+		mergedMounts := make(map[string]string, len(mergedContainer.VolumeMounts))
+		for _, m := range mergedContainer.VolumeMounts {
+			mergedMounts[m.MountPath] = m.Name
+		}
+		for _, want := range baseContainer.VolumeMounts {
+			switch got, present := mergedMounts[want.MountPath]; {
+			case !present:
+				errs = append(errs, fmt.Errorf(
+					"podOverrides removed the framework's volume mount %q at %q in container %q",
+					want.Name, want.MountPath, baseContainer.Name))
+			case got != want.Name:
+				errs = append(errs, fmt.Errorf(
+					"podOverrides displaced the framework's volume mount at %q in container %q: "+
+						"volume %q now mounts there instead of %q. Strategic merge patch keys "+
+						"volumeMounts by mountPath, not by name, so a mount declared at a path the "+
+						"framework already owns replaces it rather than being added alongside it — "+
+						"mount %q somewhere else",
+					want.MountPath, baseContainer.Name, got, want.Name, got))
+			}
+		}
+	}
+
+	// Mounts left pointing at nothing. The API server would reject these too, but only after a
+	// round trip and without naming podOverrides.
+	for _, c := range allPodContainers(merged) {
+		for _, m := range c.VolumeMounts {
+			if _, ok := declared[m.Name]; !ok {
+				errs = append(errs, fmt.Errorf(
+					"volume mount %q at %q in container %q references no declared volume "+
+						"(check podOverrides: a mount at a mountPath the framework owns replaces "+
+						"the framework's mount instead of being added alongside it)",
+					m.Name, m.MountPath, c.Name))
+			}
+		}
+	}
+
+	return errs
+}
+
+// allPodContainers returns the init containers followed by the regular ones. Sidecars are injected
+// as init containers with RestartPolicy Always, so both lists carry framework-owned mounts.
+func allPodContainers(t *corev1.PodTemplateSpec) []corev1.Container {
+	all := make([]corev1.Container, 0, len(t.Spec.InitContainers)+len(t.Spec.Containers))
+	all = append(all, t.Spec.InitContainers...)
+	all = append(all, t.Spec.Containers...)
+	return all
+}

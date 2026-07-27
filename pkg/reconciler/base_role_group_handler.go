@@ -19,6 +19,7 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -842,6 +843,16 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
+
+	// A podOverrides mount at a mountPath the framework owns REPLACES the framework's mount
+	// (strategic merge keys volumeMounts by mountPath, not by name). When the override also
+	// declares its volume the result is a valid pod spec the API server accepts, with the config
+	// ConfigMap no longer mounted anywhere — the product then starts on an empty config directory.
+	// Refusing to build is the only way that stops being silent.
+	if violations := stsBuilder.PodOverrideViolations(); len(violations) > 0 {
+		return nil, NewValidationError("podOverrides", buildCtx.RoleName, buildCtx.RoleGroupName,
+			stderrors.Join(violations...))
+	}
 
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager
