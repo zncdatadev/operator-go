@@ -331,10 +331,17 @@ func (b *StatefulSetBuilder) WithEnableServiceLinks(enable bool) *StatefulSetBui
 
 // PodOverrideViolations returns the framework invariants the applied podOverrides broke — a
 // framework-owned volume mount displaced or deleted, or a mount left referencing no declared
-// volume. It is populated by Build(), so call it afterwards. Empty means the merge preserved
-// everything the framework mounted.
+// volume. It is populated by Build() — which resets it first, so the result always describes the
+// most recent build — so call it afterwards. Empty means the merge preserved everything the
+// framework mounted.
+//
+// The slice is copied out, like every other value Build() hands back: the builder must not share
+// mutable state with its callers.
 func (b *StatefulSetBuilder) PodOverrideViolations() []error {
-	return b.podOverrideViolations
+	if len(b.podOverrideViolations) == 0 {
+		return nil
+	}
+	return append([]error(nil), b.podOverrideViolations...)
 }
 
 // WithPodOverrides sets the pod template overrides.
@@ -519,7 +526,10 @@ func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
 		sts.Spec.VolumeClaimTemplates = cloneSlice(b.StorageConfig.VolumeClaimTemplates)
 	}
 
-	// Apply pod overrides
+	// Apply pod overrides. The violation list describes THIS build, so it is reset first —
+	// unconditionally, or a builder reused after dropping its overrides would keep reporting the
+	// previous build's, and a second Build() would report each violation twice.
+	b.podOverrideViolations = nil
 	if b.PodOverrides != nil {
 		b.applyPodOverrides(sts)
 	}

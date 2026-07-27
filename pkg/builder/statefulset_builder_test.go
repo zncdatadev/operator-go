@@ -1649,4 +1649,36 @@ var _ = Describe("StatefulSetBuilder podOverrides mount invariants", func() {
 		b.Build()
 		Expect(b.PodOverrideViolations()).To(BeEmpty())
 	})
+
+	It("describes the most recent build only, and hands back a copy", func() {
+		displacing := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{
+					Name:         "extra",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}},
+				Containers: []corev1.Container{{
+					Name:         "product",
+					VolumeMounts: []corev1.VolumeMount{{Name: "extra", MountPath: frameworkPath}},
+				}},
+			},
+		}
+
+		b := newBuilder().WithPodOverrides(displacing)
+
+		// Building twice must not report the same violation twice.
+		b.Build()
+		b.Build()
+		Expect(b.PodOverrideViolations()).To(HaveLen(1))
+
+		// Mutating the returned slice must not reach the builder.
+		got := b.PodOverrideViolations()
+		got[0] = nil
+		Expect(b.PodOverrideViolations()[0]).To(HaveOccurred())
+
+		// Dropping the override and rebuilding must clear the previous build's findings.
+		b.PodOverrides = nil
+		b.Build()
+		Expect(b.PodOverrideViolations()).To(BeEmpty())
+	})
 })
