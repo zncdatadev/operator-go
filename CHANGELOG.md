@@ -119,7 +119,9 @@ changes are listed below.**
   client, which does not populate `TypeMeta`, so the message read `Created  ns/kafka-broker-default`
   — with a hole exactly where the disambiguator between a role group's Service, its headless
   Service and its metrics Service belongs. `NewEventManager` now takes the scheme and resolves the
-  kind from it, falling back to the Go type name for an object the scheme does not know.
+  kind from it, falling back to the **bare** Go type name (`Listener`, not `*v1alpha1.Listener`)
+  for an object the scheme does not know. The reconciler's `resourceKind` now shares that
+  resolution, so an object is never called two different things in the event and in the error.
 
 ### BREAKING (events)
 

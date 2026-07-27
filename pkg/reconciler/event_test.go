@@ -85,11 +85,20 @@ var _ = Describe("EventManager", func() {
 			Expect(emitted()).To(ContainSubstring("Deleted Pod default/test-pod"))
 		})
 
-		It("falls back to the Go type for an object the scheme does not know", func() {
+		It("falls back to the bare Go type name for an object the scheme does not know", func() {
 			// A product may ship an extra resource whose type is not in the reconciler's scheme;
-			// an empty kind is worse than an approximate one.
-			unknown := reconciler.NewEventManager(record.NewFakeRecorder(4), runtime.NewScheme())
-			Expect(func() { unknown.EmitCreateEvent("test-cluster", testPod) }).NotTo(Panic())
+			// an empty kind is worse than an approximate one. The fallback is the bare type name —
+			// "Pod", not "*v1.Pod" — because the star and the package qualifier are noise in a
+			// message a human scans, and the bare name is what the scheme would have answered.
+			fake := record.NewFakeRecorder(4)
+			unknown := reconciler.NewEventManager(fake, runtime.NewScheme())
+			unknown.EmitCreateEvent("test-cluster", testPod)
+
+			var got string
+			Eventually(fake.Events).Should(Receive(&got))
+			Expect(got).To(ContainSubstring("Created Pod default/test-pod"))
+			Expect(got).NotTo(ContainSubstring("Created  "), "an empty kind is the original bug")
+			Expect(got).NotTo(ContainSubstring("*"))
 		})
 	})
 

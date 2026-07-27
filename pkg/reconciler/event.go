@@ -19,6 +19,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -53,15 +54,33 @@ func NewEventManager(recorder record.EventRecorder, scheme *runtime.Scheme) *Eve
 // The scheme lookup is the same one applyResource uses, with the Go type name as the fallback for
 // an object the scheme does not know (a product's unregistered extra resource).
 func (e *EventManager) objectKind(obj client.Object) string {
+	return resolveKind(e.scheme, obj)
+}
+
+// resolveKind returns the Kind of obj: its own TypeMeta when populated, else the scheme's answer,
+// else its Go type name. Shared by the event messages and the reconciler's error context so the
+// same object is never called two different things in two different places.
+func resolveKind(scheme *runtime.Scheme, obj client.Object) string {
 	if kind := obj.GetObjectKind().GroupVersionKind().Kind; kind != "" {
 		return kind
 	}
-	if e.scheme != nil {
-		if gvks, _, err := e.scheme.ObjectKinds(obj); err == nil && len(gvks) > 0 {
+	if scheme != nil {
+		if gvks, _, err := scheme.ObjectKinds(obj); err == nil && len(gvks) > 0 {
 			return gvks[0].Kind
 		}
 	}
-	return fmt.Sprintf("%T", obj)
+	return goTypeName(obj)
+}
+
+// goTypeName renders the bare Go type name of obj — "Listener", not "*v1alpha1.Listener". The
+// pointer star and package qualifier are noise in an event message a human scans, and the bare
+// name is what the scheme would have returned had the type been registered.
+func goTypeName(obj any) string {
+	name := strings.TrimPrefix(fmt.Sprintf("%T", obj), "*")
+	if dot := strings.LastIndex(name, "."); dot >= 0 {
+		name = name[dot+1:]
+	}
+	return name
 }
 
 // EmitCreateEvent emits a resource creation event.
