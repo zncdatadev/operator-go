@@ -18,6 +18,10 @@
 # │                      │       │   - DFSReplication   │
 # └──────────────────────┘       └──────────────────────┘
 #
+# What the SDK actually standardizes is exactly `commons/v1alpha1.GenericClusterSpec`:
+# `image`, `clusterOperation` and `roles`. Everything else in this file — `clusterConfig`
+# above all — is product-owned, and is shown here only to illustrate where such fields go.
+#
 metadata:
   name: productclusters.product.kubedoop.dev
 spec:
@@ -34,10 +38,24 @@ spec:
     # KubedooP Operator version to ensure compatibility.
     kubedoopVersion: "0.2.0"
 
-  # [Extensible] Cluster-wide Configuration
-  # Contains both standard SDK configurations and Product-specific extended fields.
+  # [PRODUCT-OWNED] Cluster-wide Configuration
+  #
+  # IMPORTANT: `clusterConfig` is NOT part of the SDK's data model. commons/v1alpha1 defines no
+  # ClusterConfigSpec, and GenericClusterSpec has exactly three members — `image`,
+  # `clusterOperation` and `roles`. Every product declares its own `clusterConfig` struct with its
+  # own field names, and nothing in the framework reads it.
+  #
+  # The block below is therefore an ILLUSTRATION of what a product typically puts there, not a
+  # contract you can rely on across products. Two products may legitimately spell the same concept
+  # differently (`vectorAggregatorConfigMapName` vs `vectorAgentConfigMap`), and neither is
+  # "wrong" — the SDK has no opinion. Do not template it in shared tooling.
+  #
+  # Where the SDK *does* consume these concepts, it does so through explicit APIs, not through
+  # this block: the Vector aggregator ConfigMap via `reconciler.VectorAggregatorProvider`
+  # implemented on the CR, secret classes via `security.SecretProvisioner` registrations, and
+  # listener classes via `listener.ListenerProvisioner`.
   clusterConfig:
-    # --- Standard SDK Fields ---
+    # --- Product-defined fields (illustrative) ---
 
     # Authentication & Security:
     # Configures global authentication mechanisms. Specific fields depend on the product's capabilities.
@@ -55,8 +73,8 @@ spec:
     # If configured, a Vector sidecar container will be automatically injected into all Pods.
     vectorAgentConfigMap: "trino-vector-agent-configmap"
 
-    # --- Product Specific Fields (Examples) ---
-    # Products extend this section with their own global settings.
+    # --- Further product-specific fields (examples) ---
+    # There is no boundary between these and the ones above: the whole block is product-defined.
     #
     # zookeeperConfigMap:       <-- HDFS/HBase/Kafka would add this
     #

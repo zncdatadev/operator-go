@@ -18,7 +18,7 @@ Every non-test file in this package:
 | `health.go` | `HealthManager` — role group aggregation into Available/Progressing/Degraded plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
 | `dependency.go` | `Dependency` / `DependencyKind` / `DependencyResolver` — declarative existence checks for referenced ConfigMaps and Secrets, plus the explicit `ValidateS3Connection` / `ValidateDatabaseConnection` / `ValidateZKConfig` helpers |
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
-| `event.go` | `EventManager` — Normal/Warning event emission on the CR |
+| `event.go` | `EventManager` — Normal/Warning event emission on the CR. `NewEventManager(recorder, scheme)`: the scheme resolves the Kind named in resource events, which the typed objects `pkg/builder` produces do not carry. The framework emits exactly `Created`/`Updated`/`Deleted` (Normal) and `ReconcileError`/`ReconcilePanic`/`PodOverrideIgnored`/`UnknownConfiguredRole`/`ImmutableFieldIgnored`/`VectorSidecarSkipped` (Warning) — **there are no reconcile start/completion events**. `LogAndEmitError`/`LogAndEmitInfo` exist for product code and the framework never calls them |
 | `discovery.go` | `EnsureDiscoveryConfigMap` — shared ensure-helper for product discovery ConfigMaps (CreateOrUpdate + controller owner ref + canonical labels; the product computes the data map) |
 
 There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — status is written by

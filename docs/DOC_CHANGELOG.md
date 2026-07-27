@@ -4,6 +4,41 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-27e] (event vocabulary; clusterConfig is product-owned)
+
+Two claims the docs made that the code does not support. Both were checked by enumerating the
+actual call sites rather than by reading the prose.
+
+### Architecture Documentation (`architecture.md`, `architecture_zh.md`)
+
+- **§4.14.2 promised reconcile start/completion events that do not exist.** Nothing is emitted at
+  the beginning or end of a pass; an SRE alerting on a documented "reconcile completed" event would
+  have had an alert that is permanently firing or permanently silent depending on how it was
+  written, and the silence would read as an operator outage. The clause is replaced with an
+  explicit statement that progress is reported through **status conditions**, plus the complete
+  list of the nine events the framework really emits.
+- **§4.14.2 said the `EventManager` is "injected into the Reconciler context".** It is a struct
+  field, handed to the cleaner; nothing puts it in a `context`. Corrected, with what a hook should
+  do instead.
+- Documented that resource events name the object's Kind and why that needs the scheme.
+
+### Examples (`docs/examples/crd-base-example.yaml`)
+
+- **`clusterConfig` was presented under a "--- Standard SDK Fields ---" heading, but commons
+  defines no `ClusterConfigSpec` and `GenericClusterSpec` has only `image`, `clusterOperation` and
+  `roles`.** Five products each hand-roll the block with their own spelling of the same concepts,
+  and the doc asserting otherwise meant each author believed they were implementing a shared
+  contract. The block is now labelled product-owned and illustrative, with a pointer to the
+  explicit APIs (`VectorAggregatorProvider`, `SecretProvisioner`, `ListenerProvisioner`) through
+  which the SDK genuinely consumes those concepts.
+
+### AGENTS.md files
+
+- `pkg/reconciler/AGENTS.md`: the `event.go` row now carries the full emitted vocabulary, the
+  scheme argument, and which helpers the framework never calls.
+
+---
+
 ## [2026-07-27d] (podOverrides volumeMount merge key)
 
 ### AGENTS.md files

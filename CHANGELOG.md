@@ -112,6 +112,27 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (events)
+
+- `Created`/`Updated`/`Deleted` events now name the object's **Kind**. Everything the framework
+  applies is a typed struct from `pkg/builder` round-tripped through controller-runtime's typed
+  client, which does not populate `TypeMeta`, so the message read `Created  ns/kafka-broker-default`
+  — with a hole exactly where the disambiguator between a role group's Service, its headless
+  Service and its metrics Service belongs. `NewEventManager` now takes the scheme and resolves the
+  kind from it, falling back to the **bare** Go type name (`Listener`, not `*v1alpha1.Listener`)
+  for an object the scheme does not know. The reconciler's `resourceKind` now shares that
+  resolution, so an object is never called two different things in the event and in the error.
+
+### BREAKING (events)
+
+- `NewEventManager(recorder)` → `NewEventManager(recorder, scheme)`.
+- `EventManager.EmitProgressingEvent`, `EmitAvailableEvent` and `EmitDegradedEvent` are removed.
+  The framework never called them, and they mirror transitions it already owns through status
+  conditions — an exported emitter the framework never calls reads as a framework guarantee, and a
+  product calling these would publish a second, unsynchronized account of the cluster's state.
+  `EmitWarningEvent` / `EmitNormalEvent` / `LogAndEmitError` / `LogAndEmitInfo` remain for product
+  code; the last two are documented as never called by the framework.
+
 ### fix (podOverrides)
 
 - A `podOverrides` volumeMount at a **mountPath the framework already owns** now fails the role

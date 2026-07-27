@@ -690,12 +690,13 @@ K8s Events provide a chronological log of significant occurrences within the clu
 
 ### 4.14.2 Core Implementation
 
-- **Unified Recorder**: The SDK encapsulates the Kubernetes `EventRecorder` in an `EventManager` and injects it into the Reconciler context.
+- **Unified Recorder**: The SDK encapsulates the Kubernetes `EventRecorder` in an `EventManager`, held as a field on the reconciler and handed to the `RoleGroupCleaner`. It is **not** placed in the `context` — a hook or handler that wants to emit events constructs its own `NewEventManager(recorder, scheme)`.
 - **Automated Lifecycle Events**:
-  - **Resource Operations**: The SDK emits `Normal` events when it creates, updates, or deletes a sub-resource (StatefulSet, Service, ConfigMap, PDB), ensuring auditability without boilerplate code. Orphan cleanup emits a `Deleted` event per removed resource once the cleaner has an `EventManager` (`RoleGroupCleaner.WithEventManager`).
-  - **Reconciliation Milestones**: Emits events for Reconcile start (debug level), completion, and critical failures.
-- **Error Integration**: Any error bubbling up from the Reconciliation loop (including Extensions) that triggers a `Degraded` status automatically generates a `Warning` event with the error reason.
-- **Degraded-input warnings**: some inputs are bad but not fatal, and they get a `Warning` event of their own rather than being dropped silently — a `podOverrides` layer that fails to decode or patch (`MergedConfig.PodOverrideErrors`), and a recovered panic (`ReconcilePanic`).
+  - **Resource Operations**: `Created` / `Updated` / `Deleted` `Normal` events whenever the framework applies or reclaims a sub-resource (StatefulSet, Service, ConfigMap, PDB), giving auditability without boilerplate. Orphan cleanup emits `Deleted` per removed resource once the cleaner has an `EventManager` (`RoleGroupCleaner.WithEventManager`). Each message names the object's **Kind**, resolved through the scheme: the typed objects `pkg/builder` produces carry no `TypeMeta`, so the kind cannot be read off the object, and it is exactly the disambiguator between a role group's Service, its headless Service and its metrics Service.
+  - **There are no reconcile start / completion events.** The framework emits nothing at the beginning or end of a successful pass; progress is reported through **status conditions**, which is what a controller should be watched on. Do not build alerting on a "reconcile completed" event.
+- **Error Integration**: an error that reaches the top of the loop (including from Extensions) sets `Degraded` **and** emits a `ReconcileError` `Warning` carrying the error text.
+- **Degraded-input warnings**: some inputs are bad but not fatal, and they get a `Warning` of their own rather than being dropped silently. The complete vocabulary the framework emits: `ReconcileError`, `ReconcilePanic` (a recovered panic), `PodOverrideIgnored` (a `podOverrides` layer that fails to decode or patch — `MergedConfig.PodOverrideErrors`), `UnknownConfiguredRole` (a handler configured for a role the CR does not declare), `ImmutableFieldIgnored` (a desired change to a preserved immutable field), `VectorSidecarSkipped` (the agent is enabled but nothing supplies `vector.yaml`), plus the three resource-operation `Normal` events above.
+- **Product-facing helpers**: `EmitWarningEvent`, `EmitNormalEvent`, `LogAndEmitError` and `LogAndEmitInfo` are available to extensions and product code. The framework calls only the first two.
 
 ### 4.14.3 Core Value
 

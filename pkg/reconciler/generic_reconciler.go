@@ -287,7 +287,7 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
 	}
 
-	eventManager := NewEventManager(cfg.Recorder)
+	eventManager := NewEventManager(cfg.Recorder, cfg.Scheme)
 
 	rateLimitRetryAfter := cfg.RateLimitRetryAfter
 	if rateLimitRetryAfter == 0 {
@@ -1268,10 +1268,7 @@ func (r *GenericReconciler[CR]) validateSidecars(ctx context.Context, buildCtx *
 // messages for ExtraResources, whose GVK is not fixed). Typed objects usually carry an empty
 // TypeMeta, so the scheme registration is preferred; the Go type name is the fallback.
 func (r *GenericReconciler[CR]) resourceKind(obj client.Object) string {
-	if gvks, _, err := r.scheme.ObjectKinds(obj); err == nil && len(gvks) > 0 {
-		return gvks[0].Kind
-	}
-	return fmt.Sprintf("%T", obj)
+	return resolveKind(r.scheme, obj)
 }
 
 // applyResource applies a single resource using CreateOrUpdate: it creates the object when
