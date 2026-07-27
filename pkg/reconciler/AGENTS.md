@@ -117,9 +117,9 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     (`DrainPollInterval`) until the group is fully reclaimed. The drain is bounded by
     `DrainTimeout` (default 10m, deadline stamped on the object as `AnnotationDrainStarted`), so a
     pod that can never terminate cannot strand the rest of the group; what is still pending is
-    reported on the CR as `ConditionOrphanCleanupPending`. Pruning a group from
-    `status.roleGroups` is terminal — nothing enumerates it afterwards — so the "nothing left"
-    verdict is re-confirmed through the uncached `APIReader` before the entry is dropped. A failure
+    reported on the CR as `ConditionOrphanCleanupPending`. The "nothing left" verdict is
+    re-confirmed through the uncached `APIReader` before the group's entry is dropped from
+    `status.roleGroups`, because a cached read can answer NotFound for an object that exists. A failure
     is confined to its role group (the others still progress, errors are joined), and a 429
     anywhere in the cleanup surfaces as a `*RateLimitError` that `Reconcile` turns into a plain
     backoff. A role removed from `spec.roles` wholesale has its role PDB reclaimed by label
@@ -127,7 +127,25 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     out of the status snapshot. Every PDB reclaim is gated on its slot label
     (`LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`), because a product's own
     PDB may share the derived name and carries the same controller owner reference.
-12. **Vector sidecar gating:** the framework injects the Vector sidecar only when something supplies
+12. **Orphans are discovered from the live cluster, not only from the status ledger.**
+    `discoverOrphans` unions two sources: the role group ConfigMaps and StatefulSets this CR
+    controller-owns that carry the framework's labels, and `status.roleGroups`. The ledger alone is
+    a record the operator must have *successfully written*, so anything that loses it — a process
+    death between applying a role group's resources and updating the CR, a backup tool restoring
+    the CR without its status subresource, a `kubectl replace` — used to make those resources
+    invisible to the cleaner permanently.
+
+    A live object is claimed **only** when it carries the full
+    instance/managed-by/component/role-group label set, is controller-owned by this CR, and is
+    named exactly what `RoleGroupResourceName` produces for those labels. The name check is the
+    decisive one: a discovery ConfigMap carries the same instance/managed-by pair and owner
+    reference, and a product's `ExtraResources` may carry the handler's whole label set. Both kinds
+    are listed because the teardown deletes the StatefulSet before the ConfigMap. An empty owner UID
+    disables live discovery, as it does the role-PDB reclaim.
+
+    `status.roleGroups` remains, written by the reconciler and pruned on a real deletion — it is
+    still the only source that can attribute a *pre-labels* resource to a role group.
+13. **Vector sidecar gating:** the framework injects the Vector sidecar only when something supplies
     `vector.yaml` — the CR implements `VectorAggregatorProvider` (the framework then renders it) or
     the handler implements `VectorConfigProvider` and claims the role. Otherwise it logs, emits a
     `VectorSidecarSkipped` Warning and skips the sidecar: registering it would fail the provider's
@@ -135,7 +153,7 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     recorded on `RoleGroupBuildContext.VectorLogPipelineActive`, and the logging renderers gate the
     rolling file appender on it — the Vector provider owns the shared log volume, so without the
     sidecar an appender would write to an unmounted path.
-13. **Framework-owned selector labels:** the StatefulSet/Service/PDB selectors are derived from the
+14. **Framework-owned selector labels:** the StatefulSet/Service/PDB selectors are derived from the
     cluster/role/role group names alone (or the product's `LabelDomain` identity labels). A CR
     label that collides with a selector key is **inert**, not an error: `buildLabels` applies the
     CR's labels first and the framework's identity labels over them, so the selector and the pod
@@ -144,7 +162,7 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     was applied *last* and therefore won in the label map while the builder re-wrote the selector
     keys into the pod template afterwards. Ordering removes the failure mode instead of detecting
     it.)
-14. **The recommended label set is metadata, and wider than the selector.** Every resource the
+15. **The recommended label set is metadata, and wider than the selector.** Every resource the
     framework builds carries the six keys declared in `pkg/constant/label.go`
     (`constant.LabelKubernetes*`), on both the object metadata and the pod template:
 
@@ -168,7 +186,7 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     product upgrade, and the role group is already pinned by the `<cluster>-<group>` marker key.
     Upgrading an existing cluster into this label set rolls its pods once (the pod template gains
     labels) but leaves the frozen selector satisfied.
-15. **There is exactly one label channel, and it is the cluster CR.** `buildLabels` layers, low to
+16. **There is exactly one label channel, and it is the cluster CR.** `buildLabels` layers, low to
     high: `buildCtx.ClusterLabels` (the CR's own, cloned per cycle) → the recommended set →
     `frameworkSelectorLabels` → the product's `LabelDomain` identity labels. Anything an operator's
     *user* wants on the workloads — above all the platform opt-ins the SDK does not own, such as
@@ -177,7 +195,7 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     `BaseRoleGroupHandler.ExtraLabels` and `ExtraAnnotations` are **gone**. They were compile-time
     fields on a handler, i.e. a decision frozen when the operator was built, for something decided
     when a cluster is deployed; and `ExtraLabels` specifically existed to paper over the three
-    recommended labels the framework was not emitting (§14), which it now does.
+    recommended labels the framework was not emitting (§15), which it now does.
 
     **Annotations have no replacement channel: the framework sets none on the resources it builds.**
     The CR's annotations are deliberately *not* propagated the way its labels are — that map holds

@@ -351,8 +351,16 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 ### 4.4.2 执行流程
 
 1. 从 Spec 获取 roles 的期望 role group 列表（`desiredGroups`）。本轮调和过的每个 role group 都会记入 `Status.RoleGroups`。
-2. 从 `Status.RoleGroups` 获取历史实际 role group 列表（`oldActualGroups`）。
-3. 计算孤儿 role groups：`orphanedGroups = oldActualGroups - desiredGroups`。
+2. 从**两个**来源获取实际 role group 列表并求并集：
+   - **活跃集群**——CR 所在命名空间中带 `app.kubernetes.io/instance` 与 `app.kubernetes.io/managed-by`、由本 CR 作为 controller owner、且其 `app.kubernetes.io/component` + `app.kubernetes.io/role-group` 标签经 `RoleGroupResourceName` 重建后恰好等于对象自身名字的 role group ConfigMap 与 StatefulSet；
+   - `Status.RoleGroups`，即 operator 写给自己的账本。
+3. 计算孤儿 role groups：`orphanedGroups = actualGroups - desiredGroups`。
+
+   > **为什么读活跃集群而不只读账本。** `Status.RoleGroups` 是一条 operator 必须**成功写入过**的记录。任何让它丢失的情况——进程在应用完 role group 资源与更新 CR 之间崩溃、备份工具还原 CR 时丢掉 status 子资源、`kubectl replace`——都会让它记录过的资源对 cleaner 永久不可见，因为再没有别的东西枚举它们。这些资源会一直占着自己的 PVC、PDB 和 Pod，直到有人发现。读取活跃集群消除了这一依赖；账本仍留在并集中，用于覆盖框架尚未标注 `app.kubernetes.io/role-group` 之前创建、无法从标签还原出 role group 的资源。
+   >
+   > 对活跃对象的四个条件缺一不可。discovery ConfigMap 带着同样的 instance/managed-by 组合和同样的 owner reference，产品通过 `RoleGroupResources.ExtraResources` 交付的对象也可能带着 handler 的完整标签集——只有"名字恰好等于 `RoleGroupResourceName` 依这些标签生成的结果"才能识别出框架自己的槽位。之所以两种资源都要列，是因为拆除顺序是先删 StatefulSet 后删 ConfigMap：在这中间被打断的一轮会留下一个 ConfigMap，只看 StatefulSet 的清单永远不会再看到它。
+   >
+   > owner UID 为空时活跃发现整体禁用，与 role 级 PDB 回收的规则一致：没有 owner 可比对，命名空间内每个带标签的对象（包括兄弟集群的）都会像是本集群的。
 4. 回收**已从 Spec 中整体消失的 role 的 role 级 PDB**（见下文"被移除的 role"）。它排在 role group 循环之前，且与之无关：当 `orphanedGroups` 为空时循环会提前返回，而某个 role 的各 group 会随着删除完成被逐个从状态快照中裁剪掉——等到它的 PDB 需要重试时，可能已经没有孤儿 group 能把这一趟带起来了。
 5. 对每个孤儿 role group——role 按名称排序遍历，使得跨多轮的事件序列可复现——推进一趟删除状态机：先过灰度删除闸门，再按 `PDB → StatefulSet（缩容到 0 → 排空 → 删除）→ ConfigMap → Service → headless Service → metrics Service` 执行，在第一个仍在进行中的步骤处停下。
 6. **只有资源确实被删除干净**（本轮所有步骤都已落定）的 role group 才从 `Status.RoleGroups` 中移除。仍处于灰度删除宽限期内、排空尚未结束、以及本轮失败的 role group 都保留在状态快照里，等下一轮调和重试，而不是被悄悄遗忘。裁剪后的映射由调和流程末尾的 status 更新（循环第 7 步）持久化。

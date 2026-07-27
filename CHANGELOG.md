@@ -112,6 +112,30 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (orphan discovery)
+
+- Orphaned role groups are now discovered from the **live cluster** as well as from
+  `status.roleGroups`. The ledger alone was a record the operator had to have *successfully
+  written*: when the process died between applying a role group's resources and updating the CR,
+  when a backup tool restored the CR without its status subresource, or after a `kubectl replace`,
+  the resources it had named became invisible to the cleaner **permanently** — nothing else ever
+  enumerated them, so they held their PVCs, their PDB and their pods until someone deleted them by
+  hand.
+  - The live half lists the role group ConfigMaps and StatefulSets this CR controller-owns that
+    carry `app.kubernetes.io/{instance,managed-by,component,role-group}` **and** are named exactly
+    what `RoleGroupResourceName` produces for those labels. That last check is what keeps it safe:
+    a discovery ConfigMap carries the same instance/managed-by pair and owner reference, and a
+    product's `RoleGroupResources.ExtraResources` may carry the handler's entire label set.
+  - Both kinds are listed because the teardown deletes the StatefulSet before the ConfigMap — a
+    pass interrupted in between leaves a ConfigMap a StatefulSet-only inventory would never see.
+  - `status.roleGroups` stays in the union (and is still written and pruned): it is the only source
+    that can attribute a resource created *before* the framework stamped `app.kubernetes.io/role-group`
+    to a role group.
+  - A failed discovery no longer reads as "no orphans": it returns the error and leaves
+    `OrphanCleanupPending` untouched rather than clearing it on the strength of a failed list.
+  - An empty owner UID disables live discovery entirely, exactly as it disables the role-PDB
+    reclaim.
+
 ### security
 
 - Every framework-injected sidecar now carries a hardened container security context by default
