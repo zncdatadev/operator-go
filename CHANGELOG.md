@@ -96,6 +96,21 @@ changes are listed below.**
   a later role-level input now needs no further signature change. Handlers that override the method
   (it is detected through a method-set interface, so an override is a supported extension point)
   update their signature to match.
+- `BaseRoleGroupHandler.ExtraLabels` and `BaseRoleGroupHandler.ExtraAnnotations` are removed, along
+  with the `validateExtraLabels` build-time check they needed. Both were compile-time fields on a
+  handler — a decision frozen when the operator is *built* — for something decided when a cluster is
+  *deployed*. Labels move to the **cluster CR**: the reconciler already propagates
+  `RoleGroupBuildContext.ClusterLabels` into every built resource's metadata and pod template, which
+  is also the only route to the `StatefulSet.metadata.labels` that commons-operator's restarter
+  watches. `ExtraLabels` largely existed to supply the three recommended labels the framework was
+  not emitting, which it now does (see the label-set entry under *features* above).
+  - `DiscoveryConfigMapOptions.ExtraLabels` / `WithDiscoveryExtraLabels` are a **different**,
+    per-call API for one ConfigMap and are unaffected.
+  - **Annotations get no replacement.** The framework now sets none on the resources it builds, and
+    the CR's annotations are deliberately not propagated the way its labels are — that map holds
+    `kubectl.kubernetes.io/last-applied-configuration` and the cleaner's own `orphan.zncdata.dev/*`
+    progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
+    has no supported way to set them; tracked in #553.
 
 ### security
 

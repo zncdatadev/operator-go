@@ -92,8 +92,6 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			Expect(handler.RoleImages).NotTo(BeNil())
 			Expect(handler.RoleContainerPorts).NotTo(BeNil())
 			Expect(handler.RoleServicePorts).NotTo(BeNil())
-			Expect(handler.ExtraLabels).NotTo(BeNil())
-			Expect(handler.ExtraAnnotations).NotTo(BeNil())
 		})
 
 		It("should set the scheme correctly", func() {
@@ -239,8 +237,11 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			Expect(resources.PodDisruptionBudget).To(BeNil())
 		})
 
-		It("should include extra labels in all resources", func() {
-			handler.ExtraLabels["custom-label"] = "custom-value"
+		It("should propagate the CR's own labels to all resources", func() {
+			// The cluster CR's labels are the framework's one label channel: an operator's user
+			// labels the CR and every built resource carries it, which is how a platform opt-in
+			// like restarter.kubedoop.dev/enable reaches the StatefulSet metadata.
+			buildCtx.ClusterLabels["custom-label"] = "custom-value"
 			handler.SetRoleServicePorts("test-role", []corev1.ServicePort{
 				{Name: "http", Port: 8080},
 			})
@@ -252,10 +253,17 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			Expect(resources.HeadlessService.Labels["custom-label"]).To(Equal("custom-value"))
 			Expect(resources.Service.Labels["custom-label"]).To(Equal("custom-value"))
 			Expect(resources.StatefulSet.Labels["custom-label"]).To(Equal("custom-value"))
+			// The StatefulSet's own metadata is what the restarter's watch predicate reads, but
+			// the pod template carries it too.
+			Expect(resources.StatefulSet.Spec.Template.Labels["custom-label"]).To(Equal("custom-value"))
 		})
 
-		It("should include extra annotations in all resources", func() {
-			handler.ExtraAnnotations["custom-annotation"] = "annotation-value"
+		It("should build resources with no annotations of its own", func() {
+			// The framework sets no annotations on the resources it builds. Nothing sensible can
+			// be propagated wholesale from the CR (kubectl's last-applied blob, and the cleaner's
+			// own orphan.zncdata.dev/* progress markers, both live there), and a compile-time
+			// handler field is the wrong layer for what is a deployment decision. Service
+			// annotations specifically are tracked in zncdatadev/operator-go#553.
 			handler.SetRoleServicePorts("test-role", []corev1.ServicePort{
 				{Name: "http", Port: 8080},
 			})
@@ -263,10 +271,10 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resources.ConfigMap.Annotations["custom-annotation"]).To(Equal("annotation-value"))
-			Expect(resources.HeadlessService.Annotations["custom-annotation"]).To(Equal("annotation-value"))
-			Expect(resources.Service.Annotations["custom-annotation"]).To(Equal("annotation-value"))
-			Expect(resources.StatefulSet.Annotations["custom-annotation"]).To(Equal("annotation-value"))
+			Expect(resources.ConfigMap.Annotations).To(BeEmpty())
+			Expect(resources.HeadlessService.Annotations).To(BeEmpty())
+			Expect(resources.Service.Annotations).To(BeEmpty())
+			Expect(resources.StatefulSet.Annotations).To(BeEmpty())
 		})
 
 		It("should build ConfigMap with config files", func() {
@@ -1221,8 +1229,9 @@ var _ = Describe("BaseRoleGroupHandler extra labels and annotations", func() {
 		}
 	})
 
-	It("should include extra labels in all resources", func() {
-		handler.ExtraLabels = map[string]string{"custom-label": "custom-value", "team": "platform"}
+	It("should carry every CR label onto all resources", func() {
+		buildCtx.ClusterLabels["custom-label"] = "custom-value"
+		buildCtx.ClusterLabels["team"] = "platform"
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1230,14 +1239,6 @@ var _ = Describe("BaseRoleGroupHandler extra labels and annotations", func() {
 		Expect(resources.ConfigMap.Labels).To(HaveKey("team"))
 		Expect(resources.StatefulSet.Labels).To(HaveKey("custom-label"))
 		Expect(resources.HeadlessService.Labels).To(HaveKey("custom-label"))
-	})
-
-	It("should include extra annotations in resources", func() {
-		handler.ExtraAnnotations = map[string]string{"custom-annotation": "annotation-value"}
-
-		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.ConfigMap.Annotations).To(HaveKey("custom-annotation"))
 	})
 
 	It("should merge cluster labels with standard labels", func() {
@@ -2019,13 +2020,12 @@ var _ = Describe("Selector label stability", func() {
 
 	BeforeEach(func() {
 		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.ExtraLabels["team"] = "platform"
 		mockCR = testutil.NewMockCluster("test-cluster", "default")
 	})
 
 	It("builds the selector from framework-owned labels only", func() {
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(map[string]string{"env": "prod"}))
+			newBuildCtx(map[string]string{"env": "prod", "team": "platform"}))
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(Equal(map[string]string{
@@ -2035,9 +2035,9 @@ var _ = Describe("Selector label stability", func() {
 			"test-cluster-default":         "true",
 		}))
 
-		// The CR and extra labels stay on the pod template: StatefulSets created before the
-		// selector was narrowed froze them into their immutable selector, so dropping them from
-		// the template would leave those objects unmatchable.
+		// The CR's labels stay on the pod template: StatefulSets created before the selector was
+		// narrowed froze them into their immutable selector, so dropping them from the template
+		// would leave those objects unmatchable.
 		Expect(resources.StatefulSet.Spec.Template.Labels).To(HaveKeyWithValue("env", "prod"))
 		Expect(resources.StatefulSet.Spec.Template.Labels).To(HaveKeyWithValue("team", "platform"))
 	})
@@ -2060,12 +2060,12 @@ var _ = Describe("Selector label stability", func() {
 	})
 
 	It("keeps satisfying the selector a StatefulSet froze under the previous label scheme", func() {
-		clusterLabels := map[string]string{"env": "prod"}
+		clusterLabels := map[string]string{"env": "prod", "team": "platform"}
 		buildCtx := newBuildCtx(clusterLabels)
 
 		// The selector the previous framework version wrote into .spec.selector: the FULL
-		// descriptive label set (cluster labels, then the framework identity labels, then
-		// ExtraLabels). It is immutable on the live object, so every pod template this version
+		// descriptive label set (cluster labels, then the framework identity labels, then the
+		// product's own). It is immutable on the live object, so every pod template this version
 		// builds must still match it or the API server rejects every update.
 		legacySelector := map[string]string{
 			"env":                          "prod",
@@ -2083,26 +2083,45 @@ var _ = Describe("Selector label stability", func() {
 			Matches(k8slabels.Set(resources.StatefulSet.Spec.Template.Labels))).To(BeTrue())
 	})
 
-	It("fails the build when an ExtraLabel collides with a selector label", func() {
-		// The builder re-writes the selector keys into the pod template AFTER the labels, so this
-		// value can never take effect — and on a StatefulSet created while the selector still
-		// carried it, the frozen selector demands "platform" while the template now says "server",
-		// which makes every update fail with nothing on the object to explain why.
-		handler.ExtraLabels["app.kubernetes.io/component"] = "platform"
+	It("lets a framework label win over a CR label that collides with it", func() {
+		// This is what replaces the ExtraLabels collision check. A CR label is applied FIRST and
+		// the framework's identity labels overwrite it, so a colliding CR label is inert: the
+		// selector and the pod template still agree on the framework's value, and no live object
+		// can end up demanding a value its template no longer carries.
+		//
+		// ExtraLabels was applied LAST and therefore won in the label map, while the builder
+		// re-wrote the selector keys into the pod template afterwards — which is exactly the
+		// mismatch that needed a build-time rejection. Ordering makes it impossible instead.
+		handler.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
 
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(map[string]string{"env": "prod"}))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("app.kubernetes.io/component"))
-		Expect(err.Error()).To(ContainSubstring("ExtraLabels collide with the selector labels"))
-	})
-
-	It("allows an ExtraLabel that restates a selector label's own value", func() {
-		handler.ExtraLabels["app.kubernetes.io/managed-by"] = "operator-go"
-
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(map[string]string{"env": "prod"}))
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(map[string]string{
+				"app.kubernetes.io/component":  "hijacked",
+				"app.kubernetes.io/managed-by": "someone-else",
+				"env":                          "prod",
+			}))
 		Expect(err).NotTo(HaveOccurred())
+
+		// The ConfigMap and Services are the load-bearing assertions: they carry buildLabels'
+		// output verbatim. The StatefulSet builder re-asserts the selector keys into the
+		// StatefulSet's own labels and pod template on its way out, so checking only those would
+		// pass even with the ordering reversed — and would leave the ConfigMap and Services
+		// disagreeing with the workload about which role they belong to.
+		for _, labels := range []map[string]string{
+			resources.ConfigMap.Labels,
+			resources.HeadlessService.Labels,
+			resources.Service.Labels,
+			resources.StatefulSet.Labels,
+			resources.StatefulSet.Spec.Template.Labels,
+			resources.StatefulSet.Spec.Selector.MatchLabels,
+		} {
+			Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "server"))
+			Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "operator-go"))
+		}
+		// A non-colliding CR label is untouched.
+		Expect(resources.StatefulSet.Labels).To(HaveKeyWithValue("env", "prod"))
+		Expect(k8slabels.SelectorFromSet(resources.StatefulSet.Spec.Selector.MatchLabels).
+			Matches(k8slabels.Set(resources.StatefulSet.Spec.Template.Labels))).To(BeTrue())
 	})
 })
 

@@ -136,11 +136,14 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     rolling file appender on it — the Vector provider owns the shared log volume, so without the
     sidecar an appender would write to an unmounted path.
 13. **Framework-owned selector labels:** the StatefulSet/Service/PDB selectors are derived from the
-    cluster/role/role group names alone (or the product's `LabelDomain` identity labels). An
-    `ExtraLabels` entry that collides with a selector key and disagrees with its value fails the
-    build, naming the key: the builder re-writes selector keys into the pod template after the
-    labels, so it could never take effect, and on an object created under the older, wider selector
-    it would make every update fail.
+    cluster/role/role group names alone (or the product's `LabelDomain` identity labels). A CR
+    label that collides with a selector key is **inert**, not an error: `buildLabels` applies the
+    CR's labels first and the framework's identity labels over them, so the selector and the pod
+    template can never end up disagreeing. (The predecessor of this rule was a build-time rejection
+    of a colliding `BaseRoleGroupHandler.ExtraLabels` entry, which was needed because `ExtraLabels`
+    was applied *last* and therefore won in the label map while the builder re-wrote the selector
+    keys into the pod template afterwards. Ordering removes the failure mode instead of detecting
+    it.)
 14. **The recommended label set is metadata, and wider than the selector.** Every resource the
     framework builds carries the six keys declared in `pkg/constant/label.go`
     (`constant.LabelKubernetes*`), on both the object metadata and the pod template:
@@ -165,6 +168,23 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     product upgrade, and the role group is already pinned by the `<cluster>-<group>` marker key.
     Upgrading an existing cluster into this label set rolls its pods once (the pod template gains
     labels) but leaves the frozen selector satisfied.
+15. **There is exactly one label channel, and it is the cluster CR.** `buildLabels` layers, low to
+    high: `buildCtx.ClusterLabels` (the CR's own, cloned per cycle) → the recommended set →
+    `frameworkSelectorLabels` → the product's `LabelDomain` identity labels. Anything an operator's
+    *user* wants on the workloads — above all the platform opt-ins the SDK does not own, such as
+    `restarter.kubedoop.dev/enable` — is set by labelling the CR.
+
+    `BaseRoleGroupHandler.ExtraLabels` and `ExtraAnnotations` are **gone**. They were compile-time
+    fields on a handler, i.e. a decision frozen when the operator was built, for something decided
+    when a cluster is deployed; and `ExtraLabels` specifically existed to paper over the three
+    recommended labels the framework was not emitting (§14), which it now does.
+
+    **Annotations have no replacement channel: the framework sets none on the resources it builds.**
+    The CR's annotations are deliberately *not* propagated the way its labels are — that map holds
+    `kubectl.kubernetes.io/last-applied-configuration` and the cleaner's own
+    `orphan.zncdata.dev/*` progress markers, neither of which belongs on a ConfigMap. A product
+    needing e.g. cloud LoadBalancer annotations on the client Service has no supported way to set
+    them today; see zncdatadev/operator-go#553.
 
 ## Reconcile Flow
 
