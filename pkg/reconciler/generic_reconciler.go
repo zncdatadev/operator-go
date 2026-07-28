@@ -44,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -852,11 +853,47 @@ func RoleGroupResourceName(clusterName, roleName, groupName string) string {
 }
 
 // RoleResourceName returns the canonical resource name for a role-level resource:
-// "<cluster>-<role>". Used for resources that span all of a role's role groups, e.g. the
-// role's PodDisruptionBudget. It is always shorter than the corresponding role group name,
-// so no truncation is needed to stay within DNS limits.
+// "<cluster>-<role>". Used for resources that span all of a role's role groups — today only the
+// role's PodDisruptionBudget.
+//
+// Unlike RoleGroupResourceName this is deliberately NOT truncated, because the limit that applies
+// to it is a different one. A PodDisruptionBudget name is validated as a DNS *subdomain* (253
+// bytes), not as the 63-byte DNS label that bounds a Service name and a StatefulSet's
+// .spec.serviceName; "<cluster>-<role>" cannot realistically reach 253 when the cluster name is
+// itself capped at 253. Truncating here would only invent a hash suffix nobody needs and change
+// the name of every existing role PDB.
 func RoleResourceName(clusterName, roleName string) string {
 	return fmt.Sprintf("%s-%s", clusterName, roleName)
+}
+
+// RoleGroupMarkerLabelKey returns the label key that marks a resource as belonging to one specific
+// role group: "<cluster>-<group>", or a bounded substitute when that is not a legal label key.
+//
+// A label key's name part is limited to 63 bytes and to a restricted character set, and this key is
+// derived from two free-form user strings. Entirely ordinary big-data names blow through it — a
+// 43-character cluster plus a 21-character role group is 65 bytes — and because the key lands in
+// the StatefulSet's .spec.selector, in both Services' selectors and in every pod template label
+// set, the API server then rejects the whole role group, naming a label key the user never wrote.
+// The resource NAME built from the same two strings was already bounded (RoleGroupResourceName);
+// this second derivation was not, so the framework applied the limit it knew about to one of the
+// two places it applies.
+//
+// The natural form is kept whenever it is legal, and that is load-bearing rather than cosmetic:
+// .spec.selector is IMMUTABLE, so changing this key for a role group that already has a
+// StatefulSet would leave the pod template no longer matching the frozen selector and every
+// subsequent update would be rejected. Only combinations that could never have produced a
+// StatefulSet in the first place get the substitute — for those there is nothing to stay
+// compatible with, which is what makes this safe to roll out to running clusters.
+//
+// The substitute is RoleGroupResourceName: already bounded to maxRoleGroupNameLen, already unique
+// per role group, and already the framework's canonical identifier for one. Reusing it keeps a
+// single truncation algorithm in the codebase instead of a second one that has to agree with it.
+func RoleGroupMarkerLabelKey(clusterName, roleName, roleGroupName string) string {
+	key := clusterName + "-" + roleGroupName
+	if len(validation.IsQualifiedName(key)) == 0 {
+		return key
+	}
+	return RoleGroupResourceName(clusterName, roleName, roleGroupName)
 }
 
 // buildRoleGroupContext creates the build context for a role group.
@@ -1210,7 +1247,7 @@ func (r *GenericReconciler[CR]) reclaimRoleGroupPDB(ctx context.Context, buildCt
 		}
 		return err
 	}
-	if !isFrameworkRoleGroupPDB(pdb, buildCtx.ClusterName, buildCtx.RoleGroupName) {
+	if !isFrameworkRoleGroupPDB(pdb, buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName) {
 		return nil
 	}
 	return r.cleaner.deletePDB(ctx, key.Namespace, key.Name, ownerUID, buildCtx.ClusterName)
@@ -1221,12 +1258,12 @@ func (r *GenericReconciler[CR]) reclaimRoleGroupPDB(ctx context.Context, buildCt
 // labels, which is the only fingerprint those objects carry: the framework's managed-by value plus
 // the role group marker label. Both are required — managed-by alone would also match the role-level
 // PDB of a differently named role group.
-func isFrameworkRoleGroupPDB(pdb *policyv1.PodDisruptionBudget, clusterName, roleGroupName string) bool {
+func isFrameworkRoleGroupPDB(pdb *policyv1.PodDisruptionBudget, clusterName, roleName, roleGroupName string) bool {
 	if pdb.Labels[LabelRoleGroupPodDisruptionBudget] == roleGroupName {
 		return true
 	}
 	return pdb.Labels["app.kubernetes.io/managed-by"] == managedByValue &&
-		pdb.Labels[clusterName+"-"+roleGroupName] == valueTrue
+		pdb.Labels[RoleGroupMarkerLabelKey(clusterName, roleName, roleGroupName)] == valueTrue
 }
 
 // reclaimMetricsService deletes the role group's metrics Service, but only when the live object

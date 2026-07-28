@@ -36,7 +36,25 @@ type GenericClusterSpec struct {
 
 	// Roles defines the role configurations for the cluster.
 	// Each role represents a logical functional component (e.g., NameNode, DataNode).
+	//
+	// A role name is not free-form: it becomes a segment of the name of every resource built for
+	// the role ("<cluster>-<role>-<group>") and the value of the app.kubernetes.io/component
+	// label. A name that is not a lowercase RFC 1123 label therefore produces resource names the
+	// API server rejects — "Coordinator", "my_role" and "a.b" all fail on the StatefulSet's or the
+	// Service's metadata.name. Without this rule that rejection surfaces halfway through a
+	// reconcile, as a permanently Degraded role complaining about a field the user never wrote;
+	// with it, `kubectl apply` says so immediately.
+	//
+	// MaxProperties is not a product constraint — no product has 64 distinct roles — but the CEL
+	// cost estimator's only handle on a map. Without a declared bound it assumes the theoretical
+	// worst case and rejects the rule below at CRD creation time with "estimated rule cost exceeds
+	// budget by factor of more than 100x". The bound is set far above any real deployment so it
+	// never binds in practice, and low enough to leave a product's own CRD room in the per-schema
+	// budget it shares.
+	//
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule=`self.all(k, size(k) <= 63 && k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))`,message=`each role name must be a lowercase RFC 1123 label (lowercase alphanumerics and '-', starting and ending with an alphanumeric, at most 63 characters): role names become part of the name and labels of every resource built for the role`
 	Roles map[string]RoleSpec `json:"roles,omitempty"`
 }
 
@@ -58,7 +76,17 @@ type RoleSpec struct {
 
 	// RoleGroups defines the role group configurations.
 	// Each RoleGroup maps to a Kubernetes StatefulSet.
+	//
+	// Constrained for the same reason as the role name above: a role group name is a segment of
+	// "<cluster>-<role>-<group>" and the value of the app.kubernetes.io/role-group label, so a name
+	// that is not a lowercase RFC 1123 label yields resource names the API server refuses.
+	//
+	// MaxProperties bounds the CEL cost estimate, not the deployment — see the note on Roles.
+	// 256 role groups in a single role is far past one per rack in a very large cluster.
+	//
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxProperties=256
+	// +kubebuilder:validation:XValidation:rule=`self.all(k, size(k) <= 63 && k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))`,message=`each role group name must be a lowercase RFC 1123 label (lowercase alphanumerics and '-', starting and ending with an alphanumeric, at most 63 characters): role group names become part of the name and labels of every resource built for the group`
 	RoleGroups map[string]RoleGroupSpec `json:"roleGroups,omitempty"`
 
 	// ConfigOverrides allows customization of configuration files (e.g., XML, properties).

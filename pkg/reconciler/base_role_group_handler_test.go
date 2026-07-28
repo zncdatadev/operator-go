@@ -2574,3 +2574,89 @@ var _ = Describe("Recommended label set", func() {
 		Expect(pdb.Spec.Selector.MatchLabels).NotTo(HaveKey(constant.LabelKubernetesName))
 	})
 })
+
+var _ = Describe("Role group marker label key", func() {
+	// The marker is a label KEY built from two free-form user strings ("<cluster>-<group>"), and it
+	// lands in the StatefulSet's immutable .spec.selector, in both Services' selectors and in every
+	// pod template label set. A label key's name part is capped at 63 bytes, which ordinary
+	// big-data names exceed: 43 + 1 + 21 below is 65.
+	const (
+		longCluster = "analytics-platform-production-trino-cluster"
+		longGroup   = "memory-optimized-pool"
+	)
+
+	newHandler := func() *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
+		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("static-image:1", testScheme)
+		h.SetRoleServicePorts("worker", []corev1.ServicePort{{Name: "http", Port: 8080}})
+		return h
+	}
+
+	newBuildCtx := func(clusterName, roleName, groupName string) *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      clusterName,
+			ClusterNamespace: testNamespace,
+			ClusterSpec:      &v1alpha1.GenericClusterSpec{},
+			RoleName:         roleName,
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    groupName,
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     reconciler.RoleGroupResourceName(clusterName, roleName, groupName),
+		}
+	}
+
+	It("builds a role group the API server accepts when the natural key would overrun", func() {
+		// This is the whole point: not "the key is short" but "the role group can be created".
+		// With the natural key the API server rejects the StatefulSet, both Services and the PDB,
+		// quoting a label key the user never wrote.
+		Expect(len(longCluster+"-"+longGroup)).To(BeNumerically(">", 63),
+			"the fixture must actually overrun, or this spec proves nothing")
+
+		cr := testutil.NewMockCluster(longCluster, testNamespace)
+		resources, err := newHandler().BuildResources(context.Background(), k8sClient, cr,
+			newBuildCtx(longCluster, "worker", longGroup))
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Create(context.Background(), resources.StatefulSet)).To(Succeed(),
+			"the API server must accept a role group whose cluster+group names exceed the label key limit")
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(context.Background(), resources.StatefulSet))).To(Succeed())
+		})
+
+		// The client Service carries the same selector, and the pod template the same key set.
+		for key := range resources.Service.Spec.Selector {
+			Expect(validation.IsQualifiedName(key)).To(BeEmpty(), "Service selector key %q", key)
+		}
+		for key := range resources.StatefulSet.Spec.Template.Labels {
+			Expect(validation.IsQualifiedName(key)).To(BeEmpty(), "pod template label key %q", key)
+		}
+	})
+
+	It("keeps the natural key byte-identical when it fits", func() {
+		// .spec.selector is immutable. A cluster created by an earlier framework version must find
+		// its selector unchanged, or the pod template stops matching the frozen selector and every
+		// later update is rejected — so the substitute may only ever apply to combinations that
+		// could not have produced a StatefulSet in the first place.
+		Expect(reconciler.RoleGroupMarkerLabelKey("trino", "worker", "default")).
+			To(Equal("trino-default"))
+
+		cr := testutil.NewMockCluster("trino", testNamespace)
+		resources, err := newHandler().BuildResources(context.Background(), k8sClient, cr,
+			newBuildCtx("trino", "worker", "default"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(HaveKeyWithValue("trino-default", "true"))
+	})
+
+	It("keeps two overrunning role groups of one role distinguishable", func() {
+		// The substitute must stay unique per role group: two groups sharing a marker would make
+		// each role group's Services select the other's pods as well.
+		a := reconciler.RoleGroupMarkerLabelKey(longCluster, "worker", longGroup)
+		b := reconciler.RoleGroupMarkerLabelKey(longCluster, "worker", longGroup+"-spot")
+		Expect(a).NotTo(Equal(b))
+		Expect(validation.IsQualifiedName(a)).To(BeEmpty())
+		Expect(validation.IsQualifiedName(b)).To(BeEmpty())
+
+		// And it stays stable across calls, or the selector would differ between reconciles.
+		Expect(reconciler.RoleGroupMarkerLabelKey(longCluster, "worker", longGroup)).To(Equal(a))
+	})
+})

@@ -32,6 +32,10 @@ This document systematically expounds the design philosophy, architectural layer
 - **RoleGroup**
   - The physical unit of deployment and resource isolation under a Role. Each RoleGroup maps directly to a Kubernetes `StatefulSet` (and associated Service, ConfigMap, PDB). This allows a single Role to be partitioned into multiple groups with distinct hardware specifications (CPU/Memory), replica counts, or specialized configurations (e.g., a "high-performance" DataNode group vs. a "standard" group).
 
+- **Naming**
+  - Role and RoleGroup names are **identifiers, not labels**: the framework derives the name of every resource it builds (`<cluster>-<role>-<group>`), the value of several `app.kubernetes.io/*` labels, and a label *key* from them. They are therefore constrained to lowercase RFC 1123 labels and validated at admission, so a name that cannot become a Kubernetes identifier is rejected where the user can act on it rather than partway through a reconcile.
+  - Every identifier the framework derives must be **bounded**, because the user-supplied parts are not. A derived name is truncated with a hash suffix (`RoleGroupResourceName`); a derived label key falls back to that bounded name when the natural form would exceed the 63-byte limit (`RoleGroupMarkerLabelKey`). A derivation that lands inside an immutable field — the StatefulSet's `.spec.selector` — may only change its output for inputs that could never have produced that object in the first place, or existing clusters become unpatchable.
+
 - **SecretClass**
   - An object managed by `secret-operator`, enabling the injection of sensitive data (Certificates, Kerberos Keytabs, Passwords) into Pods via the Kubernetes CSI (Container Storage Interface). Workloads reference a `SecretClass` to mount volumes that are dynamically populated by specific security backends.
 

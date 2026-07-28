@@ -556,12 +556,17 @@ func (h *BaseRoleGroupHandler[CR]) identityLabels(buildCtx *RoleGroupBuildContex
 // stays that way: app.kubernetes.io/version changes on every product upgrade and role-group is
 // already covered by the marker key below, so neither may enter a selector that can never be
 // edited again.
+//
+// The marker key goes through RoleGroupMarkerLabelKey rather than being concatenated here, because
+// "<cluster>-<group>" is a label KEY built from two free-form user strings and overruns the 63-byte
+// limit with ordinary names — see that function for why the natural form has to be preserved
+// wherever it is legal.
 func (h *BaseRoleGroupHandler[CR]) frameworkSelectorLabels(buildCtx *RoleGroupBuildContext) map[string]string {
 	return map[string]string{
-		constant.LabelKubernetesInstance:                    buildCtx.ClusterName,
-		constant.LabelKubernetesComponent:                   buildCtx.RoleName,
-		constant.LabelKubernetesManagedBy:                   managedByValue,
-		buildCtx.ClusterName + "-" + buildCtx.RoleGroupName: valueTrue,
+		constant.LabelKubernetesInstance:  buildCtx.ClusterName,
+		constant.LabelKubernetesComponent: buildCtx.RoleName,
+		constant.LabelKubernetesManagedBy: managedByValue,
+		RoleGroupMarkerLabelKey(buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName): valueTrue,
 	}
 }
 

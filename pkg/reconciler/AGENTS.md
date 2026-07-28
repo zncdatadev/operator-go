@@ -195,6 +195,21 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     product upgrade, and the role group is already pinned by the `<cluster>-<group>` marker key.
     Upgrading an existing cluster into this label set rolls its pods once (the pod template gains
     labels) but leaves the frozen selector satisfied.
+
+    **The marker key is bounded by `RoleGroupMarkerLabelKey`, not concatenated.** A label key's name
+    part is capped at 63 bytes, and `<cluster>-<group>` is built from two free-form user strings: a
+    43-character cluster plus a 21-character role group is 65, at which point the API server rejects
+    the StatefulSet, both Services *and* the PDB of that role group, quoting a label key the user
+    never wrote. The resource *name* built from the same two strings was already bounded
+    (`RoleGroupResourceName`); this second derivation was not, so the framework applied a limit it
+    knew about to one of the two places it applies.
+
+    The helper returns the natural `<cluster>-<group>` whenever that is a legal label key, and
+    `RoleGroupResourceName` otherwise. Preserving the natural form is **load-bearing, not
+    cosmetic**: `.spec.selector` is immutable, so changing this key for a role group that already
+    has a StatefulSet would leave the pod template no longer matching the frozen selector and every
+    later update would be rejected. Only combinations that could never have produced a StatefulSet
+    get the substitute, which is what makes the change safe to roll out to running clusters.
 16. **There is exactly one label channel, and it is the cluster CR.** `buildLabels` layers, low to
     high: `buildCtx.ClusterLabels` (the CR's own, cloned per cycle) → the recommended set →
     `frameworkSelectorLabels` → the product's `LabelDomain` identity labels. Anything an operator's

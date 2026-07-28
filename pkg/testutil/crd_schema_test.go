@@ -192,3 +192,66 @@ var _ = Describe("Generated test CRD schema", func() {
 			"the framework default applies at consumption time")
 	})
 })
+
+// A role or role group name is not free-form: it becomes a segment of every resource name the
+// framework derives ("<cluster>-<role>-<group>") and the value of an app.kubernetes.io label.
+// Names that are not lowercase RFC 1123 labels produce resource names the API server refuses, and
+// before the CEL rules below that refusal only surfaced mid-reconcile — as a permanently Degraded
+// role quoting a metadata.name the user never wrote. These specs assert the rejection now happens
+// at admission, where the message reaches the person who can fix it.
+var _ = Describe("Role and role group name validation", func() {
+	const nameValidationNamespace = "default"
+
+	var counter int
+
+	// applyWithRole attempts to persist a cluster declaring exactly one role and one role group,
+	// and returns the API server's verdict.
+	applyWithRole := func(roleName, groupName string) error {
+		counter++
+		cr := testutil.NewMockCluster(fmt.Sprintf("names-%d", counter), nameValidationNamespace)
+		cr.Spec = v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				roleName: {RoleGroups: map[string]v1alpha1.RoleGroupSpec{groupName: {}}},
+			},
+		}
+		err := k8sClient.Create(ctx, cr)
+		if err == nil {
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
+		}
+		return err
+	}
+
+	DescribeTable("rejects a role name that cannot become a resource name",
+		func(roleName string) {
+			err := applyWithRole(roleName, "default")
+			Expect(err).To(HaveOccurred(), "role name %q must be rejected at admission", roleName)
+			Expect(err.Error()).To(ContainSubstring("lowercase RFC 1123 label"),
+				"the message has to name the rule, not just the field")
+		},
+		Entry("uppercase", "Coordinator"),
+		Entry("underscore", "my_role"),
+		Entry("dot", "a.b"),
+		Entry("leading dash", "-worker"),
+		Entry("trailing dash", "worker-"),
+		Entry("empty", ""),
+	)
+
+	DescribeTable("rejects a role group name that cannot become a resource name",
+		func(groupName string) {
+			err := applyWithRole("worker", groupName)
+			Expect(err).To(HaveOccurred(), "role group name %q must be rejected at admission", groupName)
+			Expect(err.Error()).To(ContainSubstring("lowercase RFC 1123 label"))
+		},
+		Entry("uppercase", "Default"),
+		Entry("underscore", "high_mem"),
+		Entry("dot", "rack.a"),
+	)
+
+	It("accepts the names products actually use", func() {
+		// The rule must not be stricter than the resource names it protects: everything here has
+		// always worked and must keep working.
+		Expect(applyWithRole("namenode", "default")).To(Succeed())
+		Expect(applyWithRole("journal-node", "rack-a-1")).To(Succeed())
+		Expect(applyWithRole("s3", "0")).To(Succeed())
+	})
+})
