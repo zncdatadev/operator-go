@@ -74,6 +74,34 @@ extension).
   framework-owned volume such as `config` a supported operation rather than an opaque apply
   failure.
 
+- **`StatefulSetBuilder` generates a readiness probe and never a liveness probe.** When ports are
+  declared, `Build()` attaches a TCP readiness probe to `Ports[0]`; `LivenessProbe` is set only by
+  `WithLivenessProbe`. The asymmetry is the point. The framework does not know which of a product's
+  ports means "healthy" — the first declared one is an accident of declaration order and is as
+  likely to be a metrics port — nor how long the product takes to open it, and a liveness probe on a
+  wrong guess *kills the container on a timer forever* (the removed default gave ~90-120s before the
+  first kill, which is inside the startup time of a NameNode loading an fsimage). Readiness's worst
+  case is a pod held out of its Services: visible as `0/1` and self-correcting. Removing readiness
+  too would not be neutral — with no readiness probe a pod is Ready the instant it starts, so a
+  rolling update walks a whole role group without waiting for any member to come up.
+
+  Consequences for callers: **the first entry of `SetRoleContainerPorts`/`WithPorts` is part of the
+  contract** (put the port that means "this pod can serve" first), and
+  `builder.DefaultTCPLivenessProbe(port)` reproduces the removed probe on a port the product picks.
+  This is deliberately *not* the same call as the sidecar probes in `pkg/sidecar`, which the
+  framework does author — there it owns the image, the port and the endpoint.
+- **`podManagementPolicy` defaults to `Parallel`, and that is a choice.** `OrderedReady` starts pod
+  N+1 only once pod N is Ready, which deadlocks a quorum product at pod-0: a ZooKeeper member or an
+  HDFS JournalNode is not Ready until it sees a quorum that does not exist until its peers start.
+  (`WithPublishNotReadyAddresses` on the headless Service is the other half of the same problem.)
+  `WithPodManagementPolicy` overrides it, but only at creation — the field is immutable, and the
+  apply path preserves the live value with an `ImmutableFieldIgnored` warning.
+- **`WithUpdateStrategy` is the canary knob.** `.spec.updateStrategy` is mutable and is *not*
+  preserved by the apply path, so a partitioned rollout (raise the partition, upgrade the high
+  ordinals, verify, lower it) converges through the normal reconcile. Left unset the field stays
+  empty and Kubernetes applies RollingUpdate with partition 0. Neither this nor
+  `podManagementPolicy` is reachable through `podOverrides`, which is a `PodTemplateSpec`.
+
 ## Working Instructions
 
 1. **Creating a new builder:** Follow the pattern of existing builders — a `New*Builder(name,

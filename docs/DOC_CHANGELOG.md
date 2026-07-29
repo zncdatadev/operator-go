@@ -4,6 +4,23 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-29a] (the framework probes only what it owns)
+
+### Framework Documentation (`AGENTS.md`, `pkg/builder/AGENTS.md`)
+
+- Recorded that `StatefulSetBuilder` generates a readiness probe and never a liveness probe, and
+  why the two are treated differently: a liveness probe on a guessed port kills the container on a
+  timer, a readiness probe on the same guess only holds the pod out of its Services. Documented the
+  consequence for callers — the FIRST entry of `SetRoleContainerPorts`/`WithPorts` is now part of
+  the contract — and `builder.DefaultTCPLivenessProbe` as the one-line way back.
+- Marked the contrast with the sidecar probes (§14) explicitly: the framework authors probes for
+  containers it owns and declines to guess for containers the product owns.
+- Documented `WithPodManagementPolicy` / `WithUpdateStrategy`, that neither field is reachable
+  through `podOverrides`, and the reason the `Parallel` default is a choice: `OrderedReady`
+  deadlocks a quorum product at pod-0.
+
+---
+
 ## [2026-07-28b] (fsGroup no longer recurses the whole volume on every start)
 
 ### Security Documentation (`security.md`)

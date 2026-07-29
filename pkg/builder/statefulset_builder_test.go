@@ -22,6 +22,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -255,14 +256,51 @@ var _ = Describe("StatefulSetBuilder", func() {
 			Expect(sts.Spec.Template.Labels).To(Equal(labels))
 		})
 
-		It("should create liveness and readiness probes when ports are defined", func() {
+		It("generates a readiness probe from the ports, but never a liveness probe", func() {
+			// A liveness probe kills the container, and the builder cannot know which of a
+			// product's ports means "healthy" (the first declared one is just as likely to be a
+			// metrics port) nor how long the product takes to open it. Readiness stays: its worst
+			// case is a pod held out of its Services, which is visible and self-correcting, and
+			// dropping it would make every pod Ready the instant it starts — rolling a whole role
+			// group without waiting for any member to come up.
 			sts := stsBuilder.
 				AddPort("http", 8080, corev1.ProtocolTCP).
 				Build()
 
 			container := sts.Spec.Template.Spec.Containers[0]
-			Expect(container.LivenessProbe).NotTo(BeNil())
+			Expect(container.LivenessProbe).To(BeNil())
 			Expect(container.ReadinessProbe).NotTo(BeNil())
+			Expect(container.ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(8080))
+		})
+
+		It("targets the FIRST declared port, which is part of the contract", func() {
+			// Port order is not decoration: whatever a product declares first is what readiness
+			// watches. Declaring metrics first means the pod is called ready as soon as its
+			// exporter is up.
+			sts := stsBuilder.
+				AddPort("metrics", 9090, corev1.ProtocolTCP).
+				AddPort("rpc", 8020, corev1.ProtocolTCP).
+				Build()
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(9090))
+		})
+
+		It("reproduces the removed liveness probe on a port the product chooses", func() {
+			// The mechanism is kept, only the guess is gone: a product that wants exactly the old
+			// behavior asks for it in one line, naming the port itself.
+			sts := stsBuilder.
+				WithLivenessProbe(builder.DefaultTCPLivenessProbe(8020)).
+				AddPort("metrics", 9090, corev1.ProtocolTCP).
+				AddPort("rpc", 8020, corev1.ProtocolTCP).
+				Build()
+
+			lp := sts.Spec.Template.Spec.Containers[0].LivenessProbe
+			Expect(lp).NotTo(BeNil())
+			Expect(lp.TCPSocket.Port.IntValue()).To(Equal(8020), "the chosen port, not Ports[0]")
+			Expect(lp.InitialDelaySeconds).To(Equal(int32(30)))
+			Expect(lp.PeriodSeconds).To(Equal(int32(30)))
+			Expect(lp.FailureThreshold).To(Equal(int32(3)))
 		})
 
 		It("should not create probes when no ports are defined", func() {
@@ -320,8 +358,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 				Expect(container.ReadinessProbe).NotTo(BeNil())
 				Expect(container.ReadinessProbe.Exec).NotTo(BeNil())
 				Expect(container.ReadinessProbe.Exec.Command).To(Equal([]string{"cat", "/tmp/healthy"}))
-				Expect(container.LivenessProbe).NotTo(BeNil())
-				Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+				Expect(container.LivenessProbe).To(BeNil(), "liveness is never generated")
 			})
 
 			It("should set startup probe when configured", func() {
@@ -346,7 +383,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 				Expect(container.StartupProbe).NotTo(BeNil())
 				Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/started"))
 				Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
-				Expect(container.LivenessProbe).NotTo(BeNil())
+				Expect(container.LivenessProbe).To(BeNil(), "liveness is never generated")
 				Expect(container.ReadinessProbe).NotTo(BeNil())
 			})
 
@@ -378,7 +415,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 
 				container := sts.Spec.Template.Spec.Containers[0]
 				Expect(container.ReadinessProbe).To(BeNil())
-				Expect(container.LivenessProbe).NotTo(BeNil())
+				Expect(container.LivenessProbe).To(BeNil(), "liveness is never generated")
 			})
 
 			It("should disable all probes", func() {
@@ -433,16 +470,13 @@ var _ = Describe("StatefulSetBuilder", func() {
 				Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
 			})
 
-			It("should use default TCP probe timing when no probe setter is called", func() {
+			It("should use default TCP readiness timing when no probe setter is called", func() {
 				sts := stsBuilder.
 					AddPort("http", 8080, corev1.ProtocolTCP).
 					Build()
 
 				container := sts.Spec.Template.Spec.Containers[0]
-				Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
-				Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(30)))
-				Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
-				Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(30)))
+				Expect(container.LivenessProbe).To(BeNil(), "liveness is never generated")
 				Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
 				Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(10)))
 				Expect(container.ReadinessProbe.TimeoutSeconds).To(Equal(int32(5)))
@@ -1680,5 +1714,56 @@ var _ = Describe("StatefulSetBuilder podOverrides mount invariants", func() {
 		b.PodOverrides = nil
 		b.Build()
 		Expect(b.PodOverrideViolations()).To(BeEmpty())
+	})
+})
+
+var _ = Describe("StatefulSet rollout knobs", func() {
+	// podManagementPolicy and updateStrategy are the two StatefulSetSpec fields that decide how a
+	// stateful role group starts and how it is upgraded. Neither is reachable through podOverrides
+	// — that is a PodTemplateSpec — so the builder has to expose them.
+	It("defaults podManagementPolicy to Parallel, which quorum products require", func() {
+		// OrderedReady starts pod N+1 only once pod N is Ready, and a ZooKeeper member or an HDFS
+		// JournalNode is not Ready until it sees a quorum that does not exist until its peers
+		// start: the role group would deadlock at pod-0. Parallel is a choice here, not an
+		// inherited default.
+		sts := builder.NewStatefulSetBuilder("sts", "ns").Build()
+		Expect(sts.Spec.PodManagementPolicy).To(Equal(appsv1.ParallelPodManagement))
+	})
+
+	It("lets a product with a strict start order ask for OrderedReady", func() {
+		sts := builder.NewStatefulSetBuilder("sts", "ns").
+			WithPodManagementPolicy(appsv1.OrderedReadyPodManagement).
+			Build()
+		Expect(sts.Spec.PodManagementPolicy).To(Equal(appsv1.OrderedReadyPodManagement))
+	})
+
+	It("leaves updateStrategy unset unless asked, and carries a partition when asked", func() {
+		// Unset means Kubernetes' own default (RollingUpdate, partition 0). A partition is how a
+		// canary upgrade is driven: raise it, roll the high ordinals, verify, lower it.
+		Expect(builder.NewStatefulSetBuilder("sts", "ns").Build().Spec.UpdateStrategy).
+			To(Equal(appsv1.StatefulSetUpdateStrategy{}))
+
+		sts := builder.NewStatefulSetBuilder("sts", "ns").
+			WithUpdateStrategy(appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(2))},
+			}).Build()
+		Expect(sts.Spec.UpdateStrategy.Type).To(Equal(appsv1.RollingUpdateStatefulSetStrategyType))
+		Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(Equal(int32(2)))
+	})
+
+	It("does not share the update strategy with the builder", func() {
+		// Build() hands back nothing the caller can use to mutate the builder, or a second Build()
+		// would silently inherit the first caller's edits.
+		b := builder.NewStatefulSetBuilder("sts", "ns").
+			WithUpdateStrategy(appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(2))},
+			})
+		first := b.Build()
+		*first.Spec.UpdateStrategy.RollingUpdate.Partition = 99
+
+		second := b.Build()
+		Expect(*second.Spec.UpdateStrategy.RollingUpdate.Partition).To(Equal(int32(2)))
 	})
 })
