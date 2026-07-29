@@ -112,6 +112,29 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (pod security)
+
+- **The framework's default pod security context now sets `fsGroupChangePolicy: OnRootMismatch`
+  alongside `fsGroup: 1001`.** Setting `fsGroup` without it means Kubernetes' own default of
+  `Always`, under which the kubelet walks the **entire** volume — chown'ing and chmod'ing every
+  file — before the container starts, on *every* start. For the workloads this SDK exists for that
+  is the difference between a pod starting in seconds and a pod sitting in `ContainerCreating` for
+  tens of minutes on every restart, rollout and node drain, with nothing in its events explaining
+  why: an HDFS DataNode or a Kafka broker data PVC holds millions of files.
+
+  `OnRootMismatch` recurses only when the volume root does not already carry the expected owner and
+  mode, which is true exactly once per freshly provisioned volume. The trade-off is deliberate:
+  ownership that drifts *inside* a volume whose root is still correct is not repaired — a repair
+  the framework never promised, and not worth paying for on every start. A product that wants it
+  back sets `fsGroupChangePolicy: Always` through `podOverrides`, which deep-merges per field and
+  so keeps the rest of the hardening.
+
+  The policy has no effect on ephemeral volumes (secret, configMap, emptyDir), so the config mount
+  and the shared log volume are unaffected either way.
+- `PodSecurityBuilder.WithFSGroupChangePolicy` exposes the field to callers assembling a context by
+  hand. Like its siblings it is opt-in: only the framework default pairs the two, so a hand-built
+  context is not given an opinion it did not state.
+
 ### fix (naming)
 
 - **A role group whose cluster and group names together exceed 63 bytes can now be created at

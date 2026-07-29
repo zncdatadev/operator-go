@@ -4,6 +4,18 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-28b] (fsGroup no longer recurses the whole volume on every start)
+
+### Security Documentation (`security.md`)
+
+- Added `fsGroupChangePolicy: OnRootMismatch` to the default pod SecurityContext table, with the
+  reason it is paired with `fsGroup` at all: unset means Kubernetes' `Always`, i.e. a full
+  chown/chmod walk of the data volume before the container starts, on every start. Recorded the
+  deliberate trade-off (drift *inside* a volume with a correct root is not repaired), the
+  `podOverrides` escape hatch, and that the policy does not apply to ephemeral volume types.
+
+---
+
 ## [2026-07-28a] (identifiers derived from user names are bounded and validated)
 
 ### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)

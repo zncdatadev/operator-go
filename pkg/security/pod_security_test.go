@@ -199,3 +199,34 @@ var _ = Describe("PodSecurityBuilder", func() {
 		})
 	})
 })
+
+var _ = Describe("fsGroup ownership recursion policy", func() {
+	It("keeps the two paths to 'the framework default' identical", func() {
+		// DefaultPodSecurityBuilder().BuildPodSecurityContext() and
+		// BuildDefaultPodSecurityContext() are two separate expressions of the same thing. A field
+		// added to one and forgotten in the other is a difference nobody chose — which is exactly
+		// how fsGroup came to be set without a change policy on both paths at once.
+		Expect(security.DefaultPodSecurityBuilder().BuildPodSecurityContext()).
+			To(Equal(security.NewPodSecurityBuilder().BuildDefaultPodSecurityContext()))
+	})
+
+	It("pairs fsGroup with a change policy, because unset means Always", func() {
+		// Kubernetes: "Valid values are OnRootMismatch and Always. If not specified, Always is
+		// used." Always makes the kubelet chown every file on the volume before the container
+		// starts, on EVERY start — minutes to hours for a data PVC with millions of files.
+		ctx := security.NewPodSecurityBuilder().BuildDefaultPodSecurityContext()
+		Expect(ctx.FSGroup).NotTo(BeNil(), "the policy only matters because fsGroup is set")
+		Expect(ctx.FSGroupChangePolicy).NotTo(BeNil())
+		Expect(*ctx.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeOnRootMismatch))
+	})
+
+	It("leaves the policy unset unless a caller asks for one", func() {
+		// The generic builder stays opt-in like its siblings: only the framework default pairs the
+		// two, so a caller assembling a context by hand is not given an opinion it did not state.
+		Expect(security.NewPodSecurityBuilder().WithFSGroup(1000).
+			BuildPodSecurityContext().FSGroupChangePolicy).To(BeNil())
+		Expect(*security.NewPodSecurityBuilder().
+			WithFSGroupChangePolicy(corev1.FSGroupChangeAlways).
+			BuildPodSecurityContext().FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeAlways))
+	})
+})

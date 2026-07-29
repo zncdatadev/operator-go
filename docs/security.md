@@ -249,8 +249,26 @@ builds. Sidecar containers carry whatever `SidecarConfig.SecurityContext` their 
 | `runAsUser` | `1001` | kubedoop images run as uid 1001 |
 | `runAsGroup` | `0` | OpenShift-compatible: OpenShift assigns an arbitrary uid but keeps gid 0, and kubedoop images are group-0 readable/writable |
 | `fsGroup` | `1001` | mounted volumes are chowned so the non-root process can write to them |
+| `fsGroupChangePolicy` | `OnRootMismatch` | apply that chown **once**, not on every pod start — see below |
 | `runAsNonRoot` | `true` | refuse to start as root |
 | `seccompProfile.type` | `RuntimeDefault` | apply the runtime's default seccomp profile |
+
+`fsGroupChangePolicy` is paired with `fsGroup` deliberately. Kubernetes documents the field as
+"Valid values are `OnRootMismatch` and `Always`. If not specified, `Always` is used" — and `Always`
+means the kubelet walks the **entire** volume, chown'ing and chmod'ing every file, before the
+container starts. On a data PVC holding millions of files (an HDFS DataNode, a Kafka broker) that
+is tens of minutes to hours, repeated on every restart, every rollout and every node drain, while
+the pod sits in `ContainerCreating` with nothing in its events explaining why.
+
+`OnRootMismatch` performs the same recursion only when the volume's root directory does not already
+have the expected owner and mode — true exactly once, the first time a freshly provisioned volume is
+mounted. The trade-off is deliberate: ownership that drifts *inside* a volume whose root is still
+correct will not be repaired. That is a repair the framework never promised, and paying for it on
+every start of every stateful pod is the wrong price. A product that wants it back sets
+`fsGroupChangePolicy: Always` through `PodOverrides` (§3.3.2).
+
+The policy has no effect on ephemeral volume types (secret, configMap, emptyDir), so the config
+mount and the shared log volume behave identically either way; the data PVC is what it is about.
 
 **Container-level (`container.securityContext`):**
 
