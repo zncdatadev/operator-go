@@ -926,6 +926,10 @@ var _ = Describe("StatefulSet building", func() {
 		Expect(*podSpec.SecurityContext.RunAsNonRoot).To(BeTrue())
 		Expect(podSpec.SecurityContext.SeccompProfile).NotTo(BeNil())
 		Expect(podSpec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+		// fsGroup without a change policy means Kubernetes' default of Always: the kubelet walks
+		// the whole data volume chown'ing every file before the container starts, on every start.
+		Expect(podSpec.SecurityContext.FSGroupChangePolicy).NotTo(BeNil())
+		Expect(*podSpec.SecurityContext.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeOnRootMismatch))
 
 		// Container-level default: uid 1001, gid 0, hardened (drop ALL caps, no privilege escalation).
 		Expect(podSpec.Containers).NotTo(BeEmpty())
@@ -2658,5 +2662,87 @@ var _ = Describe("Role group marker label key", func() {
 
 		// And it stays stable across calls, or the selector would differ between reconciles.
 		Expect(reconciler.RoleGroupMarkerLabelKey(longCluster, "worker", longGroup)).To(Equal(a))
+	})
+})
+
+var _ = Describe("fsGroup ownership recursion", func() {
+	// fsGroup makes the kubelet apply group ownership to every volume that supports it. Without a
+	// change policy Kubernetes uses Always, which recurses over the ENTIRE volume on every mount —
+	// on a data PVC holding millions of files that is tens of minutes of ContainerCreating on every
+	// single pod start. These specs pin the default and the escape hatch.
+	newHandler := func() *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
+		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
+		// A data PVC is what the policy actually applies to; ephemeral volumes ignore it.
+		h.StorageMountPath = "/kubedoop/data"
+		return h
+	}
+
+	newBuildCtx := func(name string, overrides *corev1.PodTemplateSpec) *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			ClusterName:      name,
+			ClusterNamespace: testNamespace,
+			ClusterSpec:      &v1alpha1.GenericClusterSpec{},
+			RoleName:         "datanode",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec: v1alpha1.RoleGroupSpec{
+				Replicas: ptr.To(int32(1)),
+				Config: &v1alpha1.RoleGroupConfigSpec{
+					Resources: &v1alpha1.ResourcesSpec{
+						Storage: &v1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse("1Gi"))},
+					},
+				},
+			},
+			MergedConfig: &config.MergedConfig{PodOverrides: overrides},
+			ResourceName: reconciler.RoleGroupResourceName(name, "datanode", "default"),
+		}
+	}
+
+	It("survives the API server on a StatefulSet that actually has a data PVC", func() {
+		// Building the field is not the same as it reaching the workload: it has to be a field the
+		// API server stores rather than prunes, on the object the kubelet will read.
+		cr := testutil.NewMockCluster("fsg-store", testNamespace)
+		resources, err := newHandler().BuildResources(context.Background(), k8sClient, cr,
+			newBuildCtx("fsg-store", nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.VolumeClaimTemplates).NotTo(BeEmpty(),
+			"the fixture must carry a PVC, or the policy under test would not apply to anything")
+
+		Expect(k8sClient.Create(context.Background(), resources.StatefulSet)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(context.Background(), resources.StatefulSet))).To(Succeed())
+		})
+
+		stored := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(context.Background(),
+			client.ObjectKeyFromObject(resources.StatefulSet), stored)).To(Succeed())
+		Expect(stored.Spec.Template.Spec.SecurityContext.FSGroupChangePolicy).NotTo(BeNil())
+		Expect(*stored.Spec.Template.Spec.SecurityContext.FSGroupChangePolicy).
+			To(Equal(corev1.FSGroupChangeOnRootMismatch))
+	})
+
+	It("lets a product take the recursion back with podOverrides", func() {
+		// OnRootMismatch trades one repair for a lot of startup time: it will not fix ownership
+		// that drifted deep inside a volume whose root is still correct. A product that wants that
+		// repair must be able to ask for it, and must keep the rest of the hardening while doing so.
+		resources, err := newHandler().BuildResources(context.Background(), k8sClient,
+			testutil.NewMockCluster("fsg-override", testNamespace),
+			newBuildCtx("fsg-override", &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{
+						FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeAlways),
+					},
+				},
+			}))
+		Expect(err).NotTo(HaveOccurred())
+
+		podSC := resources.StatefulSet.Spec.Template.Spec.SecurityContext
+		Expect(podSC.FSGroupChangePolicy).NotTo(BeNil())
+		Expect(*podSC.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeAlways))
+		// The fields the override did not mention survive the strategic merge.
+		Expect(podSC.FSGroup).NotTo(BeNil())
+		Expect(*podSC.FSGroup).To(Equal(int64(1001)))
+		Expect(podSC.RunAsNonRoot).NotTo(BeNil())
+		Expect(*podSC.RunAsNonRoot).To(BeTrue())
 	})
 })

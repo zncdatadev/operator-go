@@ -35,11 +35,36 @@ const (
 	DefaultFSGroup int64 = 1001
 )
 
+// DefaultFSGroupChangePolicy is the ownership-recursion policy the framework applies alongside
+// DefaultFSGroup.
+//
+// Setting fsGroup without it is a startup-time trap for exactly the workloads this SDK exists for.
+// Kubernetes documents the field as: "Valid values are OnRootMismatch and Always. If not
+// specified, Always is used." Always means the kubelet walks the ENTIRE volume on every mount,
+// chown'ing and chmod'ing each file before the container starts. On an HDFS DataNode or a Kafka
+// broker whose data PVC holds millions of files that is tens of minutes to hours — repeated on
+// every restart, every rollout, every node drain — while the pod sits in ContainerCreating with
+// nothing in its events explaining why.
+//
+// OnRootMismatch performs the same recursion only when the volume's ROOT directory does not
+// already have the expected owner and mode, which is true exactly once: the first time a freshly
+// provisioned volume is mounted. Every later mount is a single stat.
+//
+// The trade-off is real and deliberate: if something changes ownership deep inside the volume
+// while the root stays correct, OnRootMismatch will not repair it. That is a repair the framework
+// never promised, and paying for it on every start of every stateful pod is the wrong price.
+//
+// The policy has no effect on ephemeral volume types (secret, configMap, emptyDir), so the config
+// mount and the shared log volume behave identically either way — the data PVC is what this is
+// about.
+const DefaultFSGroupChangePolicy = corev1.FSGroupChangeOnRootMismatch
+
 // PodSecurityBuilder builds secure pod security contexts.
 type PodSecurityBuilder struct {
 	runAsUser                *int64
 	runAsGroup               *int64
 	fsGroup                  *int64
+	fsGroupChangePolicy      *corev1.PodFSGroupChangePolicy
 	runAsNonRoot             *bool
 	seccompProfile           *corev1.SeccompProfile
 	readOnlyRootFS           *bool
@@ -67,6 +92,15 @@ func (b *PodSecurityBuilder) WithRunAsGroup(gid int64) *PodSecurityBuilder {
 // WithFSGroup sets the filesystem group ID.
 func (b *PodSecurityBuilder) WithFSGroup(gid int64) *PodSecurityBuilder {
 	b.fsGroup = &gid
+	return b
+}
+
+// WithFSGroupChangePolicy sets how the kubelet applies fsGroup ownership to a volume: Always
+// (recurse on every mount) or OnRootMismatch (recurse only when the volume root's owner and mode
+// are not already correct). Leaving it unset means Kubernetes' own default, which is Always — see
+// DefaultFSGroupChangePolicy for why that is the wrong default for a stateful workload.
+func (b *PodSecurityBuilder) WithFSGroupChangePolicy(policy corev1.PodFSGroupChangePolicy) *PodSecurityBuilder {
+	b.fsGroupChangePolicy = &policy
 	return b
 }
 
@@ -163,6 +197,9 @@ func (b *PodSecurityBuilder) BuildPodSecurityContext() *corev1.PodSecurityContex
 	if b.fsGroup != nil {
 		ctx.FSGroup = b.fsGroup
 	}
+	if b.fsGroupChangePolicy != nil {
+		ctx.FSGroupChangePolicy = b.fsGroupChangePolicy
+	}
 	if b.seccompProfile != nil {
 		ctx.SeccompProfile = b.seccompProfile
 	}
@@ -202,6 +239,8 @@ func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityConte
 //   - RunAsUser: 1001
 //   - RunAsGroup: 0                — OpenShift-compatible group 0
 //   - FSGroup: 1001               — so mounted volumes are writable by uid 1001
+//   - FSGroupChangePolicy: OnRootMismatch — so applying that group does not walk the whole
+//     volume on every start (see DefaultFSGroupChangePolicy)
 //   - RunAsNonRoot: true
 //   - SeccompProfile: RuntimeDefault
 //
@@ -210,22 +249,27 @@ func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityConte
 // merge) via MergedConfig.PodOverrides.
 func (b *PodSecurityBuilder) BuildDefaultPodSecurityContext() *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
-		RunAsUser:    ptr.To(DefaultRunAsUser),
-		RunAsGroup:   ptr.To(DefaultRunAsGroup),
-		RunAsNonRoot: ptr.To(true),
-		FSGroup:      ptr.To(DefaultFSGroup),
+		RunAsUser:           ptr.To(DefaultRunAsUser),
+		RunAsGroup:          ptr.To(DefaultRunAsGroup),
+		RunAsNonRoot:        ptr.To(true),
+		FSGroup:             ptr.To(DefaultFSGroup),
+		FSGroupChangePolicy: ptr.To(DefaultFSGroupChangePolicy),
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
 }
 
-// DefaultPodSecurityBuilder returns a builder with secure defaults.
+// DefaultPodSecurityBuilder returns a builder with secure defaults. It must stay in step with
+// BuildDefaultSecurityContext / BuildDefaultPodSecurityContext: the two are separate paths to the
+// same "framework default", and a field present in one but not the other is a difference nobody
+// chose.
 func DefaultPodSecurityBuilder() *PodSecurityBuilder {
 	return NewPodSecurityBuilder().
 		WithRunAsUser(DefaultRunAsUser).
 		WithRunAsGroup(DefaultRunAsGroup).
 		WithFSGroup(DefaultFSGroup).
+		WithFSGroupChangePolicy(DefaultFSGroupChangePolicy).
 		WithRunAsNonRoot(true).
 		WithDroppedCapabilities("ALL").
 		WithAllowPrivilegeEscalation(false).
