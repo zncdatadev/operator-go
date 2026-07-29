@@ -112,6 +112,47 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (naming)
+
+- **A role group whose cluster and group names together exceed 63 bytes can now be created at
+  all.** The framework stamps a marker label keyed `<cluster>-<group>`, and a label key's name part
+  is capped at 63 bytes. Two entirely ordinary big-data names overrun it — a 43-character cluster
+  plus a 21-character role group is 65 — and because the key lands in the StatefulSet's
+  `.spec.selector`, in both Services' selectors and in every pod template label set, the API server
+  rejected the StatefulSet, both Services *and* the PDB of that role group, quoting a label key the
+  user never wrote. The resource *name* built from the same two strings was already bounded by
+  `RoleGroupResourceName`; the framework had applied a limit it knew about to one of the two places
+  it applies.
+
+  `reconciler.RoleGroupMarkerLabelKey(cluster, role, group)` now produces the key: the natural
+  `<cluster>-<group>` whenever that is a legal label key, `RoleGroupResourceName` otherwise.
+  Preserving the natural form is load-bearing rather than cosmetic — `.spec.selector` is immutable,
+  so changing this key for a role group that already has a StatefulSet would leave the pod template
+  no longer matching the frozen selector and every later update rejected. Only combinations that
+  could never have produced a StatefulSet get the substitute, so **running clusters are
+  byte-for-byte unaffected**.
+- `RoleResourceName` is unchanged, and its doc comment now gives the real reason: a
+  PodDisruptionBudget name is validated as a DNS *subdomain* (253 bytes), not the 63-byte DNS label
+  that bounds a Service name. The previous comment justified the absence of truncation by comparing
+  against the role group name, which is itself truncated — right conclusion, wrong argument.
+
+### BREAKING (role and role group names)
+
+- The keys of `spec.roles` and `spec.roles.<role>.roleGroups` must now be **lowercase RFC 1123
+  labels**, enforced by a CEL `x-kubernetes-validations` rule on `GenericClusterSpec.Roles` and
+  `RoleSpec.RoleGroups`. Every product CRD picks this up on the next `make manifests`.
+
+  This only rejects what never worked: each key becomes a segment of `<cluster>-<role>-<group>` and
+  the value of an `app.kubernetes.io/*` label, so `Coordinator`, `my_role` and `a.b` have always
+  produced resource names the API server refuses. What changes is *when* the user hears about it —
+  at `kubectl apply`, in a message naming the rule, instead of halfway through a reconcile as a
+  permanently `Degraded` role quoting a `metadata.name` nobody wrote.
+- Both maps gained `maxProperties` (64 roles, 256 role groups per role). This is not a product
+  constraint but the CEL cost estimator's only handle on a map: without a declared bound it assumes
+  the theoretical worst case and the API server refuses the rule at CRD creation time with
+  "estimated rule cost exceeds budget by factor of more than 100x". The bounds sit far above any
+  real deployment.
+
 ### security (secret scopes)
 
 - **A CR-supplied scope name containing `,` or `=` no longer widens the credential it asks for.**

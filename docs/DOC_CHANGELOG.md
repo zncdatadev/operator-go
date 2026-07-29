@@ -4,6 +4,22 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-28a] (identifiers derived from user names are bounded and validated)
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- Documented that the role group marker label key goes through `RoleGroupMarkerLabelKey` rather
+  than being concatenated: `<cluster>-<group>` is a label *key* built from two free-form user
+  strings and overruns the 63-byte limit with ordinary names, at which point the API server rejects
+  the whole role group. Recorded why the natural form has to be preserved wherever it is legal —
+  the key sits inside the immutable `.spec.selector`, so only combinations that could never have
+  produced a StatefulSet may change.
+- Documented the new CRD constraint on role and role group names (lowercase RFC 1123 labels,
+  enforced by CEL at admission) and the `maxProperties` bounds that exist only so the CEL cost
+  estimator can size the rule.
+
+---
+
 ## [2026-07-27f] (scope names cannot carry the annotation's own syntax)
 
 ### Security Documentation (`security.md`)

@@ -280,6 +280,14 @@ selector is immutable, and `version` changes on every product upgrade. Upgrading
 into this label set rolls its pods once, because the pod template gains labels; the frozen selector
 keeps matching. See `pkg/reconciler/AGENTS.md` §15.
 
+The marker goes through `reconciler.RoleGroupMarkerLabelKey(cluster, role, group)`, which returns
+the natural `<cluster>-<group>` when that is a legal label key and `RoleGroupResourceName` when it
+is not. A label key's name part is capped at 63 bytes, and ordinary names overrun it — a
+43-character cluster plus a 21-character role group is 65 — at which point the API server rejects
+the StatefulSet, both Services and the PDB of that role group. Keeping the natural form wherever it
+is legal is what makes this safe for running clusters: the key is inside the immutable
+`.spec.selector`, so only combinations that could never have produced a StatefulSet may change.
+
 On top of that set the handler adds the **cluster CR's own labels**
 (`RoleGroupBuildContext.ClusterLabels`), applied *first* so the framework's identity labels win over
 a colliding key — which makes a colliding CR label inert rather than an error. This is the framework's
@@ -311,6 +319,17 @@ product-config/role/role-group overrides), `ResourceName` (`{cluster}-{role}-{gr
 with a hash suffix by `RoleGroupResourceName`), `ServiceAccountName` (the SA the reconciler
 resolved and ensured), `SidecarManager`, `VolumeProviders` (see §16) and
 `VectorAggregatorAddress`.
+
+**Role and role group names are constrained by the CRD, not by convention.** The keys of
+`spec.roles` and `spec.roles.<role>.roleGroups` must be lowercase RFC 1123 labels — a CEL
+`x-kubernetes-validations` rule on `GenericClusterSpec.Roles` and `RoleSpec.RoleGroups` rejects
+anything else at `kubectl apply`. They are not free-form: each becomes a segment of
+`<cluster>-<role>-<group>` and the value of an `app.kubernetes.io/*` label, so `Coordinator`,
+`my_role` and `a.b` all yield resource names the API server refuses. Without the rule that refusal
+surfaced mid-reconcile as a permanently `Degraded` role quoting a `metadata.name` the user never
+wrote. Both maps also carry a `maxProperties` bound (64 roles, 256 role groups): it exists because
+the CEL cost estimator has no other handle on a map — without it the API server rejects the rule at
+CRD creation time — and is set far above any real deployment.
 
 ### 5. Extension System
 Three levels of extensions for injecting custom logic, all generic over the product CR type:

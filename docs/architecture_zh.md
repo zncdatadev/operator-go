@@ -32,6 +32,10 @@
 - **RoleGroup（角色组）**
   - 是 Role 下部署和资源隔离的物理单元。每个 RoleGroup 直接映射到一个 Kubernetes `StatefulSet`（以及关联的 Service、ConfigMap、PDB）。这允许将单个 Role 划分为多个具有不同硬件规格（CPU/Memory）、副本数量或特殊配置的组（例如"高性能" DataNode 组与"标准"组）。
 
+- **命名（Naming）**
+  - Role 与 RoleGroup 的名字是**标识符，不是标签文本**：框架用它们派生出所构建的每个资源的名字（`<cluster>-<role>-<group>`）、若干 `app.kubernetes.io/*` 标签的值，以及一个标签**键**。因此它们被约束为小写 RFC 1123 label 并在 admission 阶段校验——一个无法成为 Kubernetes 标识符的名字应当在用户能够改它的地方被拒绝，而不是在 reconcile 中途失败。
+  - 框架派生出的每个标识符都必须**有界**，因为用户提供的部分没有上界。派生的资源名以哈希后缀截断（`RoleGroupResourceName`）；派生的标签键在自然形式超过 63 字节限制时回退到该有界名字（`RoleGroupMarkerLabelKey`）。落在不可变字段里的派生——StatefulSet 的 `.spec.selector`——只允许对那些本来就无法创建出该对象的输入改变输出，否则存量集群将变得无法更新。
+
 - **SecretClass**
   - 由 `secret-operator` 管理的对象，通过 Kubernetes CSI (Container Storage Interface) 将敏感数据（Certificates、Kerberos Keytabs、Passwords）注入到 Pods 中。Workloads 引用 `SecretClass` 来挂载由特定安全后端动态填充的卷。
 
