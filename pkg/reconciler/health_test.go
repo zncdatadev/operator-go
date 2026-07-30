@@ -1077,3 +1077,73 @@ var _ = Describe("Degraded is a fault signal, not a progress signal", func() {
 			To(Equal(v1alpha1.ReasonWorkloadUnreadable))
 	})
 })
+
+var _ = Describe("Available names the right kind of problem", func() {
+	// The two ways a role group can be unavailable read differently: one has replica counts to
+	// compare, the other has no StatefulSet to read. Calling the second "fewer ready replicas than
+	// desired" sends an operator looking for numbers that do not exist.
+	var ns string
+	var counter int
+
+	BeforeEach(func() {
+		counter++
+		ns = fmt.Sprintf("health-avail-%d", counter)
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})).To(Succeed())
+	})
+
+	check := func(cluster string, groups map[string]v1alpha1.RoleGroupSpec) *v1alpha1.GenericClusterStatus {
+		status := &v1alpha1.GenericClusterStatus{}
+		Expect(reconciler.NewHealthManager(k8sClient).Check(ctx, ns, cluster,
+			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{
+				"worker": {RoleGroups: groups},
+			}}, status)).To(Succeed())
+		return status
+	}
+
+	It("says the StatefulSet is unreadable rather than short of replicas", func() {
+		status := check("avail-a", map[string]v1alpha1.RoleGroupSpec{"default": {Replicas: ptr.To(int32(3))}})
+
+		cond := status.GetCondition(v1alpha1.ConditionAvailable)
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(v1alpha1.ReasonWorkloadUnreadable))
+		Expect(cond.Message).To(ContainSubstring("StatefulSet could not be read"))
+		Expect(cond.Message).NotTo(ContainSubstring("fewer ready replicas"),
+			"there are no replica counts to compare")
+	})
+
+	It("reports both kinds when both occur", func() {
+		// One role group readable but short of replicas, one absent entirely.
+		name := reconciler.RoleGroupResourceName("avail-b", "worker", "short")
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas:    ptr.To(int32(3)),
+				ServiceName: name + "-headless",
+				Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "m", Image: "busybox"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, sts) })
+		sts.Status = appsv1.StatefulSetStatus{
+			Replicas: 3, ReadyReplicas: 1, CurrentReplicas: 3, UpdatedReplicas: 3,
+			CurrentRevision: "rev1", UpdateRevision: "rev1",
+		}
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+
+		status := check("avail-b", map[string]v1alpha1.RoleGroupSpec{
+			"short":   {Replicas: ptr.To(int32(3))},
+			"missing": {Replicas: ptr.To(int32(1))},
+		})
+
+		cond := status.GetCondition(v1alpha1.ConditionAvailable)
+		Expect(cond.Reason).To(Equal(v1alpha1.ReasonPodsNotReady))
+		Expect(cond.Message).To(ContainSubstring("fewer ready replicas than desired: worker/short"))
+		Expect(cond.Message).To(ContainSubstring("StatefulSet could not be read: worker/missing"))
+	})
+})

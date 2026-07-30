@@ -24,7 +24,14 @@ import (
 type ConditionType string
 
 const (
-	// ConditionAvailable indicates that at least one replica is ready and serving traffic.
+	// ConditionAvailable indicates that EVERY role group has at least as many ready replicas as its
+	// spec asks for — not merely that one replica somewhere is up. A role group deliberately scaled
+	// to 0 satisfies it, and so does one mid-scale-down that still reports more ready replicas than
+	// desired; the comparison is >=.
+	//
+	// This is the condition that goes False during a rolling update or a scale-up, so it is the one
+	// to alert on for "not serving" — with a duration, since planned changes pass through it.
+	// ConditionDegraded is for faults.
 	ConditionAvailable ConditionType = "Available"
 
 	// ConditionProgressing indicates that the cluster is rolling out a new version or scaling replicas.

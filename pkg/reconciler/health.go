@@ -104,11 +104,12 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		return nil
 	}
 
-	// Evaluate every role group's workload.
-	allAvailable := true
+	// Evaluate every role group's workload. The two ways a role group can be unavailable are kept
+	// apart, because they need different words: one has replica counts to compare, the other has no
+	// StatefulSet to read at all.
 	progressing := false
 	evaluated := 0
-	var notAvailable, unreadable []string
+	var shortOfReplicas, unreadable []string
 
 	for roleName, roleSpec := range spec.Roles {
 		for groupName, groupSpec := range roleSpec.RoleGroups {
@@ -119,15 +120,12 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 				// A role group whose StatefulSet cannot even be read is both not available and a
 				// genuine fault: the object the operator applied is gone or unreachable.
 				logger.Error(err, "Failed to check role group health", "role", roleName, "group", groupName)
-				allAvailable = false
-				notAvailable = append(notAvailable, roleName+"/"+groupName)
 				unreadable = append(unreadable, roleName+"/"+groupName)
 				continue
 			}
 
 			if !available {
-				allAvailable = false
-				notAvailable = append(notAvailable, roleName+"/"+groupName)
+				shortOfReplicas = append(shortOfReplicas, roleName+"/"+groupName)
 			}
 			if isProgressing {
 				progressing = true
@@ -135,7 +133,7 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		}
 	}
 
-	sort.Strings(notAvailable)
+	sort.Strings(shortOfReplicas)
 	sort.Strings(unreadable)
 
 	switch {
@@ -143,13 +141,24 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		// No role group was evaluated, so nothing runs. Reporting "all replicas are available"
 		// for a cluster with zero workloads would make Available useless as a readiness gate.
 		status.SetUnavailable(v1alpha1.ReasonCreating, "Cluster declares no role groups")
-	case allAvailable:
+	case len(shortOfReplicas) == 0 && len(unreadable) == 0:
 		status.SetAvailable(v1alpha1.ReasonAvailable, "All replicas are available")
 	default:
-		// Name the offenders: with several roles the generic message forced an operator to go
-		// looking for which role group is actually short of replicas.
-		status.SetUnavailable(v1alpha1.ReasonPodsNotReady,
-			fmt.Sprintf("Role groups with fewer ready replicas than desired: %s", strings.Join(notAvailable, ", ")))
+		// Name the offenders, and say which kind of problem each one is: with several roles the
+		// generic message forced an operator to go looking, and calling an unreadable StatefulSet
+		// "short of ready replicas" would send them looking for replica counts that do not exist.
+		var parts []string
+		if len(shortOfReplicas) > 0 {
+			parts = append(parts, "fewer ready replicas than desired: "+strings.Join(shortOfReplicas, ", "))
+		}
+		if len(unreadable) > 0 {
+			parts = append(parts, "StatefulSet could not be read: "+strings.Join(unreadable, ", "))
+		}
+		reason := v1alpha1.ReasonPodsNotReady
+		if len(shortOfReplicas) == 0 {
+			reason = v1alpha1.ReasonWorkloadUnreadable
+		}
+		status.SetUnavailable(reason, "Role groups — "+strings.Join(parts, "; "))
 	}
 
 	if progressing {

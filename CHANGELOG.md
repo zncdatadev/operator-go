@@ -137,10 +137,12 @@ changes are listed below.**
   being deleted are excluded. Cost: one `List` of the cluster's pods per health pass.
 - **`Available` now uses `>=` instead of `==`.** A role group mid-scale-down briefly reports more
   ready replicas than desired, which the old test called unhealthy.
-- **New reasons**: `PodsNotReady` (for `Available=False`), `PodFailure` and `WorkloadUnreadable` (for
-  `Degraded`). The `Available=False` message now names the role groups that are short of replicas,
-  and the `Degraded` message names the offending pods with their reasons, capped at three with the
-  remainder counted rather than silently truncated.
+- **New reasons**: `PodsNotReady` and `WorkloadUnreadable` (for `Available=False`), `PodFailure` and
+  `WorkloadUnreadable` (for `Degraded`). The `Available=False` message names the offending role
+  groups and distinguishes the two ways a role group can be unavailable — short of ready replicas,
+  or a StatefulSet that could not be read at all, which has no replica counts to quote. The
+  `Degraded` message names the offending pods with their reasons, capped at three with the remainder
+  counted rather than silently truncated.
 - **Alerting guidance**: alert on `Degraded=True` for faults, and on `Available=False` **with a
   duration** for "not serving". `Progressing=True` with an old `lastTransitionTime` is the signal for
   a rollout that is taking too long.
