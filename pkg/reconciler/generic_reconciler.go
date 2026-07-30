@@ -482,14 +482,24 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	if op := spec.ClusterOperation; op != nil {
 		if op.ReconciliationPaused {
 			logger.Info("Reconciliation is paused")
-			status.SetDegraded(true, v1alpha1.ReasonReconciliationPaused, "Reconciliation is paused")
+			// Observe before returning. The pause freezes the RESOURCES, not the reporting: reads
+			// mutate nothing, and skipping this left every other condition at whatever the last
+			// running cycle wrote — a cluster paused mid-rollout advertised Progressing=True for as
+			// long as the pause lasted, and a cluster paused after a failure kept claiming
+			// Available. The health pass also owns the Paused condition and clears Degraded, so a
+			// maintenance window stops looking like a fault (see HealthManager.Check).
+			if err := r.healthManager.Check(ctx, cr.GetNamespace(), cr.GetName(), spec, status); err != nil {
+				logger.Error(err, "Failed to update health status while paused")
+			}
 			// Surfacing the pause is the only thing this cycle does, so a failed write must be
 			// retried rather than dropped — otherwise the CR keeps advertising the last running
 			// cycle's status and nothing reschedules it.
 			if err := r.updateStatus(ctx, cr, stored); err != nil {
 				return ctrl.Result{}, NewReconcileError("StatusUpdate", "failed to record the paused state", err)
 			}
-			return ctrl.Result{}, nil
+			// Re-observe on the health cadence: a paused cluster's pods keep changing state, and
+			// nothing else will wake this CR up while its resources are frozen.
+			return ctrl.Result{RequeueAfter: r.healthCheckInterval}, nil
 		}
 	}
 

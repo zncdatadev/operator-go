@@ -30,9 +30,26 @@ const (
 	// ConditionProgressing indicates that the cluster is rolling out a new version or scaling replicas.
 	ConditionProgressing ConditionType = "Progressing"
 
-	// ConditionDegraded indicates that the cluster is experiencing issues
-	// (e.g., missing dependencies, crash loops, health check failures).
+	// ConditionDegraded indicates that something is wrong that the operator cannot resolve on its
+	// own — a pod wedged in CrashLoopBackOff or ImagePullBackOff, a pod that cannot be scheduled, a
+	// StatefulSet that cannot be read, a failing application health check.
+	//
+	// It deliberately does NOT mean "not all replicas are ready". A rolling update, a scale-up and
+	// a scale-down all pass through that state on purpose, and reporting Degraded for them makes
+	// the one condition an operator would alert on fire during every routine change — after which
+	// it stops being alerted on at all. "Not serving" is ConditionAvailable and "changing" is
+	// ConditionProgressing; this condition is for "a human needs to look".
 	ConditionDegraded ConditionType = "Degraded"
+
+	// ConditionPaused indicates that spec.clusterOperation.reconciliationPaused is set, so the
+	// framework is deliberately not reconciling this cluster.
+	//
+	// It exists so that a paused cluster does not have to be reported as Degraded. Pausing is an
+	// administrator's decision — a maintenance window, an investigation — and folding it into the
+	// fault signal pages someone for a planned action. The framework already draws that distinction
+	// for the sibling operation, `stopped`, which reports Degraded=False and "intentionally
+	// stopped"; the two are the same class of state and now read the same way.
+	ConditionPaused ConditionType = "Paused"
 
 	// ConditionServiceHealthy indicates that the application-level health check passed
 	// (e.g., HDFS SafeMode off, RegionServer registered).
@@ -70,6 +87,14 @@ const (
 	ReasonReconciliationPaused = "ReconciliationPaused"
 	// ReasonStopped indicates the cluster is stopped.
 	ReasonStopped = "Stopped"
+	// ReasonPodsNotReady indicates fewer replicas are ready than the spec asks for. It is a reason
+	// for Available=False, never for Degraded: converging is not a fault.
+	ReasonPodsNotReady = "PodsNotReady"
+	// ReasonPodFailure indicates at least one pod is wedged in a state the operator cannot resolve
+	// (CrashLoopBackOff, an image that cannot be pulled, nowhere to schedule it).
+	ReasonPodFailure = "PodFailure"
+	// ReasonWorkloadUnreadable indicates a role group's StatefulSet could not be read at all.
+	ReasonWorkloadUnreadable = "WorkloadUnreadable"
 )
 
 // GenericClusterStatus defines the observed state of a cluster.
@@ -191,6 +216,34 @@ func (s *GenericClusterStatus) SetDegraded(isDegraded bool, reason, message stri
 	})
 }
 
+// SetPaused sets the Paused condition. It must be written on every pass — including to False — or a
+// cluster that was un-paused keeps advertising the pause forever.
+func (s *GenericClusterStatus) SetPaused(isPaused bool, reason, message string) {
+	status := metav1.ConditionFalse
+	if isPaused {
+		status = metav1.ConditionTrue
+	}
+	s.SetCondition(metav1.Condition{
+		Type:    string(ConditionPaused),
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
+}
+
+// SetServiceHealthyUnknown records that the application-level health check was deliberately not
+// run, so the condition neither claims health nor reports a fault. Used while reconciliation is
+// paused: a ServiceHealthCheck is an active probe against the product, and leaving the previous
+// verdict in place would let a stale True outlive whatever the cluster is doing during the pause.
+func (s *GenericClusterStatus) SetServiceHealthyUnknown(reason, message string) {
+	s.SetCondition(metav1.Condition{
+		Type:    string(ConditionServiceHealthy),
+		Status:  metav1.ConditionUnknown,
+		Reason:  reason,
+		Message: message,
+	})
+}
+
 // SetServiceHealthy sets the ServiceHealthy condition.
 func (s *GenericClusterStatus) SetServiceHealthy(isHealthy bool, reason, message string) {
 	status := metav1.ConditionFalse
@@ -240,6 +293,12 @@ func (s *GenericClusterStatus) IsProgressing() bool {
 // IsServiceHealthy returns true if the ServiceHealthy condition is True.
 func (s *GenericClusterStatus) IsServiceHealthy() bool {
 	cond := s.GetCondition(ConditionServiceHealthy)
+	return cond != nil && cond.Status == metav1.ConditionTrue
+}
+
+// IsPaused returns true if the Paused condition is True.
+func (s *GenericClusterStatus) IsPaused() bool {
+	cond := s.GetCondition(ConditionPaused)
 	return cond != nil && cond.Status == metav1.ConditionTrue
 }
 

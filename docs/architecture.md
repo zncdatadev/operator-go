@@ -167,7 +167,7 @@ Defines the common data model, serving as the data exchange contract between the
 
 - **Core Components**:
     - `GenericClusterSpec`: Common cluster configuration, containing cluster-level configuration, role, and role group configuration.
-    - `GenericClusterStatus`: Common cluster status, employing standard Kubernetes **Conditions** (e.g., `Available`, `Progressing`, `Degraded`, `ServiceHealthy`) to represent complex states beyond simple replica counts.
+    - `GenericClusterStatus`: Common cluster status, employing standard Kubernetes **Conditions** (`Available`, `Progressing`, `Degraded`, `Paused`, `ServiceHealthy`, `ReconcileComplete`) to represent complex states beyond simple replica counts. Each answers a distinct question and none may be derived from another — see §4.8.2.
     - **Auxiliary Models**: `RoleSpec` / `RoleGroupSpec` (role and role group definitions), `RoleConfigSpec` (Role-scoped Kubernetes controls, e.g. PDB), `RoleGroupConfigSpec` (workload runtime configuration), `OverridesSpec` (the flattened override fields), `ImageSpec`, `LoggingSpec`, `ResourcesSpec`.
 
 - **Design Points**: Specific product Spec/Status must embed common models (e.g., `HdfsClusterStatus` embeds `GenericClusterStatus`) to achieve state reuse. The `ServiceHealthy` condition allows products to report business-level readiness (e.g., HDFS safe mode off).
@@ -523,15 +523,29 @@ Stateful systems distinguish between "Infrastructure Ready" (Pod Running) and "S
 
 ### 4.8.2 Health Check Mechanism
 
+**The three workload conditions answer three different questions, and must not be derived from one number.** This is a design constraint, not an implementation detail:
+
+| condition | question | derived from |
+| --- | --- | --- |
+| `Available` | *Can it serve?* | `readyReplicas >= desired` for every role group |
+| `Progressing` | *Is it changing?* | a revision rollout or replica change in flight |
+| `Degraded` | *Must a human look?* | **failure states**, never replica counts |
+
+`Degraded` is the condition an operator alerts on, so it may only fire for something the operator cannot resolve on its own. Deriving it from replica counts makes it fire during every rolling update, every scale-up and every scale-down — planned changes that reduce ready replicas on purpose — and a signal that fires on every planned change is one nobody can alert on. `Available=False` is the honest report for those; alert on it with a duration.
+
+Consequently `Degraded` is computed from **state, not time**: a pod wedged in `CrashLoopBackOff`, `ImagePullBackOff`, `InvalidImageName`, a `CreateContainer*`/`RunContainerError`, or a pod that cannot be scheduled; a role group whose StatefulSet cannot be read; a failing `ServiceHealthCheck`. Because these are states rather than elapsed times, a **stuck** rollout still reports `Degraded=True` — its pods are visibly failing — while a healthy rollout does not, with no progress-deadline machinery required. Transient startup states (`ContainerCreating`, `PodInitializing`) and pods already being deleted are deliberately excluded: they are what a healthy pod looks like on the way in and on the way out.
+
 The health step runs once per reconcile, after orphan cleanup, and evaluates:
-- **Workload Status**: for every role group in the Spec, the StatefulSet's `readyReplicas` against the role group's desired replicas — producing `Available`, `Progressing` (revision rollout in flight) and `Degraded`. A role group deliberately scaled to `replicas: 0` is healthy at 0 ready replicas; a role group whose StatefulSet cannot be read is both not-healthy and not-available.
-- **Service Availability**: the optional product-level `ServiceHealthCheck` (below), reported through the `ServiceHealthy` condition.
-- **ClusterOperation short-circuit**: `reconciliationPaused` reports `Degraded/ReconciliationPaused`, and `stopped` reports `Available=False` with `Degraded=False` (a stopped cluster is doing exactly what was asked).
+- **Workload Status**: per role group, `readyReplicas` against the desired replicas, producing `Available` and `Progressing`. The comparison is `>=`, so a role group mid-scale-down — briefly reporting MORE ready replicas than desired — is available, and one deliberately scaled to `replicas: 0` is available at 0.
+- **Pod Failures**: one `List` of the cluster's pods (matched on `app.kubernetes.io/instance` + `managed-by`) producing `Degraded`, with a message naming the offending pods and their reasons, capped and with the remainder counted rather than silently truncated.
+- **Service Availability**: the optional product-level `ServiceHealthCheck` (below), reported through the `ServiceHealthy` condition, and also setting `Degraded`.
+- **ClusterOperation states are not faults.** `stopped` reports `Available=False` with `Degraded=False`, and `reconciliationPaused` reports the dedicated **`Paused`** condition with `Degraded=False` — pausing is an administrator's decision (a maintenance window, an investigation), and reporting it through the fault signal pages someone for a planned action. While paused the framework still *observes*: the pause freezes the resources, not the reporting, so `Available`/`Progressing` are re-evaluated from the live StatefulSets instead of being left at whatever the last running cycle wrote. The `ServiceHealthy` condition goes `Unknown` rather than keeping a stale verdict, because an active probe against a paused cluster is exactly what a pause asks the operator not to do.
 
 - **Check Cadence**: `GenericReconcilerConfig.HealthCheckInterval` (default **120 s**) is the interval at which a successful reconcile requeues itself, which is what makes health re-evaluation periodic — see §4.8.4. A negative value disables the periodic wakeup.
 - **Timeout**: `GenericReconcilerConfig.HealthCheckTimeout` (default **300 s**) is applied as a `context.WithTimeout` around the product-level `ServiceHealthCheck` call, so a hanging probe cannot pin a reconcile worker. A non-positive value disables the deadline. It does not bound the workload checks, which are ordinary client reads governed by the reconcile context.
 - **Failure Handling**:
-  - A failing health evaluation marks the CR Status **Degraded**. The message names the offenders: `Unhealthy role groups: <role>/<group>, ...`.
+  - Replicas short of the desired count mark the CR **`Available=False`** — not Degraded. The message names the offenders: `Role groups with fewer ready replicas than desired: <role>/<group>, ...`.
+  - A pod the operator cannot help marks the CR **Degraded**, naming it: `Pods requiring attention: <pod> (CrashLoopBackOff), ...`.
   - A `ServiceHealthCheck` that errors or reports unhealthy sets both `Degraded=True` and `ServiceHealthy=False` with the probe's message.
   - An error raised by the health step itself is logged and does **not** fail the reconcile; the state is re-evaluated on the next cycle.
   - If the controller itself encounters an internal error (a recovered panic), the Status is **NOT modified** — an internal fault says nothing about the cluster's actual state. The panic is instead returned as an error so the work queue retries with backoff (§4.13.2).
@@ -539,9 +553,10 @@ The health step runs once per reconcile, after orphan cleanup, and evaluates:
 ### 4.8.3 Core Implementation
 
 - **Status Definition**: The SDK standardizes cluster status through Generic Conditions:
-  - **Available**: At least one replica is ready and serving traffic.
+  - **Available**: every role group has at least as many ready replicas as its spec asks for.
   - **Progressing**: The cluster is rolling out a new version or scaling replicas.
-  - **Degraded**: The cluster is experiencing issues (e.g., missing dependencies, crash loops, health check failures).
+  - **Degraded**: something is wrong that the operator cannot resolve on its own — a wedged or unschedulable pod, an unreadable StatefulSet, a failing application health check. Explicitly **not** "replicas are converging"; see §4.8.2.
+  - **Paused**: `spec.clusterOperation.reconciliationPaused` is set. Carries `Degraded=False`: a pause is a decision, not a fault.
   - **ServiceHealthy**: The application-level check passed (e.g., SafeMode off, RegionServer registered).
   - **ReconcileComplete**: The SDK has finished the latest reconciliation loop successfully.
 - **ServiceHealthCheck Interface**:
