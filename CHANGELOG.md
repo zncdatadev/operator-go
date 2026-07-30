@@ -112,6 +112,62 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (status conditions)
+
+- **`Degraded` no longer fires during a rolling update, a scale-up or a scale-down.** It was derived
+  from `readyReplicas == desiredReplicas`, so every planned change that reduces ready replicas
+  reported the cluster as broken. Measured against a real API server:
+
+  | situation | before | after |
+  |---|---|---|
+  | rolling update in flight | `Progressing=True` **and `Degraded=True`** | `Progressing=True`, `Degraded=False` |
+  | scale-down 5→3 | `Available=True`, `Progressing=False`, **`Degraded=True`** | `Available=True`, `Degraded=False` |
+  | pod in `ImagePullBackOff` | `Degraded=True` | `Degraded=True` (**reason `PodFailure`, naming the pod**) |
+
+  The scale-down row is the worst of the three: `Progressing=False` meant nothing in the status even
+  hinted the cluster was mid-operation. A signal that fires on every planned change is one nobody
+  can alert on.
+
+  `Degraded` is now computed from **failure states**: a pod wedged in `CrashLoopBackOff`,
+  `ImagePullBackOff`, `InvalidImageName`, a `CreateContainer*`/`RunContainerError`, or a pod that
+  cannot be scheduled; a role group whose StatefulSet cannot be read; a failing `ServiceHealthCheck`.
+  Because those are states and not elapsed times, a **stuck** rollout still reports `Degraded=True` —
+  its pods are visibly failing — while a healthy rollout does not, and no progress-deadline
+  machinery is required. Transient states (`ContainerCreating`, `PodInitializing`) and pods already
+  being deleted are excluded. Cost: one `List` of the cluster's pods per health pass.
+- **`Available` now uses `>=` instead of `==`.** A role group mid-scale-down briefly reports more
+  ready replicas than desired, which the old test called unhealthy.
+- **New reasons**: `PodsNotReady` and `WorkloadUnreadable` (for `Available=False`), `PodFailure` and
+  `WorkloadUnreadable` (for `Degraded`). The `Available=False` message names the offending role
+  groups and distinguishes the two ways a role group can be unavailable — short of ready replicas,
+  or a StatefulSet that could not be read at all, which has no replica counts to quote. The
+  `Degraded` message names the offending pods with their reasons, capped at three with the remainder
+  counted rather than silently truncated.
+- **Alerting guidance**: alert on `Degraded=True` for faults, and on `Available=False` **with a
+  duration** for "not serving". `Progressing=True` with an old `lastTransitionTime` is the signal for
+  a rollout that is taking too long.
+
+### BREAKING (reconciliationPaused)
+
+- **A paused cluster reports the new `Paused` condition with `Degraded=False`**, instead of
+  `Degraded=True`. Pausing is an administrator's decision — a maintenance window, an investigation —
+  and reporting it through the fault signal pages someone for a planned action. The framework already
+  drew this distinction for the sibling operation `stopped` (`Degraded=False`, "intentionally
+  stopped"); the two are the same class of state and now read the same way.
+- **The paused path no longer leaves the other conditions stale.** It returned before any condition
+  but `Degraded` was written, so a cluster paused mid-rollout advertised `Progressing=True` from the
+  last running cycle for as long as the pause lasted, and one paused after a failure kept claiming
+  `Available`. The pause freezes the *resources*, not the reporting: `Available` and `Progressing` are
+  now re-evaluated from the live StatefulSets (reads mutate nothing), and `ServiceHealthy` goes
+  `Unknown` rather than keeping a stale verdict — an active probe is exactly what a pause asks the
+  operator not to run.
+- **A paused reconcile now returns `RequeueAfter: HealthCheckInterval`** instead of no requeue, so
+  those conditions keep up with a paused cluster's pods. A container entering `ImagePullBackOff`
+  without ever having been ready changes no StatefulSet field, so the `Owns()` watch would not
+  deliver anything.
+- `GenericClusterStatus` gains `SetPaused`, `IsPaused` and `SetServiceHealthyUnknown`, and the
+  `ConditionPaused` type.
+
 ### BREAKING (primary container probes)
 
 - **`StatefulSetBuilder` no longer generates a liveness probe.** It used to attach a TCP probe to

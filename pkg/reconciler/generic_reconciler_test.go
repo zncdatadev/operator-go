@@ -692,17 +692,28 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 			result, err := r.Reconcile(ctx, req)
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
-
+			// Paused freezes the resources, not the observing: the cycle still re-arms itself on
+			// the health cadence, because a paused cluster's pods keep changing state and a
+			// container entering ImagePullBackOff without ever having been ready changes no
+			// StatefulSet field for the Owns() watch to deliver.
+			Expect(result.RequeueAfter).To(Equal(reconciler.DefaultHealthCheckInterval))
 			fetchedCR := &testutil.MockCluster{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: crName}, fetchedCR)).To(Succeed())
 
 			// Surfacing the pause is the only thing this cycle does: without the status write the
 			// CR keeps advertising the last running cycle's state and nothing tells an operator
 			// why the cluster stopped converging.
+			paused := fetchedCR.Status.GetCondition(v1alpha1.ConditionPaused)
+			Expect(paused).NotTo(BeNil())
+			Expect(paused.Status).To(Equal(metav1.ConditionTrue))
+			Expect(paused.Reason).To(Equal(v1alpha1.ReasonReconciliationPaused))
+
+			// And the pause is NOT a fault. Degraded is the condition an operator alerts on, so
+			// reporting a maintenance window through it pages someone for a planned action — which
+			// is why the sibling operation `stopped` has always reported Degraded=False.
 			degraded := fetchedCR.Status.GetCondition(v1alpha1.ConditionDegraded)
 			Expect(degraded).NotTo(BeNil())
-			Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
+			Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
 			Expect(degraded.Reason).To(Equal(v1alpha1.ReasonReconciliationPaused))
 			Expect(fetchedCR.Status.ObservedGeneration).To(Equal(fetchedCR.Generation))
 
@@ -944,7 +955,8 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 
 			result, err := r.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result.RequeueAfter).To(Equal(reconciler.DefaultHealthCheckInterval),
+				"the pause still re-observes on the health cadence")
 
 			// The pause gate runs before ensureServiceAccount, so the SA must still be absent.
 			err = saLookup()

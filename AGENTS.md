@@ -480,6 +480,29 @@ type ServiceHealthCheck interface {
 }
 ```
 
+**The status conditions answer three separate questions and none is derived from another.**
+`Available` = every role group has at least as many ready replicas as its spec asks for (`>=`, so a
+scale-down that briefly leaves MORE ready than desired is still available). `Progressing` = a
+revision rollout or replica change is in flight. `Degraded` = something is wrong the operator cannot
+fix: a pod wedged in `CrashLoopBackOff`/`ImagePullBackOff`/`InvalidImageName`/a `CreateContainer*` or
+`RunContainerError`, a pod that cannot be scheduled, a role group whose StatefulSet cannot be read,
+or a failing `ServiceHealthCheck`. It is found by one `List` of the cluster's pods per pass.
+
+`Degraded` is deliberately **not** derived from replica counts. Doing so made it fire during every
+rolling update, scale-up and scale-down — planned changes that reduce ready replicas on purpose —
+which is how the one condition worth alerting on became unalertable. Because the new inputs are
+*states* rather than elapsed times, a **stuck** rollout still reports `Degraded=True` (its pods are
+visibly failing) while a healthy one does not, and no progress-deadline machinery is needed.
+Transient states (`ContainerCreating`, `PodInitializing`) and pods already being deleted are
+excluded.
+
+`reconciliationPaused` gets its own **`Paused`** condition with `Degraded=False` — a maintenance
+window is not a fault, and the sibling `stopped` has always been reported that way. While paused the
+framework still *observes*: `Available`/`Progressing` are re-evaluated from the live StatefulSets
+rather than left at whatever the last running cycle wrote, and `ServiceHealthy` goes `Unknown`
+instead of keeping a stale verdict. A paused reconcile therefore returns
+`RequeueAfter: HealthCheckInterval` so those conditions keep up with reality.
+
 `CompositeHealthCheck` combines multiple checks (all must pass); `ServiceHealthCheckFunc` adapts a
 bare function. `AlwaysHealthy` and `AlwaysUnhealthy` are provided as convenience values. A check
 reports a plain `(bool, error)` — there is no result struct.

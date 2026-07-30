@@ -4,6 +4,30 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-30a] (Degraded is a fault signal, not a progress signal)
+
+### Core Architecture (`architecture.md`)
+
+- §4.8.2 now opens with the design constraint the implementation had drifted from: the three workload
+  conditions answer three different questions (`Available` = can it serve, `Progressing` = is it
+  changing, `Degraded` = must a human look) and **none may be derived from another**. Added the table,
+  the reason (a signal that fires on every planned change is unalertable), and the state-based inputs
+  Degraded now uses — including why state-based detection catches a *stuck* rollout without any
+  progress-deadline machinery.
+- Recorded that ClusterOperation states are not faults: `stopped` and the new `Paused` condition both
+  carry `Degraded=False`, and a paused cluster is still *observed* (the pause freezes resources, not
+  reporting) with `ServiceHealthy` going `Unknown` rather than stale.
+- §4.8.3 condition list updated: `Available` restated as "every role group has at least as many ready
+  replicas as its spec asks for", `Degraded` restated as a fault signal, `Paused` added.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- Documented the same split, the `>=` fix for `Available`, the single pod `List` behind `Degraded`,
+  the excluded transient/terminating states, and the paused-path behaviour including the
+  `RequeueAfter` that keeps a paused cluster's conditions current.
+
+---
+
 ## [2026-07-29a] (the framework probes only what it owns)
 
 ### Framework Documentation (`AGENTS.md`, `pkg/builder/AGENTS.md`)
