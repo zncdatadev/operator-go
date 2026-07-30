@@ -112,6 +112,40 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (config.affinity)
+
+- **A misspelled affinity key now fails the build instead of scheduling the pods anywhere.**
+  `config.affinity` is a schema-free `RawExtension`, so the API server neither validates nor prunes
+  it, and `json.Unmarshal` ignores what it does not recognise. The two together made a typo
+  completely silent: `nodeAffinty` (one letter short) passed `kubectl apply`, decoded into an empty
+  `corev1.Affinity`, and the pods were scheduled wherever the scheduler liked — no event, no log
+  line, no status change. Affinity is the scheduling *contract* for these products (rack awareness,
+  spreading a quorum across failure domains, keeping a worker near its data), so losing it is not
+  cosmetic.
+
+  `reconciler.DecodeAffinity` now decodes with `DisallowUnknownFields`, and the build error names the
+  offending field. **The trade-off is deliberate**: a field belonging to a newer Kubernetes API than
+  the SDK is built against is now rejected rather than ignored. That is the honest answer — the
+  framework cannot honor a field it does not know — and it fails where someone can read it rather
+  than when a node drains at 3am.
+- **A role group's affinity no longer discards the role's.** `MergeRoleGroupConfig` folds affinity
+  **per top-level member** (`nodeAffinity`, `podAffinity`, `podAntiAffinity`): the group wins for a
+  member it declares and inherits the role's for a member it does not. It was all-or-nothing, which
+  is the same defect the merge's own doc comment identifies for `resources` — "Overriding one knob is
+  the normal way to use this API, and it silently dropped the rest". Here it meant a role spreading
+  its pods with `podAntiAffinity`, plus a group adding a `nodeAffinity` to pin itself to an instance
+  type, silently lost the spreading and put the whole group on one node.
+
+  Merging stops at the top level on purpose: below it sit complete scheduling statements (a
+  `nodeSelectorTerms` list is an OR of ANDs), and interleaving two of them produces a constraint
+  neither author wrote. An unrecognised member is carried *through* the merge rather than dropped, so
+  the strict decode still gets to reject it by name.
+- A typed `*corev1.Affinity` CRD field was measured and **rejected**: it grows the generated CRD from
+  39 KB to 192 KB (the field appears at both role and role-group level), and `kubectl apply` stores
+  the whole CRD in `last-applied-configuration` — within one annotation's 256 KB limit, leaving a
+  real product's own fields no room. The strict decode recovers most of the diagnostic value at no
+  size cost.
+
 ### BREAKING (status conditions)
 
 - **`Degraded` no longer fires during a rolling update, a scale-up or a scale-down.** It was derived

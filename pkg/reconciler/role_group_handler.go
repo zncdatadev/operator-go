@@ -353,9 +353,7 @@ func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.R
 	}
 
 	merged := group.DeepCopy()
-	if merged.Affinity == nil {
-		merged.Affinity = role.Affinity.DeepCopy()
-	}
+	merged.Affinity = mergeAffinity(role.Affinity, group.Affinity)
 	if merged.GracefulShutdownTimeout == nil {
 		merged.GracefulShutdownTimeout = role.GracefulShutdownTimeout
 	}

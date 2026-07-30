@@ -4,6 +4,30 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-30b] (schema-free config must be decoded strictly; config merges per member)
+
+### Core Architecture (`architecture.md`, `architecture_zh.md`)
+
+- §2.5 gained the rule the typed `config` block folds by, as a design constraint rather than an
+  implementation note: **the finest granularity at which the result still means what both authors
+  said**. Added the per-field table (`resources` per leaf, `affinity` per top-level member,
+  scalars per field) with the reason each is not coarser *or* finer — interleaving two
+  `nodeSelectorTerms` lists produces a constraint neither author wrote — and restated why this only
+  works with no CRD-level defaults on those fields.
+- Added the general rule for schema-free fields: anything the SDK accepts as opaque JSON and then
+  interprets must reject unknown members loudly, because with
+  `x-kubernetes-preserve-unknown-fields` the API server validates nothing and the SDK is the last
+  layer that can.
+
+### Framework Documentation (`AGENTS.md`)
+
+- Documented `reconciler.DecodeAffinity`'s strict decode, the concrete failure it prevents
+  (`nodeAffinty` passing admission and evaporating), the accepted trade-off for
+  newer-Kubernetes fields, and the per-member affinity merge including why unknown members survive
+  it.
+
+---
+
 ## [2026-07-30a] (Degraded is a fault signal, not a progress signal)
 
 ### Core Architecture (`architecture.md`)

@@ -97,6 +97,18 @@ SDK 负责实现通用逻辑（如资源构建、配置合并、通用 Webhook �
 
 > Role↔RoleGroup 两层合并是该折叠在「无产品层」时的特例;只传这两层的现有调用不受影响。
 
+**`config`（类型化的工作负载配置）按自己的规则折叠：取"结果仍然符合双方本意"的最细粒度。** 这与上面的 override 栈是两条不同的轴，而且是**设计约束**而非实现细节——它要防的失败是**静默的部分丢失**：覆盖一个旋钮就丢掉 Role 配好的其余兄弟字段。
+
+| 字段 | 粒度 | 为什么不更粗 / 不更细 |
+| --- | --- | --- |
+| `resources`（cpu/memory/storage） | **按叶子** | 只覆盖一个叶子（一个 `storageClass`、一个 `cpu.min`）是这个 API 的正常用法；struct 粒度会静默丢掉所有兄弟字段。 |
+| `affinity` | **按顶层成员**（`nodeAffinity`、`podAffinity`、`podAntiAffinity`） | 更粗会导致 RoleGroup 一加 node affinity 就丢掉 Role 的 Pod 打散。更细是错的：成员之下是完整的调度语句（`nodeSelectorTerms` 列表是"或的与"），把两个交错合并会产出双方都没写过的约束。 |
+| `gracefulShutdownTimeout`、`logging` | 按字段 / 按容器 | 标量，以及本身已按容器名索引的 map。 |
+
+这套规则能成立的前提是这些字段是指针且**没有 CRD 层默认值**：结构化默认会在外层对象一存在就填充字段，因此叶子上的 `+kubebuilder:default` 会让"此处未设置"与"显式等于默认值"无法区分，Role 的值就永远赢不了。默认值因此放在消费时（`StorageResource.GetCapacity`、`RoleGroupConfigSpec.GetGracefulShutdownTimeout`）。
+
+**无 schema 的字段必须严格解码。** `config.affinity` 是 `RawExtension`，API server 既不校验也不裁剪，而宽松解码会丢弃它不认识的内容——这就是拼错的键（`nodeAffinty`）能通过 admission 然后蒸发、Pod 被随便调度且无任何上报的原因。凡是 SDK 以不透明 JSON 接收再自行解释的字段，都必须大声拒绝未知成员（`reconciler.DecodeAffinity`），因为它是最后一道能拒绝的关口。
+
 ## 2.6 产品配置 vs. 默认值(层的分离)
 
 SDK 区分产品提供「非用户输入值」的**两种不同机制**,二者不可混为一谈:

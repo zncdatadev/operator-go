@@ -264,7 +264,28 @@ type RoleNameProvider interface {
 ```
 `ConfiguredRoleNames()` returns the sorted union of the role names the handler carries settings for (images, container ports, service ports, logging containers, main container names). The reconciler checks it against `spec.roles` and emits an `UnknownConfiguredRole` Warning event for names the CR does not declare — a typo there would otherwise silently produce a role group with no ports, no image override and no Service. It is a warning, not a failure, because a handler may legitimately be configured for optional roles.
 
-When building the StatefulSet, `BaseRoleGroupHandler` consumes the role group's `config` (commons `RoleGroupConfigSpec`): `resources` (requests/limits, plus an opt-in data PVC via `StorageMountPath`), `affinity` (a RawExtension unmarshaled into `corev1.Affinity` and set on the pod spec — invalid JSON fails the build), and `gracefulShutdownTimeout` (a Go duration mapped to `terminationGracePeriodSeconds` — unparsable or non-positive values fail the build). All of these are applied before `podOverrides`, so user pod overrides keep precedence. The framework sets affinity only when the config provides one, so products that post-process the built StatefulSet with `if podSpec.Affinity == nil {...}` default guards remain correct.
+When building the StatefulSet, `BaseRoleGroupHandler` consumes the role group's `config` (commons `RoleGroupConfigSpec`): `resources` (requests/limits, plus an opt-in data PVC via `StorageMountPath`), `affinity` (see below), and `gracefulShutdownTimeout` (a Go duration mapped to `terminationGracePeriodSeconds` — unparsable or non-positive values fail the build). All of these are applied before `podOverrides`, so user pod overrides keep precedence. The framework sets affinity only when the config provides one, so products that post-process the built StatefulSet with `if podSpec.Affinity == nil {...}` default guards remain correct.
+
+**`config.affinity` is decoded STRICTLY, and merges per member.** The CRD carries it as a
+schema-free `RawExtension` (`type: object` + `x-kubernetes-preserve-unknown-fields`), so the API
+server neither validates nor prunes it. `reconciler.DecodeAffinity` therefore decodes with
+`DisallowUnknownFields` and an unknown field **fails the build**, naming it. Before that, `nodeAffinty`
+(one letter short) passed admission, decoded into an empty `corev1.Affinity`, and the pods were
+scheduled anywhere — with no event, no log line and no status change, even though affinity is the
+scheduling *contract* for these products (rack awareness, spreading a quorum, colocating a worker
+with its data). The trade-off is deliberate: a field from a newer Kubernetes API than the SDK is
+built against is now rejected rather than ignored, which is the honest answer, since the framework
+cannot honor a field it does not know.
+
+`MergeRoleGroupConfig` folds a role's affinity into a role group's **one top-level member at a
+time** — `nodeAffinity`, `podAffinity`, `podAntiAffinity` — so a group that declares one inherits the
+role's others. It used to be all-or-nothing, which is the same defect the merge's own doc comment
+identifies for `resources`: a role spreading its pods with `podAntiAffinity` plus a group adding a
+`nodeAffinity` silently lost the spreading and put the whole group on one node. Merging stops at the
+top level on purpose: below it sit complete scheduling statements (a `nodeSelectorTerms` list is an
+OR of ANDs), and interleaving two of them yields a constraint neither author wrote. An unrecognised
+member is carried through the merge rather than dropped, so the strict decode still gets to reject it
+by name.
 
 **Labels.** Every resource the base handler builds carries the Kubernetes recommended set declared
 in `pkg/constant/label.go` — `app.kubernetes.io/{name,instance,version,component,role-group,managed-by}` —

@@ -97,6 +97,18 @@ Each field type folds with a defined strategy:
 
 > The two-layer Role↔RoleGroup merge is the special case of this fold with no product layer; existing callers that pass only those two layers are unaffected.
 
+**`config` (the typed workload config) folds by its own rule: the finest granularity at which the result still means what both authors said.** This is a separate axis from the override stack above, and it is a design constraint rather than an implementation detail — the failure it prevents is *silent partial loss*, where overriding one knob discards the siblings the Role configured:
+
+| field | granularity | why not coarser / finer |
+| --- | --- | --- |
+| `resources` (cpu/memory/storage) | **per leaf** | Overriding one leaf — a `storageClass`, a `cpu.min` — is the normal way to use the API; struct granularity silently dropped every sibling. |
+| `affinity` | **per top-level member** (`nodeAffinity`, `podAffinity`, `podAntiAffinity`) | Coarser lost a Role's pod spreading whenever a RoleGroup added node affinity. Finer is wrong: below a member sit complete scheduling statements (a `nodeSelectorTerms` list is an OR of ANDs), and interleaving two produces a constraint neither author wrote. |
+| `gracefulShutdownTimeout`, `logging` | per field / per container | Scalars and an already keyed map. |
+
+This works only because these fields are pointers with **no CRD-level default**: structural defaulting fills a field as soon as its enclosing object exists, so a `+kubebuilder:default` on a leaf makes "unset here" indistinguishable from "explicitly the default" and the Role's value can never win. Defaults therefore live at consumption time (`StorageResource.GetCapacity`, `RoleGroupConfigSpec.GetGracefulShutdownTimeout`).
+
+**Schema-free fields must be decoded strictly.** `config.affinity` is a `RawExtension`, so the API server neither validates nor prunes it, and a lenient decode discards what it does not recognise — which made a misspelled key (`nodeAffinty`) pass admission and evaporate, scheduling the pods anywhere with nothing reported. Any field the SDK accepts as opaque JSON and then interprets must reject unknown members loudly (`reconciler.DecodeAffinity`), because it is the only layer left that can.
+
 ## 2.6 Product Config vs. Defaulting (Separation of Layers)
 
 The SDK distinguishes **two different mechanisms** by which a product supplies values that are not typed by the user, and they must not be conflated:

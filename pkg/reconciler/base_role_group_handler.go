@@ -18,7 +18,6 @@ package reconciler
 
 import (
 	"context"
-	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"maps"
@@ -743,8 +742,8 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		// only when the CRD config provides one, so products that post-process the built
 		// StatefulSet with `if podSpec.Affinity == nil { ... }` default guards remain correct.
 		if roleGroupConfig.Affinity != nil && len(roleGroupConfig.Affinity.Raw) > 0 {
-			affinity := &corev1.Affinity{}
-			if err := json.Unmarshal(roleGroupConfig.Affinity.Raw, affinity); err != nil {
+			affinity, err := DecodeAffinity(roleGroupConfig.Affinity)
+			if err != nil {
 				return nil, fmt.Errorf("invalid affinity in role group config (role %q, group %q): %w",
 					buildCtx.RoleName, buildCtx.RoleGroupName, err)
 			}
