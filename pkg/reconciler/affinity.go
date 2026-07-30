@@ -50,6 +50,19 @@ func DecodeAffinity(raw *k8sruntime.RawExtension) (*corev1.Affinity, error) {
 	if raw == nil || len(raw.Raw) == 0 {
 		return nil, nil
 	}
+	// json.Decoder reads ONE value and leaves the rest of the stream untouched, so
+	// `{"nodeAffinity":{...}} {"podAffinity":{...}}` decodes the first object and drops the second
+	// without complaint — the same silent partial loss this function exists to prevent, arriving
+	// through the decoder rather than through an unknown field. json.Valid is the cheap way to
+	// require exactly one value first. It also keeps this function consistent with affinityMembers,
+	// which uses json.Unmarshal and rejects trailing data already.
+	//
+	// A value that reached here through the API server is always a single re-serialized object, so
+	// this guards a RawExtension built in Go: a product's webhook defaulter, or product code
+	// assembling a config by hand.
+	if !json.Valid(raw.Raw) {
+		return nil, fmt.Errorf("affinity is not a single valid JSON value")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw.Raw))
 	decoder.DisallowUnknownFields()
 

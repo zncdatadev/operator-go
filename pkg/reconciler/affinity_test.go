@@ -268,6 +268,23 @@ var _ = Describe("DecodeAffinity", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
+	It("rejects two concatenated objects instead of decoding only the first", func() {
+		// json.Decoder reads ONE value and leaves the rest of the stream alone, so without the
+		// json.Valid guard this decodes nodeAffinity and drops podAffinity silently — the same
+		// partial loss the strict decode exists to prevent, arriving by a different door. Only
+		// reachable for a RawExtension built in Go (a webhook defaulter, product code): a value that
+		// came through the API server is always a single re-serialized object.
+		_, err := reconciler.DecodeAffinity(raw(
+			`{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[]}}} ` +
+				`{"podAffinity":{}}`))
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("rejects trailing garbage after a valid object", func() {
+		_, err := reconciler.DecodeAffinity(raw(`{"nodeAffinity":{}} oops`))
+		Expect(err).To(HaveOccurred())
+	})
+
 	It("accepts an empty object", func() {
 		affinity, err := reconciler.DecodeAffinity(raw(`{}`))
 		Expect(err).NotTo(HaveOccurred())
