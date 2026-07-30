@@ -112,6 +112,48 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (primary container probes)
+
+- **`StatefulSetBuilder` no longer generates a liveness probe.** It used to attach a TCP probe to
+  `Ports[0]` whenever any container port was declared, with ~90-120s to the first kill. Both halves
+  of that were guesses the framework is not in a position to make: `Ports[0]` is an accident of the
+  product's declaration order — in the SDK's own test fixture it lands on a *metrics* port, not the
+  service port — and the kill budget is inside the startup time of several products this SDK exists
+  for (a NameNode loading an fsimage, a broker replaying log segments). The result was a
+  CrashLoopBackOff caused by a probe the user never wrote.
+
+  A TCP-accept check is also close to worthless *as* a liveness signal — a wedged JVM still accepts
+  connections — so this removes a mechanism that was nearly all risk and almost no guarantee, not a
+  guarantee. Products that want the old behavior:
+
+  ```go
+  stsBuilder.WithLivenessProbe(builder.DefaultTCPLivenessProbe(8020)) // a port THEY choose
+  ```
+
+  `DefaultTCPLivenessProbe` is exported for exactly that, with the previous timings.
+- **The readiness probe is kept**, and its target is now a documented contract rather than an
+  accident: it is `Ports[0]`, so the first entry of `SetRoleContainerPorts`/`WithPorts` must be the
+  port that means "this pod can serve". Readiness is kept because its failure modes are the
+  acceptable ones — at worst the pod stays out of its Services, visible as `0/1` and self-correcting
+  — and because removing it would assert the opposite: with no readiness probe a pod is Ready the
+  instant its container starts, so a rolling update walks a whole role group without ever waiting
+  for a member to come up.
+- This is the opposite decision from the sidecar probes (#548) and deliberately so. There the
+  framework owns the container — its image, its port, its endpoint — so it can say what healthy
+  means. Here the container belongs to the product.
+
+### features (StatefulSet rollout knobs)
+
+- `StatefulSetBuilder.WithUpdateStrategy` and `WithPodManagementPolicy` expose the two
+  `StatefulSetSpec` fields `podOverrides` cannot reach (it is a `PodTemplateSpec`).
+  `updateStrategy` is mutable and not preserved by the apply path, so a partitioned canary rollout
+  — raise the partition, upgrade the high ordinals, verify, lower it — converges through a normal
+  reconcile. `podManagementPolicy` is immutable and can only be chosen at creation.
+- The `Parallel` default for `podManagementPolicy` is unchanged and now carries its reason:
+  `OrderedReady` starts pod N+1 only once pod N is Ready, which **deadlocks a quorum product at
+  pod-0** — a ZooKeeper member or an HDFS JournalNode is not Ready until it sees a quorum that does
+  not exist until its peers start. It is a choice, not an inherited default.
+
 ### fix (pod security)
 
 - **The framework's default pod security context now sets `fsGroupChangePolicy: OnRootMismatch`

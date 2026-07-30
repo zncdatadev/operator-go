@@ -421,6 +421,25 @@ members must resolve each other before readiness. `.spec.type` is always written
 The reconciler builds the role group ConfigMap and both Services through these builders, so
 behavior changes made here reach the framework path directly.
 
+**Probes on the primary container: readiness is generated, liveness never is.** With ports declared,
+`StatefulSetBuilder` attaches a TCP readiness probe to **`Ports[0]`** — which makes the first entry
+of `SetRoleContainerPorts` part of the contract, not decoration: put the port that means "this pod
+can serve" first. No liveness probe is generated at all. The framework knows neither which port
+means healthy (the first declared one is as likely to be a metrics port) nor how long the product
+takes to open it, and a liveness probe on a wrong guess kills the container on a timer forever;
+readiness's worst case is a pod held out of its Services, which is visible and self-correcting.
+`builder.DefaultTCPLivenessProbe(port)` reproduces the removed probe on a port the product chooses,
+and `WithLivenessProbe` takes any probe. This is the opposite call from the **sidecar** probes
+(§14), and deliberately so: there the framework owns the container's image, port and endpoint.
+
+**Two StatefulSetSpec fields `podOverrides` cannot reach** (it is a `PodTemplateSpec`) have builder
+knobs: `WithPodManagementPolicy` and `WithUpdateStrategy`. The default `podManagementPolicy` is
+`Parallel` and that is a choice, not an inherited default — `OrderedReady` deadlocks a quorum
+product at pod-0, because a ZooKeeper member or an HDFS JournalNode is not Ready until it sees a
+quorum that does not exist until its peers start. It is immutable, so it can only be chosen at
+creation. `updateStrategy` is mutable and not preserved by the apply path, which is what makes a
+partitioned canary rollout converge through a normal reconcile.
+
 ### 7. Config Generation
 Multi-format config generation over a split format contract:
 ```go
