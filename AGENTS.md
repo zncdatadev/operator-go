@@ -277,52 +277,14 @@ with its data). The trade-off is deliberate: a field from a newer Kubernetes API
 built against is now rejected rather than ignored, which is the honest answer, since the framework
 cannot honor a field it does not know.
 
-`MergeRoleGroupConfig` folds a role's affinity into a role group's **one top-level member at a
-time** — `nodeAffinity`, `podAffinity`, `podAntiAffinity` — so a group that declares one inherits the
-role's others. It used to be all-or-nothing, which is the same defect the merge's own doc comment
-identifies for `resources`: a role spreading its pods with `podAntiAffinity` plus a group adding a
-`nodeAffinity` silently lost the spreading and put the whole group on one node. Merging stops at the
-top level on purpose: below it sit complete scheduling statements (a `nodeSelectorTerms` list is an
-OR of ANDs), and interleaving two of them yields a constraint neither author wrote. An unrecognised
-member is carried through the merge rather than dropped, so the strict decode still gets to reject it
-by name.
-
-**Labels.** Every resource the base handler builds carries the Kubernetes recommended set declared
-in `pkg/constant/label.go` — `app.kubernetes.io/{name,instance,version,component,role-group,managed-by}` —
-on both the object metadata and the pod template. `name` comes from `ProductName` and `version` from
-`spec.image.productVersion`, so both are omitted for a handler that declares no `ProductName` (it
-runs its static `Image` and never reads `spec.image`); `role-group` is absent on role-level
-resources, which span every group of the role. An illegal label value for `name`/`version` drops
-that one label rather than making every resource of the cluster unappliable.
-
-The `.spec.selector` of the StatefulSet, Services and PDBs stays **narrower**: instance, component,
-managed-by and the `<cluster>-<group>` marker (or the product's `LabelDomain` identity labels). A
-selector is immutable, and `version` changes on every product upgrade. Upgrading an existing cluster
-into this label set rolls its pods once, because the pod template gains labels; the frozen selector
-keeps matching. See `pkg/reconciler/AGENTS.md` §15.
-
-The marker goes through `reconciler.RoleGroupMarkerLabelKey(cluster, role, group)`, which returns
-the natural `<cluster>-<group>` when that is a legal label key and `RoleGroupResourceName` when it
-is not. A label key's name part is capped at 63 bytes, and ordinary names overrun it — a
-43-character cluster plus a 21-character role group is 65 — at which point the API server rejects
-the StatefulSet, both Services and the PDB of that role group. Keeping the natural form wherever it
-is legal is what makes this safe for running clusters: the key is inside the immutable
-`.spec.selector`, so only combinations that could never have produced a StatefulSet may change.
-
-On top of that set the handler adds the **cluster CR's own labels**
-(`RoleGroupBuildContext.ClusterLabels`), applied *first* so the framework's identity labels win over
-a colliding key — which makes a colliding CR label inert rather than an error. This is the framework's
-**only** label channel: whatever an operator's user wants on the workloads, including platform
-opt-ins the SDK does not own such as `restarter.kubedoop.dev/enable`, is set by labelling the CR.
-`BaseRoleGroupHandler.ExtraLabels` and `ExtraAnnotations` no longer exist — they put a deployment-time
-decision in a compile-time field, and `ExtraLabels` mostly existed to supply the recommended labels
-the framework now emits itself.
-
-**The framework sets no annotations on the resources it builds**, and the CR's annotations are
-deliberately not propagated the way its labels are: that map carries
-`kubectl.kubernetes.io/last-applied-configuration` and the cleaner's `orphan.zncdata.dev/*` progress
-markers. A product needing e.g. cloud LoadBalancer annotations on the client Service has no
-supported way to set them today — tracked in zncdatadev/operator-go#553.
+`config.affinity` is also the one field in that block that **does not fold per leaf**: a role
+group's affinity REPLACES the role's rather than merging into it, and `affinity: {}` clears it.
+`resources` is a set of independent knobs where overriding `cpu.max` and keeping the rest is the
+normal thing to want; an affinity is a single scheduling *policy*, and a role group that needs
+different scheduling needs a different policy rather than a partial edit of the role's. Kubernetes
+treats `PodSpec.Affinity` the same way — Helm values and Kustomize patches replace it. Per-member
+inheritance was tried and reverted: it invented a semantic users would have to learn, and it removed
+the only way to say "this group has no affinity", which a single-node development group needs.
 
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
 

@@ -102,7 +102,7 @@ SDK 负责实现通用逻辑（如资源构建、配置合并、通用 Webhook �
 | 字段 | 粒度 | 为什么不更粗 / 不更细 |
 | --- | --- | --- |
 | `resources`（cpu/memory/storage） | **按叶子** | 只覆盖一个叶子（一个 `storageClass`、一个 `cpu.min`）是这个 API 的正常用法；struct 粒度会静默丢掉所有兄弟字段。 |
-| `affinity` | **按顶层成员**（`nodeAffinity`、`podAffinity`、`podAntiAffinity`） | 更粗会导致 RoleGroup 一加 node affinity 就丢掉 Role 的 Pod 打散。更细是错的：成员之下是完整的调度语句（`nodeSelectorTerms` 列表是"或的与"），把两个交错合并会产出双方都没写过的约束。 |
+| `affinity` | **整体替换** —— RoleGroup 的覆盖 Role 的，`{}` 表示清空 | 这是刻意的例外。`resources` 是一组独立旋钮；affinity 是**一条调度策略**，局部编辑会产出双方都没写过的约束（`nodeSelectorTerms` 列表是"或的与"）。Kubernetes 对 `PodSpec.Affinity` 也是整体替换。而且按成员继承会消灭"本组无 affinity"这个唯一表达方式，单节点组需要它。 |
 | `gracefulShutdownTimeout`、`logging` | 按字段 / 按容器 | 标量，以及本身已按容器名索引的 map。 |
 
 这套规则能成立的前提是这些字段是指针且**没有 CRD 层默认值**：结构化默认会在外层对象一存在就填充字段，因此叶子上的 `+kubebuilder:default` 会让"此处未设置"与"显式等于默认值"无法区分，Role 的值就永远赢不了。默认值因此放在消费时（`StorageResource.GetCapacity`、`RoleGroupConfigSpec.GetGracefulShutdownTimeout`）。

@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
@@ -357,7 +356,20 @@ func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.R
 	}
 
 	merged := group.DeepCopy()
-	merged.Affinity = mergeAffinity(role.Affinity, group.Affinity)
+	// Affinity is replaced wholesale, NOT merged member by member — the one field in this struct
+	// that does not fold per leaf, and deliberately so. `resources` is a set of independent knobs
+	// where overriding cpu.max and keeping the rest is the normal thing to want; an affinity is a
+	// single scheduling POLICY, and a role group that needs different scheduling needs a different
+	// policy rather than a partial edit of the role's. Kubernetes treats PodSpec.Affinity the same
+	// way: Helm values and Kustomize patches replace it, they do not interleave it.
+	//
+	// Merging per member was tried and reverted: it invented a semantic users would have to learn,
+	// and it removed the only way to say "this group has no affinity" — with inheritance per member,
+	// `affinity: {}` inherits everything and nothing expresses the empty policy a single-node group
+	// wants. Replacement keeps that: an absent affinity inherits the role's, `{}` clears it.
+	if merged.Affinity == nil {
+		merged.Affinity = role.Affinity.DeepCopy()
+	}
 	if merged.GracefulShutdownTimeout == nil {
 		merged.GracefulShutdownTimeout = role.GracefulShutdownTimeout
 	}
@@ -417,11 +429,6 @@ func mergeResources(role, group *v1alpha1.ResourcesSpec) *v1alpha1.ResourcesSpec
 	return merged
 }
 
-// affinityFields are the top-level members of corev1.Affinity. mergeAffinity folds a role's
-// affinity into a role group's one member at a time, so the list has to be the complete set: a
-// member missing from here would silently stop being inheritable.
-var affinityFields = []string{"nodeAffinity", "podAffinity", "podAntiAffinity"}
-
 // DecodeAffinity decodes the schema-free `config.affinity` RawExtension into a corev1.Affinity,
 // REJECTING fields the type does not have.
 //
@@ -462,124 +469,6 @@ func DecodeAffinity(raw *k8sruntime.RawExtension) (*corev1.Affinity, error) {
 		return nil, err
 	}
 	return affinity, nil
-}
-
-// mergeAffinity folds a role's affinity into a role group's, one top-level member at a time: the
-// group wins for a member it declares, and inherits the role's for a member it does not.
-//
-// The previous rule was all-or-nothing — any affinity at the group level discarded the role's
-// entirely — which is the exact behavior MergeRoleGroupConfig's own doc comment identifies as a bug
-// for `resources`: "Overriding one knob is the normal way to use this API, and it silently dropped
-// the rest." Affinity had the same shape and is where it hurts most: a role that spreads its pods
-// with podAntiAffinity, plus a group that adds a nodeAffinity to pin itself to an instance type,
-// silently lost the spreading and put the whole group on one node.
-//
-// Merging stops at the top level on purpose. Below it sit `requiredDuringSchedulingIgnoredDuringExecution`
-// and its preferred counterpart, whose values are complete scheduling statements — a nodeSelectorTerm
-// list is an OR of ANDs, and interleaving two of them produces a constraint neither author wrote.
-// Choosing per member is the finest granularity where the result still means what both sides said.
-//
-// Neither input is mutated and the result shares no memory with them.
-func mergeAffinity(role, group *k8sruntime.RawExtension) *k8sruntime.RawExtension {
-	roleFields, roleOK := affinityMembers(role)
-	groupFields, groupOK := affinityMembers(group)
-
-	// Anything that is not a JSON object cannot be merged member-wise. Rather than guess, keep the
-	// old precedence (group wins whole) and let DecodeAffinity fail the build with the real reason —
-	// the same malformed value reaches it a moment later.
-	if !roleOK || !groupOK {
-		if group != nil {
-			return group.DeepCopy()
-		}
-		return role.DeepCopy()
-	}
-
-	merged := make(map[string]json.RawMessage, len(affinityFields))
-	for _, field := range affinityFields {
-		if value, ok := groupFields[field]; ok {
-			merged[field] = value
-			continue
-		}
-		if value, ok := roleFields[field]; ok {
-			merged[field] = value
-		}
-	}
-	// Members outside the known set are preserved so the strict decode still gets to reject them
-	// with a message naming the field, instead of this merge quietly deleting the evidence.
-	for _, fields := range []map[string]json.RawMessage{roleFields, groupFields} {
-		for field, value := range fields {
-			if _, known := merged[field]; known {
-				continue
-			}
-			if !isAffinityField(field) {
-				merged[field] = value
-			}
-		}
-	}
-
-	if len(merged) == 0 {
-		return nil
-	}
-	encoded, err := json.Marshal(merged)
-	if err != nil {
-		// A map of already-valid json.RawMessage values cannot fail to marshal; keep the group's
-		// value rather than dropping the user's configuration on an impossible path.
-		if group != nil {
-			return group.DeepCopy()
-		}
-		return role.DeepCopy()
-	}
-	return &k8sruntime.RawExtension{Raw: encoded}
-}
-
-// affinityMembers splits a RawExtension into its top-level JSON members. The bool reports whether
-// the value was a JSON object at all; an absent value is an empty object, which merges cleanly.
-func affinityMembers(raw *k8sruntime.RawExtension) (map[string]json.RawMessage, bool) {
-	if raw == nil || len(raw.Raw) == 0 {
-		return map[string]json.RawMessage{}, true
-	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(raw.Raw, &members); err != nil {
-		return nil, false
-	}
-	if members == nil {
-		// Explicit JSON null.
-		return map[string]json.RawMessage{}, true
-	}
-	return members, true
-}
-
-// isAffinityField reports whether name is a known top-level member of corev1.Affinity.
-func isAffinityField(name string) bool {
-	return slices.Contains(affinityFields, name)
-}
-
-// affinityFieldsAreComplete fails the build if corev1.Affinity grows a member affinityFields does
-// not list, which would silently stop that member from being inheritable from the role level.
-func affinityFieldsAreComplete() error {
-	encoded, err := json.Marshal(corev1.Affinity{
-		NodeAffinity:    &corev1.NodeAffinity{},
-		PodAffinity:     &corev1.PodAffinity{},
-		PodAntiAffinity: &corev1.PodAntiAffinity{},
-	})
-	if err != nil {
-		return err
-	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &members); err != nil {
-		return err
-	}
-	for name := range members {
-		if !isAffinityField(name) {
-			return fmt.Errorf("corev1.Affinity has member %q that affinityFields does not list, "+
-				"so a role-level value for it would not be inherited by its role groups", name)
-		}
-	}
-	if len(members) != len(affinityFields) {
-		return fmt.Errorf("affinityFields lists %d members but corev1.Affinity marshals %d",
-			len(affinityFields), len(members))
-	}
-	return nil
 }
 
 // RoleGroupHandler is the interface that product operators must implement

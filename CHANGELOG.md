@@ -128,18 +128,14 @@ changes are listed below.**
   the SDK is built against is now rejected rather than ignored. That is the honest answer — the
   framework cannot honor a field it does not know — and it fails where someone can read it rather
   than when a node drains at 3am.
-- **A role group's affinity no longer discards the role's.** `MergeRoleGroupConfig` folds affinity
-  **per top-level member** (`nodeAffinity`, `podAffinity`, `podAntiAffinity`): the group wins for a
-  member it declares and inherits the role's for a member it does not. It was all-or-nothing, which
-  is the same defect the merge's own doc comment identifies for `resources` — "Overriding one knob is
-  the normal way to use this API, and it silently dropped the rest". Here it meant a role spreading
-  its pods with `podAntiAffinity`, plus a group adding a `nodeAffinity` to pin itself to an instance
-  type, silently lost the spreading and put the whole group on one node.
-
-  Merging stops at the top level on purpose: below it sit complete scheduling statements (a
-  `nodeSelectorTerms` list is an OR of ANDs), and interleaving two of them produces a constraint
-  neither author wrote. An unrecognised member is carried *through* the merge rather than dropped, so
-  the strict decode still gets to reject it by name.
+- **`config.affinity` replaces rather than merges, and that is now documented and tested.** A role
+  group's affinity has always replaced the role's wholesale, with `affinity: {}` clearing it; none
+  of that was written down or covered by a spec. It stays that way deliberately: `resources` is a
+  set of independent knobs where overriding `cpu.max` and keeping the rest is the normal thing to
+  want, but an affinity is a single scheduling *policy*, and Kubernetes replaces `PodSpec.Affinity`
+  too (Helm values, Kustomize patches). Per-member inheritance was implemented and then reverted —
+  it invented a semantic users would have to learn, and it removed the only way to say "this group
+  has no affinity", which a single-node development group needs.
 - A typed `*corev1.Affinity` CRD field was measured and **rejected**: it grows the generated CRD from
   39 KB to 192 KB (the field appears at both role and role-group level), and `kubectl apply` stores
   the whole CRD in `last-applied-configuration` — within one annotation's 256 KB limit, leaving a

@@ -149,10 +149,11 @@ var _ = Describe("Affinity is decoded strictly", func() {
 	})
 })
 
-var _ = Describe("Affinity merges per member, not wholesale", func() {
-	// MergeRoleGroupConfig's own doc comment says why leaf granularity matters for `resources`:
-	// "Overriding one knob is the normal way to use this API, and it silently dropped the rest."
-	// Affinity had the same shape and is where it hurts most.
+var _ = Describe("Affinity is replaced wholesale, not merged", func() {
+	// The one field in RoleGroupConfigSpec that does not fold per leaf. `resources` is a set of
+	// independent knobs where overriding one and keeping the rest is the normal thing to want; an
+	// affinity is a single scheduling POLICY. Kubernetes agrees — Helm values and Kustomize patches
+	// replace PodSpec.Affinity, they do not interleave it.
 	roleAntiAffinity := `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[` +
 		`{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"role":"worker"}}}]}}`
 	groupNodeAffinity := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
@@ -165,90 +166,44 @@ var _ = Describe("Affinity merges per member, not wholesale", func() {
 		)
 	}
 
-	It("keeps the role's spreading when a group adds node affinity", func() {
-		// The bug: a role spreads its pods with podAntiAffinity, a group pins itself to an instance
-		// type, and the whole group ended up on ONE node because the group's affinity replaced the
-		// role's entirely.
-		merged := mergedConfig(raw(roleAntiAffinity), raw(groupNodeAffinity))
-
-		m := members(merged.Affinity)
-		Expect(m).To(HaveKey("podAntiAffinity"), "inherited from the role")
-		Expect(m).To(HaveKey("nodeAffinity"), "declared by the group")
-
-		// And the merged value is still a valid Affinity with both constraints intact.
-		affinity, err := reconciler.DecodeAffinity(merged.Affinity)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(HaveLen(1))
-		Expect(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms).To(HaveLen(1))
-	})
-
-	It("lets the group win for a member both declare", func() {
-		// Per-member precedence, not per-field-inside-a-member: a nodeSelectorTerm list is an OR of
-		// ANDs, and interleaving two of them produces a constraint neither author wrote.
-		role := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
-			`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"zone","operator":"In","values":["a"]}]}]}}}`
-		group := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
-			`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"zone","operator":"In","values":["b"]}]}]}}}`
-
-		affinity, err := reconciler.DecodeAffinity(mergedConfig(raw(role), raw(group)).Affinity)
-		Expect(err).NotTo(HaveOccurred())
-		terms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
-		Expect(terms).To(HaveLen(1), "the group's term replaces the role's, they are not concatenated")
-		Expect(terms[0].MatchExpressions[0].Values).To(Equal([]string{"b"}))
-	})
-
 	It("inherits the role's affinity when the group declares none", func() {
-		merged := mergedConfig(raw(roleAntiAffinity), nil)
-		Expect(members(merged.Affinity)).To(HaveKey("podAntiAffinity"))
+		Expect(members(mergedConfig(raw(roleAntiAffinity), nil).Affinity)).To(HaveKey("podAntiAffinity"))
+	})
+
+	It("replaces the role's affinity entirely when the group declares one", func() {
+		// The group states a whole policy, so it gets a whole policy — the role's podAntiAffinity is
+		// NOT carried along. A group that wants both restates both, which is verbose but says
+		// exactly what will be scheduled.
+		m := members(mergedConfig(raw(roleAntiAffinity), raw(groupNodeAffinity)).Affinity)
+		Expect(m).To(HaveKey("nodeAffinity"))
+		Expect(m).NotTo(HaveKey("podAntiAffinity"))
+	})
+
+	It("lets a group clear the role's affinity with an empty object", func() {
+		// This is the case per-member inheritance cannot express, and it is a real one: a
+		// single-node development role group has to be able to opt out of the role's spreading.
+		affinity, err := reconciler.DecodeAffinity(mergedConfig(raw(roleAntiAffinity), raw(`{}`)).Affinity)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(affinity).To(Equal(&corev1.Affinity{}), "an empty policy, not the role's")
 	})
 
 	It("keeps the group's affinity when the role declares none", func() {
-		merged := mergedConfig(nil, raw(groupNodeAffinity))
-		Expect(members(merged.Affinity)).To(HaveKey("nodeAffinity"))
+		Expect(members(mergedConfig(nil, raw(groupNodeAffinity)).Affinity)).To(HaveKey("nodeAffinity"))
 	})
 
 	It("produces no affinity when neither declares one", func() {
 		Expect(mergedConfig(nil, nil).Affinity).To(BeNil())
 	})
 
-	It("does not mutate either input", func() {
-		role, group := raw(roleAntiAffinity), raw(groupNodeAffinity)
-		roleBefore, groupBefore := string(role.Raw), string(group.Raw)
+	It("does not alias the role's value into the merged config", func() {
+		// The merged config is handed to a handler that may edit it; the CR's spec must not move.
+		role := raw(roleAntiAffinity)
+		before := string(role.Raw)
 
-		merged := mergedConfig(role, group)
+		merged := mergedConfig(role, nil)
 		merged.Affinity.Raw[0] = 'X'
 
-		Expect(string(role.Raw)).To(Equal(roleBefore))
-		Expect(string(group.Raw)).To(Equal(groupBefore))
-	})
-
-	It("carries an unknown member through so the decode can still reject it", func() {
-		// The merge must not become a second place where a typo disappears: dropping the unknown key
-		// here would hand DecodeAffinity a clean object and the user would be back to silence.
-		merged := mergedConfig(raw(`{"nodeAffinty":{"x":1}}`), raw(groupNodeAffinity))
-		Expect(members(merged.Affinity)).To(HaveKey("nodeAffinty"))
-
-		_, err := reconciler.DecodeAffinity(merged.Affinity)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("nodeAffinty"))
-	})
-
-	It("falls back to the group's value when a side is not a JSON object", func() {
-		// Nothing sensible can be merged member-wise here. Rather than guess, keep the old
-		// precedence and let the strict decode fail the build with the real reason.
-		merged := mergedConfig(raw(`"not-an-object"`), raw(groupNodeAffinity))
-		Expect(members(merged.Affinity)).To(HaveKey("nodeAffinity"))
-
-		merged = mergedConfig(raw(roleAntiAffinity), raw(`["also-not-an-object"]`))
-		Expect(merged.Affinity).NotTo(BeNil())
-		_, err := reconciler.DecodeAffinity(merged.Affinity)
-		Expect(err).To(HaveOccurred(), "the malformed value reaches the loud check")
-	})
-
-	It("treats an explicit JSON null as no affinity at all", func() {
-		merged := mergedConfig(raw(roleAntiAffinity), raw(`null`))
-		Expect(members(merged.Affinity)).To(HaveKey("podAntiAffinity"),
-			"a null group value inherits rather than blanking the role's")
+		Expect(string(role.Raw)).To(Equal(before))
 	})
 })
 

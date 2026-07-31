@@ -102,7 +102,7 @@ Each field type folds with a defined strategy:
 | field | granularity | why not coarser / finer |
 | --- | --- | --- |
 | `resources` (cpu/memory/storage) | **per leaf** | Overriding one leaf — a `storageClass`, a `cpu.min` — is the normal way to use the API; struct granularity silently dropped every sibling. |
-| `affinity` | **per top-level member** (`nodeAffinity`, `podAffinity`, `podAntiAffinity`) | Coarser lost a Role's pod spreading whenever a RoleGroup added node affinity. Finer is wrong: below a member sit complete scheduling statements (a `nodeSelectorTerms` list is an OR of ANDs), and interleaving two produces a constraint neither author wrote. |
+| `affinity` | **wholesale** — the RoleGroup's replaces the Role's, and `{}` clears it | The exception, and deliberate. `resources` is independent knobs; an affinity is a single scheduling *policy*, so a partial edit produces a constraint neither author wrote (a `nodeSelectorTerms` list is an OR of ANDs). Kubernetes replaces `PodSpec.Affinity` too. Per-member inheritance also removes the only way to express "no affinity", which a single-node group needs. |
 | `gracefulShutdownTimeout`, `logging` | per field / per container | Scalars and an already keyed map. |
 
 This works only because these fields are pointers with **no CRD-level default**: structural defaulting fills a field as soon as its enclosing object exists, so a `+kubebuilder:default` on a leaf makes "unset here" indistinguishable from "explicitly the default" and the Role's value can never win. Defaults therefore live at consumption time (`StorageResource.GetCapacity`, `RoleGroupConfigSpec.GetGracefulShutdownTimeout`).
