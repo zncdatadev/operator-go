@@ -4,6 +4,23 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-31a] (the irreversible teardown step goes last)
+
+### Core Architecture (`architecture.md`, `architecture_zh.md`)
+
+- §4.4.3's PVC handling carried the same false justification as the code — "before the scale-to-0 so
+  the selector is still meaningful" — for an ordering the implementation never needed. Replaced with
+  the rule it should have stated: **the irreversible step goes last**, after the drain, because
+  deleting a role group is undoable right up until its data goes. Written as a constraint on any
+  future teardown step rather than a detail of this one, plus why PVCs still precede the StatefulSet
+  (the cleaner reaches them through its selector) and why the drain-timeout path falls through.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- The teardown order now shows the PVC step and where it sits, with the same reasoning.
+
+---
+
 ## [2026-07-30b] (schema-free config must be decoded strictly; affinity replaces, it does not merge)
 
 ### Core Architecture (`architecture.md`, `architecture_zh.md`)
