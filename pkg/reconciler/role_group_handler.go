@@ -353,6 +353,17 @@ func MergeRoleGroupConfig(role, group *v1alpha1.RoleGroupConfigSpec) *v1alpha1.R
 	}
 
 	merged := group.DeepCopy()
+	// Affinity is replaced wholesale, NOT merged member by member — the one field in this struct
+	// that does not fold per leaf, and deliberately so. `resources` is a set of independent knobs
+	// where overriding cpu.max and keeping the rest is the normal thing to want; an affinity is a
+	// single scheduling POLICY, and a role group that needs different scheduling needs a different
+	// policy rather than a partial edit of the role's. Kubernetes treats PodSpec.Affinity the same
+	// way: Helm values and Kustomize patches replace it, they do not interleave it.
+	//
+	// Merging per member was tried and reverted: it invented a semantic users would have to learn,
+	// and it removed the only way to say "this group has no affinity" — with inheritance per member,
+	// `affinity: {}` inherits everything and nothing expresses the empty policy a single-node group
+	// wants. Replacement keeps that: an absent affinity inherits the role's, `{}` clears it.
 	if merged.Affinity == nil {
 		merged.Affinity = role.Affinity.DeepCopy()
 	}

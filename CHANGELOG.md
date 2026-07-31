@@ -112,6 +112,36 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (config.affinity)
+
+- **A misspelled affinity key now fails the build instead of scheduling the pods anywhere.**
+  `config.affinity` is a schema-free `RawExtension`, so the API server neither validates nor prunes
+  it, and `json.Unmarshal` ignores what it does not recognise. The two together made a typo
+  completely silent: `nodeAffinty` (one letter short) passed `kubectl apply`, decoded into an empty
+  `corev1.Affinity`, and the pods were scheduled wherever the scheduler liked — no event, no log
+  line, no status change. Affinity is the scheduling *contract* for these products (rack awareness,
+  spreading a quorum across failure domains, keeping a worker near its data), so losing it is not
+  cosmetic.
+
+  `reconciler.DecodeAffinity` now decodes with `DisallowUnknownFields`, and the build error names the
+  offending field. **The trade-off is deliberate**: a field belonging to a newer Kubernetes API than
+  the SDK is built against is now rejected rather than ignored. That is the honest answer — the
+  framework cannot honor a field it does not know — and it fails where someone can read it rather
+  than when a node drains at 3am.
+- **`config.affinity` replaces rather than merges, and that is now documented and tested.** A role
+  group's affinity has always replaced the role's wholesale, with `affinity: {}` clearing it; none
+  of that was written down or covered by a spec. It stays that way deliberately: `resources` is a
+  set of independent knobs where overriding `cpu.max` and keeping the rest is the normal thing to
+  want, but an affinity is a single scheduling *policy*, and Kubernetes replaces `PodSpec.Affinity`
+  too (Helm values, Kustomize patches). Per-member inheritance was implemented and then reverted —
+  it invented a semantic users would have to learn, and it removed the only way to say "this group
+  has no affinity", which a single-node development group needs.
+- A typed `*corev1.Affinity` CRD field was measured and **rejected**: it grows the generated CRD from
+  39 KB to 192 KB (the field appears at both role and role-group level), and `kubectl apply` stores
+  the whole CRD in `last-applied-configuration` — within one annotation's 256 KB limit, leaving a
+  real product's own fields no room. The strict decode recovers most of the diagnostic value at no
+  size cost.
+
 ### BREAKING (status conditions)
 
 - **`Degraded` no longer fires during a rolling update, a scale-up or a scale-down.** It was derived

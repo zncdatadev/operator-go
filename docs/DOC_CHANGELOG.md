@@ -4,6 +4,29 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-07-30b] (schema-free config must be decoded strictly; affinity replaces, it does not merge)
+
+### Core Architecture (`architecture.md`, `architecture_zh.md`)
+
+- §2.5 gained the rule the typed `config` block folds by, as a design constraint rather than an
+  implementation note: **the finest granularity at which the result still means what both authors
+  said**. Added the per-field table with the reason each granularity is not coarser *or* finer, and
+  the reason `affinity` is the deliberate exception that replaces wholesale — it is one policy, not
+  a set of knobs, and per-member inheritance would leave no way to express "no affinity".
+- Added the general rule for schema-free fields: anything the SDK accepts as opaque JSON and then
+  interprets must reject unknown members loudly, because with
+  `x-kubernetes-preserve-unknown-fields` the API server validates nothing and the SDK is the last
+  layer that can.
+
+### Framework Documentation (`AGENTS.md`)
+
+- Documented `reconciler.DecodeAffinity`'s strict decode, the concrete failure it prevents
+  (`nodeAffinty` passing admission and evaporating), the accepted trade-off for newer-Kubernetes
+  fields, and the previously undocumented wholesale replacement of `config.affinity` including that
+  `{}` clears it.
+
+---
+
 ## [2026-07-30a] (Degraded is a fault signal, not a progress signal)
 
 ### Core Architecture (`architecture.md`)
