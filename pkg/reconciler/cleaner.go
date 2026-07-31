@@ -988,8 +988,13 @@ func (c *RoleGroupCleaner) deletePDB(ctx context.Context, namespace, name string
 // update would — the whole point of scaling to zero first.
 //
 // Each phase returns deletionInFlight so the caller requeues instead of blocking a reconcile
-// worker: a drain outlives many reconcile cycles. If deletePVCs is true the PVCs are deleted
-// first, while the replica count still describes which ones exist; otherwise they are preserved.
+// worker: a drain outlives many reconcile cycles.
+//
+// When deletePVCs is true the PVCs are deleted at the END of that sequence — after the drain,
+// immediately before the StatefulSet — and not at the start. See the comment at that call site for
+// why the irreversible step goes last, why it nevertheless precedes the StatefulSet, and why the
+// drain-timeout path falls through to it. Without the annotation they are preserved.
+//
 // clusterName names the owning cluster in the emitted Deleted event.
 func (c *RoleGroupCleaner) deleteStatefulSet(
 	ctx context.Context,
