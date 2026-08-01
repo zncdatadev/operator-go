@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -425,7 +426,7 @@ func mergeResources(role, group *v1alpha1.ResourcesSpec) *v1alpha1.ResourcesSpec
 			merged.Storage.Capacity = copyQuantity(role.Storage.Capacity)
 		}
 		if merged.Storage.StorageClass == nil {
-			merged.Storage.StorageClass = role.Storage.StorageClass
+			merged.Storage.StorageClass = copyString(role.Storage.StorageClass)
 		}
 	}
 
@@ -483,4 +484,14 @@ func copyQuantity(q *resource.Quantity) *resource.Quantity {
 	}
 	out := q.DeepCopy()
 	return &out
+}
+
+// copyString is copyQuantity for the pointer fields whose element is a plain string. Inheriting the
+// role's pointer directly would leave the merged config aliasing the live CR spec, which is what
+// every other branch of this merge deep-copies to avoid.
+func copyString(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	return ptr.To(*s)
 }

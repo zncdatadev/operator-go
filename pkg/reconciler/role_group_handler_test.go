@@ -47,6 +47,28 @@ var _ = Describe("MergeRoleGroupConfig leaf granularity", func() {
 		Expect(merged.Resources.Storage.Capacity.String()).To(Equal("500Gi"))
 	})
 
+	It("copies an inherited storageClass instead of aliasing the role spec", func() {
+		// Every other branch of this merge deep-copies. The role spec passed in is a pointer into
+		// the CR the informer cache holds, so a merged config that aliases it turns any later write
+		// through the pointer into a mutation of the cached object — an object the reconciler
+		// compares against to decide whether to write the status at all.
+		roleStorage := &v1alpha1.StorageResource{StorageClass: ptr.To("fast-ssd")}
+		merged := reconciler.MergeRoleGroupConfig(
+			&v1alpha1.RoleGroupConfigSpec{Resources: &v1alpha1.ResourcesSpec{Storage: roleStorage}},
+			&v1alpha1.RoleGroupConfigSpec{Resources: &v1alpha1.ResourcesSpec{
+				Storage: &v1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse("100Gi"))},
+			}},
+		)
+
+		Expect(merged.Resources.Storage.StorageClass).To(HaveValue(Equal("fast-ssd")))
+		Expect(merged.Resources.Storage.StorageClass).NotTo(BeIdenticalTo(roleStorage.StorageClass),
+			"the merged config must not share the role's pointer")
+
+		*merged.Resources.Storage.StorageClass = "slow-hdd"
+		Expect(roleStorage.StorageClass).To(HaveValue(Equal("fast-ssd")),
+			"writing through the merged config must not reach the role spec")
+	})
+
 	It("keeps the role's cpu.max when the group overrides only cpu.min", func() {
 		merged := reconciler.MergeRoleGroupConfig(
 			&v1alpha1.RoleGroupConfigSpec{Resources: &v1alpha1.ResourcesSpec{
