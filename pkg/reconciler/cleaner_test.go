@@ -33,6 +33,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -2581,6 +2582,25 @@ var _ = Describe("RoleGroupCleaner extra resource reclaim", func() {
 		Expect(exists(extra.Name)).To(BeTrue())
 	})
 
+	It("lists extras through the uncached reader, not the cache", func() {
+		// The role group's status entry is pruned on the strength of this pass settling, and extras
+		// are not in discoverLiveOrphans and have no derived name — so unlike the framework's own
+		// kinds, an extra missed because a cached List had not caught up is missed for good. The
+		// recording reader below proves the read does not go through the cache.
+		cluster := "extras-uncached"
+		extra := extraSecret(cluster+"-listener", cluster, "role", "gone", ownerRefs(cluster, uid))
+
+		reader := &recordingReader{Reader: k8sClient}
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithExtraResourceKinds(&corev1.Secret{}).
+			WithAPIReader(reader)
+		reclaim(cleaner, cluster, uid)
+
+		Expect(reader.secretLists).To(BeNumerically(">", 0),
+			"the extras listing must go through the APIReader")
+		Expect(exists(extra.Name)).To(BeFalse())
+	})
+
 	It("ignores an unlabelled extra rather than guessing", func() {
 		// Without the role group's labels the cleaner has no handle on it at all. That is the
 		// documented cost of not labelling extras, and it fails closed.
@@ -2599,3 +2619,17 @@ var _ = Describe("RoleGroupCleaner extra resource reclaim", func() {
 		Expect(exists(bare.Name)).To(BeTrue())
 	})
 })
+
+// recordingReader counts the unstructured Secret lists that go through it, so a spec can tell an
+// uncached read from a cached one. Everything else is delegated unchanged.
+type recordingReader struct {
+	client.Reader
+	secretLists int
+}
+
+func (r *recordingReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if u, ok := list.(*unstructured.UnstructuredList); ok && u.GetKind() == "SecretList" {
+		r.secretLists++
+	}
+	return r.Reader.List(ctx, list, opts...)
+}

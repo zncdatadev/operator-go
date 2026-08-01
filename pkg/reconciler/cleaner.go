@@ -1332,9 +1332,19 @@ func (c *RoleGroupCleaner) deleteRoleGroupExtras(
 			continue
 		}
 
+		// Read through the confirmation reader (the uncached APIReader when one is wired), for the
+		// reason confirmRoleGroupReclaimed already gives: the caller prunes the role group from
+		// Status.RoleGroups on the strength of this pass settling, and a cached List that has not
+		// caught up answers "nothing here" for an extra that exists.
+		//
+		// For extras that answer is TERMINAL rather than merely early. The framework's own kinds are
+		// re-found by discoverLiveOrphans on a later pass, which is exactly the safety net #556
+		// added; extras are not in that inventory and have no derived name to look them up by, so a
+		// missed one is the leak this function exists to close, arriving through a stale cache
+		// instead of through the missing feature.
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
-		if err := c.Client.List(ctx, list, client.InNamespace(namespace), selector); err != nil {
+		if err := c.confirmReader().List(ctx, list, client.InNamespace(namespace), selector); err != nil {
 			return deletionInFlight, fmt.Errorf("failed to list extra %s resources of role group %s/%s: %w",
 				gvk.Kind, roleName, groupName, c.apiError(err))
 		}

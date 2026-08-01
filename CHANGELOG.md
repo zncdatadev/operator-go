@@ -131,6 +131,12 @@ changes are listed below.**
   the same one. Ownership alone would take every surviving role group's extras along with the
   orphan's. The name check the framework's own kinds use is unavailable here: an extra's name
   belongs to the product.
+- The listing goes through the **uncached** reader (`WithAPIReader`), for the reason
+  `confirmRoleGroupReclaimed` already gives: the role group's status entry is pruned on the strength
+  of the pass settling, and a cached `List` that has not caught up answers "nothing here" for an
+  extra that exists. For extras that answer is *terminal* rather than early — the framework's own
+  kinds are re-found by live orphan discovery, extras are not in that inventory and have no derived
+  name to look them up by.
 - It fails closed. An unregistered kind, an unlabelled object, or an empty owner UID (the same
   precedent as live orphan discovery and the role-PDB reclaim) means nothing is deleted — exactly
   the behaviour before this change. A product that builds its controller through `ControllerBuilder`
