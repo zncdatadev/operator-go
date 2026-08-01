@@ -1887,7 +1887,9 @@ var _ = Describe("RoleGroupCleaner rate limit mapping", func() {
 	It("maps a 429 from the PVC listing", func() {
 		clusterName := "pvc-list-429"
 		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
-		sts := orphanTestStatefulSet(resourceName, 1)
+		// Already drained: PVC deletion runs after the drain, so a StatefulSet still carrying
+		// replicas would be scaled to zero and this pass would never reach the listing.
+		sts := orphanTestStatefulSet(resourceName, 0)
 		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
 			ObjectMeta: metav1.ObjectMeta{Name: "data"},
 			Spec: corev1.PersistentVolumeClaimSpec{
@@ -2302,5 +2304,159 @@ var _ = Describe("RoleGroupCleaner live orphan discovery", func() {
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 		Expect(condition.Message).To(ContainSubstring("worker/removed"))
+	})
+})
+
+var _ = Describe("RoleGroupCleaner PVC deletion order", func() {
+	// Deleting a role group is undoable right up until its data goes, so the irreversible step has
+	// to be the last one — not the first. PVC deletion used to run before the scale-to-zero,
+	// justified by a comment claiming the replica count was still valid; the listing has always
+	// been by pod selector and never used the replica count at all.
+	var ctx context.Context
+	const pollInterval = 2 * time.Second
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	// stsWithPVC creates an orphaned StatefulSet declaring a volumeClaimTemplate, plus a PVC
+	// carrying the selector labels the StatefulSet controller copies onto the real ones.
+	stsWithPVC := func(clusterName string, replicas, statusReplicas int32) (string, *corev1.PersistentVolumeClaim) {
+		resourceName := reconciler.RoleGroupResourceName(clusterName, "role", "gone")
+		sts := orphanTestStatefulSet(resourceName, replicas)
+		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
+			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}}
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, sts) })
+
+		if statusReplicas > 0 {
+			sts.Status.Replicas = statusReplicas
+			Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+		}
+
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "data-" + resourceName + "-0",
+				Namespace: cleanerTestNamespace,
+				// What the StatefulSet controller stamps on a PVC it provisions.
+				Labels: map[string]string{"app": resourceName},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pvc) })
+		return resourceName, pvc
+	}
+
+	pvcExists := func(pvc *corev1.PersistentVolumeClaim) bool {
+		live := &corev1.PersistentVolumeClaim{}
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pvc), live)
+		return err == nil && live.DeletionTimestamp == nil
+	}
+
+	deletePVCAnnotations := map[string]string{reconciler.AnnotationDeletePVCs: "true"}
+
+	It("keeps the PVCs while the StatefulSet is still being scaled down", func() {
+		// The pass that issues the scale-to-zero must not touch the volumes: at this moment the
+		// pods are still running and writing, and re-adding the role group would still be free.
+		clusterName := "pvc-order-scale"
+		_, pvc := stsWithPVC(clusterName, 3, 0)
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).WithDrainPollInterval(pollInterval)
+
+		requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(),
+			status, "", deletePVCAnnotations)
+		Expect(err).To(Succeed())
+		Expect(requeue).To(Equal(pollInterval), "the scale-down is in flight")
+		Expect(pvcExists(pvc)).To(BeTrue(), "the data must outlive the scale-down request")
+	})
+
+	It("keeps the PVCs while the pods are still draining", func() {
+		// Scaled to zero but .status.replicas has not reached 0: the pods are terminating. Still
+		// nothing irreversible.
+		clusterName := "pvc-order-drain"
+		_, pvc := stsWithPVC(clusterName, 0, 2)
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).WithDrainPollInterval(pollInterval)
+
+		requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(),
+			status, "", deletePVCAnnotations)
+		Expect(err).To(Succeed())
+		Expect(requeue).To(Equal(pollInterval), "the drain is in flight")
+		Expect(pvcExists(pvc)).To(BeTrue(), "the data must outlive the drain")
+	})
+
+	It("deletes the PVCs once the pods are gone", func() {
+		// Drained: now the volumes are provably unused and the user did ask for them to go.
+		clusterName := "pvc-order-done"
+		resourceName, pvc := stsWithPVC(clusterName, 0, 0)
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).WithDrainPollInterval(pollInterval)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(),
+			status, "", deletePVCAnnotations)
+		Expect(err).To(Succeed())
+
+		Expect(pvcExists(pvc)).To(BeFalse(), "the volumes go with the workload")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Namespace: cleanerTestNamespace, Name: resourceName}, &appsv1.StatefulSet{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
+	})
+
+	It("leaves the PVCs alone entirely without the annotation", func() {
+		// The annotation is the whole opt-in; nothing about a teardown implies destroying data.
+		clusterName := "pvc-order-optin"
+		_, pvc := stsWithPVC(clusterName, 0, 0)
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+		Expect(pvcExists(pvc)).To(BeTrue())
+	})
+
+	It("still deletes the PVCs when the drain times out", func() {
+		// A pod that will not terminate must not leak the volumes the user asked to reclaim: the
+		// timeout path falls through to the same deletion rather than skipping it.
+		clusterName := "pvc-order-timeout"
+		resourceName, pvc := stsWithPVC(clusterName, 0, 2)
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithDrainPollInterval(pollInterval).
+			WithDrainTimeout(time.Nanosecond)
+
+		// First pass stamps the drain start; the deadline has passed by the next one.
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(),
+			status, "", deletePVCAnnotations)
+		Expect(err).To(Succeed())
+		Expect(pvcExists(pvc)).To(BeTrue(), "not on the pass that only records the deadline")
+
+		_, err = cleaner.Cleanup(ctx, cleanerTestNamespace, clusterName, orphanedGroupSpec(),
+			status, "", deletePVCAnnotations)
+		Expect(err).To(Succeed())
+		Expect(pvcExists(pvc)).To(BeFalse(), "the user asked for them; a stuck pod must not leak them")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Namespace: cleanerTestNamespace, Name: resourceName}, &appsv1.StatefulSet{})).
+			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
 	})
 })

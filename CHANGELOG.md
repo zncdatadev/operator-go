@@ -112,6 +112,25 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (orphan cleanup)
+
+- **The PVCs of an orphaned role group are now deleted after the drain, not before the
+  scale-to-zero.** With `operator.zncdata.dev/delete-pvcs` set, the most destructive and least
+  reversible step of the whole teardown was being issued first — while the pods were still running
+  and writing — on the strength of a comment claiming "replica count is still valid at this point".
+  That was never true: `deletePVCsForStatefulSet` has listed by the pod selector since it was
+  written, precisely so it does not depend on the replica count.
+
+  It matters because deleting a role group is undoable right up until the data goes. A user who
+  removes a role group by mistake and re-adds it a minute later — a `git revert` of a bad CR edit —
+  used to find the volumes already reclaimed while the StatefulSet was still there draining. Now the
+  drain window is safe: re-adding costs a restart, not a restore.
+
+  PVCs still go **before** the StatefulSet, because the cleaner reaches them through its selector
+  and the other order would leave them unreachable; a process death between the two steps simply
+  re-enters the same pass. The drain-timeout path falls through to the same deletion, so a pod that
+  will not terminate cannot silently leak the volumes the user asked to reclaim.
+
 ### BREAKING (config.affinity)
 
 - **A misspelled affinity key now fails the build instead of scheduling the pods anywhere.**

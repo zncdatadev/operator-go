@@ -14,7 +14,7 @@ Every non-test file in this package:
 | `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
 | `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters |
 | `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
-| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithDrainTimeout` / `WithAPIReader` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` / `AnnotationDrainStarted`, `LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`, `ConditionOrphanCleanupPending`, `DefaultDrainPollInterval` / `DefaultDrainTimeout` |
+| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → [PVCs] → StatefulSet → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithDrainTimeout` / `WithAPIReader` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` / `AnnotationDrainStarted`, `LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`, `ConditionOrphanCleanupPending`, `DefaultDrainPollInterval` / `DefaultDrainTimeout` |
 | `health.go` | `HealthManager` — role group aggregation into Available/Progressing, pod-failure detection into Degraded, the `Paused` condition, plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
 | `dependency.go` | `Dependency` / `DependencyKind` / `DependencyResolver` — declarative existence checks for referenced ConfigMaps and Secrets, plus the explicit `ValidateS3Connection` / `ValidateDatabaseConnection` / `ValidateZKConfig` helpers |
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
@@ -57,7 +57,12 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
 
    Both paths run **no SDK teardown code**. Three consequences:
    - `AnnotationDeletePVCs` (`operator.zncdata.dev/delete-pvcs`) only affects the **orphan** path in
-     `cleaner.go` — PVCs of a StatefulSet whose role group was removed or renamed in the spec. It
+     `cleaner.go` — PVCs of a StatefulSet whose role group was removed or renamed in the spec. The
+     deletion runs **after the drain** (or after the drain deadline) and immediately before the
+     StatefulSet: nothing irreversible may happen while the pods are still running, so re-adding a
+     role group mid-teardown costs a restart rather than the data. PVCs go before the StatefulSet
+     because the cleaner finds them through its selector; a crash between the two re-enters the same
+     pass, whereas the other order would strand them. It
      has no effect when the whole cluster CR is deleted; those PVCs survive, because the SDK sets
      no `persistentVolumeClaimRetentionPolicy` and StatefulSet-managed PVCs therefore carry no
      owner reference for GC to follow.

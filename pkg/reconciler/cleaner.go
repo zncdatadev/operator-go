@@ -988,8 +988,13 @@ func (c *RoleGroupCleaner) deletePDB(ctx context.Context, namespace, name string
 // update would — the whole point of scaling to zero first.
 //
 // Each phase returns deletionInFlight so the caller requeues instead of blocking a reconcile
-// worker: a drain outlives many reconcile cycles. If deletePVCs is true the PVCs are deleted
-// first, while the replica count still describes which ones exist; otherwise they are preserved.
+// worker: a drain outlives many reconcile cycles.
+//
+// When deletePVCs is true the PVCs are deleted at the END of that sequence — after the drain,
+// immediately before the StatefulSet — and not at the start. See the comment at that call site for
+// why the irreversible step goes last, why it nevertheless precedes the StatefulSet, and why the
+// drain-timeout path falls through to it. Without the annotation they are preserved.
+//
 // clusterName names the owning cluster in the emitted Deleted event.
 func (c *RoleGroupCleaner) deleteStatefulSet(
 	ctx context.Context,
@@ -1012,13 +1017,6 @@ func (c *RoleGroupCleaner) deleteStatefulSet(
 	if !isOwnedByCluster(sts, ownerUID) {
 		logger.Info("Skipping StatefulSet deletion: not owned by this cluster", "name", name)
 		return deletionSettled, nil
-	}
-
-	// Delete PVCs BEFORE scaling to 0 (replica count is still valid at this point)
-	if deletePVCs {
-		if err := c.deletePVCsForStatefulSet(ctx, sts); err != nil {
-			return deletionInFlight, err
-		}
 	}
 
 	// A nil replica count means the API server default of 1, so it is a scale-down like any other.
@@ -1047,6 +1045,34 @@ func (c *RoleGroupCleaner) deleteStatefulSet(
 		}
 		logger.Info("Orphaned StatefulSet drain timed out; deleting it with pods still terminating",
 			"name", name, "remainingReplicas", sts.Status.Replicas, "drainTimeout", c.drainDeadline())
+	}
+
+	// Delete the PVCs here — after the drain, immediately before the StatefulSet — and not earlier.
+	//
+	// This used to run first, before the scale-to-zero, justified by a comment claiming "replica
+	// count is still valid at this point". That was never true: deletePVCsForStatefulSet has listed
+	// by the pod selector since it was written, precisely so it does not depend on the replica
+	// count. So the most destructive and least reversible step in the whole teardown was being
+	// issued first, for a reason the code never had.
+	//
+	// It matters because deleting a role group is undoable right up until the data goes. A user who
+	// removes a role group by mistake and re-adds it a minute later — a `git revert` of a bad CR
+	// edit — used to find the volumes already reclaimed while the StatefulSet was still there
+	// draining. Running after the drain means the pods are provably gone before anything
+	// irreversible happens, and re-adding the group during the drain costs a restart rather than
+	// the data.
+	//
+	// PVCs before the StatefulSet, not after: if the process dies between the two, the next pass
+	// still finds the StatefulSet, re-enters here and finishes the job. The other order would leave
+	// PVCs nothing ever looks at again — the cleaner finds them through the StatefulSet's selector,
+	// so once it is gone they are unreachable.
+	//
+	// The drain-timeout path above falls through to here deliberately: the user asked for the PVCs
+	// to go, and skipping them because a pod would not terminate would leak the volumes silently.
+	if deletePVCs {
+		if err := c.deletePVCsForStatefulSet(ctx, sts); err != nil {
+			return deletionInFlight, err
+		}
 	}
 
 	if err := c.Client.Delete(ctx, sts); err != nil {

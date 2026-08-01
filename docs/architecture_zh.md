@@ -419,7 +419,9 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 - **PVC 处理**：
   - 默认情况下，**PVC 在孤儿资源清理期间被保留**以保护数据。
-  - 在集群 CR 上设置注解 `operator.zncdata.dev/delete-pvcs: "true"` 后，cleaner 会同时删除孤儿 StatefulSet 的 PVC（按 StatefulSet 的 Pod 选择器列出，且在缩容到 0 之前执行，此时选择器仍然有意义）。
+  - 在集群 CR 上设置注解 `operator.zncdata.dev/delete-pvcs: "true"` 后，cleaner 会同时删除孤儿 StatefulSet 的 PVC，按 StatefulSet 的 Pod 选择器列出（这正是 StatefulSet 控制器给它创建的 PVC 打上的标签）。
+  - **不可逆的那一步放在最后。** 删除在 drain **之后**执行——即 `.status.replicas` 归零之后，或 drain 超时之后——并紧接在删除 StatefulSet 之前。删除一个 role group 在数据消失之前都是可撤销的，所以 Pod 还在运行时不允许发生任何不可逆的事：用户误删后在 drain 期间重新加回来，代价应该是一次重启而不是一次恢复。这是对**任何未来的拆除步骤**都成立的设计约束，而不是这一步的实现细节。
+  - PVC 在 StatefulSet 之前删、而不是之后：cleaner 是**通过** StatefulSet 的选择器找到它们的，先删工作负载会让它们再也无人可及。按这个顺序，进程在两步之间崩溃只会让下一轮重新进入同一段逻辑。drain 超时路径同样落到这次删除，所以一个终止不了的 Pod 不会悄悄泄漏用户明确要求回收的卷。
   - **适用范围**：仅限孤儿清理，即从 Spec 中移除的 role group。SDK 不注册 finalizer，因此删除整个 CR 不会执行任何 SDK 拆除逻辑：被删除集群的 PVC 交由 Kubernetes 自身的垃圾回收规则处理。但 `Reconcile` 仍必须*识别*删除——前台传播会让 CR 在其依赖对象被清理完之前保持可读——因此一旦 `deletionTimestamp` 被置上就立即返回，避免调和循环反复重建正被删除流程等待的那些依赖对象。
 
 ### 4.4.4 并发冲突处理
