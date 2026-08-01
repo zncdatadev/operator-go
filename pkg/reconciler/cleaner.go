@@ -395,6 +395,10 @@ func (c *RoleGroupCleaner) Cleanup(
 	}
 
 	setOrphanCleanupCondition(status, pending)
+	// Published on every pass, including at zero: a gauge only written when something is pending
+	// would keep its last non-zero value after the teardown finished, which is the opposite of what
+	// an alert on it should say.
+	OrphanCleanupPending.WithLabelValues(namespace, clusterName).Set(float64(len(pending)))
 
 	return nextRequeue, stderrors.Join(errs...)
 }
@@ -1082,6 +1086,7 @@ func (c *RoleGroupCleaner) deleteStatefulSet(
 		}
 		logger.Info("Orphaned StatefulSet drain timed out; deleting it with pods still terminating",
 			"name", name, "remainingReplicas", sts.Status.Replicas, "drainTimeout", c.drainDeadline())
+		OrphanDrainTimeouts.WithLabelValues(namespace, clusterName).Inc()
 	}
 
 	// Delete the PVCs here — after the drain, immediately before the StatefulSet — and not earlier.

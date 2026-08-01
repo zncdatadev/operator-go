@@ -370,6 +370,10 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("Cluster resource not found, assuming deleted")
+			// Drop this cluster's series. A gauge left behind keeps publishing its last value for a
+			// cluster that no longer exists, so an alert on "cleanup pending" would fire forever for
+			// something nobody can fix.
+			forgetClusterMetrics(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err

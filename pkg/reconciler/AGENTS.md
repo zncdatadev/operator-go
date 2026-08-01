@@ -20,6 +20,7 @@ Every non-test file in this package:
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
 | `event.go` | `EventManager` — Normal/Warning event emission on the CR. `NewEventManager(recorder, scheme)`: the scheme resolves the Kind named in resource events, which the typed objects `pkg/builder` produces do not carry. The framework emits exactly `Created`/`Updated`/`Deleted` (Normal) and `ReconcileError`/`ReconcilePanic`/`PodOverrideIgnored`/`UnknownConfiguredRole`/`ImmutableFieldIgnored`/`VectorSidecarSkipped` (Warning) — **there are no reconcile start/completion events**. `LogAndEmitError`/`LogAndEmitInfo` exist for product code and the framework never calls them |
 | `discovery.go` | `EnsureDiscoveryConfigMap` — shared ensure-helper for product discovery ConfigMaps (CreateOrUpdate + controller owner ref + canonical labels; the product computes the data map) |
+| `metrics.go` | `OrphanCleanupPending` (GaugeVec) and `OrphanDrainTimeouts` (CounterVec), registered on controller-runtime's `metrics.Registry` at init, plus `forgetClusterMetrics`. The framework exports **only** the cleanup state machine — see below |
 
 There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — status is written by
 `GenericReconciler.updateStatus` (see below) and the SDK registers no finalizer at all.
@@ -232,6 +233,31 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     `orphan.zncdata.dev/*` progress markers, neither of which belongs on a ConfigMap. A product
     needing e.g. cloud LoadBalancer annotations on the client Service has no supported way to set
     them today; see zncdatadev/operator-go#553.
+17. **The framework exports metrics for the orphan cleanup state machine and nothing else.** Both
+    live in `metrics.go`, are registered on controller-runtime's `metrics.Registry` at init (so
+    they appear on the endpoint an operator already serves, with no wiring in `main.go`), and are
+    labelled `namespace` + `cluster`:
+
+    - `operator_go_orphan_cleanup_pending` (Gauge) — role groups not finished being reclaimed.
+      Written on **every** pass including at zero; a gauge only set while something is pending keeps
+      its last non-zero value after the teardown finishes.
+    - `operator_go_orphan_drain_timeouts_total` (Counter) — orphaned StatefulSets deleted with pods
+      still terminating. A counter because the interesting question is "did this ever happen", and
+      the answer must survive an operator restart.
+
+    `forgetClusterMetrics` **deletes** (not zeroes) a cluster's series on the `IsNotFound` branch of
+    `Reconcile`, which is the only place the framework learns a CR is gone — it registers no
+    finalizer, so there is no teardown callback. A zeroed series still publishes a series for
+    something that does not exist.
+
+    The boundary is deliberate. controller-runtime already exports reconcile counts, errors and
+    durations (`controller_runtime_reconcile_*`), and kube-state-metrics already turns CR status
+    conditions into series once configured for the product's CRD — `Available`/`Progressing`/
+    `Degraded` belong there. What neither covers is the cleanup state machine, because it is
+    internal to this SDK: it spans many reconciles, records progress in annotations on the objects
+    it is retiring, and reports the rest in log lines, so a role group stuck mid-teardown for three
+    days produces no error, no failing reconcile and no condition transition. Do not grow this file
+    into a second copy of tools that already exist.
 
 ## Reconcile Flow
 
