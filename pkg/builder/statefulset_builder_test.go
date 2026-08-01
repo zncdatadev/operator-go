@@ -1066,7 +1066,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			capacity := resource.MustParse("10Gi")
 			storage := &v1alpha1.StorageResource{
 				Capacity:     &capacity,
-				StorageClass: "fast-ssd",
+				StorageClass: ptr.To("fast-ssd"),
 			}
 			mountPath := "/data"
 			result := stsBuilder.WithStorage(storage, mountPath)
@@ -1088,7 +1088,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			capacity := resource.MustParse("10Gi")
 			storage := &v1alpha1.StorageResource{
 				Capacity:     &capacity,
-				StorageClass: "fast-ssd",
+				StorageClass: ptr.To("fast-ssd"),
 			}
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).
@@ -1765,5 +1765,35 @@ var _ = Describe("StatefulSet rollout knobs", func() {
 
 		second := b.Build()
 		Expect(*second.Spec.UpdateStrategy.RollingUpdate.Partition).To(Equal(int32(2)))
+	})
+})
+
+var _ = Describe("storageClass distinguishes unset from empty", func() {
+	// Kubernetes reads `storageClassName: ""` as "no class at all — bind a pre-provisioned PV, do no
+	// dynamic provisioning", which is a different request from leaving the field out (use the
+	// cluster default). A plain string could not express the first, because "" was also how the
+	// role/role-group merge spelled "inherit".
+	build := func(class *string) *appsv1.StatefulSet {
+		return builder.NewStatefulSetBuilder("sts", "ns").
+			WithStorage(&v1alpha1.StorageResource{
+				Capacity:     ptr.To(resource.MustParse("1Gi")),
+				StorageClass: class,
+			}, "/data").
+			Build()
+	}
+
+	It("leaves storageClassName absent when the field is unset", func() {
+		Expect(build(nil).Spec.VolumeClaimTemplates[0].Spec.StorageClassName).To(BeNil())
+	})
+
+	It("writes an empty storageClassName when the user asked for one", func() {
+		Expect(build(ptr.To(""))).NotTo(BeNil())
+		Expect(build(ptr.To("")).Spec.VolumeClaimTemplates[0].Spec.StorageClassName).
+			To(HaveValue(Equal("")), "an explicit empty class is a request, not an omission")
+	})
+
+	It("writes the named class", func() {
+		Expect(build(ptr.To("fast-ssd")).Spec.VolumeClaimTemplates[0].Spec.StorageClassName).
+			To(HaveValue(Equal("fast-ssd")))
 	})
 })
