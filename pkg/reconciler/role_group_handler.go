@@ -424,7 +424,7 @@ func mergeResources(role, group *v1alpha1.ResourcesSpec) *v1alpha1.ResourcesSpec
 		if merged.Storage.Capacity == nil {
 			merged.Storage.Capacity = copyQuantity(role.Storage.Capacity)
 		}
-		if merged.Storage.StorageClass == "" {
+		if merged.Storage.StorageClass == nil {
 			merged.Storage.StorageClass = role.Storage.StorageClass
 		}
 	}

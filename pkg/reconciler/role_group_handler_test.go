@@ -36,11 +36,11 @@ var _ = Describe("MergeRoleGroupConfig leaf granularity", func() {
 				Storage: &v1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse("500Gi"))},
 			}},
 			&v1alpha1.RoleGroupConfigSpec{Resources: &v1alpha1.ResourcesSpec{
-				Storage: &v1alpha1.StorageResource{StorageClass: "fast-ssd"},
+				Storage: &v1alpha1.StorageResource{StorageClass: ptr.To("fast-ssd")},
 			}},
 		)
 
-		Expect(merged.Resources.Storage.StorageClass).To(Equal("fast-ssd"), "the group's leaf wins")
+		Expect(merged.Resources.Storage.StorageClass).To(HaveValue(Equal("fast-ssd")), "the group's leaf wins")
 		Expect(merged.Resources.Storage.Capacity).NotTo(BeNil(),
 			"the role's capacity must survive: it is baked into an immutable volumeClaimTemplate, "+
 				"so losing it here is unrecoverable without deleting the StatefulSet")
