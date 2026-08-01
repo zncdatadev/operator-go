@@ -112,6 +112,57 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (framework metrics)
+
+- **The orphan cleanup state machine now has a metrics surface.** `pkg/reconciler/metrics.go` exports
+  `operator_go_orphan_cleanup_pending` (Gauge) and `operator_go_orphan_drain_timeouts_total`
+  (Counter), both labelled `namespace` + `cluster`, registered on controller-runtime's
+  `metrics.Registry` at init — they appear on the endpoint an operator already serves with no wiring
+  in `main.go`.
+- Teardown is the one part of the framework with no other observability: it spans many reconciles,
+  records progress in annotations on the objects it is retiring, and reports the rest in log lines.
+  A role group stuck mid-teardown for three days produces no error, no failing reconcile and no
+  condition transition — while its pods keep running and its PVCs keep costing. The `Degraded`
+  condition will not fire for it either, by design (it is not a fault the operator can resolve).
+- The gauge is written on **every** pass, including at zero. A gauge only set while something is
+  pending keeps publishing its last non-zero value after the teardown finishes, and an alert on it
+  would never clear.
+- The drain-timeout counter marks the one event in that machine that had no surface at all beyond a
+  log line, and the one that matters most: reaching it means a stateful product was denied the
+  ordered shutdown the scale-to-zero existed to give it, so a pod was killed mid-flush. A counter
+  rather than a gauge, because the question is "did this ever happen" and the answer must survive an
+  operator restart.
+- A deleted CR's series are **removed**, not zeroed, on the `IsNotFound` branch of `Reconcile` — the
+  only place the framework learns a cluster is gone, since it registers no finalizer and so has no
+  teardown callback. A zeroed series still publishes a series for something that does not exist.
+- **The boundary is deliberate**: nothing else is exported. controller-runtime already publishes
+  reconcile counts, errors and durations (`controller_runtime_reconcile_*`), and kube-state-metrics
+  already turns CR status conditions into series once configured for a product's CRD.
+
+### fix (cleanups)
+
+- `podOverrides` whose strategic merge fails is now recorded on `PodOverrideViolations()` instead of
+  being dropped with a bare `return`. The branch is **unreachable through the public API** — every
+  step operates on a valid `*corev1.PodTemplateSpec` — and therefore carries no spec; it is recorded
+  rather than ignored so a later refactor cannot reopen a silent-drop hole at the one point nobody
+  is watching.
+- The framework's ServiceAccount no longer aliases `cr.GetLabels()`. It is cloned, and the canonical
+  `app.kubernetes.io/instance` and `managed-by` labels are added, so the SA is identifiable the same
+  way every other framework-owned object is.
+- Removed the dead health helpers `CheckPodHealth`, `isPodReady` and `UpdateStatusCondition`, which
+  nothing in the SDK called after the condition rework, and the duplicate `DefaultCheckInterval` /
+  `DefaultTimeout` constants — `NewHealthManager` uses `DefaultHealthCheckInterval` and
+  `DefaultHealthCheckTimeout`, the values the reconciler config documents.
+
+### BREAKING (storage class)
+
+- `commons/v1alpha1.StorageSpec.StorageClass` is now `*string`. **The empty string is not a synonym
+  for unset here**: Kubernetes reads `storageClassName: ""` as "bind only a pre-provisioned PV,
+  never dynamically provision one", so a role group that wrote `storageClass: ""` to mean "inherit
+  the role's" got a PVC that stays `Pending` forever. With a pointer, unset means "use the cluster
+  default" and `""` keeps its Kubernetes meaning. Go code reading the field takes the pointer
+  (`ptr.To("fast-ssd")` to set it); CR YAML is unaffected.
+
 ### features (orphan cleanup of product extras)
 
 - **A removed role group's `ExtraResources` are now reclaimed instead of surviving until the cluster

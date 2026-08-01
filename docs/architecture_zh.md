@@ -537,15 +537,29 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 ### 4.8.2 健康检查机制
 
+三个条件回答三个彼此独立的问题，谁也不由谁推导：
+
+| 条件 | 回答的问题 | 判据 |
+| --- | --- | --- |
+| `Available` | *还能服务吗？* | 每个 role group 都满足 `readyReplicas >= 期望副本数` |
+| `Progressing` | *正在变化吗？* | 有版本滚动或副本数变更在进行中 |
+| `Degraded` | *需要人来看吗？* | **故障状态**，绝不是副本数 |
+
+`Degraded` 是运维真正拿去告警的条件，因此它只能为 operator 自身无法解决的问题而触发。若由副本数推导，它会在每一次滚动更新、每一次扩容与缩容时触发——这些都是有意减少就绪副本的计划内变更——而一个在每次计划内变更时都触发的信号，没有人能拿它做告警。那些场景的诚实上报是 `Available=False`，配上持续时间去告警。
+
+因此 `Degraded` 由**状态**而非**时间**计算得出：卡在 `CrashLoopBackOff`、`ImagePullBackOff`、`InvalidImageName`、`CreateContainer*`/`RunContainerError` 的 Pod，或无法被调度的 Pod；StatefulSet 读取失败的 role group；失败的 `ServiceHealthCheck`。因为这些是状态而不是流逝的时间，**卡住的**滚动依然上报 `Degraded=True`（它的 Pod 肉眼可见地在失败），而健康的滚动不会，且完全不需要 progress-deadline 那套机制。启动中的瞬态（`ContainerCreating`、`PodInitializing`）和已在删除中的 Pod 被有意排除：健康 Pod 进场和退场时本来就长这样。
+
 健康检查步骤在每轮调和中执行一次，位于孤儿清理之后，评估内容包括：
-- **工作负载状态**：对 Spec 中每个 role group，用 StatefulSet 的 `readyReplicas` 与该 role group 的期望副本数比较，得出 `Available`、`Progressing`（版本滚动进行中）与 `Degraded`。有意缩容到 `replicas: 0` 的 role group 在 0 个就绪副本时被视为健康；StatefulSet 读取失败的 role group 则既不健康也不可用。
-- **服务可用性**：可选的产品级 `ServiceHealthCheck`（见下），通过 `ServiceHealthy` 条件上报。
-- **ClusterOperation 短路**：`reconciliationPaused` 上报 `Degraded/ReconciliationPaused`；`stopped` 上报 `Available=False` 且 `Degraded=False`（已停止的集群正是按要求运行的）。
+- **工作负载状态**：对每个 role group 比较 `readyReplicas` 与期望副本数，得出 `Available` 与 `Progressing`。比较用 `>=`，所以缩容途中（就绪副本数一度**多于**期望值）的 role group 是可用的，有意缩容到 `replicas: 0` 的也在 0 副本时可用。
+- **Pod 故障**：对集群的 Pod 做一次 `List`（按 `app.kubernetes.io/instance` + `managed-by` 匹配）得出 `Degraded`，消息中点名问题 Pod 及其原因；条目有上限，超出部分计数而不是静默截断。
+- **服务可用性**：可选的产品级 `ServiceHealthCheck`（见下），通过 `ServiceHealthy` 条件上报，同时也置 `Degraded`。
+- **ClusterOperation 状态不是故障**：`stopped` 上报 `Available=False` 且 `Degraded=False`；`reconciliationPaused` 上报专门的 **`Paused`** 条件，同样 `Degraded=False`——暂停是管理员的决定（维护窗口、排查问题），用故障信号去上报它，等于为一次计划内动作叫醒值班。暂停期间框架仍在*观察*：暂停冻结的是资源而不是上报，因此 `Available`/`Progressing` 会依据实时 StatefulSet 重新评估，而不是停留在最后一轮运行时写下的值。`ServiceHealthy` 则转为 `Unknown` 而非保留过期结论，因为对一个暂停的集群主动探测，正是暂停要求 operator 不要做的事。
 
 - **检查节奏**：`GenericReconcilerConfig.HealthCheckInterval`（默认 **120 秒**）是调和成功后自我重新入队的间隔，正是它让健康评估具有周期性——见 §4.8.4。设为负值可关闭周期性唤醒。
 - **超时**：`GenericReconcilerConfig.HealthCheckTimeout`（默认 **300 秒**）以 `context.WithTimeout` 包裹产品级 `ServiceHealthCheck` 调用，使卡住的探测不会长期占用调和 worker。非正值表示不设截止时间。它不约束工作负载检查——那些只是受调和上下文管辖的普通 client 读取。
 - **失败处理**：
-  - 健康评估失败会把 CR Status 标记为 **Degraded**，消息中直接点名问题对象：`Unhealthy role groups: <role>/<group>, ...`。
+  - 就绪副本数不足会把 CR 标记为 **`Available=False`**，而不是 Degraded。消息中直接点名问题对象：`Role groups with fewer ready replicas than desired: <role>/<group>, ...`。
+  - operator 帮不上忙的 Pod 会把 CR 标记为 **Degraded**，并点名：`Pods requiring attention: <pod> (CrashLoopBackOff), ...`。
   - `ServiceHealthCheck` 报错或返回不健康时，同时置 `Degraded=True` 与 `ServiceHealthy=False`，并带上探测给出的消息。
   - 健康检查步骤自身抛出的错误只记录日志，**不会**让调和失败；状态在下一轮重新评估。
   - 如果控制器本身遇到内部错误（被捕获的 panic），Status **不会被修改**——内部故障并不能说明集群的真实状态。该 panic 会以错误形式返回，使工作队列按退避策略重试（§4.13.2）。
@@ -553,9 +567,10 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 ### 4.8.3 核心实现
 
 - **状态定义**：SDK 通过 Generic Conditions 标准化集群状态：
-  - **Available**：至少有一个副本已准备好并正在服务流量。
+  - **Available**：每个 role group 的就绪副本数都不少于其 Spec 要求的数量。
   - **Progressing**：集群正在推出新版本或扩展副本。
-  - **Degraded**：集群遇到问题（如缺失依赖、崩溃循环、健康检查失败）。
+  - **Degraded**：出现了 operator 自身无法解决的问题——卡住或无法调度的 Pod、读不到的 StatefulSet、失败的应用级健康检查。明确**不**表示"副本正在收敛"；见 §4.8.2。
+  - **Paused**：设置了 `spec.clusterOperation.reconciliationPaused`。带 `Degraded=False`：暂停是一个决定，不是故障。
   - **ServiceHealthy**：应用级检查通过（如 SafeMode 关闭、RegionServer 注册）。
   - **ReconcileComplete**：SDK 已成功完成最新的调和循环。
 - **ServiceHealthCheck 接口**：
@@ -576,9 +591,27 @@ watch 只覆盖框架自身拥有的资源类型（`StatefulSet`、`ConfigMap`�
   当清理的截止时间早于健康检查节奏时以前者为准，从而保证延迟删除按时执行、多趟排空按自己的时钟推进，而不必等待无关的 watch 事件。若两者都非正（`HealthCheckInterval` 设为负值且没有待处理项），`d` 为 `0`——不做周期性唤醒，完全由 watch 驱动。
 - **429 限流路径**上，`Reconcile` 返回 `RequeueAfter: RateLimitRetryAfter`（默认 10 秒）且 error 为 nil，因此限流不会产生 `Degraded` 条件和错误事件。
 - **错误路径**上（含被捕获的 panic），`Reconcile` 返回错误，由 controller-runtime 的限速器施加指数退避，不设置 `RequeueAfter`——两者同时设置没有意义。
-- **暂停路径**上（`reconciliationPaused: true`），循环返回 `ctrl.Result{}` 且不重新入队：在用户改动 CR 之前不会有任何变化，而改动本身就会产生 watch 事件。
+- **暂停路径**上（`reconciliationPaused: true`），循环与正常成功的一轮一样返回 `RequeueAfter: HealthCheckInterval`。暂停冻结的是**资源**，不是上报：每次唤醒都会依据实时 StatefulSet 重新评估 `Available`/`Progressing`，而维护窗口期间崩溃回退的 Pod 不会改动 CR，本身并不产生 watch 事件。
 
 由于这一节奏会让 operator 定时访问 API server，当计算出的 status 与线上 status 深度相等时会跳过写入——稳态集群的每次唤醒只花费一次读取，而不是一次写入。
+
+### 4.8.5 框架指标
+
+上面的状态条件是 operator 给 `kubectl describe` 前那个人的汇报。它们本身并不是告警面：把 CR 条件变成时间序列需要为该产品的 CRD 配置 kube-state-metrics，而这是每个部署各自的动作，operator 作者无法代用户完成。
+
+因此 SDK 自己只导出两条 Prometheus 序列，都在 `pkg/reconciler/metrics.go`，init 时注册到 controller-runtime 的 `metrics.Registry`，从而出现在 operator 本就提供的 metrics 端点上，`main.go` 无需任何接线。两者都带 `namespace` 与 `cluster` 标签：
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `operator_go_orphan_cleanup_pending` | Gauge | 孤儿资源尚未回收完毕的 role group 数量 |
+| `operator_go_orphan_drain_timeouts_total` | Counter | 在 Pod 仍在终止时被删除的孤儿 StatefulSet 次数 |
+
+两处设计取舍都是为了不说假话：
+
+- gauge 在**每一轮**都写，包括写 0。只在有待办时才写的 gauge，会在拆除完成后继续发布它最后那个非零值，基于它的告警永远不会恢复；
+- 已删除 CR 的序列是被**删除**而不是置零，动作发生在 `Reconcile` 的 `IsNotFound` 分支——那是框架唯一能得知集群已消失的地方，因为它不注册 finalizer，也就没有拆除回调（§4.4.3）。置零后依然在为一个不存在的东西发布序列。
+
+**这条边界是刻意的，这份清单也应当保持简短。** controller-runtime 已经导出了调和次数、错误数与耗时（`controller_runtime_reconcile_*`），按集群再导出一遍只会增加基数而不增加信息。它和 kube-state-metrics 都覆盖不到的是孤儿清理状态机（§4.4.2 第 7 步），因为那是本 SDK 内部的东西：它跨越多轮调和，把进度记录在正被回收的对象的 annotation 上，其余部分只写进日志。一个卡在拆除中间三天的 role group，不会产生任何错误、任何失败的调和、任何条件变化——而它的 Pod 还在跑，PVC 还在计费。drain 超时计数器标记的正是这台状态机中唯一没有其他呈现面、也最要紧的事件：走到那一步意味着一个有状态产品被剥夺了缩容到零本来要给它的有序停机，某个 Pod 是在刷盘途中被杀掉的。
 
 ## 4.9 安全模块
 
@@ -628,7 +661,7 @@ Day-2 运维（维护、调试、紧急停止）需要对 Operator 行为进行�
 ### 4.11.2 核心能力
 
 - **调和暂停（`reconciliationPaused: true`）**：
-  - **机制**：Reconciler 在循环最开始、任何资源变更（ServiceAccount 创建、PreReconcile 扩展、角色调和）之前检查此标志。如果为 true，则设置 `ReconciliationPaused`（Degraded）状态条件以使暂停可观测，随后跳过该轮所有资源调和，保持被管理资源不变。
+  - **机制**：Reconciler 在循环最开始、任何资源变更（ServiceAccount 创建、PreReconcile 扩展、角色调和）之前检查此标志。如果为 true，则设置专门的 **`Paused`** 状态条件——并带 `Degraded=False`，因为维护窗口不是故障（见状态条件一节）——随后跳过该轮所有资源调和，保持被管理资源不变，但仍会重新读取实时工作负载，使健康条件保持最新。
   - **用例**：允许管理员手动修改底层 K8s 资源（如修补 StatefulSet 进行调试），而 Operator 不会立即还原更改。
 - **优雅停止（`stopped: true`）**：
   - **机制**：Reconciler 将所有 RoleGroup StatefulSets 缩放到 0 副本。

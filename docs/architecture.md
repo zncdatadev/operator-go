@@ -591,9 +591,27 @@ Watches only cover the resource kinds the framework owns (`StatefulSet`, `Config
   A cleanup deadline sooner than the health cadence wins, so a deferred deletion runs on time and the multi-pass drain advances on its own clock rather than waiting for an unrelated watch event. When both are non-positive (`HealthCheckInterval` set negative and nothing pending), `d` is `0` — no periodic wakeup, purely watch-driven.
 - On the **429 rate-limit path**, `Reconcile` returns `RequeueAfter: RateLimitRetryAfter` (default 10 s) with a nil error, so no `Degraded` condition and no error event are produced for throttling.
 - On the **error path** (including a recovered panic), `Reconcile` returns the error and lets controller-runtime's rate limiter apply exponential backoff. No `RequeueAfter` is set — setting both is meaningless.
-- On the **paused path** (`reconciliationPaused: true`), the loop returns `ctrl.Result{}` with no requeue: nothing will change until the user edits the CR, which produces a watch event anyway.
+- On the **paused path** (`reconciliationPaused: true`), the loop returns `RequeueAfter: HealthCheckInterval` like a normal successful pass. A pause freezes the *resources*, not the reporting: `Available`/`Progressing` are re-evaluated from the live StatefulSets on every wakeup, and a pod that crash-loops during a maintenance window changes nothing in the CR and so produces no watch event of its own.
 
 Because the cadence makes the operator write to the API server on a timer, the final status update is skipped when the computed status is deep-equal to the live one — a steady-state cluster costs one read, not a write, per wakeup.
+
+### 4.8.5 Framework Metrics
+
+The status conditions above are the operator's report to a human reading `kubectl describe`. They are not, by themselves, an alerting surface: turning a CR condition into a series needs kube-state-metrics configured for that product's CRD, which is a per-deployment step an operator author cannot take on the user's behalf.
+
+The SDK therefore exports exactly two Prometheus series of its own, both from `pkg/reconciler/metrics.go`, registered on controller-runtime's `metrics.Registry` at init so they appear on the metrics endpoint an operator already serves with no wiring in `main.go`. Both are labelled `namespace` and `cluster`:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `operator_go_orphan_cleanup_pending` | Gauge | Role groups whose orphaned resources are not finished being reclaimed |
+| `operator_go_orphan_drain_timeouts_total` | Counter | Orphaned StatefulSets deleted with pods still terminating |
+
+Both design points are about not lying:
+
+- the gauge is written on **every** pass, including at zero. A gauge only set while something is pending keeps publishing its last non-zero value after the teardown finishes, and an alert on it would never clear;
+- a deleted CR's series are **removed**, not zeroed, on the `IsNotFound` branch of `Reconcile` — the only place the framework learns a cluster is gone, since it registers no finalizer and so has no teardown callback (§4.4.3). A zeroed series still publishes a series for something that does not exist.
+
+**The boundary is deliberate, and this list is meant to stay short.** controller-runtime already exports reconcile counts, error counts and durations (`controller_runtime_reconcile_*`); re-exporting those per cluster would add cardinality and no information. What neither it nor kube-state-metrics covers is the orphan cleanup state machine (§4.4.2 step 7), because it is internal to this SDK: it spans many reconciles, records its progress in annotations on the objects it is retiring, and reports the rest in log lines. A role group stuck mid-teardown for three days produces no error, no failing reconcile and no condition transition — while its pods keep running and its PVCs keep costing. The drain-timeout counter marks the one event in that machine with no other surface at all, and the one that matters most: reaching it means a stateful product was denied the ordered shutdown the scale-to-zero existed to give it, so a pod was killed mid-flush.
 
 ## 4.9 Security Module
 
@@ -643,7 +661,7 @@ Day-2 operations (maintenance, debugging, emergency stop) require safe and predi
 ### 4.11.2 Core Capabilities
 
 - **Reconciliation Pause (`reconciliationPaused: true`)**:
-  - **Mechanism**: The Reconciler checks this flag at the very beginning of the loop, before any resource mutation (ServiceAccount provisioning, PreReconcile extensions, role reconciliation). If true, it surfaces a `ReconciliationPaused` (Degraded) status condition so the pause stays observable, then skips all resource reconciliation for that loop, leaving managed resources untouched.
+  - **Mechanism**: The Reconciler checks this flag at the very beginning of the loop, before any resource mutation (ServiceAccount provisioning, PreReconcile extensions, role reconciliation). If true, it surfaces the dedicated **`Paused`** condition — with `Degraded=False`, because a maintenance window is not a fault (§ status conditions) — then skips all resource reconciliation for that loop, leaving managed resources untouched while still re-reading the live workloads so the health conditions stay current.
   - **Use Case**: Allows admins to manually modify underlying K8s resources (e.g., patching a StatefulSet for debugging) without the Operator reverting changes immediately.
 - **Graceful Stop (`stopped: true`)**:
   - **Mechanism**: The Reconciler scales all RoleGroup StatefulSets to 0 replicas.
