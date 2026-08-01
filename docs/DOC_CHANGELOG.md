@@ -4,6 +4,31 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-01c] (the Chinese architecture document is removed)
+
+### Core Architecture
+
+- **`docs/architecture_zh.md` is deleted.** `docs/architecture.md` is now the single architecture
+  document.
+- The reason is the one the previous entry documents: a second copy of an authoritative design
+  document is only authoritative while it is current, and it was not. Its §4.8.2/§4.8.3 spent an
+  entire review round describing a status model the code had already replaced — `Degraded` derived
+  from replica counts, no `Paused` condition — so anyone reading it was being told the framework
+  behaves in a way it does not. Every change to the design now costs one edit instead of two, and
+  cannot half-land.
+- Historical entries in this changelog still name `architecture_zh.md`. They are left as written:
+  they record what was true when each change was made, and rewriting them would make this file
+  wrong in the same way the translation was.
+
+### Framework Documentation (`AGENTS.md`)
+
+- Removed the file from the Documentation Structure table and from the directory tree.
+
+Note: `README_zh-CN.md` at the repository root is unaffected — a README is a short entry point that
+does not drift the way a 116 KB design document does.
+
+---
+
 ## [2026-08-01b] (framework metrics, and the Chinese doc catches up on status conditions)
 
 ### Core Architecture (`architecture.md`, `architecture_zh.md`)
