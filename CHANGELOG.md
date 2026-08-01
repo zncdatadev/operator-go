@@ -112,6 +112,34 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (orphan cleanup of product extras)
+
+- **A removed role group's `ExtraResources` are now reclaimed instead of surviving until the cluster
+  CR is deleted.** They were invisible to the cleaner: it deleted the framework's own kinds, pruned
+  the group's `status.roleGroups` entry — so nothing in the SDK would ever look at the group again —
+  and left the product's arbitrary-GVK objects behind. For a `listeners.kubedoop.dev` Listener that
+  is not untidiness: the listener-operator turns it into a Service of type LoadBalancer, so a role
+  group scaled away in the morning is still billing for a cloud load balancer in the evening.
+- Discovery needs no new declaration. `SetupWithManagerOpts` hands
+  `SetupWithManagerOptions.ExtraOwns` — the kinds a product already registers to get watches — to
+  the cleaner as `RoleGroupCleaner.WithExtraResourceKinds`. Deriving one from the other is what
+  keeps them in step: a product adding an extra kind must register it for watches anyway.
+- **Both guards are required**, and each covers what the other cannot. An object is deleted only if
+  it carries the departing role group's identity labels (`instance` + `managed-by` + `component` +
+  `role-group`) **and** this CR is its controller owner. Labels alone would reach another cluster's
+  object — `instance` is the cluster *name*, and a namespace can hold a second product's CR under
+  the same one. Ownership alone would take every surviving role group's extras along with the
+  orphan's. The name check the framework's own kinds use is unavailable here: an extra's name
+  belongs to the product.
+- It fails closed. An unregistered kind, an unlabelled object, or an empty owner UID (the same
+  precedent as live orphan discovery and the role-PDB reclaim) means nothing is deleted — exactly
+  the behaviour before this change. A product that builds its controller through `ControllerBuilder`
+  rather than `SetupWithManagerOpts` gets no extras cleanup and can call `WithExtraResourceKinds`
+  itself.
+- Teardown order mirrors the apply order: extras are created *before* the StatefulSet because they
+  are pod-scheduling prerequisites, so they are deleted immediately *after* it — nothing a pod might
+  still need is reclaimed while a pod could still exist.
+
 ### fix (orphan cleanup)
 
 - **The PVCs of an orphaned role group are now deleted after the drain, not before the

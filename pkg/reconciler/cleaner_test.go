@@ -2460,3 +2460,142 @@ var _ = Describe("RoleGroupCleaner PVC deletion order", func() {
 			To(MatchError(k8serrors.IsNotFound, "IsNotFound"))
 	})
 })
+
+var _ = Describe("RoleGroupCleaner extra resource reclaim", func() {
+	// A product's ExtraResources used to survive their role group entirely: the group's status entry
+	// was pruned, the framework's own kinds were deleted, and the arbitrary-GVK objects sat there
+	// until the whole cluster CR was deleted. For a listeners.kubedoop.dev Listener that is a cloud
+	// load balancer still billing for a role group scaled away hours ago.
+	var ctx context.Context
+	const uid = types.UID("extras-owner-uid")
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	ownerRefs := func(cluster string, ownerUID types.UID) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{
+			APIVersion: "test.zncdata.dev/v1alpha1", Kind: "TestCluster",
+			Name: cluster, UID: ownerUID, Controller: ptr.To(true),
+		}}
+	}
+
+	// extraSecret stands in for a product's arbitrary-GVK extra: any kind the framework does not
+	// build itself, carrying the role group's identity labels and the cluster's controller owner ref.
+	extraSecret := func(name, cluster, role, group string, owner []metav1.OwnerReference) *corev1.Secret {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: cleanerTestNamespace, OwnerReferences: owner,
+			Labels: map[string]string{
+				constant.LabelKubernetesInstance:  cluster,
+				constant.LabelKubernetesManagedBy: "operator-go",
+				constant.LabelKubernetesComponent: role,
+				constant.LabelKubernetesRoleGroup: group,
+			},
+		}}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, secret) })
+		return secret
+	}
+
+	exists := func(name string) bool {
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cleanerTestNamespace, Name: name},
+			&corev1.Secret{})
+		return err == nil
+	}
+
+	// reclaim runs a full teardown of role/gone, looping until the state machine settles.
+	reclaim := func(cleaner *reconciler.RoleGroupCleaner, cluster string, ownerUID types.UID) *v1alpha1.GenericClusterStatus {
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		for range 5 {
+			requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, cluster, orphanedGroupSpec(), status, ownerUID, nil)
+			Expect(err).To(Succeed())
+			if requeue == 0 {
+				break
+			}
+		}
+		return status
+	}
+
+	It("deletes an orphaned role group's registered extra kinds", func() {
+		cluster := "extras-reclaim"
+		extra := extraSecret(cluster+"-listener", cluster, "role", "gone", ownerRefs(cluster, uid))
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithExtraResourceKinds(&corev1.Secret{})
+		status := reclaim(cleaner, cluster, uid)
+
+		Expect(status.GetRoleGroups()).To(BeEmpty(), "the group is fully reclaimed")
+		Expect(exists(extra.Name)).To(BeFalse(), "and so is its extra")
+	})
+
+	It("leaves extras alone when no kinds are registered", func() {
+		// A product that never declares its kinds keeps the behaviour it had: the resources wait
+		// for owner-reference GC on cluster deletion. Nothing is deleted on a guess.
+		cluster := "extras-unregistered"
+		extra := extraSecret(cluster+"-listener", cluster, "role", "gone", ownerRefs(cluster, uid))
+
+		reclaim(reconciler.NewRoleGroupCleaner(k8sClient, testScheme), cluster, uid)
+		Expect(exists(extra.Name)).To(BeTrue())
+	})
+
+	It("does not touch an extra belonging to a role group that is still declared", func() {
+		// The label filter is per role group, not per cluster: reclaiming an orphan must not take
+		// its surviving siblings' resources with it.
+		cluster := "extras-sibling"
+		orphan := extraSecret(cluster+"-gone-listener", cluster, "role", "gone", ownerRefs(cluster, uid))
+		survivor := extraSecret(cluster+"-live-listener", cluster, "role", "live", ownerRefs(cluster, uid))
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithExtraResourceKinds(&corev1.Secret{})
+		reclaim(cleaner, cluster, uid)
+
+		Expect(exists(orphan.Name)).To(BeFalse())
+		Expect(exists(survivor.Name)).To(BeTrue(), "a different role group's extra must survive")
+	})
+
+	It("does not touch an object this cluster does not own", func() {
+		// Labels alone are not enough: `instance` is the cluster NAME, and a namespace can hold a
+		// second CR of another product under the same name.
+		cluster := "extras-foreign"
+		foreign := extraSecret(cluster+"-foreign", cluster, "role", "gone",
+			ownerRefs(cluster, types.UID("someone-elses-uid")))
+		unowned := extraSecret(cluster+"-unowned", cluster, "role", "gone", nil)
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithExtraResourceKinds(&corev1.Secret{})
+		reclaim(cleaner, cluster, uid)
+
+		Expect(exists(foreign.Name)).To(BeTrue(), "owned by another cluster")
+		Expect(exists(unowned.Name)).To(BeTrue(), "owned by nothing")
+	})
+
+	It("does nothing when the owner UID is unknown", func() {
+		// Same precedent as live orphan discovery and the role-PDB reclaim: with no owner to match,
+		// the label filter would be the only guard, and that is not enough to delete on.
+		cluster := "extras-no-uid"
+		extra := extraSecret(cluster+"-listener", cluster, "role", "gone", ownerRefs(cluster, uid))
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithExtraResourceKinds(&corev1.Secret{})
+		reclaim(cleaner, cluster, "")
+
+		Expect(exists(extra.Name)).To(BeTrue())
+	})
+
+	It("ignores an unlabelled extra rather than guessing", func() {
+		// Without the role group's labels the cleaner has no handle on it at all. That is the
+		// documented cost of not labelling extras, and it fails closed.
+		cluster := "extras-unlabelled"
+		bare := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: cluster + "-bare", Namespace: cleanerTestNamespace,
+			OwnerReferences: ownerRefs(cluster, uid),
+		}}
+		Expect(k8sClient.Create(ctx, bare)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, bare) })
+
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithExtraResourceKinds(&corev1.Secret{})
+		reclaim(cleaner, cluster, uid)
+
+		Expect(exists(bare.Name)).To(BeTrue())
+	})
+})

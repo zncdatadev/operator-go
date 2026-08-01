@@ -32,11 +32,13 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -111,6 +113,10 @@ type RoleGroupCleaner struct {
 	drainTimeout          time.Duration
 	rateLimitRetryAfter   time.Duration
 	eventManager          *EventManager
+	// extraResourceKinds are prototypes of the arbitrary-GVK kinds a product ships through
+	// RoleGroupResources.ExtraResources; only their GVK is read. Empty means the cleaner deletes
+	// only the framework's fixed kinds, which is what it did before WithExtraResourceKinds existed.
+	extraResourceKinds []client.Object
 }
 
 // NewRoleGroupCleaner creates a new RoleGroupCleaner.
@@ -212,6 +218,29 @@ func (c *RoleGroupCleaner) apiError(err error) error {
 // WithEventManager sets the EventManager used to emit a Normal "Deleted" event for every
 // resource the cleaner actually removes. Without it, deletions are silent: only the operator
 // log records that a role group's resources disappeared.
+// WithExtraResourceKinds tells the cleaner which arbitrary-GVK kinds a product ships through
+// RoleGroupResources.ExtraResources, so those can be reclaimed when a role group is removed.
+//
+// Without it the cleaner only deletes the framework's own fixed kinds, and a product's extras
+// survive until the whole cluster CR is deleted and owner-reference GC collects them. For a
+// listeners.kubedoop.dev Listener that is not a tidiness problem: the listener-operator turns it
+// into a Service of type LoadBalancer, so a role group scaled away in the morning is still billing
+// for a cloud load balancer in the evening — and the role group's status entry has already been
+// pruned, so nothing in the SDK will ever look at it again either.
+//
+// Prototypes are the same objects passed as SetupWithManagerOptions.ExtraOwns; only their GVK is
+// used. GenericReconciler wires the two together, so a product that registers a kind for watches
+// gets its cleanup with no second declaration to keep in step.
+func (c *RoleGroupCleaner) WithExtraResourceKinds(kinds ...client.Object) *RoleGroupCleaner {
+	for _, obj := range kinds {
+		if obj == nil {
+			continue
+		}
+		c.extraResourceKinds = append(c.extraResourceKinds, obj)
+	}
+	return c
+}
+
 func (c *RoleGroupCleaner) WithEventManager(em *EventManager) *RoleGroupCleaner {
 	c.eventManager = em
 	return c
@@ -333,7 +362,7 @@ func (c *RoleGroupCleaner) Cleanup(
 	// discoverOrphans returns them sorted by resource name, so the sequence of events across the
 	// several reconciles a teardown spans is reproducible.
 	for _, orphan := range orphans {
-		deleted, retryAfter, err := c.cleanupRoleGroup(ctx, namespace, orphan.resourceName, ownerUID, deletePVCs, clusterName, liveResourceNames)
+		deleted, retryAfter, err := c.cleanupRoleGroup(ctx, namespace, orphan, ownerUID, deletePVCs, clusterName, liveResourceNames)
 		if err != nil {
 			// A 429 is the API server throttling this operator as a whole; the remaining
 			// groups would only add to the requests it is rejecting.
@@ -636,12 +665,14 @@ func roleGroupSlotOf(obj metav1.Object, clusterName string, ownerUID types.UID) 
 // snapshot forever.
 func (c *RoleGroupCleaner) cleanupRoleGroup(
 	ctx context.Context,
-	namespace, resourceName string,
+	namespace string,
+	orphan orphanRef,
 	ownerUID types.UID,
 	deletePVCs bool,
 	clusterName string,
 	liveResourceNames map[string]struct{},
 ) (deleted bool, retryAfter time.Duration, err error) {
+	resourceName := orphan.resourceName
 	if c.grayDeleteGracePeriod > 0 {
 		// Gray delete: check if the primary resource (StatefulSet or ConfigMap) is already
 		// annotated. If not, annotate and defer; if yes and grace period elapsed, proceed.
@@ -665,6 +696,12 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(
 		},
 		func() (deletionState, error) {
 			return c.deleteStatefulSet(ctx, namespace, resourceName, ownerUID, deletePVCs, clusterName)
+		},
+		// The product's own extras go after the workload, mirroring the apply path that creates
+		// them BEFORE it: they are typically pod-scheduling prerequisites (a Listener CR the pods
+		// mount through a CSI volume), so nothing may reclaim them while a pod could still need one.
+		func() (deletionState, error) {
+			return c.deleteRoleGroupExtras(ctx, namespace, clusterName, orphan.roleName, orphan.groupName, ownerUID)
 		},
 		func() (deletionState, error) {
 			return deleteOwned[corev1.ConfigMap](ctx, c, namespace, resourceName, ownerUID, clusterName)
@@ -1242,4 +1279,89 @@ func (c *RoleGroupCleaner) clearTeardownProgress(ctx context.Context, namespace,
 	}
 
 	return stderrors.Join(errs...)
+}
+
+// deleteRoleGroupExtras reclaims the arbitrary-GVK resources a product shipped for one role group
+// through RoleGroupResources.ExtraResources, for each kind registered with WithExtraResourceKinds.
+//
+// A resource qualifies only if BOTH hold:
+//
+//   - it carries this role group's identity labels (instance + managed-by + component + role-group),
+//     which is what the SDK asks products to stamp on their extras; and
+//   - this cluster CR is its CONTROLLER owner.
+//
+// Either alone is too weak. Labels alone would reach another cluster's object in a namespace where
+// two clusters share a role and role group name — and instance is the cluster name, so that means a
+// second CR of a different product with the same name, which a namespace can hold. Ownership alone
+// would reach every extra of every role group of this cluster, deleting the surviving groups'
+// resources along with the orphan's. The name check the fixed kinds use is not available here: an
+// extra's name is the product's to choose.
+//
+// A product that does not label its extras gets the behaviour it had before this existed: nothing
+// is found, nothing is deleted, and the resources wait for owner-reference GC on cluster deletion.
+// Unlabelled extras are undiscoverable in principle — the cleaner has no other handle on them.
+//
+// An empty ownerUID disables the reclaim entirely, as it does live orphan discovery and the role-PDB
+// reclaim: with no owner to match, the label filter alone would be the only guard.
+func (c *RoleGroupCleaner) deleteRoleGroupExtras(
+	ctx context.Context,
+	namespace, clusterName, roleName, groupName string,
+	ownerUID types.UID,
+) (deletionState, error) {
+	if len(c.extraResourceKinds) == 0 || ownerUID == "" || roleName == "" || groupName == "" {
+		return deletionSettled, nil
+	}
+
+	logger := log.FromContext(ctx)
+	selector := client.MatchingLabels{
+		constant.LabelKubernetesInstance:  clusterName,
+		constant.LabelKubernetesManagedBy: managedByValue,
+		constant.LabelKubernetesComponent: roleName,
+		constant.LabelKubernetesRoleGroup: groupName,
+	}
+
+	state := deletionSettled
+	for _, prototype := range c.extraResourceKinds {
+		gvk, err := apiutil.GVKForObject(prototype, c.Scheme)
+		if err != nil {
+			// A kind the scheme does not know cannot be listed. That is a wiring mistake in the
+			// product, not a reason to abandon this role group's teardown: report it and carry on
+			// with the kinds that do resolve.
+			logger.Error(err, "Skipping extra resource kind the scheme cannot resolve", "type",
+				fmt.Sprintf("%T", prototype))
+			continue
+		}
+
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+		if err := c.Client.List(ctx, list, client.InNamespace(namespace), selector); err != nil {
+			return deletionInFlight, fmt.Errorf("failed to list extra %s resources of role group %s/%s: %w",
+				gvk.Kind, roleName, groupName, c.apiError(err))
+		}
+
+		for i := range list.Items {
+			item := &list.Items[i]
+			if !isOwnedByCluster(item, ownerUID) {
+				continue
+			}
+			if !item.GetDeletionTimestamp().IsZero() {
+				// Already going; the next pass confirms it is gone.
+				state = deletionInFlight
+				continue
+			}
+			if err := c.Client.Delete(ctx, item); err != nil {
+				if errors.IsNotFound(err) {
+					continue
+				}
+				return deletionInFlight, fmt.Errorf("failed to delete extra %s %s/%s: %w",
+					gvk.Kind, namespace, item.GetName(), c.apiError(err))
+			}
+			logger.Info("Deleted orphaned extra resource",
+				"kind", gvk.Kind, "name", item.GetName(), "role", roleName, "group", groupName)
+			c.emitDeleted(clusterName, item)
+			state = deletionInFlight
+		}
+	}
+
+	return state, nil
 }

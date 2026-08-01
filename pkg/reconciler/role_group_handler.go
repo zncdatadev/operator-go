@@ -73,11 +73,17 @@ type RoleGroupResources struct {
 	// e.g. a Listener CR must exist before the pods that mount its CSI volume are created,
 	// otherwise the pods hang in ContainerCreating.
 	//
-	// Cleanup: RoleGroupCleaner only deletes the framework's fixed, well-known resources
-	// (PDB, StatefulSet, ConfigMap, Services) when a role group is removed or renamed; it
-	// cannot discover arbitrary-GVK extras. Extras of a removed role group therefore remain
-	// until the cluster CR itself is deleted (owner-reference GC). Products that need eager
-	// removal must delete such extras themselves (e.g. in a role group extension).
+	// Cleanup: extras of a removed or renamed role group ARE reclaimed, provided two things hold.
+	// The product registers their kinds — which it does by listing them in
+	// SetupWithManagerOptions.ExtraOwns, the same declaration that gives them watches — and it
+	// stamps the role group's labels on them (see BaseRoleGroupHandler.SelectorLabels). The cleaner
+	// then deletes objects of those kinds that carry the departing group's identity labels AND this
+	// CR's controller owner reference; both are required, because instance is the cluster NAME and
+	// a namespace can hold another product's CR under the same one.
+	//
+	// Unlabelled extras, or kinds never registered, keep the old behaviour: they survive until the
+	// cluster CR is deleted and owner-reference GC collects them. The cleaner has no other handle
+	// on them, so it fails closed rather than guessing.
 	//
 	// A nil/empty slice behaves exactly as before this field existed; nil entries are skipped.
 	ExtraResources []client.Object
