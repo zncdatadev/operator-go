@@ -1492,6 +1492,13 @@ type SetupWithManagerOptions struct {
 	// ExtraOwns adds an Owns() watch for each object's GVK — the right choice for resources the
 	// reconciler creates with a controller owner reference (which is how ExtraResources are
 	// applied).
+	//
+	// It ALSO tells the orphan cleaner which kinds to reclaim when a role group leaves the spec
+	// (see RoleGroupCleaner.WithExtraResourceKinds). The two are the same list by construction —
+	// the kinds a product ships as ExtraResources — so deriving cleanup from it means a product
+	// cannot register a kind for watches and forget to register it for cleanup. Only resources
+	// carrying the departing role group's identity labels AND this CR's controller owner reference
+	// are deleted, so a kind listed here that is not per-role-group is simply never matched.
 	ExtraOwns []client.Object
 
 	// Watches registers arbitrary additional watches on the controller builder, for sources
@@ -1509,6 +1516,11 @@ func (r *GenericReconciler[CR]) SetupWithManager(mgr ctrl.Manager) error {
 // watches to the framework's fixed set. It is the extension point for ExtraResources GVKs;
 // SetupWithManager is the zero-options form.
 func (r *GenericReconciler[CR]) SetupWithManagerOpts(mgr ctrl.Manager, opts SetupWithManagerOptions) error {
+	// ExtraOwns is the product's declaration of "these GVKs are mine, per role group". The cleaner
+	// needs exactly that list to reclaim a removed role group's extras, and taking it from here
+	// rather than from a second field means the two cannot drift: a product that adds an extra kind
+	// has to register it for watches anyway, and its cleanup follows.
+	r.cleaner.WithExtraResourceKinds(opts.ExtraOwns...)
 	return r.ControllerBuilder(mgr, opts).Complete(r)
 }
 

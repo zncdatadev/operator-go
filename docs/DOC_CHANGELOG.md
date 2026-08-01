@@ -4,6 +4,26 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-01a] (a removed role group's product extras are reclaimed)
+
+### Core Architecture (`architecture.md`)
+
+- §4.x's apply-order list now states the teardown counterpart: extras are deleted immediately after
+  the StatefulSet, mirroring their creation before it, so nothing a pod might still need is
+  reclaimed while a pod could still exist. Recorded the discovery rule (role group labels **and**
+  controller ownership, over the kinds declared in `ExtraOwns`) and that unlabelled extras are
+  undiscoverable in principle.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- Corrected the standing claim that "the cleaner does not discover arbitrary-GVK extras", in §3 and
+  on `RoleGroupResources.ExtraResources` itself.
+- §13 now documents that `ExtraOwns` does double duty — watches and cleanup — why the two are
+  derived from one list rather than declared twice, and that `ControllerBuilder` callers do not get
+  the wiring and can call `WithExtraResourceKinds` themselves.
+
+---
+
 ## [2026-07-31a] (the irreversible teardown step goes last)
 
 ### Core Architecture (`architecture.md`, `architecture_zh.md`)
