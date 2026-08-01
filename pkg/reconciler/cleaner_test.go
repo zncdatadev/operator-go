@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	testutilmetrics "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
@@ -2633,3 +2634,78 @@ func (r *recordingReader) List(ctx context.Context, list client.ObjectList, opts
 	}
 	return r.Reader.List(ctx, list, opts...)
 }
+
+var _ = Describe("Orphan cleanup metrics", func() {
+	// The teardown state machine is the one part of the framework with no other observability: it
+	// runs across many reconciles, records progress in annotations on the objects it is retiring,
+	// and reports the rest through log lines. A role group stuck mid-teardown for three days
+	// produces no error, no failing reconcile and no condition transition.
+	var ctx context.Context
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	pendingValue := func(cluster string) float64 {
+		gauge, err := reconciler.OrphanCleanupPending.GetMetricWithLabelValues(cleanerTestNamespace, cluster)
+		Expect(err).NotTo(HaveOccurred())
+		return testutilmetrics.ToFloat64(gauge)
+	}
+
+	It("publishes the pending count, and clears it when the teardown finishes", func() {
+		// Written on every pass INCLUDING at zero: a gauge only set while something is pending keeps
+		// its last non-zero value after the teardown finishes, which is the opposite of what an
+		// alert on it should say.
+		cluster := "metrics-pending"
+		resourceName := reconciler.RoleGroupResourceName(cluster, "role", "gone")
+		sts := orphanTestStatefulSet(resourceName, 3)
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, sts) })
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).WithDrainPollInterval(time.Second)
+
+		_, err := cleaner.Cleanup(ctx, cleanerTestNamespace, cluster, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+		Expect(pendingValue(cluster)).To(Equal(1.0), "the scale-down is in flight")
+
+		for range 4 {
+			requeue, err := cleaner.Cleanup(ctx, cleanerTestNamespace, cluster, orphanedGroupSpec(), status, "", nil)
+			Expect(err).To(Succeed())
+			if requeue == 0 {
+				break
+			}
+		}
+		Expect(pendingValue(cluster)).To(BeZero(), "and back to zero once nothing is left")
+	})
+
+	It("counts a drain that had to be abandoned", func() {
+		// Reaching this means a stateful product was denied the ordered shutdown the scale-to-zero
+		// existed to give it — a pod killed mid-flush. Today it is one log line.
+		cluster := "metrics-timeout"
+		resourceName := reconciler.RoleGroupResourceName(cluster, "role", "gone")
+		sts := orphanTestStatefulSet(resourceName, 0)
+		Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, sts) })
+		sts.Status.Replicas = 2
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+
+		counter, err := reconciler.OrphanDrainTimeouts.GetMetricWithLabelValues(cleanerTestNamespace, cluster)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(testutilmetrics.ToFloat64(counter)).To(BeZero())
+
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("role", "gone")
+		cleaner := reconciler.NewRoleGroupCleaner(k8sClient, testScheme).
+			WithDrainPollInterval(time.Second).
+			WithDrainTimeout(time.Nanosecond)
+
+		// First pass stamps the drain start; the deadline has passed by the next.
+		_, err = cleaner.Cleanup(ctx, cleanerTestNamespace, cluster, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+		Expect(testutilmetrics.ToFloat64(counter)).To(BeZero(), "not on the pass that only records the deadline")
+
+		_, err = cleaner.Cleanup(ctx, cleanerTestNamespace, cluster, orphanedGroupSpec(), status, "", nil)
+		Expect(err).To(Succeed())
+		Expect(testutilmetrics.ToFloat64(counter)).To(Equal(1.0))
+	})
+})

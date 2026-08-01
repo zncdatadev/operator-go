@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	testutilmetrics "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
@@ -2454,5 +2455,36 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(custom), &policyv1.PodDisruptionBudget{})).To(Succeed())
+	})
+})
+
+var _ = Describe("Metrics of a deleted cluster", func() {
+	It("drops the cluster's series instead of leaving a gauge published forever", func() {
+		// A gauge is not self-clearing. Left behind, "orphan cleanup pending = 1" keeps being
+		// scraped for a cluster nobody can act on — an alert that can never be resolved because
+		// the object it points at is gone. Deleting the whole series is the only honest answer;
+		// setting it to zero would still publish a series for something that does not exist.
+		const namespace, cluster = "default", "metrics-gone"
+		reconciler.OrphanCleanupPending.WithLabelValues(namespace, cluster).Set(3)
+		before := testutilmetrics.CollectAndCount(reconciler.OrphanCleanupPending)
+
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
+			Prototype:        testutil.NewMockCluster(cluster, namespace),
+		}
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+
+		// No such CR: the NotFound branch is the one place that learns a cluster is gone, because
+		// the SDK registers no finalizer and so has no teardown callback.
+		_, err = r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: namespace, Name: cluster}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(testutilmetrics.CollectAndCount(reconciler.OrphanCleanupPending)).To(Equal(before-1),
+			"the series must be gone, not merely zeroed")
 	})
 })

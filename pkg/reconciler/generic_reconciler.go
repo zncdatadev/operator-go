@@ -370,6 +370,10 @@ func (r *GenericReconciler[CR]) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("Cluster resource not found, assuming deleted")
+			// Drop this cluster's series. A gauge left behind keeps publishing its last value for a
+			// cluster that no longer exists, so an alert on "cleanup pending" would fire forever for
+			// something nobody can fix.
+			forgetClusterMetrics(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -1578,7 +1582,22 @@ func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR,
 	sa.Namespace = cr.GetNamespace()
 
 	_, err := r.k8sUtil.CreateOrUpdate(ctx, sa, func() error {
-		sa.Labels = cr.GetLabels()
+		// Copied, not aliased: cr.GetLabels() hands out the live object's map, and assigning it
+		// here would let anything that later writes to sa.Labels mutate the object this cycle's
+		// status write is computed against.
+		//
+		// The canonical identity labels are applied on top, the same pair EnsureDiscoveryConfigMap
+		// stamps and the same two every other framework-built resource carries. The ServiceAccount
+		// was the one object that carried whatever the CR happened to have and nothing else, so a
+		// cluster with no labels produced an SA that no `app.kubernetes.io/instance` query could
+		// find.
+		labels := maps.Clone(cr.GetLabels())
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[constant.LabelKubernetesInstance] = cr.GetName()
+		labels[constant.LabelKubernetesManagedBy] = managedByValue
+		sa.Labels = labels
 		if err := controllerutil.SetControllerReference(cr, sa, r.scheme); err != nil {
 			var alreadyOwned *controllerutil.AlreadyOwnedError
 			if stderrors.As(err, &alreadyOwned) {

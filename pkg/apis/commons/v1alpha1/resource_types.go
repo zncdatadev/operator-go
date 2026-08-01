@@ -71,8 +71,20 @@ type StorageResource struct {
 	// +kubebuilder:validation:Optional
 	Capacity *resource.Quantity `json:"capacity,omitempty"`
 
+	// StorageClass names the StorageClass for the PVC. Unset means "use the cluster default", which
+	// is what an absent `storageClassName` asks Kubernetes for.
+	//
+	// It is a POINTER because the empty string is not a synonym for unset here — Kubernetes reads
+	// `storageClassName: ""` as "no class at all", i.e. bind a pre-provisioned PV and do no dynamic
+	// provisioning. With a plain string a role group could never express that over a role that names
+	// a class, because "" was how the merge spelled "inherit". This is the same reason
+	// StorageResource.Capacity, CPUResource.Min/Max, MemoryResource.Limit and
+	// RoleGroupConfigSpec.GracefulShutdownTimeout are pointers, and it carries the same rule: no
+	// `+kubebuilder:default`, or structural defaulting would fill it as soon as the enclosing
+	// object exists and the role's value could never win.
+	//
 	// +kubebuilder:validation:Optional
-	StorageClass string `json:"storageClass,omitempty"`
+	StorageClass *string `json:"storageClass,omitempty"`
 }
 
 // GetCapacity returns the configured capacity, or DefaultStorageCapacity when unset.

@@ -163,7 +163,7 @@ var _ = Describe("Generated test CRD schema", func() {
 		group := stored.Spec.Roles["broker"].RoleGroups["default"]
 		Expect(group.Config.Resources.Storage.Capacity).To(BeNil(),
 			"overriding one leaf must not silently downgrade the capacity the role asked for")
-		Expect(group.Config.Resources.Storage.StorageClass).To(Equal("fast-ssd"))
+		Expect(group.Config.Resources.Storage.StorageClass).To(HaveValue(Equal("fast-ssd")))
 	})
 
 	It("omits an unset capacity from a Go-constructed spec", func() {
@@ -173,7 +173,7 @@ var _ = Describe("Generated test CRD schema", func() {
 					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
 						"default": {Config: &v1alpha1.RoleGroupConfigSpec{
 							Resources: &v1alpha1.ResourcesSpec{
-								Storage: &v1alpha1.StorageResource{StorageClass: "fast-ssd"},
+								Storage: &v1alpha1.StorageResource{StorageClass: ptr.To("fast-ssd")},
 							},
 						}},
 					},

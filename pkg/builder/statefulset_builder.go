@@ -17,6 +17,7 @@ limitations under the License.
 package builder
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -397,7 +398,7 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 	}
 
 	b.StorageConfig = &StorageConfig{
-		StorageClass: storage.StorageClass,
+		StorageClass: ptr.Deref(storage.StorageClass, ""),
 		VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -422,9 +423,12 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 		},
 	}
 
-	if storage.StorageClass != "" {
-		// Copy rather than point into the caller's spec, which the caller still owns.
-		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = ptr.To(storage.StorageClass)
+	if storage.StorageClass != nil {
+		// Set whenever the user said something, INCLUDING the empty string: Kubernetes reads
+		// `storageClassName: ""` as "no class, bind a pre-provisioned PV", which is a different
+		// request from leaving the field out (use the cluster default). Copy rather than point into
+		// the caller's spec, which the caller still owns.
+		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = ptr.To(*storage.StorageClass)
 	}
 
 	// Add volume mount for data
@@ -836,8 +840,18 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 
 	merged, err := strategicMergePodTemplate(base, override)
 	if err != nil {
-		// Structurally valid templates cannot realistically fail to marshal or patch; if it ever
-		// happens, keep the built template rather than emitting a half-merged one.
+		// Unreachable through the public API, and deliberately still reported. Every step of
+		// strategicMergePodTemplate operates on a valid *corev1.PodTemplateSpec: marshalling one
+		// cannot fail, the patch metadata comes from a constant type, and the final unmarshal is
+		// the inverse of the marshal that just succeeded. It carries NO spec for that reason —
+		// inventing a fixture that does not actually reach it would only claim coverage.
+		//
+		// It records rather than returns because "unreachable" is not "silent". Discarding a user's
+		// whole podOverrides without a word is exactly what PodOverrideViolations exists to prevent,
+		// and a refactor that made this reachable would otherwise reopen the hole at the one point
+		// nobody is watching. The built template is kept — a half-merged one would be worse.
+		b.podOverrideViolations = append(b.podOverrideViolations,
+			fmt.Errorf("podOverrides could not be applied and were dropped: %w", err))
 		return
 	}
 	sts.Spec.Template = *merged

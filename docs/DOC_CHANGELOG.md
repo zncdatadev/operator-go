@@ -4,6 +4,34 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-01b] (framework metrics, and the Chinese doc catches up on status conditions)
+
+### Core Architecture (`architecture.md`, `architecture_zh.md`)
+
+- New **§4.8.5 Framework Metrics**: the two Prometheus series the SDK exports for the orphan cleanup
+  state machine, why the gauge is written at zero, why a deleted CR's series are removed rather than
+  zeroed, and — at least as important — why the list stops there (controller-runtime already
+  publishes the reconcile metrics; kube-state-metrics already publishes CR conditions).
+- **`architecture_zh.md` §4.8.2/§4.8.3 were still describing the pre-R3-4 status model** — `Degraded`
+  derived from replica counts, no `Paused` condition, `Available` as "at least one replica ready".
+  They contradicted the code and their own English counterpart. Translated the three-question
+  condition table, the state-not-time rationale, the `>=` comparison, the pod-failure pass and the
+  `Paused` condition.
+- Both languages: the §4.11.2 ClusterOperation entry still said `reconciliationPaused` surfaces a
+  `ReconciliationPaused` (Degraded) condition, contradicting §4.8 in the same document; and the
+  §4.8.4 requeue list still said the paused path does not requeue. Both now match R3-4 — the
+  dedicated `Paused` condition with `Degraded=False`, and `RequeueAfter: HealthCheckInterval` so the
+  health conditions keep up with reality during a maintenance window.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- `pkg/reconciler/AGENTS.md`: `metrics.go` added to the file table; new working instruction 17
+  covering both series, the label set, `forgetClusterMetrics`, and the instruction not to grow the
+  file into a second copy of tools that already exist.
+- `AGENTS.md` §3: `resources.storage.storageClass` is a `*string`, and why `""` cannot mean unset.
+
+---
+
 ## [2026-08-01a] (a removed role group's product extras are reclaimed)
 
 ### Core Architecture (`architecture.md`)
