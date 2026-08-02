@@ -79,9 +79,11 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// ImageDefaults), three migrated operators gave up all of it: they left ProductName empty,
 	// hand-rolled image resolution, and two of them emit no app.kubernetes.io/version at all.
 	//
-	// Left empty, only spec.image.custom can be honored — without a product name there is no
-	// repository path segment to build a reference from — and the handler otherwise runs its
-	// static Image/RoleImages. That is the shape a product uses when it resolves images itself.
+	// Left empty, the only references still resolvable are the fully qualified ones, which need no
+	// repository path segment: spec.image.custom, and ImageDefaults.Custom when the spec states no
+	// structured field. Everything else falls through to the handler's static Image/RoleImages
+	// rather than erroring — that is the shape a product uses when it resolves images itself, and
+	// its CRs may well carry a spec.image this handler is not equipped to read.
 	ProductName string
 
 	// ImageDefaults fills in whatever spec.image leaves empty. It is read on every reconcile,
@@ -508,13 +510,19 @@ func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
 // this handler actually resolves is running.
 //
 // It reads the RESOLVED version — spec.image's when the user stated one, ImageDefaults' otherwise —
-// so the label tracks the tag the pods run rather than only what the user happened to type. It is
-// empty in the two cases where that version is unknowable or unused: a Custom reference (the tag was
-// written by hand, and spec.image.productVersion never reached the container), and a handler with no
-// ProductName, which runs its static Image and resolves nothing from the CR.
+// so the label tracks the tag the pods run rather than only what the user happened to type. That
+// second half is the fix: a cluster running the operator's default version used to carry no version
+// label at all.
 //
-// Labelling pods with a version they are not running is the one thing this label must never do,
-// which is why both exclusions are silence rather than a guess.
+// It is empty when:
+//   - the handler declares no ProductName, so it runs its static Image and resolves nothing from
+//     the CR — a version read from a field that never reaches the container would be a guess;
+//   - the user pinned spec.image.custom and stated no productVersion alongside it;
+//   - the custom reference came from ImageDefaults rather than the spec, since a product's default
+//     version says nothing about an image it did not build.
+//
+// A spec.image.custom WITH a productVersion still publishes it: `custom` replaces the image
+// *reference*, and that field remains the user's declaration of which product version it is.
 func (h *BaseRoleGroupHandler[CR]) productVersion(clusterSpec *v1alpha1.GenericClusterSpec) string {
 	if h.ProductName == "" {
 		return ""

@@ -203,6 +203,24 @@ var _ = Describe("ResolveImage", func() {
 		Expect(image).To(BeEmpty(), "the caller falls back to whatever it would have used")
 	})
 
+	It("still resolves a default custom with no product name", func() {
+		// A fully qualified reference needs no repository path segment, from either layer. The
+		// field docs said only spec.image.custom survived an empty ProductName, which was the
+		// design before it was narrowed — an untested sentence is how that drift survives.
+		image, err := (&v1alpha1.ImageSpec{}).ResolveImage("", v1alpha1.ImageSpec{Custom: "pinned/hive:frozen"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(image).To(Equal("pinned/hive:frozen"))
+	})
+
+	It("writes its error for whoever is editing the CR, not for the SDK", func() {
+		// A product's validating webhook forwards this verbatim to a `kubectl apply`, where
+		// SDK-internal vocabulary is noise: nobody editing a CR knows what an ImageDefaults is.
+		_, err := (&v1alpha1.ImageSpec{ProductVersion: "4.1.0"}).ResolveImage("hive", v1alpha1.ImageSpec{})
+		Expect(err).To(MatchError(ContainSubstring("spec.image")))
+		Expect(err.Error()).NotTo(ContainSubstring("ImageDefaults"))
+		Expect(err.Error()).NotTo(ContainSubstring("handler"))
+	})
+
 	It("resolves only custom when no product name is given, without erroring", func() {
 		// An empty product name means the caller resolves images itself — the shape hive and
 		// zookeeper use today. Erroring here would break every one of their clusters, and it is

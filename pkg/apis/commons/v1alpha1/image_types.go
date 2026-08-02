@@ -123,9 +123,13 @@ func (i *ImageSpec) ResolveImage(productName string, defaults ImageSpec) (string
 			// Nothing anywhere. No opinion to honor and nothing to complain about.
 			return "", nil
 		}
+		// Worded for a `kubectl apply` reader: a product's validating webhook forwards this
+		// verbatim, and "the handler's ImageDefaults" is SDK-internal vocabulary that means nothing
+		// to whoever is editing the CR.
 		return "", fmt.Errorf(
-			"cannot resolve spec.image for product %q: %s. Set them in spec.image or in the "+
-				"handler's ImageDefaults", productName, missingImageFields(repo, productVersion))
+			"cannot resolve spec.image for product %q: %s. Set it in spec.image, or ask the "+
+				"operator's administrator to configure a default for it",
+			productName, missingImageFields(repo, productVersion))
 	}
 
 	image := repo + "/" + productName + ":" + productVersion
