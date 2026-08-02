@@ -112,6 +112,32 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### fix (shared handler state)
+
+- **`RoleGroupBuildContext` gains `Image`, `ImagePullPolicy`, `ContainerPorts` and `ServicePorts`**
+  (#525) — the per-CR inputs a product derives from the cluster it is building for. They outrank the
+  handler's own values, and the context is rebuilt per role group per reconcile.
+- **Why it matters.** One handler instance is constructed in `main.go` and serves every CR and every
+  reconcile, so the established idiom — assigning `h.Image` or calling `h.SetRoleContainerPorts`
+  from inside `BuildResources` — writes per-cluster values into process-wide state. Above
+  `MaxConcurrentReconciles: 1` those writes **race** between clusters; at the default of 1 they
+  still **leak**, because a product that conditionally skips one assignment inherits the previous
+  CR's value. spark-k8s-operator shipped exactly that (a CR omitting `pullPolicy` took the last
+  CR's), with a serial reconcile loop and no race involved.
+- **The framework held one too.** `SidecarManager.SetProductImage` writes the resolved image into
+  the manager's configs, so a manager registered through `BaseRoleGroupHandler.WithSidecarManager` —
+  process-wide — carried one cluster's image into the next. New
+  `sidecar.SidecarManager.CloneForBuild()` copies the configs for the build; providers and phases
+  are shared, being read-only during it. The reconciler-created manager is already per-role-group
+  and is used as-is.
+- Additive and backward compatible: unset context fields fall back to the handler exactly as before,
+  so a product that has not migrated renders byte-identical output. Handler fields stay correct for
+  reconcile-**invariant** configuration — this is a split, not a deprecation — and their doc
+  comments plus the `SetRole*` setters now say which is which.
+- Pinned by five specs, one of which builds eight clusters concurrently through a single handler.
+  `make test` runs with `-race` in CI, so the old idiom is reported there as a data race rather than
+  as a wrong value — verified by temporarily reintroducing it.
+
 ### BREAKING (image resolution)
 
 - **`BaseRoleGroupHandler.ProductName` no longer decides whether `spec.image` is read** (#569). It

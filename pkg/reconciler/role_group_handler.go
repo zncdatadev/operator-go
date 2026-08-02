@@ -192,6 +192,40 @@ type RoleGroupBuildContext struct {
 	// calling BaseRoleGroupHandler.BuildResources. Empty means no extra volumes (backward compatible).
 	VolumeProviders []VolumeProvider
 
+	// Image, ImagePullPolicy, ContainerPorts and ServicePorts are the per-CR inputs a product
+	// derives from the cluster it is building for. Set them here, NOT on the handler.
+	//
+	//	func (h *MyHandler) BuildResources(ctx context.Context, c client.Client, cr *MyCluster,
+	//	    buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+	//	    buildCtx.ContainerPorts = h.portsFor(cr, buildCtx.RoleName) // depends on cr.Spec.Tls
+	//	    return h.BaseRoleGroupHandler.BuildResources(ctx, c, cr, buildCtx)
+	//	}
+	//
+	// The handler instance is constructed once in main.go and shared by the controller across
+	// every CR and every reconcile, so the older idiom — assigning h.Image or calling
+	// h.SetRoleContainerPorts from inside BuildResources — writes per-cluster values into
+	// process-wide state. That has two failure modes, and the quieter one bites first:
+	//
+	//   - with MaxConcurrentReconciles above 1 the writes RACE, and one cluster's image or
+	//     TLS-dependent ports are built into another cluster's workload;
+	//   - even at the default concurrency of 1, a product that conditionally SKIPS one of those
+	//     assignments silently inherits the previous CR's value. spark-k8s-operator shipped
+	//     exactly that (a CR omitting pullPolicy took the last CR's), with a serial reconcile
+	//     loop and no race involved.
+	//
+	// This context is rebuilt for every role group of every reconcile, so nothing set here can
+	// reach another cluster. Unset fields fall back to the handler's own configuration, which is
+	// where reconcile-INVARIANT settings belong (a static image, ProductName, ImageDefaults, the
+	// ports of a product whose ports do not depend on the CR).
+	//
+	// Precedence, highest first: this context > the handler's per-role maps > the handler's
+	// defaults. For the image specifically, the CR's own spec.image still outranks all three —
+	// see BaseRoleGroupHandler.ImageDefaults.
+	Image           string
+	ImagePullPolicy corev1.PullPolicy
+	ContainerPorts  []corev1.ContainerPort
+	ServicePorts    []corev1.ServicePort
+
 	// VectorAggregatorAddress is the resolved Vector aggregator discovery address, populated by
 	// GenericReconciler when the Vector agent is enabled and the CR implements
 	// VectorAggregatorProvider (the reconciler reads its ConfigMap name and resolves the address

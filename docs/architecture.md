@@ -306,6 +306,24 @@ Original interfaces relied on type assertions, presenting runtime error risks an
 
 Compile-time type checking removes runtime type assertions from the reconciler and from product extensions alike; new products only need to bind generic types, reducing boilerplate.
 
+### 4.1.4 Handler Lifetime and Per-CR Inputs
+
+**One `RoleGroupHandler` instance serves every cluster.** It is constructed once in `main.go` and the controller reuses it for every CR and every reconcile, so every field on it is process-wide state. That is not obvious from the embedding idiom the SDK encourages, and it has produced real defects downstream.
+
+| where a value lives | lifetime | what belongs there |
+| --- | --- | --- |
+| handler fields (`Image`, `RoleContainerPorts`, …) | process | reconcile-**invariant** settings — a static image, `ProductName`, `ImageDefaults`, ports that do not depend on the CR |
+| `RoleGroupBuildContext` (`Image`, `ImagePullPolicy`, `ContainerPorts`, `ServicePorts`) | one role group of one reconcile | anything derived from **this** CR |
+
+Assigning a per-cluster value to a handler field from inside `BuildResources` fails in two ways, and the quieter one bites first:
+
+- above `MaxConcurrentReconciles: 1` the writes **race**, and one cluster's image or TLS-dependent ports are built into another cluster's workload;
+- at the default concurrency of 1 it **leaks**: a product that conditionally skips one assignment silently inherits the previous CR's value. spark-k8s-operator shipped exactly that — a CR omitting `pullPolicy` took the last CR's — with a serial reconcile loop and no race involved.
+
+`BuildResources` on the base handler is **read-only on the handler**; the per-call fields are read from the build context, which is rebuilt per role group. The one place the framework itself held per-CR state was a handler-registered `SidecarManager`: `SetProductImage` writes the resolved image into its configs, so it is now cloned for the build. `VolumeProviders` already followed this shape and is the precedent the new fields copy.
+
+Handler fields are still the right home for invariant configuration — this is a split, not a deprecation.
+
 ## 4.2 Extension Point Mechanism Module
 
 ### 4.2.1 Design Approach

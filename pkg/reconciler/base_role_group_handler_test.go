@@ -19,7 +19,9 @@ package reconciler_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -2818,3 +2820,155 @@ var _ = Describe("fsGroup ownership recursion", func() {
 		Expect(*podSC.RunAsNonRoot).To(BeTrue())
 	})
 })
+
+var _ = Describe("Per-CR inputs on the build context", func() {
+	// The handler is constructed once in main.go and shared across every CR and every reconcile.
+	// These specs pin the channel that lets a product supply per-cluster values without writing
+	// them into that shared instance.
+	var mockCR *testutil.MockCluster
+
+	BeforeEach(func() { mockCR = testutil.NewMockCluster("test-cluster", "default") })
+
+	buildCtxWith := func(mutate func(*reconciler.RoleGroupBuildContext)) *reconciler.RoleGroupBuildContext {
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+		}
+		if mutate != nil {
+			mutate(buildCtx)
+		}
+		return buildCtx
+	}
+
+	It("prefers the per-call image and ports over the handler's own", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+		handler.SetRoleImage("server", "role-image:1")
+		handler.SetRoleContainerPorts("server", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
+		handler.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
+				b.Image = "per-call:2"
+				b.ImagePullPolicy = corev1.PullAlways
+				b.ContainerPorts = []corev1.ContainerPort{{Name: "https", ContainerPort: 8443}}
+				b.ServicePorts = []corev1.ServicePort{{Name: "https", Port: 8443}}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("per-call:2"))
+		Expect(container.ImagePullPolicy).To(Equal(corev1.PullAlways))
+		Expect(container.Ports).To(HaveLen(1))
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8443)))
+		Expect(resources.Service.Spec.Ports[0].Port).To(Equal(int32(8443)))
+	})
+
+	It("falls back to the handler when the build states nothing", func() {
+		// Reconcile-INVARIANT settings still belong on the handler; this channel is only for the
+		// values that depend on which cluster is being built.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+		handler.SetRoleContainerPorts("server", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtxWith(nil))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("handler-image:1"))
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
+	})
+
+	It("does not carry one cluster's values into the next through the shared handler", func() {
+		// The quiet half of the hazard, and the one that bites at the default concurrency of 1:
+		// spark-k8s-operator shipped a CR inheriting the previous CR's pullPolicy, with a serial
+		// reconcile loop and no race involved.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+
+		first, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
+				b.Image = "cluster-a:1"
+				b.ImagePullPolicy = corev1.PullAlways
+				b.ContainerPorts = []corev1.ContainerPort{{Name: "https", ContainerPort: 8443}}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("cluster-a:1"))
+
+		// The second cluster states nothing — under the old idiom it would inherit cluster A's.
+		second, err := handler.BuildResources(context.Background(), k8sClient,
+			testutil.NewMockCluster("other-cluster", "default"), buildCtxWith(nil))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := second.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("handler-image:1"), "cluster A's image must not leak")
+		Expect(container.ImagePullPolicy).NotTo(Equal(corev1.PullAlways))
+		Expect(container.Ports).To(BeEmpty(), "cluster A's ports must not leak")
+	})
+
+	It("builds concurrently on one handler without crossing values", func() {
+		// The loud half: this is what raising MaxConcurrentReconciles above 1 does. `make test`
+		// runs with -race in CI, so a handler-side write would be reported as a data race here
+		// rather than as a wrong value.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+
+		const workers = 8
+		images := make([]string, workers)
+		var wg sync.WaitGroup
+		for i := range workers {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				want := fmt.Sprintf("cluster-%d:1", i)
+				resources, err := handler.BuildResources(context.Background(), k8sClient,
+					testutil.NewMockCluster(fmt.Sprintf("cluster-%d", i), "default"),
+					buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
+						b.ClusterName = fmt.Sprintf("cluster-%d", i)
+						b.ResourceName = fmt.Sprintf("cluster-%d-server-default", i)
+						b.Image = want
+					}))
+				Expect(err).NotTo(HaveOccurred())
+				images[i] = resources.StatefulSet.Spec.Template.Spec.Containers[0].Image
+			}()
+		}
+		wg.Wait()
+
+		for i := range workers {
+			Expect(images[i]).To(Equal(fmt.Sprintf("cluster-%d:1", i)))
+		}
+	})
+
+	It("does not write one cluster's image into a handler-wide sidecar manager", func() {
+		// The framework's own instance of the same defect: SetProductImage writes into the
+		// manager's configs, and a manager registered on the handler outlives the build.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+		mgr := sidecar.NewSidecarManager()
+		mgr.Register(&recordingSidecarProvider{name: "probe"}, &sidecar.SidecarConfig{Enabled: true})
+		handler.WithSidecarManager(mgr)
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) { b.Image = "cluster-a:1" }))
+		Expect(err).NotTo(HaveOccurred())
+
+		cfg, ok := mgr.GetConfig("probe")
+		Expect(ok).To(BeTrue())
+		Expect(cfg.Image).To(BeEmpty(),
+			"the handler's manager is process-wide; this cluster's image must not be written into it")
+	})
+})
+
+// recordingSidecarProvider is a minimal provider: it only has to be registered so SetProductImage
+// has a config to write into.
+type recordingSidecarProvider struct{ name string }
+
+func (p *recordingSidecarProvider) Name() string { return p.name }
+func (p *recordingSidecarProvider) Inject(podSpec *corev1.PodSpec, cfg *sidecar.SidecarConfig) error {
+	podSpec.InitContainers = append(podSpec.InitContainers,
+		corev1.Container{Name: p.name, Image: cfg.Image})
+	return nil
+}
+func (p *recordingSidecarProvider) Validate(context.Context, client.Client, string) error { return nil }
