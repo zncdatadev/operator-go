@@ -25,11 +25,20 @@ import (
 type ListenerClass string
 
 const (
-	// ListenerClassClusterInternal creates ClusterIP Service.
+	// ListenerClassClusterInternal exposes the workload inside the cluster only: a ClusterIP
+	// Service.
 	ListenerClassClusterInternal ListenerClass = "cluster-internal"
-	// ListenerClassExternalStable creates LoadBalancer with stable IPs.
+	// ListenerClassExternalStable exposes the workload at an address that does not change as pods
+	// move: a LoadBalancer Service.
 	ListenerClassExternalStable ListenerClass = "external-stable"
-	// ListenerClassExternalUnstable creates LoadBalancer with dynamic IPs.
+	// ListenerClassExternalUnstable exposes the workload outside the cluster at an address tied to
+	// whichever node the pod lands on: a NodePort Service. "Unstable" is precisely that — the
+	// address changes when the pod is rescheduled.
+	//
+	// This comment previously said "LoadBalancer with dynamic IPs", which is what the name is NOT:
+	// a LoadBalancer is the STABLE class. builder.ListenerClassServiceType is the executable form
+	// of the mapping, and two downstream operators had already drawn opposite conclusions from the
+	// old wording.
 	ListenerClassExternalUnstable ListenerClass = "external-unstable"
 )
 
