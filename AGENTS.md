@@ -337,6 +337,30 @@ func (h *MyHandler) BuildResources(ctx context.Context, c client.Client, cr *MyC
 }
 ```
 
+`ListenerClass` and `MainContainerCustomizer` ride the same channel, and replace the other
+post-build habit: **the framework builds a complete object and the product reaches in to edit it.**
+
+```go
+buildCtx.ListenerClass = listener.ListenerClassExternalUnstable   // Service type set at Build()
+buildCtx.MainContainerCustomizer = func(c *corev1.Container) error {
+    c.Command = []string{"/bin/zkServer.sh"}                      // no Containers[0] lookup
+    return nil
+}
+```
+
+The customizer runs on the assembled primary container **before** `podOverrides` are strategic-merged,
+which is why it cannot be a post-build patch: a product editing the returned StatefulSet lands
+*after* the merge and silently beats the user. It is handed the container by identity, so nobody
+indexes `Containers[0]` — an assumption the framework never made, and which a sidecar provider
+inserting a container earlier quietly breaks. Returning an error fails the role group with a
+`*ValidationError`; **changing the image is rejected the same way**, since the image is resolved once
+and propagated to the sidecars before the StatefulSet is built (`buildCtx.Image` is that channel).
+
+`listener.ServiceTypeFor` is the shared class→type mapping restored from v0.12.6:
+`cluster-internal` → ClusterIP, `external-unstable` → **NodePort**, `external-stable` →
+LoadBalancer, anything else → ClusterIP. It lives in `pkg/listener` rather than `pkg/builder`
+because `pkg/listener` already imports `pkg/builder`.
+
 **One handler instance serves every cluster** — it is built once in `main.go` — so the older idiom
 of assigning `h.Image` or calling `h.SetRoleContainerPorts` inside `BuildResources` writes
 per-cluster values into process-wide state. Above `MaxConcurrentReconciles: 1` those writes race

@@ -324,6 +324,15 @@ Assigning a per-cluster value to a handler field from inside `BuildResources` fa
 
 Handler fields are still the right home for invariant configuration — this is a split, not a deprecation.
 
+**The same context carries the product's declared intent, replacing the post-build patch.** `BuildResources` returns a finished object, and for anything the framework does not model the only extension point used to be mutating it afterwards. That cost twice: products re-derived what the handler already knew (zookeeper-operator located the primary container as `Containers[0]`, which a sidecar provider inserting a container earlier silently invalidates), and the edit landed *after* the framework's own ordering.
+
+| field | replaces | why declaring it first matters |
+| --- | --- | --- |
+| `MainContainerCustomizer` | patching `Containers[0]` of the returned StatefulSet | it runs before `podOverrides` are strategic-merged, so the **user's** overrides still win; a post-build edit inverts that silently |
+| `ListenerClass` | patching `Service.Spec.Type` after the fact | one shared `listener.ServiceTypeFor` mapping instead of a three-way switch re-derived per product |
+
+Both fail loudly: a customizer that returns an error, or that changes the image (resolved once and already propagated to the sidecars), fails the role group with a `*ValidationError` rather than shipping a workload missing what the product meant to set.
+
 ## 4.2 Extension Point Mechanism Module
 
 ### 4.2.1 Design Approach

@@ -112,6 +112,35 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (declare intent before Build)
+
+- **`RoleGroupBuildContext.MainContainerCustomizer`** (#577) hands a product the assembled primary
+  container just before `podOverrides` are strategic-merged. The framework owns the container's
+  name, image, ports, security context, mounts and probes and nothing else, so every migrated
+  product edited the StatefulSet the framework had just returned — zookeeper-operator locating the
+  container as `Containers[0]`, an assumption the framework never made and which a sidecar provider
+  inserting a container earlier silently invalidates.
+- **The timing is the point, not the hook.** Running before the strategic merge is what keeps a
+  user's `podOverrides` outranking the product; a post-build edit inverts that precedence silently.
+  A customizer that returns an error fails the role group with a `*ValidationError`, and so does one
+  that changes the **image** — the image is resolved once and propagated to the sidecars before the
+  StatefulSet is built (the Vector agent ships inside the product image), so
+  `RoleGroupBuildContext.Image` is that channel.
+- **`RoleGroupBuildContext.ListenerClass` and `listener.ServiceTypeFor`** (#576) restore the
+  class→Service-type mapping v0.12.6 shipped as `builder.ListenerClass2ServiceType`, which v0.13
+  dropped while keeping the class constants: `cluster-internal` → ClusterIP, `external-unstable` →
+  **NodePort**, `external-stable` → LoadBalancer, anything unrecognised → ClusterIP (the narrowest
+  exposure, never an accidental public address). The client Service now gets its type at `Build()`
+  instead of being patched afterwards.
+- It lives in `pkg/listener`, not `pkg/builder` where the issue proposed it: `pkg/listener` already
+  imports `pkg/builder`, so that direction does not compile. It pairs with the Service builder's
+  existing `WithServiceType` rather than adding a second entry point.
+- **Doc correction with teeth**: `ListenerClassExternalUnstable`'s comment said "creates LoadBalancer
+  with dynamic IPs". It is a NodePort — the LoadBalancer is the *stable* class — and that wording is
+  the documented reason two migrated operators disagreed about what `external-stable` meant.
+- Both fields are additive: unset, the Service is a ClusterIP and no customizer runs, so an
+  unmigrated product renders byte-identical output.
+
 ### features (generate-once secrets)
 
 - **`reconciler.EnsureGeneratedSecret`** creates a Secret whose values are generated once and then

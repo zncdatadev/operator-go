@@ -29,6 +29,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constant"
+	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/security"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
@@ -779,11 +780,67 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 
 // buildService creates the client-facing service.
 func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext, labels map[string]string, ports []corev1.ServicePort) *corev1.Service {
-	return builder.NewServiceBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
+	svcBuilder := builder.NewServiceBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace).
 		WithLabels(labels).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
-		WithPorts(ports).
-		Build()
+		WithPorts(ports)
+	// Set the type from the declared listener class before Build(), rather than leaving the
+	// product to patch Service.Spec.Type on the object it gets back.
+	if buildCtx.ListenerClass != "" {
+		svcBuilder = svcBuilder.WithServiceType(builder.ServiceType(listener.ServiceTypeFor(buildCtx.ListenerClass)))
+	}
+	return svcBuilder.Build()
+}
+
+// wireVolumes attaches the role group ConfigMap and the product's CSI volumes to the builder.
+//
+// Extracted from buildStatefulSet, which was over the cyclomatic budget: this is the one part of it
+// that is a self-contained unit (pod volumes plus the matching mounts on the primary container),
+// and it runs before the container rename and sidecar injection so both see the final shape.
+func (h *BaseRoleGroupHandler[CR]) wireVolumes(
+	stsBuilder *builder.StatefulSetBuilder, buildCtx *RoleGroupBuildContext,
+) {
+	// Mount the role group ConfigMap as the "config" volume at configMountPath().
+	//
+	// This is intentionally NOT gated on MergedConfig.ConfigFiles. ConfigFiles is populated
+	// only from role/role-group configOverrides, but the role group ConfigMap
+	// (buildCtx.ResourceName) is ALWAYS produced by buildConfigMap — a product can populate its
+	// real config (e.g. zoo.cfg, security.properties, logback.xml) directly into ConfigMap.Data
+	// with no overrides at all. Gating the mount on ConfigFiles would starve those products of
+	// their config in the common no-overrides case, forcing them to hand-create a config volume
+	// and strip the framework's. The mount references buildCtx.ResourceName, which the same
+	// handler's buildConfigMap always creates, so the referenced ConfigMap always exists.
+	stsBuilder.AddVolume(corev1.Volume{
+		Name: "config",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: buildCtx.ResourceName,
+				},
+			},
+		},
+	})
+	stsBuilder.AddVolumeMount(corev1.VolumeMount{
+		Name:      "config",
+		MountPath: h.configMountPath(),
+		ReadOnly:  true,
+	})
+
+	// Inject product-registered CSI volumes (secret/TLS certificates, listener address
+	// volumes). These flow through the same builder path as the config volume (volumes on the
+	// pod, mounts on the primary container), before the container rename and sidecar injection.
+	// buildCtx.VolumeProviders is per-build-context, so nothing accumulates across reconciles.
+	for _, vp := range buildCtx.VolumeProviders {
+		if vp == nil {
+			continue
+		}
+		for _, v := range vp.Volumes() {
+			stsBuilder.AddVolume(v)
+		}
+		for _, m := range vp.VolumeMounts() {
+			stsBuilder.AddVolumeMount(m)
+		}
+	}
 }
 
 // buildStatefulSet creates the StatefulSet for the role group.
@@ -901,47 +958,7 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		stsBuilder.WithPodOverrides(buildCtx.MergedConfig.PodOverrides)
 	}
 
-	// Mount the role group ConfigMap as the "config" volume at configMountPath().
-	//
-	// This is intentionally NOT gated on MergedConfig.ConfigFiles. ConfigFiles is populated
-	// only from role/role-group configOverrides, but the role group ConfigMap
-	// (buildCtx.ResourceName) is ALWAYS produced by buildConfigMap — a product can populate its
-	// real config (e.g. zoo.cfg, security.properties, logback.xml) directly into ConfigMap.Data
-	// with no overrides at all. Gating the mount on ConfigFiles would starve those products of
-	// their config in the common no-overrides case, forcing them to hand-create a config volume
-	// and strip the framework's. The mount references buildCtx.ResourceName, which the same
-	// handler's buildConfigMap always creates, so the referenced ConfigMap always exists.
-	stsBuilder.AddVolume(corev1.Volume{
-		Name: "config",
-		VolumeSource: corev1.VolumeSource{
-			ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: buildCtx.ResourceName,
-				},
-			},
-		},
-	})
-	stsBuilder.AddVolumeMount(corev1.VolumeMount{
-		Name:      "config",
-		MountPath: h.configMountPath(),
-		ReadOnly:  true,
-	})
-
-	// Inject product-registered CSI volumes (secret/TLS certificates, listener address
-	// volumes). These flow through the same builder path as the config volume (volumes on the
-	// pod, mounts on the primary container), before the container rename and sidecar injection.
-	// buildCtx.VolumeProviders is per-build-context, so nothing accumulates across reconciles.
-	for _, vp := range buildCtx.VolumeProviders {
-		if vp == nil {
-			continue
-		}
-		for _, v := range vp.Volumes() {
-			stsBuilder.AddVolume(v)
-		}
-		for _, m := range vp.VolumeMounts() {
-			stsBuilder.AddVolumeMount(m)
-		}
-	}
+	h.wireVolumes(stsBuilder, buildCtx)
 
 	// Name the primary container when the product needs a significant name (e.g. to match its
 	// per-container logging key). This must reach the builder BEFORE Build(): podOverrides are
@@ -954,6 +971,12 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		stsBuilder.WithMainContainerName(mainName)
 	}
 
+	// Registered BEFORE Build(): the customizer runs on the assembled container and podOverrides
+	// are strategic-merged afterwards, so the user's overrides keep the last word.
+	if buildCtx.MainContainerCustomizer != nil {
+		stsBuilder.WithMainContainerCustomizer(buildCtx.MainContainerCustomizer)
+	}
+
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
 
@@ -964,6 +987,14 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// Refusing to build is the only way that stops being silent.
 	if violations := stsBuilder.PodOverrideViolations(); len(violations) > 0 {
 		return nil, NewValidationError("podOverrides", buildCtx.RoleName, buildCtx.RoleGroupName,
+			stderrors.Join(violations...))
+	}
+
+	// A customizer that failed would otherwise ship a workload missing the command, args or probes
+	// the product meant to set — the same reason podOverrides violations fail the build rather than
+	// being logged.
+	if violations := stsBuilder.MainContainerViolations(); len(violations) > 0 {
+		return nil, NewValidationError("mainContainerCustomizer", buildCtx.RoleName, buildCtx.RoleGroupName,
 			stderrors.Join(violations...))
 	}
 

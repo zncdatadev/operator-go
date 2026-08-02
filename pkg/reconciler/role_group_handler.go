@@ -24,6 +24,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constant"
+	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/vector"
@@ -225,6 +226,29 @@ type RoleGroupBuildContext struct {
 	ImagePullPolicy corev1.PullPolicy
 	ContainerPorts  []corev1.ContainerPort
 	ServicePorts    []corev1.ServicePort
+
+	// ListenerClass sets the client Service's type through listener.ServiceTypeFor, so the
+	// Service is right when it is BUILT. Products used to patch Service.Spec.Type after
+	// BuildResources returned, each re-deriving the same three-way switch — two of them with raw
+	// string literals rather than the framework constants, and disagreeing about what
+	// external-stable meant. Empty leaves the builder's default (ClusterIP).
+	ListenerClass listener.ListenerClass
+
+	// MainContainerCustomizer gets the assembled primary container just before podOverrides are
+	// applied, which is the whole point: a user's podOverrides still outrank whatever the product
+	// sets here, and a post-build edit would invert that precedence silently.
+	//
+	// The framework owns the primary container's name, image, ports, security context, volume
+	// mounts and probes; everything else — command, args, env, probes the product wants to
+	// replace, lifecycle hooks — has no other channel, so products reached into the returned
+	// StatefulSet and edited it, re-deriving the container they had just been handed.
+	// zookeeper-operator located it as Containers[0], which the framework has never promised: the
+	// moment a sidecar provider inserts a container earlier, that configures the wrong one.
+	//
+	// Returning an error fails the role group with a *ValidationError. Changing the image is
+	// rejected the same way — it is resolved once and propagated to the sidecars before the
+	// StatefulSet is built, so set Image above instead.
+	MainContainerCustomizer func(*corev1.Container) error
 
 	// VectorAggregatorAddress is the resolved Vector aggregator discovery address, populated by
 	// GenericReconciler when the Vector agent is enabled and the CR implements

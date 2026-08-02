@@ -4,6 +4,27 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-03c] (declaring intent before Build, instead of patching after)
+
+### Core Architecture (`architecture.md`)
+
+- §4.1.4 gains the second half of the build-context story: `MainContainerCustomizer` and
+  `ListenerClass` replace the post-build patch, with a table of what each one replaces and why the
+  *timing* is the point rather than the hook's existence.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §4 documents both fields, the pre-`podOverrides` ordering, the rejection of an image change, and
+  where `listener.ServiceTypeFor` lives and why.
+
+### API doc correction (`pkg/listener`)
+
+- `ListenerClassExternalUnstable`'s comment said "creates LoadBalancer with dynamic IPs". It is a
+  **NodePort** — the LoadBalancer is the *stable* class. The wrong wording is the documented reason
+  two downstream operators reached opposite conclusions about `external-stable`.
+
+---
+
 ## [2026-08-03b] (an object whose content must not converge)
 
 ### Core Architecture (`architecture.md`)

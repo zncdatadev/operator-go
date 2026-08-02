@@ -2972,3 +2972,129 @@ func (p *recordingSidecarProvider) Inject(podSpec *corev1.PodSpec, cfg *sidecar.
 	return nil
 }
 func (p *recordingSidecarProvider) Validate(context.Context, client.Client, string) error { return nil }
+
+var _ = Describe("Declaring intent before Build", func() {
+	// Both of these replace the same shape: the framework builds a complete object and the product
+	// reaches in and edits it. Declaring the intent first keeps ordering framework-owned.
+	var mockCR *testutil.MockCluster
+
+	BeforeEach(func() { mockCR = testutil.NewMockCluster("test-cluster", "default") })
+
+	declareCtx := func(mutate func(*reconciler.RoleGroupBuildContext)) *reconciler.RoleGroupBuildContext {
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+			ServicePorts:     []corev1.ServicePort{{Name: "http", Port: 8080}},
+		}
+		if mutate != nil {
+			mutate(buildCtx)
+		}
+		return buildCtx
+	}
+
+	It("sets the client Service type from the declared listener class", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.ListenerClass = listener.ListenerClassExternalUnstable
+			}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.Service.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+	})
+
+	It("leaves the Service a ClusterIP when no class is declared", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, declareCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.Service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+	})
+
+	It("hands the customizer the primary container, whichever index it ends up at", func() {
+		// zookeeper-operator located it as Containers[0], an assumption the framework never made:
+		// a sidecar provider inserting a container earlier silently configures the wrong one.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.MainContainerName = "zookeeper"
+
+		var sawName string
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MainContainerCustomizer = func(c *corev1.Container) error {
+					sawName = c.Name
+					c.Command = []string{"/bin/zkServer.sh"}
+					c.Args = []string{"start-foreground"}
+					c.Env = append(c.Env, corev1.EnvVar{Name: "ZK_ID", Value: "1"})
+					return nil
+				}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sawName).To(Equal("zookeeper"), "the customizer is handed the container by identity, not by index")
+
+		main := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(main.Command).To(Equal([]string{"/bin/zkServer.sh"}))
+		Expect(main.Args).To(Equal([]string{"start-foreground"}))
+		Expect(main.Env).To(ContainElement(corev1.EnvVar{Name: "ZK_ID", Value: "1"}))
+	})
+
+	It("lets podOverrides outrank the customizer", func() {
+		// The reason this is a pre-Build hook rather than a post-build patch. A product editing the
+		// returned StatefulSet would land AFTER the strategic merge and silently beat the user.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.MainContainerName = "main"
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MergedConfig.PodOverrides = &corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name: "main",
+						Env:  []corev1.EnvVar{{Name: "LEVEL", Value: "from-user"}},
+					}}},
+				}
+				b.MainContainerCustomizer = func(c *corev1.Container) error {
+					c.Env = append(c.Env, corev1.EnvVar{Name: "LEVEL", Value: "from-product"})
+					return nil
+				}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+
+		main := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(main.Env).To(ContainElement(corev1.EnvVar{Name: "LEVEL", Value: "from-user"}))
+		Expect(main.Env).NotTo(ContainElement(corev1.EnvVar{Name: "LEVEL", Value: "from-product"}))
+	})
+
+	It("fails the role group when the customizer errors", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MainContainerCustomizer = func(*corev1.Container) error {
+					return fmt.Errorf("no JVM heap could be computed")
+				}
+			}))
+		Expect(err).To(MatchError(ContainSubstring("no JVM heap could be computed")))
+		Expect(reconciler.IsValidationError(err)).To(BeTrue())
+	})
+
+	It("refuses an image change from the customizer, and keeps the resolved one", func() {
+		// The image is propagated to the sidecars before the StatefulSet is built (the Vector agent
+		// ships inside the product image), so changing it here would leave them on the old one.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MainContainerCustomizer = func(c *corev1.Container) error {
+					c.Image = "sneaky:2"
+					return nil
+				}
+			}))
+		Expect(err).To(MatchError(ContainSubstring("RoleGroupBuildContext.Image")))
+		Expect(err).To(MatchError(ContainSubstring("sneaky:2")))
+	})
+})
