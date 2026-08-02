@@ -493,6 +493,14 @@ The check runs against the API server through the injected `client.Client`; the 
 ### 9. Logging Configuration
 `LoggingFramework`-aware logging config generation (Log4j, Log4j2, Logback, Python) lives in `pkg/productlogging`. `BaseRoleGroupHandler.LoggingContainers` (or the per-role `SetRoleLoggingContainers`) declares which containers get a generated config file; the framework merges the CRD logging spec, renders the file and injects it into the role group ConfigMap. The same declaration names the producers of the Vector log pipeline.
 
+**A level a role group does not state is inherited, never cleared.** `LogLevelSpec.Level` carries no
+`+kubebuilder:default` — it sits inside the folded `config` block, where structural defaulting would fill
+it as soon as its enclosing object existed, so `console: {}` in a role group would arrive as
+`console: {level: INFO}` and beat the role's `DEBUG`. `MergeLoggingSpec` applies the same rule to
+`console`, `file` and every entry of `loggers`: a level-less entry keeps the role's value, and only a
+stated level overrides. The effective default (root logger `INFO`, no appender threshold) is applied by
+the renderers at consumption time.
+
 Default config file names come from each generator's `DefaultFileName()`: `logback.xml`, `log4j.properties`, `log4j2.properties` and — deliberately **not** `logging.py` — `log_config.py`, since a config directory on `sys.path` would otherwise shadow the standard library's `logging` module. `ContainerLogging.FileName` overrides the name per container. The rolling *log* file the Vector sources glob is separate and framework-owned: `<KubedoopLogDir>/<lowercased container>/<container><suffix>`, with `.log4j.xml` (log4j/logback), `.log4j2.xml` (log4j2) or `.py.json` (python) selecting the Vector edge parser; `ContainerLogging.LogFileName` may rename it only if the suffix survives and it stays a bare file name.
 
 ### 10. Product Config (`ProductConfig`)

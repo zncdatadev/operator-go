@@ -262,6 +262,51 @@ var _ = Describe("MergeLoggingSpec", func() {
 		Expect(c.Console.Level).To(Equal("INFO")) // role threshold preserved
 		Expect(c.File.Level).To(Equal("ERROR"))   // role threshold preserved
 	})
+
+	It("does not let an empty group logger entry wipe the role's level", func() {
+		// The loggers map had no such guard: the group's entries were copied in unconditionally,
+		// so `loggers: {ROOT: {}}` replaced the role's entry with a level-less one — and
+		// LogConfigFromSpec skips those, so the logger silently fell back to the product's
+		// built-in default rather than the role's. Naming a logger without stating a threshold is
+		// "inherit", the same as it is for console and file.
+		role := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {Loggers: map[string]*v1alpha1.LogLevelSpec{
+					"ROOT":  {Level: "DEBUG"},
+					"a.b.c": {Level: "TRACE"},
+				}},
+			},
+		}
+		group := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {Loggers: map[string]*v1alpha1.LogLevelSpec{
+					"ROOT":  {},  // `loggers: {ROOT: {}}`
+					"a.b.c": nil, // `loggers: {a.b.c: null}`
+					"x.y.z": {},  // no role counterpart: nothing to inherit
+				}},
+			},
+		}
+
+		c := productlogging.MergeLoggingSpec(role, group).Containers["main"]
+		Expect(c.Loggers["ROOT"].Level).To(Equal("DEBUG"))
+		Expect(c.Loggers["a.b.c"].Level).To(Equal("TRACE"))
+		Expect(c.Loggers).To(HaveKey("x.y.z"), "a group-only entry is still carried through")
+	})
+
+	It("still lets a group logger level win", func() {
+		role := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {Loggers: map[string]*v1alpha1.LogLevelSpec{"ROOT": {Level: "DEBUG"}}},
+			},
+		}
+		group := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {Loggers: map[string]*v1alpha1.LogLevelSpec{"ROOT": {Level: "WARN"}}},
+			},
+		}
+		c := productlogging.MergeLoggingSpec(role, group).Containers["main"]
+		Expect(c.Loggers["ROOT"].Level).To(Equal("WARN"))
+	})
 })
 
 var _ = Describe("Render with appender thresholds", func() {

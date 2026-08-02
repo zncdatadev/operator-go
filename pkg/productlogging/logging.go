@@ -362,7 +362,17 @@ func mergeContainerLogging(role, group v1alpha1.LoggingConfigSpec) v1alpha1.Logg
 		for k, v := range role.Loggers {
 			merged.Loggers[k] = v
 		}
+		// Same rule as console/file above, and for the same reason: an entry carrying no level is
+		// the role group naming a logger without stating a threshold, which is "inherit", not
+		// "clear". Overriding unconditionally made `loggers: {ROOT: {}}` erase the role's ROOT
+		// level — the renderer skips a level-less entry, so the logger silently reverted to the
+		// product's built-in default instead of the role's.
 		for k, v := range group.Loggers {
+			if v == nil || v.Level == "" {
+				if _, inherited := merged.Loggers[k]; inherited {
+					continue
+				}
+			}
 			merged.Loggers[k] = v
 		}
 	}
