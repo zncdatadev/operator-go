@@ -140,8 +140,11 @@ func (m *ConfigMerger) Merge(overrides ...*v1alpha1.OverridesSpec) *MergedConfig
 // helper for that reason, byte for byte including its doc comment.
 //
 // The per-dimension rules are the merge's own, applied with the product's layer as the base:
-// config files fold per key, env vars per key, CLI/JVM args as a whole (an empty higher slice means
+// config files fold per key, env vars per key, CLI args as a whole (an empty higher slice means
 // "unset", so the product's is used), and podOverrides through the same strategic merge patch.
+//
+// JvmArgs has no OverridesSpec field, so the lower layer cannot contribute any; the higher config's
+// are carried through unchanged for callers that populated them imperatively (MergedConfig.AddJvmArg).
 //
 // `higher` is not mutated; the result is a new MergedConfig.
 func (m *ConfigMerger) MergeBeneath(higher *MergedConfig, lower *v1alpha1.OverridesSpec) *MergedConfig {

@@ -198,6 +198,20 @@ var _ = Describe("ApplyProductDefaults", func() {
 		Expect(withoutUser.MergedConfig.CliArgs).To(Equal([]string{"--from-product"}))
 	})
 
+	It("carries JVM args through, which no overrides layer can contribute", func() {
+		// OverridesSpec has no JVM-args field, so the lower layer cannot supply any; a caller that
+		// populated them imperatively (MergedConfig.AddJvmArg) must not lose them.
+		buildCtx := newCtx(nil)
+		buildCtx.MergedConfig.AddJvmArg("-Xmx4g")
+
+		buildCtx.ApplyProductDefaults(&v1alpha1.OverridesSpec{
+			EnvOverrides: map[string]string{"HIVE_HOME": "/opt/hive"},
+		})
+
+		Expect(buildCtx.MergedConfig.JvmArgs).To(Equal([]string{"-Xmx4g"}))
+		Expect(buildCtx.MergedConfig.EnvVars).To(HaveKeyWithValue("HIVE_HOME", "/opt/hive"))
+	})
+
 	It("is a no-op for a nil layer or a context with no merged config", func() {
 		buildCtx := newCtx(&v1alpha1.OverridesSpec{
 			EnvOverrides: map[string]string{"KEEP": "me"},

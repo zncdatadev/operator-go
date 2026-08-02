@@ -141,6 +141,14 @@ changes are listed below.**
   `MergedConfig.EnvVars` is a map, so contributing beneath is simply "set what is absent".
 - `mergePodTemplates` is extracted so the `RawExtension` path and `MergeBeneath` share one strategic
   merge implementation rather than two that can drift.
+- **`reconciler.ConfigError` now carries a `Cause` and implements `Unwrap`**, with the new
+  `WrapConfigError(field, cause)` constructor. It was the only error type in the package without
+  one, so building it from another error flattened the chain to a string and callers lost
+  `errors.Is` / `errors.As` — which is exactly how a product tells "the S3Connection does not exist
+  yet" (`apierrors.IsNotFound`) from a real failure. `NewConfigError` is unchanged.
+- `MergedConfig.JvmArgs` has no `OverridesSpec` field, so a lower layer cannot contribute any;
+  `MergeBeneath` carries the higher config's through for callers that populated them imperatively
+  via `AddJvmArg`.
 
 ### features (declare intent before Build)
 

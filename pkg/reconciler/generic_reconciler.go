@@ -813,7 +813,7 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	// Build context
 	buildCtx, err := r.buildRoleGroupContext(ctx, cr, roleName, roleSpec, groupName, groupSpec)
 	if err != nil {
-		return NewConfigError(fmt.Sprintf("role %s group %s", roleName, groupName), err.Error())
+		return WrapConfigError(fmt.Sprintf("role %s group %s", roleName, groupName), err)
 	}
 
 	// A podOverrides layer that fails to decode is dropped by the merger so the rest of the

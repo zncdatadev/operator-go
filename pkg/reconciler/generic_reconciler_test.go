@@ -18,6 +18,7 @@ package reconciler_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -2041,6 +2043,36 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 			NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}})
 		Expect(err).To(MatchError(ContainSubstring("could not be resolved")))
 		Expect(captured).To(BeNil(), "no workload is built from a config that failed to compute")
+	})
+
+	It("keeps the lookup's error chain intact", func() {
+		// A product distinguishes "the S3Connection does not exist yet" from a real failure with
+		// k8serrors.IsNotFound. Flattening the cause to a string — which ConfigError forced, being
+		// the one error type in the package without an Unwrap — takes that away.
+		var captured *config.MergedConfig
+		notFound := k8serrors.NewNotFound(
+			schema.GroupResource{Group: "s3.kubedoop.dev", Resource: "s3connections"}, "warehouse")
+
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: newCapturingHandler(&captured),
+			Prototype:        testutil.NewMockCluster("proto", namespace),
+			ProductConfig: func(context.Context, client.Client, *testutil.MockCluster,
+				string, string) (*v1alpha1.OverridesSpec, error) {
+				return nil, fmt.Errorf("resolving the warehouse connection: %w", notFound)
+			},
+		}
+
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}})
+
+		Expect(err).To(HaveOccurred())
+		Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "errors.As must still reach the cause")
+		Expect(errors.Is(err, notFound)).To(BeTrue())
 	})
 })
 
