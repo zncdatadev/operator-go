@@ -578,17 +578,43 @@ Products contribute their computed configuration **as data through the same merg
 ```go
 reconcilerCfg := &reconciler.GenericReconcilerConfig[*v1alpha1.TrinoCluster]{
     // ...
-    ProductConfig: func(cr *v1alpha1.TrinoCluster, roleName, roleGroupName string) *commonsv1alpha1.OverridesSpec {
+    ProductConfig: func(ctx context.Context, c client.Client, cr *v1alpha1.TrinoCluster,
+        roleName, roleGroupName string) (*commonsv1alpha1.OverridesSpec, error) {
         overrides := map[string]map[string]string{
             "config.properties": {"http-server.http.port": "8080"},
         }
         if roleName == "coordinators" {
             overrides["config.properties"]["coordinator"] = "true"
         }
-        return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}
+        return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}, nil
     },
 }
 ```
+
+**The `ctx` and client are what make "may derive from live cluster state" true.** Without them the
+hook could only be a pure function of the CR, so a product needing an API lookup — resolving an
+`S3Connection` reference to an endpoint — could not use it at all, and a `Get` failure could only be
+swallowed (rendering a silently wrong config) or panicked. A returned error fails the role group.
+
+**`RoleGroupBuildContext.ApplyProductDefaults(*OverridesSpec)` is the imperative counterpart**, for a
+product that performs its lookup inside `BuildResources` and does not want to repeat it:
+
+```go
+conn, err := s3.ResolveConnection(ctx, c, cr.Namespace, inline, ref)
+if err != nil { return nil, err }
+buildCtx.ApplyProductDefaults(&commonsv1alpha1.OverridesSpec{
+    ConfigOverrides: map[string]map[string]string{"hive-site.xml": conn.S3AProperties()},
+})
+```
+
+It folds the layer **beneath** everything already merged, using the merge's own per-dimension rules
+(`config.ConfigMerger.MergeBeneath`): config files and env vars per key, CLI/JVM args as a whole,
+podOverrides through the same strategic merge patch. Repeated calls accumulate, each landing beneath
+the last. hive-operator and spark-k8s-operator each hand-wrote the same "set only keys the user did
+not set" helper, and both then discovered the same second rule for env vars — that product defaults
+must not overwrite `envOverrides`, which they solved by prepending to the container's env list. Both
+rules are the framework's own precedence, and neither needs an ordering dance here because
+`MergedConfig.EnvVars` is a map.
 
 Precedence (low → high): **product config < role overrides < role group overrides**. Any value a user sets in the CRD always wins. `ConfigMerger.Merge` is variadic (`Merge(...*OverridesSpec)`) and folds layers in order; the previous two-argument call (`Merge(role, group)`) is still valid.
 

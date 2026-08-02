@@ -491,6 +491,41 @@ func mergeResources(role, group *v1alpha1.ResourcesSpec) *v1alpha1.ResourcesSpec
 	return merged
 }
 
+// ApplyProductDefaults folds an overrides layer UNDERNEATH the already-merged config: a value the
+// user set anywhere in the CRD is kept, and only what they left unset is contributed.
+//
+// It is the imperative half of the product-config seam, for the case GenericReconcilerConfig's
+// ProductConfig hook cannot serve: a product whose configuration depends on an API lookup — an
+// S3Connection reference resolved to an endpoint, a ZooKeeper connection string built from the
+// live resources — does that lookup inside BuildResources, where a ctx and a client already exist,
+// and only then knows what to contribute.
+//
+//	func (h *MyHandler) BuildResources(ctx context.Context, c client.Client, cr *MyCluster,
+//	    buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+//	    conn, err := s3.ResolveConnection(ctx, c, cr.Namespace, inline, ref)
+//	    if err != nil {
+//	        return nil, err
+//	    }
+//	    buildCtx.ApplyProductDefaults(&commonsv1alpha1.OverridesSpec{
+//	        ConfigOverrides: map[string]map[string]string{"hive-site.xml": conn.S3AProperties()},
+//	    })
+//	    return h.BaseRoleGroupHandler.BuildResources(ctx, c, cr, buildCtx)
+//	}
+//
+// hive-operator and spark-k8s-operator each hand-wrote the same "set only keys the user did not
+// set" helper for exactly this, byte for byte including its doc comment, and both then discovered
+// the same second rule for environment variables — that product defaults must not overwrite
+// envOverrides. Both rules are the framework's own merge precedence, so they belong here rather
+// than being re-derived per product.
+//
+// A nil layer, or a nil MergedConfig, is a no-op.
+func (c *RoleGroupBuildContext) ApplyProductDefaults(defaults *v1alpha1.OverridesSpec) {
+	if c == nil || defaults == nil || c.MergedConfig == nil {
+		return
+	}
+	c.MergedConfig = config.NewConfigMerger().MergeBeneath(c.MergedConfig, defaults)
+}
+
 // RoleGroupHandler is the interface that product operators must implement
 // to define how resources are built for each role group.
 //

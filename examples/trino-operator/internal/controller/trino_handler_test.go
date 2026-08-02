@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -36,7 +38,9 @@ import (
 func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role string, crdOverrides *commonsv1alpha1.OverridesSpec) *reconciler.RoleGroupBuildContext {
 	const group = "default"
 	merger := config.NewConfigMerger()
-	merged := merger.Merge(product.ComputeConfig(cr, role, group), crdOverrides)
+	productCfg, err := product.ComputeConfig(context.Background(), nil, cr, role, group)
+	Expect(err).NotTo(HaveOccurred())
+	merged := merger.Merge(productCfg, crdOverrides)
 
 	return &reconciler.RoleGroupBuildContext{
 		ClusterName:      cr.Name,

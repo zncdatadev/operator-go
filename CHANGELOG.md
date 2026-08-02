@@ -112,6 +112,44 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (product config)
+
+- **`GenericReconcilerConfig.ProductConfig` gains a `ctx`, a `client.Client` and an `error`** (#574):
+
+  ```go
+  ProductConfig func(ctx context.Context, c client.Client, cr CR,
+      roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
+  ```
+
+  Adopters add the two parameters and `, nil` to the return. `examples/trino-operator` is migrated
+  in this change.
+- **Why.** The hook's own doc says it "may derive from live cluster state", but the signature had no
+  `ctx`, no client and no error return — so it could only be a pure function of the CR, and a failed
+  lookup could only be swallowed (rendering a silently wrong config) or panicked. The products that
+  most needed a product-config layer were exactly the ones it could not serve, which is why **zero**
+  operators used it while two hand-wrote the same workaround.
+- **New: `RoleGroupBuildContext.ApplyProductDefaults(*OverridesSpec)`**, the imperative counterpart
+  for a product that performs its lookup inside `BuildResources` and does not want to repeat it. It
+  folds the layer **beneath** everything already merged.
+- **New: `config.ConfigMerger.MergeBeneath(*MergedConfig, *OverridesSpec)`** implements that fold
+  once, by the merge's own per-dimension rules — config files and env vars per key, CLI/JVM args as
+  a whole, podOverrides through the same strategic merge patch. `Merge` could not express it: it
+  folds left to right, so the lowest layer must be known before the merge runs, which a product
+  computing from a live lookup cannot promise.
+- The env-var half needs no ordering dance. Both operators had discovered that product defaults must
+  not overwrite `envOverrides` and both solved it by **prepending** to the container's env list;
+  `MergedConfig.EnvVars` is a map, so contributing beneath is simply "set what is absent".
+- `mergePodTemplates` is extracted so the `RawExtension` path and `MergeBeneath` share one strategic
+  merge implementation rather than two that can drift.
+- **`reconciler.ConfigError` now carries a `Cause` and implements `Unwrap`**, with the new
+  `WrapConfigError(field, cause)` constructor. It was the only error type in the package without
+  one, so building it from another error flattened the chain to a string and callers lost
+  `errors.Is` / `errors.As` — which is exactly how a product tells "the S3Connection does not exist
+  yet" (`apierrors.IsNotFound`) from a real failure. `NewConfigError` is unchanged.
+- `MergedConfig.JvmArgs` has no `OverridesSpec` field, so a lower layer cannot contribute any;
+  `MergeBeneath` carries the higher config's through for callers that populated them imperatively
+  via `AddJvmArg`.
+
 ### features (declare intent before Build)
 
 - **`RoleGroupBuildContext.MainContainerCustomizer`** (#577) hands a product the assembled primary

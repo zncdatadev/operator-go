@@ -17,6 +17,8 @@ limitations under the License.
 package product_test
 
 import (
+	"context"
+
 	"strings"
 	"testing"
 
@@ -38,7 +40,10 @@ func testCR() *trinov1alpha1.TrinoCluster {
 
 func configProps(t *testing.T, cr *trinov1alpha1.TrinoCluster, role string) map[string]string {
 	t.Helper()
-	ov := product.ComputeConfig(cr, role, "default")
+	ov, err := product.ComputeConfig(context.Background(), nil, cr, role, "default")
+	if err != nil {
+		t.Fatalf("ComputeConfig failed: %v", err)
+	}
 	if ov == nil || ov.ConfigOverrides["config.properties"] == nil {
 		t.Fatalf("ComputeConfig returned no config.properties for role %q", role)
 	}

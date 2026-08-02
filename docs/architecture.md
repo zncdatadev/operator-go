@@ -167,6 +167,10 @@ convention, and three migrated operators consequently hand-rolled image resoluti
 silent fall back to the handler's static image: running a version nobody asked for is not a safe
 default for a stateful product (the same call as `config.affinity` above).
 
+**The `ProductConfig` hook receives a `ctx` and a client, and may fail.** "Recomputed every reconcile, and may reflect the current state of the cluster" is only true if the hook can *read* the cluster; without those parameters it was a pure function of the CR, so the products that most needed a product-config layer — anything resolving an `S3Connection` reference or a ZooKeeper address — could not use it, and a failed lookup had nowhere to go but a swallowed error or a panic. Zero operators used the hook, which was the symptom rather than the disease.
+
+Products that already perform the lookup inside `BuildResources` use the imperative counterpart, `RoleGroupBuildContext.ApplyProductDefaults`, rather than repeating it: it folds an overrides layer **beneath** everything already merged, by the merge's own per-dimension rules. Two operators had hand-written that fold, identically, along with a second rule for environment variables that the framework can express directly because `MergedConfig.EnvVars` is a map rather than an ordered list.
+
 - **`ProductDefaulter`** is the right place for stable, user-facing **typed Spec defaults** (see §4.3). The value becomes part of the user's persisted Spec and is visible via `kubectl get`.
 - **`ProductConfig`** is the right place for **product-intrinsic and derived config-file content** — e.g. a ZooKeeper connection string built from the actual resources, a quorum peer list from pod ordinals, or a JVM heap sized from the role group's resources. It is *config generation, not defaulting*: computing it at reconcile time (rather than freezing it into the Spec at admission) means an operator upgrade **recomputes** the configuration for existing clusters, and values derived from mutable state stay fresh. It is injected as the lowest merge layer (§2.5), so user overrides still win.
 
