@@ -112,6 +112,32 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (generate-once secrets)
+
+- **`reconciler.EnsureGeneratedSecret`** creates a Secret whose values are generated once and then
+  never change (#575). It creates with generated values when absent, fills only **missing** keys
+  when it exists, **never rewrites an existing value**, sets a controller owner reference, and
+  tolerates the `IsAlreadyExists` of a concurrent reconcile by re-reading.
+- **Why it was needed.** v0.13 made a generated Secret mandatory —
+  `OAuth2ProxySidecarProvider.Validate` fails the reconcile when the cookie key is missing, and
+  `GenerateCookieSecret`'s doc says to call it once and store the result — while removing
+  `builder.SecretBuilder`, the only way to make one. `RoleGroupResources.ExtraResources` cannot
+  serve: its apply path is idempotent `CreateOrUpdate` against a desired object, which rewrites the
+  value every pass and produces exactly the "log every user out" failure the doc warns about. Five
+  operators need this primitive; spark-k8s-operator hand-wrote 58 lines of it while migrating.
+- **Filling a missing key is deliberate.** Providers fail the reconcile on a missing key, so a
+  Secret that lost one — a partial restore, a hand-edit — would wedge the cluster with no recovery
+  short of deleting the whole Secret, which rotates every *other* key too. Generators run only for
+  absent keys, so the steady-state path invokes none of them and a generator with a side effect (an
+  external KMS call) is not re-triggered.
+- `Type` is applied only at creation, because it is immutable and writing it on update would make
+  every later reconcile fail. Options mirror the discovery helper
+  (`WithGeneratedSecretProductName` / `ExtraLabels` / `Annotations` / `Type`), and the canonical
+  labels always win.
+- No `sidecar.WithOAuth2ProxyManagedCookieSecret` convenience: the provider's `Validate` is the only
+  place it could create from, and a validation hook that creates objects is a side effect in the one
+  step whose job is to have none. Products call the helper from a `ClusterExtension` `PreReconcile`.
+
 ### fix (shared handler state)
 
 - **`RoleGroupBuildContext` gains `Image`, `ImagePullPolicy`, `ContainerPorts` and `ServicePorts`**
