@@ -301,7 +301,9 @@ per-role container and service ports).
 // ComputeConfig is merged as the LOWEST layer (product < role < role group), so a user's
 // configOverrides always win over it. It is recomputed every reconcile and may derive from
 // live cluster state — here, the discovery URI of the coordinator Service.
-func ComputeConfig(cr *trinov1alpha1.TrinoCluster, roleName, _ string) *commonsv1alpha1.OverridesSpec {
+func ComputeConfig(
+    _ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster, roleName, _ string,
+) (*commonsv1alpha1.OverridesSpec, error) {
     port := CoordinatorPort(cr)
 
     props := map[string]string{
@@ -320,7 +322,7 @@ func ComputeConfig(cr *trinov1alpha1.TrinoCluster, roleName, _ string) *commonsv
         ConfigOverrides: map[string]map[string]string{
             "config.properties": props,
         },
-    }
+    }, nil
 }
 ```
 

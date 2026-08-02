@@ -19,8 +19,11 @@ limitations under the License.
 package product
 
 import (
+	"context"
 	"fmt"
 	"slices"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
@@ -43,7 +46,13 @@ const (
 // role-specific product knowledge lives (coordinator vs worker) and where values are derived
 // from live cluster state (the discovery URI is built from the coordinator Service the
 // framework will create). It contains no imperative resource construction — purely data.
-func ComputeConfig(cr *trinov1alpha1.TrinoCluster, roleName, _ string) *commonsv1alpha1.OverridesSpec {
+// The ctx and client are unused here — trino's configuration is a pure function of the CR — but
+// they are what the seam exists for: a product resolving an S3Connection reference or a ZooKeeper
+// address does that lookup here and reports a failure through the error return, rather than
+// swallowing it and rendering a silently wrong config.
+func ComputeConfig(
+	_ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster, roleName, _ string,
+) (*commonsv1alpha1.OverridesSpec, error) {
 	port := CoordinatorPort(cr)
 
 	props := map[string]string{
@@ -64,7 +73,7 @@ func ComputeConfig(cr *trinov1alpha1.TrinoCluster, roleName, _ string) *commonsv
 		ConfigOverrides: map[string]map[string]string{
 			"config.properties": props,
 		},
-	}
+	}, nil
 }
 
 // CoordinatorPort returns the coordinator HTTP port from the CR or the product default.

@@ -4,6 +4,23 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-03d] (the product-config seam can read the cluster it documents)
+
+### Core Architecture (`architecture.md`)
+
+- §2.6 records that `ProductConfig` now receives a `ctx` and a client and may fail — "recomputed
+  every reconcile, and may reflect the current state of the cluster" was only true if the hook could
+  *read* the cluster — and that zero adoption was the symptom rather than the disease.
+- Documents `ApplyProductDefaults` as the imperative counterpart for products that already perform
+  the lookup inside `BuildResources`.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §10 carries the new signature, both entry points, and why the env-var precedence rule two
+  operators hand-wrote needs no ordering dance here.
+
+---
+
 ## [2026-08-03c] (declaring intent before Build, instead of patching after)
 
 ### Core Architecture (`architecture.md`)

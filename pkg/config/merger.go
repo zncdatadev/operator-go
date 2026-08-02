@@ -130,6 +130,51 @@ func (m *ConfigMerger) Merge(overrides ...*v1alpha1.OverridesSpec) *MergedConfig
 	return result
 }
 
+// MergeBeneath folds an overrides layer UNDERNEATH an already-merged config: a value the higher
+// layers set is kept, and only what they left unset is contributed.
+//
+// Merge itself cannot express this. It folds *OverridesSpec layers left to right, so the lowest
+// layer must be known before the merge runs — which is exactly what a product computing its config
+// from a live API lookup cannot promise, because the lookup happens inside BuildResources. Both
+// hive-operator and spark-k8s-operator hand-wrote the same "set only keys the user did not set"
+// helper for that reason, byte for byte including its doc comment.
+//
+// The per-dimension rules are the merge's own, applied with the product's layer as the base:
+// config files fold per key, env vars per key, CLI/JVM args as a whole (an empty higher slice means
+// "unset", so the product's is used), and podOverrides through the same strategic merge patch.
+//
+// `higher` is not mutated; the result is a new MergedConfig.
+func (m *ConfigMerger) MergeBeneath(higher *MergedConfig, lower *v1alpha1.OverridesSpec) *MergedConfig {
+	base := m.Merge(lower)
+	if higher == nil {
+		return base
+	}
+
+	result := NewMergedConfig()
+	result.ConfigFiles = m.mergeConfigFiles(base.ConfigFiles, higher.ConfigFiles)
+	result.EnvVars = m.mergeMaps(base.EnvVars, higher.EnvVars)
+	result.CliArgs = m.mergeSlices(base.CliArgs, higher.CliArgs)
+	result.JvmArgs = m.mergeSlices(base.JvmArgs, higher.JvmArgs)
+
+	// The product's pod template is the base and the already-merged one is the patch, which is
+	// what puts the user's podOverrides on top.
+	result.PodOverrides = higher.PodOverrides
+	if base.PodOverrides != nil {
+		merged, err := m.mergePodTemplates(base.PodOverrides, higher.PodOverrides)
+		if err != nil {
+			result.PodOverrideErrors = append(result.PodOverrideErrors, err)
+		} else {
+			result.PodOverrides = merged
+		}
+	}
+
+	// Carry both layers' recorded failures: the caller surfaces them as one set.
+	result.PodOverrideErrors = append(result.PodOverrideErrors, base.PodOverrideErrors...)
+	result.PodOverrideErrors = append(result.PodOverrideErrors, higher.PodOverrideErrors...)
+	result.Logging = higher.Logging
+	return result
+}
+
 // mergeMaps performs deep merge of two maps.
 // Values in the second map override values in the first map.
 func (m *ConfigMerger) mergeMaps(base, override map[string]string) map[string]string {
@@ -222,6 +267,16 @@ func (m *ConfigMerger) mergePodOverrideInto(base *corev1.PodTemplateSpec, overri
 		overridePod = &parsed
 	}
 
+	return m.mergePodTemplates(base, overridePod)
+}
+
+// mergePodTemplates strategic-merges override onto base. Both callers need this — the RawExtension
+// path above after it has decoded its layer, and MergeBeneath, whose "override" is an
+// already-merged template rather than raw JSON — so it lives in one place rather than two that can
+// drift.
+func (m *ConfigMerger) mergePodTemplates(
+	base, overridePod *corev1.PodTemplateSpec,
+) (*corev1.PodTemplateSpec, error) {
 	switch {
 	case base == nil && overridePod == nil:
 		return nil, nil
