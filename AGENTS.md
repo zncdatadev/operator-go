@@ -859,6 +859,22 @@ All AI agents and developers working on this project **must** follow these rules
   `DeepCopyInto`, so controller-gen concludes the type is already satisfied and emits nothing,
   producing code that does not compile. The package deliberately carries no package-level
   `generate=true` marker, which would drag in the mock handlers whose fields are funcs.
+- **`testutil.HaveNoInheritedConfigDefaults()` is the exported guard against the #544 defect class**,
+  and product operators are expected to run it over their own generated CRDs:
+
+  ```go
+  It("declares no CRD default inside a role config block", func() {
+      Expect("config/crd/bases/*.yaml").To(testutil.HaveNoInheritedConfigDefaults())
+  })
+  ```
+
+  It statically scans CRD YAML — no envtest, no CR fixture, no cluster — and reports every
+  `default` under a role or role group `config` block, at any depth. `FindInheritedConfigDefaults`
+  is the same check returning `[]InheritedConfigDefault` (CRD, version, JSON path, default, file).
+  Roles are found structurally (a schema node declaring `roleGroups`), so a product that flattens
+  its roles into `spec.coordinators` is covered as well as the generic `spec.roles[*]` map.
+  Arguments matching no files are an **error**, not a pass. This repository runs it over
+  `config/crd/bases/*.yaml` and `examples/trino-operator` over its own.
 - Run tests: `make test`
 - All tests must pass before any code is committed
 

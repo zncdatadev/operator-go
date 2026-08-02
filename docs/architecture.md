@@ -107,6 +107,28 @@ Each field type folds with a defined strategy:
 
 This works only because these fields carry **no CRD-level default**: structural defaulting fills a field as soon as its enclosing object exists, so a `+kubebuilder:default` on a leaf makes "unset here" indistinguishable from "explicitly the default" and the Role's value can never win. Defaults therefore live at consumption time (`StorageResource.GetCapacity`, `RoleGroupConfigSpec.GetGracefulShutdownTimeout`, the renderers' root-level INFO).
 
+**This rule binds product operators too, and it is checkable.** It is not an explanation of why the
+SDK's own fields are shaped the way they are — it is a constraint on any CRD whose `config` block
+this framework folds, including every field a product adds of its own. Documentation alone was not
+enough: the rule has been written here since #544 and trino-operator carries
+`+kubebuilder:default:="5GB"` on `queryMaxMemory` inside `config` today, so a role group that
+declares `config` merely to set `resources` silently gets `5GB` instead of the role's value. The
+executable form is `testutil.HaveNoInheritedConfigDefaults`, a static scan of the generated CRD YAML
+that needs no envtest, no CR fixture and no cluster:
+
+```go
+It("declares no CRD default inside a role config block", func() {
+    Expect("config/crd/bases/*.yaml").To(testutil.HaveNoInheritedConfigDefaults())
+})
+```
+
+It reports **every** default under a folded `config`, at any depth, and deliberately applies no
+depth heuristic — see the note below for why "deeply nested is safe" is false. Roles are detected
+structurally (any schema node declaring a `roleGroups` property), so it covers both the generic
+`spec.roles[*]` map and products that flatten roles into named fields such as `spec.coordinators`.
+An argument matching no files is an error rather than a pass, because a guard that silently
+inspects nothing reports success.
+
 > **The rule is easy to satisfy in one place and forget in another.** `LogLevelSpec.Level` kept `+kubebuilder:default:="INFO"` long after the same defect was fixed for `resources`, and it was not inert: a Role asking for `DEBUG` plus a RoleGroup writing an empty `console: {}` produced `INFO`, because the API server filled the leaf the moment `console` existed. `mergeContainerLogging` even carried a guard written for exactly that case — it could never fire, since the value it tested for emptiness had already been filled. **A guard against a defaulted field must be verified through the API server**; the unit test covering that guard passed throughout, because a Go-constructed spec never meets structural defaulting.
 
 **Schema-free fields must be decoded strictly.** `config.affinity` is a `RawExtension`, so the API server neither validates nor prunes it, and a lenient decode discards what it does not recognise — which made a misspelled key (`nodeAffinty`) pass admission and evaporate, scheduling the pods anywhere with nothing reported. Any field the SDK accepts as opaque JSON and then interprets must reject unknown members loudly (`reconciler.DecodeAffinity`), because it is the only layer left that can.

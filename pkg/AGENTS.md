@@ -22,7 +22,7 @@ Every directory under `pkg/`:
 | `s3/` | `S3Connection`/`S3Bucket` resolution, S3A properties, CSI credential wiring | |
 | `security/` | `SecretProvisioner` (secret-operator CSI volumes), secret-class constants, pod SecurityContext defaults | |
 | `sidecar/` | `SidecarManager`, `SidecarProvider`/`PhasedProvider`, JMX exporter and oauth2-proxy providers | |
-| `testutil/` | envtest harness, mocks, matchers, CR builders | |
+| `testutil/` | envtest harness, mocks, matchers, CR builders, the exported CRD-default guard (`HaveNoInheritedConfigDefaults`) | |
 | `util/` | `K8sUtil` (CreateOrUpdate, status update with retry) and `ExecUtil` (in-pod exec, consumer-facing) | |
 | `vector/` | Vector agent sidecar: config rendering, aggregator discovery, `VectorSidecarProvider` | |
 | `webhook/` | Webhook infrastructure: `WebhookManager`, `ProductDefaulter`/`ProductValidator`, common image defaults/validators | |

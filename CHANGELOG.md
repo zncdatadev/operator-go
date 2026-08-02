@@ -112,6 +112,41 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (CRD default guard)
+
+- **`testutil.HaveNoInheritedConfigDefaults()` and `testutil.FindInheritedConfigDefaults()`** export
+  the guard against the #544 defect class so product operators can pin it on their own fields
+  (#570). Three lines, no envtest, no CR fixture, no cluster — it statically scans the CRD YAML
+  `make manifests` generates:
+
+  ```go
+  It("declares no CRD default inside a role config block", func() {
+      Expect("config/crd/bases/*.yaml").To(testutil.HaveNoInheritedConfigDefaults())
+  })
+  ```
+
+- It reports every `default` under a role or role group `config` block **at any depth, with no depth
+  heuristic**. "Deeply nested is safe" is false and the SDK has the scar: `LogLevelSpec.Level` sat
+  two levels down under `logging.containers[*].console` and was a live defect for months (#573).
+- Roles are detected **structurally** — any schema node declaring a `roleGroups` property — so the
+  check covers both the generic `spec.roles[*]` map and products that flatten roles into named
+  fields (`spec.coordinators`, `spec.workers`). Verified against the pre-#573 CRDs, where it finds
+  all 18 real defects with exact paths.
+- Arguments matching no files are an **error**, not a pass: a guard that silently inspects nothing
+  reports success, which is worse than having no guard. So is a document that says it is a
+  CustomResourceDefinition and fails to parse.
+- The scan is scoped to `.spec`. The contract covers the desired state the framework folds Role ->
+  RoleGroup; a `config` under `.status` is written by the operator and never merged. This is not
+  only noise reduction — `GenericClusterStatus` already carries a `roleGroups` field, so an unscoped
+  walk treats `.status` as a role node.
+- Multi-document files are split with apimachinery's YAML reader rather than on `"\n---"`: a `---`
+  inside a block scalar is ordinary text, and CRD descriptions are block scalars carrying whatever a
+  Go doc comment said.
+- `FindInheritedConfigDefaults` returns `[]InheritedConfigDefault` (CRD, version, JSON path,
+  default, file) for callers that want to report differently.
+- Wired into this repository's own suite and into `examples/trino-operator`, which is also the
+  reference for the product-side usage.
+
 ### BREAKING (log levels)
 
 - **`LogLevelSpec.Level` no longer carries `+kubebuilder:default:="INFO"`** (#570). It sits inside
