@@ -128,6 +128,10 @@ changes are listed below.**
   `loggers: {ROOT: {}}` replaced the role's entry with a level-less one, which the renderers skip —
   the logger fell back to the product's built-in default rather than the role's value. `console`,
   `file` and `loggers` now share one rule: **an entry that states no level means "inherit"**.
+- A level-less logger entry with nothing to inherit is now **dropped** rather than carried into the
+  merged map, which also keeps that map free of nil values. `loggers: {foo: null}` is a legal
+  spelling of `loggers: {foo: {}}`, and the old unconditional copy carried the nil through, so a
+  product reading `merged.Loggers[k].Level` had to know which spelling the user chose.
 - **What changes for users.** A role group writing `console: {}` (or `file: {}`, or a level-less
   logger) now inherits the role's threshold instead of silently getting `INFO`; where no role value
   exists, no appender threshold is emitted instead of an `INFO` one — a no-op whenever the root

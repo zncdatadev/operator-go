@@ -290,7 +290,34 @@ var _ = Describe("MergeLoggingSpec", func() {
 		c := productlogging.MergeLoggingSpec(role, group).Containers["main"]
 		Expect(c.Loggers["ROOT"].Level).To(Equal("DEBUG"))
 		Expect(c.Loggers["a.b.c"].Level).To(Equal("TRACE"))
-		Expect(c.Loggers).To(HaveKey("x.y.z"), "a group-only entry is still carried through")
+		Expect(c.Loggers).NotTo(HaveKey("x.y.z"),
+			"with nothing to inherit, a level-less entry is dropped rather than carried")
+	})
+
+	It("puts no nil value in the merged loggers map", func() {
+		// `loggers: {foo: null}` is a legal spelling of an empty entry, and it survived the old
+		// unconditional copy. A product reading merged.Loggers[k].Level should not have to know
+		// which spelling the user chose, so a level-less entry never enters the map at all.
+		role := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {Loggers: map[string]*v1alpha1.LogLevelSpec{"role.only": nil}},
+			},
+		}
+		group := &v1alpha1.LoggingSpec{
+			Containers: map[string]v1alpha1.LoggingConfigSpec{
+				"main": {Loggers: map[string]*v1alpha1.LogLevelSpec{
+					"group.only": nil,
+					"stated":     {Level: "WARN"},
+				}},
+			},
+		}
+
+		c := productlogging.MergeLoggingSpec(role, group).Containers["main"]
+		for k, v := range c.Loggers {
+			Expect(v).NotTo(BeNil(), "logger %q must not be a nil entry", k)
+		}
+		Expect(c.Loggers).To(HaveLen(1))
+		Expect(c.Loggers["stated"].Level).To(Equal("WARN"))
 	})
 
 	It("still lets a group logger level win", func() {

@@ -359,21 +359,22 @@ func mergeContainerLogging(role, group v1alpha1.LoggingConfigSpec) v1alpha1.Logg
 	}
 	if role.Loggers != nil || group.Loggers != nil {
 		merged.Loggers = make(map[string]*v1alpha1.LogLevelSpec)
-		for k, v := range role.Loggers {
-			merged.Loggers[k] = v
-		}
-		// Same rule as console/file above, and for the same reason: an entry carrying no level is
-		// the role group naming a logger without stating a threshold, which is "inherit", not
-		// "clear". Overriding unconditionally made `loggers: {ROOT: {}}` erase the role's ROOT
-		// level — the renderer skips a level-less entry, so the logger silently reverted to the
-		// product's built-in default instead of the role's.
-		for k, v := range group.Loggers {
-			if v == nil || v.Level == "" {
-				if _, inherited := merged.Loggers[k]; inherited {
+		// One rule for both sides: an entry that states no level is not information. From the role
+		// group it means "inherit" — the same as console/file above — so it must not overwrite the
+		// role's entry; and where there is nothing to inherit it is dropped rather than carried.
+		//
+		// Overriding unconditionally made `loggers: {ROOT: {}}` erase the role's ROOT level: the
+		// renderers skip a level-less entry, so the logger silently reverted to the product's
+		// built-in default instead of the role's. Dropping instead of carrying also keeps the
+		// merged map free of nil values — `loggers: {foo: null}` is a legal spelling of the same
+		// empty entry, and a product reading merged.Loggers[k].Level should not have to know that.
+		for _, loggers := range []map[string]*v1alpha1.LogLevelSpec{role.Loggers, group.Loggers} {
+			for k, v := range loggers {
+				if v == nil || v.Level == "" {
 					continue
 				}
+				merged.Loggers[k] = v
 			}
-			merged.Loggers[k] = v
 		}
 	}
 	return merged
