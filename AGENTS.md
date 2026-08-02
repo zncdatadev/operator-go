@@ -325,6 +325,27 @@ with a hash suffix by `RoleGroupResourceName`), `ServiceAccountName` (the SA the
 resolved and ensured), `SidecarManager`, `VolumeProviders` (see §16) and
 `VectorAggregatorAddress`.
 
+**It is also where a product puts its per-CR inputs.** `Image`, `ImagePullPolicy`, `ContainerPorts`
+and `ServicePorts` on the context outrank the handler's own, and the context is rebuilt per role
+group per reconcile:
+
+```go
+func (h *MyHandler) BuildResources(ctx context.Context, c client.Client, cr *MyCluster,
+    buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+    buildCtx.ContainerPorts = h.portsFor(cr, buildCtx.RoleName) // depends on cr.Spec.Tls
+    return h.BaseRoleGroupHandler.BuildResources(ctx, c, cr, buildCtx)
+}
+```
+
+**One handler instance serves every cluster** — it is built once in `main.go` — so the older idiom
+of assigning `h.Image` or calling `h.SetRoleContainerPorts` inside `BuildResources` writes
+per-cluster values into process-wide state. Above `MaxConcurrentReconciles: 1` those writes race
+between clusters; at 1 they still leak, because a product that conditionally skips one assignment
+inherits the previous CR's value (spark-k8s-operator shipped exactly that). Handler fields remain
+correct for reconcile-**invariant** configuration; `sidecar.SidecarManager.CloneForBuild` covers the
+framework's own instance of the same hazard, a handler-registered manager whose configs
+`SetProductImage` writes into. See `docs/architecture.md` §4.4.4.
+
 **Role and role group names are constrained by the CRD, not by convention.** The keys of
 `spec.roles` and `spec.roles.<role>.roleGroups` must be lowercase RFC 1123 labels — a CEL
 `x-kubernetes-validations` rule on `GenericClusterSpec.Roles` and `RoleSpec.RoleGroups` rejects

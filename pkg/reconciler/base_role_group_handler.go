@@ -63,11 +63,22 @@ const managedByValue = "operator-go"
 //	    // Add HDFS-specific customizations
 //	    return resources, nil
 //	}
+//
+// ONE INSTANCE SERVES EVERY CLUSTER. A handler is constructed once in main.go and the controller
+// reuses it for every CR and every reconcile, so every field below is process-wide state. Set them
+// at construction, from values that do not depend on which cluster is being reconciled.
+//
+// Anything that DOES depend on the cluster — an image derived from its spec, ports that move when
+// its TLS toggle flips — goes on RoleGroupBuildContext instead, which is rebuilt per role group per
+// reconcile. Assigning such a value here from inside BuildResources races above
+// MaxConcurrentReconciles 1, and even at 1 it leaks: skip the assignment on one CR and it silently
+// inherits the previous CR's value.
 type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
-	// Image is the default container image for all roles.
+	// Image is the default container image for all roles, and must be reconcile-invariant — see
+	// the note above the type, and RoleGroupBuildContext.Image for the per-cluster channel.
 	Image string
 
-	// ImagePullPolicy is the default image pull policy.
+	// ImagePullPolicy is the default image pull policy. Reconcile-invariant, as above.
 	ImagePullPolicy corev1.PullPolicy
 
 	// ProductName is the kubedoop product name (e.g. "trino"). It supplies two unrelated things:
@@ -109,13 +120,14 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	ImageDefaults v1alpha1.ImageSpec
 
 	// RoleImages maps role names to specific images.
-	// If a role is not found here, the default Image is used.
+	// If a role is not found here, the default Image is used. Reconcile-invariant.
 	RoleImages map[string]string
 
-	// RoleContainerPorts maps role names to container ports.
+	// RoleContainerPorts maps role names to container ports. Reconcile-invariant: ports that
+	// depend on the CR belong on RoleGroupBuildContext.ContainerPorts.
 	RoleContainerPorts map[string][]corev1.ContainerPort
 
-	// RoleServicePorts maps role names to service ports.
+	// RoleServicePorts maps role names to service ports. Reconcile-invariant, as above.
 	RoleServicePorts map[string][]corev1.ServicePort
 
 	// ConfigGenerator is used to generate configuration files.
@@ -307,7 +319,13 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	// empty image field.
 	if sidecarMgr := buildCtx.SidecarManager; sidecarMgr != nil || h.sidecarManager != nil {
 		if sidecarMgr == nil {
-			sidecarMgr = h.sidecarManager
+			// The handler's manager is process-wide, and SetProductImage below writes THIS
+			// cluster's image into it. Build against a copy, or the next cluster inherits it —
+			// the framework's own instance of the shared-state defect this context's Image field
+			// exists to fix. The reconciler-created manager (the common path) is already
+			// per-role-group, so it is used as-is.
+			sidecarMgr = h.sidecarManager.CloneForBuild()
+			buildCtx.SidecarManager = sidecarMgr
 		}
 		image, pullPolicy, err := h.containerImage(buildCtx, buildCtx.RoleName)
 		if err != nil {
@@ -333,7 +351,7 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	resources.HeadlessService = headlessSvc
 
 	// Build Service (if ports are defined)
-	svcPorts := h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName)
+	svcPorts := h.servicePorts(buildCtx, buildCtx.RoleName)
 	if len(svcPorts) > 0 {
 		resources.Service = h.buildService(buildCtx, labels, svcPorts)
 	}
@@ -475,22 +493,44 @@ func (h *BaseRoleGroupHandler[CR]) containerImage(
 	if image != "" {
 		return image, pullPolicy, nil
 	}
-	if image, ok := h.RoleImages[roleName]; ok {
-		return image, h.ImagePullPolicy, nil
+	// The per-call channel outranks the handler's own configuration: it is the one input that is
+	// allowed to depend on WHICH cluster is being built (see RoleGroupBuildContext.Image).
+	if buildCtx != nil && buildCtx.Image != "" {
+		return buildCtx.Image, h.pullPolicy(buildCtx), nil
 	}
-	return h.Image, h.ImagePullPolicy, nil
+	if image, ok := h.RoleImages[roleName]; ok {
+		return image, h.pullPolicy(buildCtx), nil
+	}
+	return h.Image, h.pullPolicy(buildCtx), nil
 }
 
-// containerPorts returns the container ports for a role group.
-func (h *BaseRoleGroupHandler[CR]) containerPorts(roleName, _ string) []corev1.ContainerPort {
+// pullPolicy resolves the pull policy for a handler-supplied image: the per-call value when the
+// product set one, the handler's otherwise.
+func (h *BaseRoleGroupHandler[CR]) pullPolicy(buildCtx *RoleGroupBuildContext) corev1.PullPolicy {
+	if buildCtx != nil && buildCtx.ImagePullPolicy != "" {
+		return buildCtx.ImagePullPolicy
+	}
+	return h.ImagePullPolicy
+}
+
+// containerPorts returns the container ports for a role group: the per-call value when the product
+// set one (ports that depend on the CR — a TLS toggle moving 8080 to 8443 — belong there), the
+// handler's per-role map otherwise.
+func (h *BaseRoleGroupHandler[CR]) containerPorts(buildCtx *RoleGroupBuildContext, roleName string) []corev1.ContainerPort {
+	if buildCtx != nil && len(buildCtx.ContainerPorts) > 0 {
+		return buildCtx.ContainerPorts
+	}
 	if ports, ok := h.RoleContainerPorts[roleName]; ok {
 		return ports
 	}
 	return nil
 }
 
-// servicePorts returns the service ports for a role group.
-func (h *BaseRoleGroupHandler[CR]) servicePorts(roleName, _ string) []corev1.ServicePort {
+// servicePorts returns the service ports for a role group, with the same precedence.
+func (h *BaseRoleGroupHandler[CR]) servicePorts(buildCtx *RoleGroupBuildContext, roleName string) []corev1.ServicePort {
+	if buildCtx != nil && len(buildCtx.ServicePorts) > 0 {
+		return buildCtx.ServicePorts
+	}
 	if ports, ok := h.RoleServicePorts[roleName]; ok {
 		return ports
 	}
@@ -733,7 +773,7 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 		WithLabels(labels).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
 		WithPublishNotReadyAddresses(h.PublishNotReadyAddresses).
-		WithPorts(h.servicePorts(buildCtx.RoleName, buildCtx.RoleGroupName)).
+		WithPorts(h.servicePorts(buildCtx, buildCtx.RoleName)).
 		Build()
 }
 
@@ -779,7 +819,7 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		WithReplicas(replicas).
 		WithImage(image, pullPolicy).
 		WithConfig(buildCtx.MergedConfig).
-		WithPorts(h.containerPorts(buildCtx.RoleName, buildCtx.RoleGroupName))
+		WithPorts(h.containerPorts(buildCtx, buildCtx.RoleName))
 
 	// Bind the reconciler-managed ServiceAccount to the pod template when configured, so the
 	// created SA is actually used. Empty leaves ServiceAccountName unset (pods use the namespace
@@ -1045,6 +1085,10 @@ func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(buildCtx *RoleBuildContext) m
 }
 
 // SetRoleImage sets the image for a specific role.
+//
+// Call this at CONSTRUCTION. It writes into the shared handler instance, so calling it
+// from inside BuildResources publishes one cluster's value process-wide — use
+// RoleGroupBuildContext.Image for a value derived from the CR.
 func (h *BaseRoleGroupHandler[CR]) SetRoleImage(roleName, image string) {
 	if h.RoleImages == nil {
 		h.RoleImages = make(map[string]string)
@@ -1053,6 +1097,10 @@ func (h *BaseRoleGroupHandler[CR]) SetRoleImage(roleName, image string) {
 }
 
 // SetRoleContainerPorts sets the container ports for a specific role.
+//
+// Call this at CONSTRUCTION. It writes into the shared handler instance, so calling it
+// from inside BuildResources publishes one cluster's value process-wide — use
+// RoleGroupBuildContext.ContainerPorts for a value derived from the CR.
 func (h *BaseRoleGroupHandler[CR]) SetRoleContainerPorts(roleName string, ports []corev1.ContainerPort) {
 	if h.RoleContainerPorts == nil {
 		h.RoleContainerPorts = make(map[string][]corev1.ContainerPort)
@@ -1061,6 +1109,10 @@ func (h *BaseRoleGroupHandler[CR]) SetRoleContainerPorts(roleName string, ports 
 }
 
 // SetRoleServicePorts sets the service ports for a specific role.
+//
+// Call this at CONSTRUCTION. It writes into the shared handler instance, so calling it
+// from inside BuildResources publishes one cluster's value process-wide — use
+// RoleGroupBuildContext.ServicePorts for a value derived from the CR.
 func (h *BaseRoleGroupHandler[CR]) SetRoleServicePorts(roleName string, ports []corev1.ServicePort) {
 	if h.RoleServicePorts == nil {
 		h.RoleServicePorts = make(map[string][]corev1.ServicePort)

@@ -4,6 +4,26 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-03a] (handler lifetime, and where per-CR inputs go)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.4.4 Handler Lifetime and Per-CR Inputs**: one handler instance serves every cluster, a
+  table of what belongs on the handler versus the build context, and the two failure modes of
+  getting it wrong — the race above `MaxConcurrentReconciles: 1`, and the quieter stale-value leak
+  at concurrency 1 that spark-k8s-operator actually shipped.
+- Records that `BuildResources` is read-only on the handler, and that the framework's own instance
+  of the hazard (a handler-registered `SidecarManager`, whose configs `SetProductImage` writes into)
+  is now cloned per build.
+- Answers the first of the three gaps #579 names.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §4 documents the per-CR input fields on `RoleGroupBuildContext`, with the example call and the
+  reason the older handler-mutating idiom is unsafe.
+
+---
+
 ## [2026-08-02d] (image resolution moves to reconcile time)
 
 ### Core Architecture (`architecture.md`)
