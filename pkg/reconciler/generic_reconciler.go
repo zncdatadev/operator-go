@@ -42,6 +42,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -299,6 +300,13 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 	healthManager.Timeout = healthCheckTimeout
 	if cfg.ServiceHealthCheck != nil {
 		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
+	}
+	// Let the health manager read the right workload per role. The assertion mirrors the
+	// role-PDB one (rolePodDisruptionBudgetBuilder): a handler embedding BaseRoleGroupHandler
+	// satisfies the interface through the promoted method, and one that does not is treated as
+	// all-StatefulSet — exactly what every handler was before workload kinds existed.
+	if provider, ok := cfg.RoleGroupHandler.(WorkloadKindProvider); ok {
+		healthManager.WithWorkloadKindProvider(provider)
 	}
 
 	eventManager := NewEventManager(cfg.Recorder, cfg.Scheme)
@@ -1157,16 +1165,25 @@ func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Conte
 }
 
 // applyResources applies all resources in the correct dependency order.
-// Order: ConfigMap -> Headless Service -> Service -> ExtraResources -> StatefulSet -> PDB -> MetricsService
-// ExtraResources are applied before the StatefulSet because they are typically prerequisites
+// Order: ConfigMap -> Headless Service -> Service -> ExtraResources -> workload (StatefulSet or
+// Deployment) -> PDB -> MetricsService.
+// ExtraResources are applied before the workload because they are typically prerequisites
 // for pod scheduling (e.g. a Listener CR referenced by an ephemeral CSI volume).
 // Each resource is created when absent and updated to the handler-built desired state when it
 // already exists (see applyResource / copyDesiredState for the exact update semantics).
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
 
 	// 0. Reject a declaration the lifecycle cannot honour, BEFORE anything is applied — a role
-	// group that half-converged and then failed is worse than one that did not start.
+	// group that half-converged and then failed is worse than one that did not start. The
+	// one-workload-per-role-group rule is part of it (see validateRoleGroupResources).
 	if err := validateRoleGroupResources(resources, buildCtx); err != nil {
+		return err
+	}
+
+	// 0b. Refuse to run two workloads for one role group. The declaration above is consistent, but
+	// the CLUSTER may not be: a role whose handler used to say StatefulSet and now says Deployment
+	// leaves a live workload of the other kind under the very same name.
+	if err := r.checkNoForeignWorkload(ctx, cr, resources, buildCtx); err != nil {
 		return err
 	}
 
@@ -1214,10 +1231,16 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 		return err
 	}
 
-	// 5. Apply StatefulSet
+	// 5. Apply the workload — the StatefulSet, or the Deployment in exactly the same slot: both
+	// kinds have the same prerequisites (config, DNS, extras) and the same dependants (the PDB).
 	if resources.StatefulSet != nil {
 		if err := r.applyResource(ctx, cr, resources.StatefulSet); err != nil {
 			return NewResourceApplyError("StatefulSet", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
+		}
+	}
+	if resources.Deployment != nil {
+		if err := r.applyResource(ctx, cr, resources.Deployment); err != nil {
+			return NewResourceApplyError("Deployment", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
 
@@ -1275,6 +1298,68 @@ func (r *GenericReconciler[CR]) apiError(err error) error {
 	return err
 }
 
+// checkNoForeignWorkload fails the role group when a live workload of the OTHER kind already exists
+// under its name.
+//
+// A StatefulSet and a Deployment named the same thing are different resources, so nothing in
+// Kubernetes objects to both existing — and the apply path would not notice either: each slot is
+// applied only when the handler filled it, so changing a role's declared kind creates the new
+// workload and simply stops mentioning the old one. The old one keeps running. Both carry the role
+// group's selector labels, so the client Service ends up with twice the endpoints, half of them
+// pods of a template that will never be updated again; the health manager reads only the declared
+// kind and reports Available=True throughout. Nothing in the cleaner sees it either: orphan
+// discovery skips every role group the spec still declares.
+//
+// So the framework detects it and says so. Deleting the old workload automatically was the
+// alternative and is rejected: the trigger is indistinguishable from a handler typo, and the
+// remedy for a typo must not be "your pods are gone". The check is a cached read — both kinds are
+// in the controller's Owns() set — and only on the role group's own name.
+func (r *GenericReconciler[CR]) checkNoForeignWorkload(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
+	var foreign client.Object
+	var foreignKind, declaredKind WorkloadKind
+	switch {
+	case resources.StatefulSet != nil:
+		foreign, foreignKind, declaredKind = &appsv1.Deployment{}, WorkloadKindDeployment, WorkloadKindStatefulSet
+	case resources.Deployment != nil:
+		foreign, foreignKind, declaredKind = &appsv1.StatefulSet{}, WorkloadKindStatefulSet, WorkloadKindDeployment
+	default:
+		// No workload declared at all: there is nothing to conflict with, and a handler that
+		// builds none is a separate (already reported) problem.
+		return nil
+	}
+
+	key := types.NamespacedName{Namespace: buildCtx.ClusterNamespace, Name: buildCtx.ResourceName}
+	if err := r.client.Get(ctx, key, foreign); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return r.apiError(err)
+	}
+	// Only this cluster's own workload counts. An unrelated object of that name in the namespace is
+	// not ours to complain about, and deleting or blocking on it would be worse.
+	if ref := metav1.GetControllerOf(foreign); ref == nil || ref.UID != cr.GetUID() {
+		return nil
+	}
+
+	remedy := fmt.Sprintf("kubectl delete %s/%s -n %s", strings.ToLower(string(foreignKind)), buildCtx.ResourceName, buildCtx.ClusterNamespace)
+	if foreignKind == WorkloadKindStatefulSet {
+		// The headless Service was the StatefulSet's serviceName and no longer has an owner: a
+		// Deployment role group does not build one, so nothing reclaims it. Name it here rather
+		// than leave it behind — the alternative is a reclaim keyed on a name a sibling role
+		// group called "<group>-headless" legitimately owns.
+		remedy += fmt.Sprintf(" && kubectl delete service/%s-headless -n %s --ignore-not-found",
+			buildCtx.ResourceName, buildCtx.ClusterNamespace)
+	}
+
+	return NewValidationError("workload", buildCtx.RoleName, buildCtx.RoleGroupName,
+		fmt.Errorf("this role group already runs as a %s named %q, but the handler now declares %s. "+
+			"Both would run at once under the same name and selector, doubling the Service's endpoints "+
+			"with pods of a template that is never updated again, so the framework refuses to apply the "+
+			"new one. Changing a live role group's workload kind is a migration, not a config change: "+
+			"once the old pods may go, run `%s`, and the next reconcile creates the %s",
+			foreignKind, buildCtx.ResourceName, declaredKind, remedy, declaredKind))
+}
+
 // validateRoleGroupResources rejects a RoleGroupResources the lifecycle cannot honour.
 //
 // The six fixed slots are addressed BY DERIVED NAME on every path that removes them: the in-spec
@@ -1294,6 +1379,19 @@ func (r *GenericReconciler[CR]) apiError(err error) error {
 // The namespace is checked for the same reason and one more: a cross-namespace owner reference is
 // not honoured by Kubernetes garbage collection, so the object would outlive even the CR.
 func validateRoleGroupResources(resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
+	// A role group is exactly one workload. Both slots filled means the handler built two
+	// workloads under one name that would fight over the same pods, Services and status entry.
+	// It is checked here rather than at the apply step so the mistake costs a failed role group
+	// instead of a live conflict.
+	if resources.StatefulSet != nil && resources.Deployment != nil {
+		return NewValidationError("RoleGroupResources.Deployment", buildCtx.RoleName, buildCtx.RoleGroupName,
+			fmt.Errorf("both StatefulSet and Deployment are set; a role group carries exactly one workload. "+
+				"The kind comes from the handler's WorkloadKindFor(role) — fill the slot that matches it"))
+	}
+
+	// The Deployment shares the StatefulSet's name because it shares its slot: the cleaner's live
+	// inventory admits an object only when its name is exactly RoleGroupResourceName(...), and
+	// deleteDeployment addresses that same derived name.
 	slots := []struct {
 		field string
 		want  string
@@ -1302,7 +1400,8 @@ func validateRoleGroupResources(resources *RoleGroupResources, buildCtx *RoleGro
 		{"ConfigMap", buildCtx.ResourceName, objectOrNil(resources.ConfigMap)},
 		{"HeadlessService", buildCtx.ResourceName + "-headless", objectOrNil(resources.HeadlessService)},
 		{"Service", buildCtx.ResourceName, objectOrNil(resources.Service)},
-		{"StatefulSet", buildCtx.ResourceName, objectOrNil(resources.StatefulSet)},
+		{string(WorkloadKindStatefulSet), buildCtx.ResourceName, objectOrNil(resources.StatefulSet)},
+		{string(WorkloadKindDeployment), buildCtx.ResourceName, objectOrNil(resources.Deployment)},
 		{"PodDisruptionBudget", buildCtx.ResourceName, objectOrNil(resources.PodDisruptionBudget)},
 		{"MetricsService", buildCtx.ResourceName + "-metrics", objectOrNil(resources.MetricsService)},
 	}
@@ -1693,6 +1792,7 @@ func (r *GenericReconciler[CR]) ControllerBuilder(mgr ctrl.Manager, opts SetupWi
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(r.prototype).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&policyv1.PodDisruptionBudget{}).

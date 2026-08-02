@@ -76,6 +76,12 @@ func copyDesiredState(desired, live client.Object) ([]string, error) {
 			return nil, err
 		}
 		return copyStatefulSetState(desiredObj, liveObj), nil
+	case *appsv1.Deployment:
+		desiredObj, err := desiredAs[*appsv1.Deployment](desired, live)
+		if err != nil {
+			return nil, err
+		}
+		return copyDeploymentState(desiredObj, liveObj), nil
 	case *corev1.ConfigMap:
 		desiredObj, err := desiredAs[*corev1.ConfigMap](desired, live)
 		if err != nil {
@@ -168,6 +174,36 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	live.Spec.ServiceName = serviceName
 	live.Spec.VolumeClaimTemplates = volumeClaimTemplates
 	live.Spec.PodManagementPolicy = podManagementPolicy
+
+	return ignored
+}
+
+// copyDeploymentState copies the desired Deployment spec onto the live one, preserving the one
+// field the Kubernetes API declares immutable after creation:
+//
+//   - Spec.Selector
+//
+// It keeps its LIVE value for exactly the reason copyStatefulSetState documents: a handler that
+// starts producing a different selector after an operator upgrade must not make every subsequent
+// Update fail against the API server. Changing it for an existing cluster requires a manual
+// delete/recreate migration. Everything else — Replicas, Template, Strategy, MinReadySeconds,
+// RevisionHistoryLimit, ... — comes from desired, so new mutable fields converge by default.
+//
+// Like its StatefulSet counterpart it RETURNS the field paths whose desired value was dropped, so
+// the caller can tell the user (the ImmutableFieldIgnored event) instead of preserving silently.
+func copyDeploymentState(desired, live *appsv1.Deployment) []string {
+	selector := live.Spec.Selector
+
+	// Compared BEFORE the spec is overwritten. Only a desired value the handler actually set
+	// counts: an unset field is the handler declining to have an opinion, not a change request.
+	var ignored []string
+	if desired.Spec.Selector != nil && !apiequality.Semantic.DeepEqual(desired.Spec.Selector, selector) {
+		ignored = append(ignored, "spec.selector")
+	}
+
+	live.Spec = desired.Spec
+
+	live.Spec.Selector = selector
 
 	return ignored
 }

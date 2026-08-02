@@ -6,7 +6,7 @@
 **Key Features:**
 - **GenericReconciler**: Template Method Pattern-based reconciliation framework
 - **Extension System**: Hook-based customization at cluster/role/role-group levels, with per-product registries
-- **Resource Builders**: Fluent builders for StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount
+- **Resource Builders**: Fluent builders for StatefulSet, Deployment, Service, ConfigMap, PDB, RBAC, ServiceAccount
 - **Config Generation**: Multi-format config file generation (XML, YAML, Properties, Env, INI)
 - **Logging Config**: Framework-aware logging configuration generation (Log4j, Log4j2, Logback, Python)
 - **Health Checks**: Business-level health check interface with composite checks
@@ -169,8 +169,8 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
      - RoleGroup PreReconcile Extensions
      - Build RoleGroupBuildContext
      - Delegate to RoleGroupHandler.BuildResources()
-     - Apply Resources (CM -> HeadlessSvc -> Service -> Extras -> [sidecar Validate] -> STS ->
-       per-group PDB -> MetricsSvc)
+     - Apply Resources (CM -> HeadlessSvc -> Service -> Extras -> [sidecar Validate] ->
+       workload (STS | Deployment) -> per-group PDB -> MetricsSvc)
      - RoleGroup PostReconcile Extensions
    - Role-level PodDisruptionBudget
    - Role PostReconcile Extensions
@@ -179,7 +179,7 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
 10. PostReconcile Extensions
 11. Final Status Update, then requeue
 
-Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile.
+Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Deployment `selector`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile.
 
 **A `configOverrides` change does not roll the pods by itself — the platform restarter does.**
 Editing `configOverrides` makes the framework rewrite the role group ConfigMap, and stop there: the
@@ -215,6 +215,16 @@ each answer to a reclaim aimed at the slot. The filter is an enumerated set rath
 `kubedoop.dev` prefix rule precisely because `restarter.kubedoop.dev/enable` shows that domain is
 shared with the platform; every other CR label propagates unchanged.
 
+> **The restarter is StatefulSet-only, so a Deployment role never rolls.**
+> commons-operator's `internal/controller/restart/` contains one controller,
+> `statefulset_controller.go`, whose `For(&appsv1.StatefulSet{})` and `MatchingLabels` List both
+> address StatefulSets; there is no Deployment controller in that repo. A role declared
+> `WorkloadKindDeployment` therefore gets **no** config propagation: `restarter.kubedoop.dev/enable`
+> reaches the Deployment's labels through `ClusterLabels` like any other CR label, and nothing acts
+> on it, so a `configOverrides` edit rewrites the ConfigMap and the pods keep the old config until
+> something else rolls them. A sibling StatefulSet role of the same cluster rolls in seconds, which
+> is what makes this worth stating rather than leaving to be discovered.
+
 > **Caveat (upstream bug).** commons-operator's `getRefConfigMapRefs` returns after the *first*
 > ConfigMap volume it finds, so a pod mounting several ConfigMaps only ever gets one of them
 > watched — see zncdatadev/commons-operator#298. The secret path (`getRefSecretRefs`) is correct.
@@ -232,9 +242,9 @@ restarter involved.
 
 **Requeue cadence.** A successful reconcile returns `ctrl.Result{RequeueAfter: HealthCheckInterval}` (`DefaultHealthCheckInterval` = 120s; a negative value disables the periodic wakeup), or the cleaner's earliest pending wakeup when that is sooner — a remaining gray-delete deadline, or the drain poll interval of an orphan deletion in flight. Watches only cover the kinds the framework owns, so anything that changes without producing an event — a product `ServiceHealthCheck` probe, a grace period running out, a StatefulSet finishing its drain — depends on this timer.
 
-**Orphan cleanup discovers its work from the live cluster, not only from `status.roleGroups`.** The cleaner unions two inventories: the role group ConfigMaps and StatefulSets this CR controller-owns that carry the framework's labels (`instance` + `managed-by` + `component` + `role-group`) **and** whose name is exactly what `RoleGroupResourceName` produces for those labels, plus the `status.roleGroups` ledger. The ledger alone is a record the operator must have *successfully written*, so losing it — a process death between applying a role group's resources and updating the CR, a backup tool restoring the CR without its status subresource, a `kubectl replace` — used to make those resources invisible to the cleaner permanently, holding their PVCs and pods until a human noticed. The name check is what keeps the live half safe: a discovery ConfigMap carries the same instance/managed-by pair and owner reference, and a product's `ExtraResources` may carry the handler's entire label set. An empty owner UID disables live discovery, as it does the role-PDB reclaim.
+**Orphan cleanup discovers its work from the live cluster, not only from `status.roleGroups`.** The cleaner unions two inventories: the role group ConfigMaps, StatefulSets and Deployments this CR controller-owns that carry the framework's labels (`instance` + `managed-by` + `component` + `role-group`) **and** whose name is exactly what `RoleGroupResourceName` produces for those labels, plus the `status.roleGroups` ledger. The ledger alone is a record the operator must have *successfully written*, so losing it — a process death between applying a role group's resources and updating the CR, a backup tool restoring the CR without its status subresource, a `kubectl replace` — used to make those resources invisible to the cleaner permanently, holding their PVCs and pods until a human noticed. The name check is what keeps the live half safe: a discovery ConfigMap carries the same instance/managed-by pair and owner reference, and a product's `ExtraResources` may carry the handler's entire label set. An empty owner UID disables live discovery, as it does the role-PDB reclaim.
 
-**Orphan cleanup is a multi-pass state machine.** A role group removed from the spec is retired over several reconciles: scale the StatefulSet to zero (under `RetryOnConflict`), wait for the controller's ordered drain (`.status.replicas` reaching 0), then delete `PDB → [PVCs] → StatefulSet → [product extras] → ConfigMap → Service → headless → metrics`, each step confirmed absent before the next is issued. The PVC step is opt-in (`operator.zncdata.dev/delete-pvcs`) and sits **after** the drain on purpose: deleting a role group is undoable right up until its data goes, so nothing irreversible happens while the pods are still running, and re-adding a group mid-teardown costs a restart rather than the data. It goes before the StatefulSet because the cleaner finds the PVCs through its selector — the other order would strand them — and the drain-timeout path falls through to it so a stuck pod cannot silently leak the volumes. A group's status entry is pruned only after a real deletion; a failure is isolated to its own group and the others still progress; the state machine's progress annotations (`orphan.zncdata.dev/pending-deletion`, `orphan.zncdata.dev/drain-started`) are reset on every role group that IS in the spec, so a group that was orphaned and then re-added starts its next teardown from scratch instead of inheriting the previous one's timestamps; a 429 becomes a `*reconciler.RateLimitError` that aborts the pass and backs off instead of marking the cluster `Degraded`. The cleaner also reclaims the role-level PDB of a role deleted from the spec outright, found by the `pdb.kubedoop.dev/role` label (`reconciler.LabelRolePodDisruptionBudget`) rather than by derived name.
+**Orphan cleanup is a multi-pass state machine.** A role group removed from the spec is retired over several reconciles: scale the StatefulSet to zero (under `RetryOnConflict`), wait for the controller's ordered drain (`.status.replicas` reaching 0), then delete `PDB → [PVCs] → StatefulSet → Deployment → [product extras] → ConfigMap → Service → headless → metrics`, each step confirmed absent before the next is issued. An orphaned Deployment is scaled to zero and deleted **without** the drain wait — a ReplicaSet retires its pods all at once, so there is no order to preserve — and the absent workload kind settles trivially on `NotFound`. The PVC step is opt-in (`operator.zncdata.dev/delete-pvcs`) and sits **after** the drain on purpose: deleting a role group is undoable right up until its data goes, so nothing irreversible happens while the pods are still running, and re-adding a group mid-teardown costs a restart rather than the data. It goes before the StatefulSet because the cleaner finds the PVCs through its selector — the other order would strand them — and the drain-timeout path falls through to it so a stuck pod cannot silently leak the volumes. A group's status entry is pruned only after a real deletion; a failure is isolated to its own group and the others still progress; the state machine's progress annotations (`orphan.zncdata.dev/pending-deletion`, `orphan.zncdata.dev/drain-started`) are reset on every role group that IS in the spec, so a group that was orphaned and then re-added starts its next teardown from scratch instead of inheriting the previous one's timestamps; a 429 becomes a `*reconciler.RateLimitError` that aborts the pass and backs off instead of marking the cluster `Degraded`. The cleaner also reclaims the role-level PDB of a role deleted from the spec outright, found by the `pdb.kubedoop.dev/role` label (`reconciler.LabelRolePodDisruptionBudget`) rather than by derived name.
 
 **Status writes are conditional.** `updateStatus` skips the write entirely when the whole CR is `apiequality.Semantic.DeepEqual` to the object read at the start of the cycle — comparing the whole object, not just the embedded generic status, so a product's own status fields count too. Without that guard the controller's watch on its own CR would turn every reconcile into another reconcile. The write itself goes out from the in-memory object (a re-fetch would discard product-specific status fields); a 409 refreshes only the `resourceVersion`, preferring `GenericReconcilerConfig.APIReader` because the informer cache has not seen the competing write, and a `NotFound` is treated as success.
 
@@ -252,7 +262,7 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 }
 ```
 
-`BaseRoleGroupHandler.BuildResources` returns a ConfigMap, a headless Service, a StatefulSet, and a client-facing Service **when the role declares service ports**. It does not return a PDB: the framework's PDB comes from `roleConfig.podDisruptionBudget` and is a **role-level** resource built by `BuildRolePodDisruptionBudget` and applied once per role by the reconciler (`RoleGroupResources.PodDisruptionBudget` remains an escape hatch for an extra per-group PDB). `BuildRolePodDisruptionBudget` takes a single `*RoleBuildContext` — the role-scoped analogue of `RoleGroupBuildContext`, carrying `ClusterName`, `ClusterNamespace`, `ClusterLabels`, `ClusterSpec`, `RoleName` and `RoleSpec` — so a later role-level input needs no new signature. Product operators embed the base handler and override specific methods:
+`BaseRoleGroupHandler.BuildResources` returns a ConfigMap, the role's workload — a StatefulSet with its headless Service by default, or a Deployment with **no** headless Service for roles declared `WorkloadKindDeployment` via `SetRoleWorkloadKind` (a Deployment's pods have no stable identity for one to name; `StorageMountPath` is ignored for such roles) — and a client-facing Service **when the role declares service ports**. It does not return a PDB: the framework's PDB comes from `roleConfig.podDisruptionBudget` and is a **role-level** resource built by `BuildRolePodDisruptionBudget` and applied once per role by the reconciler (`RoleGroupResources.PodDisruptionBudget` remains an escape hatch for an extra per-group PDB). `BuildRolePodDisruptionBudget` takes a single `*RoleBuildContext` — the role-scoped analogue of `RoleGroupBuildContext`, carrying `ClusterName`, `ClusterNamespace`, `ClusterLabels`, `ClusterSpec`, `RoleName` and `RoleSpec` — so a later role-level input needs no new signature. Product operators embed the base handler and override specific methods:
 ```go
 handler := reconciler.NewBaseRoleGroupHandler[*v1alpha1.TrinoCluster](image, scheme)
 handler.ProductName = "trino" // resolves spec.image into "{repo}/trino:{version}-kubedoop{v}"
@@ -327,7 +337,19 @@ owner-referenced and then reclaimed by nothing, surviving until the cluster CR i
 metrics Service left as a Prometheus target with no endpoints). It is now a `*ValidationError`
 raised **before any resource is applied**, so a rejected declaration leaves nothing half-converged.
 `builder.MetricsServiceBuilder` therefore exposes no name override, and `ExtraResources` is the
-supported route for an object whose name the product chooses.
+supported route for an object whose name the product chooses. `Deployment` shares the StatefulSet's
+name because it shares its slot, and the two are **mutually exclusive** — a role group is exactly
+one workload, and filling both slots fails the same way.
+
+**Changing a live role group's workload kind is a migration the framework refuses to perform
+silently.** A StatefulSet and a Deployment of the same name are different resources, so flipping a
+role's declared kind would create the new workload and leave the old one running — same selector,
+double the Service endpoints, half of them pods of a template that is never updated again, with
+`Available=True` throughout and nothing in the cleaner to reclaim it (orphan discovery skips every
+role group the spec still declares). The reconciler reads the other kind under the role group's name
+before applying and fails the role group with a `*ValidationError` naming the `kubectl delete` that
+completes the migration — including the now-ownerless `-headless` Service, which a Deployment role
+does not build and nothing reclaims.
 
 Besides the fixed fields (ConfigMap, Services, StatefulSet, PDB, MetricsService), `RoleGroupResources.ExtraResources []client.Object` lets products ship arbitrary per-role-group resources (e.g. a `listeners.kubedoop.dev` Listener CR) through the framework's apply path: same controller owner reference, applied BEFORE the StatefulSet because extras are typically pod-scheduling prerequisites. **Extras of a removed role group are reclaimed too**, provided the product registers their kinds through `SetupWithManagerOptions.ExtraOwns` and labels them with the role group's labels; the teardown deletes them right after the StatefulSet, mirroring the apply order. Unregistered or unlabelled extras keep the old behaviour and wait for owner-reference GC on cluster deletion (see §13 and the field's doc comment).
 
@@ -554,7 +576,7 @@ type ServiceHealthCheck interface {
 scale-down that briefly leaves MORE ready than desired is still available). `Progressing` = a
 revision rollout or replica change is in flight. `Degraded` = something is wrong the operator cannot
 fix: a pod wedged in `CrashLoopBackOff`/`ImagePullBackOff`/`InvalidImageName`/a `CreateContainer*` or
-`RunContainerError`, a pod that cannot be scheduled, a role group whose StatefulSet cannot be read,
+`RunContainerError`, a pod that cannot be scheduled, a role group whose workload object cannot be read,
 or a failing `ServiceHealthCheck`. It is found by one `List` of the cluster's pods per pass.
 
 `Degraded` is deliberately **not** derived from replica counts. Doing so made it fire during every
@@ -567,7 +589,7 @@ excluded.
 
 `reconciliationPaused` gets its own **`Paused`** condition with `Degraded=False` — a maintenance
 window is not a fault, and the sibling `stopped` has always been reported that way. While paused the
-framework still *observes*: `Available`/`Progressing` are re-evaluated from the live StatefulSets
+framework still *observes*: `Available`/`Progressing` are re-evaluated from the live workloads
 rather than left at whatever the last running cycle wrote, and `ServiceHealthy` goes `Unknown`
 instead of keeping a stale verdict. A paused reconcile therefore returns
 `RequeueAfter: HealthCheckInterval` so those conditions keep up with reality.

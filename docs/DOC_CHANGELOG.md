@@ -80,6 +80,34 @@ This document tracks all changes made to the SDK documentation.
 
 - §10 carries the new signature, both entry points, and why the env-var precedence rule two
   operators hand-wrote needs no ordering dance here.
+## [2026-08-03d] (a role group's workload can be a Deployment)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.1.5 Workload Kinds (StatefulSet / Deployment)**: the per-role, reconcile-invariant
+  choice on the handler (`RoleWorkloadKinds`), a table of what changes for a Deployment role — no
+  headless Service, no data PVC, RollingUpdate defaults, no drain wait on teardown — and why
+  everything else is identical by construction (one shared pod-template implementation under both
+  builders).
+- §1.3's RoleGroup definition no longer says a role group "maps directly to a StatefulSet"; it maps
+  to one workload of either kind.
+- §4.4 (orphan cleanup): the live inventory and the deletion state machine include Deployments,
+  with the Deployment step's no-drain-wait rationale.
+- §4.8 (health): unreadable-workload wording follows the role's kind instead of naming a
+  StatefulSet a Deployment role never had; the watch list gains `Deployment`.
+- §5.3.3 (apply order and update semantics): the workload slot is `StatefulSet | Deployment`
+  (mutually exclusive, validated before anything is written), and the immutable-fields list gains
+  the Deployment `selector`.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`, `pkg/builder/AGENTS.md`)
+
+- Root: build-output, apply-order, orphan-cleanup and health claims updated from "StatefulSet" to
+  the workload the role actually runs.
+- `pkg/reconciler`: `workload_kind.go` added to the file table, the affected rows (apply, cleaner,
+  health, handlers) updated, and a new working instruction on choosing a workload kind.
+- `pkg/builder`: `deployment_builder.go` and the shared `workload_builder.go` added to the file
+  table; the pod-overrides and probe semantics bullets now name both workload builders, plus a
+  bullet on the enforced pod-template parity.
 
 ---
 

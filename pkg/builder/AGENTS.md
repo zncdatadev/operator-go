@@ -2,7 +2,7 @@
 
 **Parent:** [../AGENTS.md](../AGENTS.md)
 
-Kubernetes resource builders for StatefulSet, Service, ConfigMap, PDB, RBAC, and other resources.
+Kubernetes resource builders for StatefulSet, Deployment, Service, ConfigMap, PDB, RBAC, and other resources.
 
 ## Key Files
 
@@ -10,7 +10,9 @@ Every non-test file in this package:
 
 | File | Purpose |
 |------|---------|
-| `statefulset_builder.go` | `StatefulSetBuilder` — the workload builder, including `WithPodOverrides`, the strategic-merge-patch application of pod overrides, and `PodOverrideViolations()` (the framework mounts an override displaced; `Build()` cannot return an error, so they are read back afterwards) |
+| `workload_builder.go` | `workloadBuilder` — the shared, unexported pod-template half both workload builders embed: primary container assembly, probes, security contexts, `WithMainContainerCustomizer` timing, the strategic-merge-patch application of pod overrides and the violation collection (`PodOverrideViolations()` / `MainContainerViolations()`, promoted onto both concrete builders) |
+| `statefulset_builder.go` | `StatefulSetBuilder` — the StatefulSet workload builder: the shared pod template plus what only a StatefulSet has (`WithStorage` volumeClaimTemplates, the `-headless` serviceName, `WithPodManagementPolicy`, `WithUpdateStrategy`) |
+| `deployment_builder.go` | `DeploymentBuilder` — the Deployment workload builder for interchangeable-pod roles: same shared pod template, deliberately **no** volumeClaimTemplates / serviceName / podManagementPolicy, and `.spec.strategy` left unset so the Kubernetes RollingUpdate default applies |
 | `service_builder.go` | `ServiceBuilder` / `HeadlessServiceBuilder` and the `ServiceType` constants |
 | `configmap_builder.go` | `ConfigMapBuilder`, including `WithMergedConfig(cfg *config.MergedConfig, generator *config.MultiFormatConfigGenerator) (*ConfigMapBuilder, error)` |
 | `pdb_builder.go` | PodDisruptionBudget builder |
@@ -52,7 +54,7 @@ extension).
   silently block node drains for workloads the operator does not own. It is the only object in
   this package whose invalidity no API server error would reveal, so the builder refuses to build
   it.
-- **`NamespacedName()`** is available on the StatefulSet, Service, ConfigMap, PDB, `RoleBuilder`,
+- **`NamespacedName()`** is available on the StatefulSet, Deployment, Service, ConfigMap, PDB, `RoleBuilder`,
   `RoleBindingBuilder`, `ClusterRoleBuilder`, `ClusterRoleBindingBuilder` and ServiceAccount
   builders, for callers that need the key without building the object. The two cluster-scoped RBAC
   builders return an empty `Namespace`. `MetricsServiceBuilder` does not expose one.
@@ -67,7 +69,7 @@ extension).
 - **`ConfigMapBuilder.WithMergedConfig` returns `(*ConfigMapBuilder, error)`** — it is not a pure
   fluent step, because config generation can fail. A ConfigMap with no config files at all is built
   with `.Data` left nil rather than an empty map.
-- **`StatefulSetBuilder` pod overrides** are applied last in `Build()` via a strategic merge patch
+- **Pod overrides (both workload builders)** are applied last in `Build()` via a strategic merge patch
   on the pod template: containers merge by name, struct fields (including security contexts)
   deep-merge per field, and the selector labels are re-asserted afterwards so an override can never
   break the immutable `.spec.selector` ↔ template-labels invariant. Anything that must be
@@ -85,7 +87,7 @@ extension).
   framework-owned volume such as `config` a supported operation rather than an opaque apply
   failure.
 
-- **`StatefulSetBuilder` generates a readiness probe and never a liveness probe.** When ports are
+- **Both workload builders generate a readiness probe and never a liveness probe.** When ports are
   declared, `Build()` attaches a TCP readiness probe to `Ports[0]`; `LivenessProbe` is set only by
   `WithLivenessProbe`. The asymmetry is the point. The framework does not know which of a product's
   ports means "healthy" — the first declared one is an accident of declaration order and is as
@@ -101,6 +103,15 @@ extension).
   `builder.DefaultTCPLivenessProbe(port)` reproduces the removed probe on a port the product picks.
   This is deliberately *not* the same call as the sidecar probes in `pkg/sidecar`, which the
   framework does author — there it owns the image, the port and the endpoint.
+- **`DeploymentBuilder` and `StatefulSetBuilder` render identical pods for identical inputs.** Both
+  embed the unexported `workloadBuilder`, which owns the entire pod-template assembly — containers,
+  volumes, probes, security contexts, the customizer hook and the pod-overrides merge — so the two
+  workload kinds cannot drift; a parity spec pins it. What differs is only what the Kubernetes kinds
+  themselves differ in: the Deployment builder has no `WithStorage` (its pods own no per-pod
+  storage, which is why `BaseRoleGroupHandler.StorageMountPath` is ignored for Deployment roles),
+  no serviceName, no podManagementPolicy, and it leaves `.spec.strategy` unset rather than
+  restating the RollingUpdate server default. Its `.spec.selector` is immutable exactly as the
+  StatefulSet's is, and the apply path preserves it the same way (`copyDeploymentState`).
 - **`podManagementPolicy` defaults to `Parallel`, and that is a choice.** `OrderedReady` starts pod
   N+1 only once pod N is Ready, which deadlocks a quorum product at pod-0: a ZooKeeper member or an
   HDFS JournalNode is not Ready until it sees a quorum that does not exist until its peers start.
