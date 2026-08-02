@@ -8,6 +8,25 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### features (metrics service customization)
+
+- **The per-role-group metrics Service slot is now name- and annotation-customizable.**
+  `builder.MetricsServiceBuilder` gains `WithName` — overriding the default `{resourceName}-metrics`
+  name — and `WithAnnotations`, merged into the generated Prometheus annotation set with caller
+  entries winning on key collisions. Products migrating from pre-framework operators that published
+  the metrics Service under the role group resource name can keep that DNS name byte-stable across
+  a Gen 3 migration instead of shipping the Service through the `ExtraResources` escape hatch.
+- **The slot is identified by labels, not by derived name.** The apply path stamps the slot label
+  plus the framework's role group identity (the instance label and the role group marker) on
+  whatever Service the handler ships as `RoleGroupResources.MetricsService`, and the reclaim runs a
+  label-selected List — with the historical derived-name lookup retained as a fallback for slots
+  applied before the stamping existed. A custom-named metrics Service is therefore reclaimed
+  exactly like the default one when the handler stops shipping it; the name-derived lookup alone
+  would never have found it, leaking a scrape target pointing at nothing. The filter stays
+  precise: a product object under the derived name — or the client Service of a role group
+  literally called `<group>-metrics` — carries neither the marker nor the slot label and is never
+  touched.
+
 ### BREAKING CHANGES
 
 - `common.ClusterInterface` shrank from twelve methods to `client.Object` plus `GetSpec` and

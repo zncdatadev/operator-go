@@ -166,4 +166,64 @@ var _ = Describe("MetricsServiceBuilder", func() {
 			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromString("jmx")))
 		})
 	})
+
+	Describe("WithName", func() {
+		It("should override the default derived name", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithName(resourceName).
+				Build()
+
+			Expect(svc.Name).To(Equal(resourceName))
+			Expect(svc.Namespace).To(Equal(namespace))
+		})
+
+		It("should keep the derived name when not set", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).Build()
+
+			Expect(svc.Name).To(Equal(resourceName + "-metrics"))
+		})
+
+		It("should preserve the prometheus conventions under a custom name", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithName("custom-metrics-svc").
+				Build()
+
+			Expect(svc.Name).To(Equal("custom-metrics-svc"))
+			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9505"))
+			Expect(svc.Labels).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+		})
+	})
+
+	Describe("WithAnnotations", func() {
+		It("should merge extra annotations into the generated set", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithAnnotations(map[string]string{"example.com/team": "data"}).
+				Build()
+
+			Expect(svc.Annotations).To(HaveKeyWithValue("example.com/team", "data"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9505"))
+		})
+
+		It("should let caller entries win over generated defaults", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithPath("/custom").
+				WithAnnotations(map[string]string{"prometheus.io/path": "/override"}).
+				Build()
+
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/path", "/override"))
+		})
+
+		It("should merge successive calls", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithAnnotations(map[string]string{"a": "1"}).
+				WithAnnotations(map[string]string{"b": "2"}).
+				Build()
+
+			Expect(svc.Annotations).To(HaveKeyWithValue("a", "1"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("b", "2"))
+		})
+	})
 })

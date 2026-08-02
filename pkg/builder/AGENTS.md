@@ -36,6 +36,13 @@ extension).
 - **`WithLabels` / `WithAnnotations` merge, they do not replace.** This holds for every builder
   that has them (StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount); calling them twice
   unions the entries.
+- **`MetricsServiceBuilder` name and annotations are customizable.** The Service is named
+  `{resourceName}-metrics` unless `WithName` overrides it — the migration path for products whose
+  pre-framework operator published the metrics Service under the role group resource name.
+  `WithAnnotations` merges extra entries into the generated Prometheus annotation set; caller
+  entries win on key collisions, so any default can be restated or replaced. The reconciler's
+  metrics slot identifies this Service by the labels it stamps at apply time (the slot label plus
+  the role group marker), so apply and reclaim behave identically under a custom name.
 - **`PDBBuilder.Build()` panics without a selector.** An empty `LabelSelector` is accepted by the
   API server and selects *every* pod in the namespace, so a PDB built without `WithSelector` would
   silently block node drains for workloads the operator does not own. It is the only object in

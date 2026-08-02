@@ -27,27 +27,30 @@ import (
 
 // MetricsServiceBuilder constructs a headless Service with Prometheus scrape annotations.
 // Conventions applied automatically:
-//   - Service name: "{resourceName}-metrics"
+//   - Service name: "{resourceName}-metrics" (override with WithName)
 //   - ClusterIP: None (headless)
-//   - Prometheus annotations: scrape=true, port, scheme=http
+//   - Prometheus annotations: scrape=true, port, scheme=http (extend with WithAnnotations)
 //   - Service labels: input labels + "prometheus.io/scrape=true"
 //   - Selector: input labels (without prometheus annotation)
 //
-// Override defaults with WithScheme() and WithPath().
+// Override defaults with WithScheme(), WithPath(), WithName() and WithAnnotations().
 type MetricsServiceBuilder struct {
 	resourceName   string
 	namespace      string
+	name           string
 	port           int32
 	portName       string
 	targetPortName string
 	labels         map[string]string
 	selector       map[string]string
+	annotations    map[string]string
 	scheme         string
 	path           string
 }
 
 // NewMetricsServiceBuilder creates a builder for a metrics headless service.
-// resourceName is the role group resource name; "-metrics" suffix is appended automatically.
+// resourceName is the role group resource name; the Service is named "{resourceName}-metrics"
+// unless WithName overrides it.
 // port is the metrics port number.
 // labels are used for both service labels and selector.
 // The labels are copied, like every other builder's: a caller that keeps mutating the map it
@@ -73,6 +76,29 @@ func (b *MetricsServiceBuilder) WithScheme(scheme string) *MetricsServiceBuilder
 // WithPath sets the Prometheus metrics path (default: "" which means /metrics).
 func (b *MetricsServiceBuilder) WithPath(path string) *MetricsServiceBuilder {
 	b.path = path
+	return b
+}
+
+// WithName overrides the default "{resourceName}-metrics" Service name. Products migrating from
+// pre-framework operators whose metrics Service shared the role group resource name use this to
+// keep the published DNS name stable across the migration. The framework's apply and reclaim
+// paths identify the metrics slot by its labels, not by this name, so a custom name stays fully
+// managed (including deletion when the handler stops shipping a MetricsService).
+func (b *MetricsServiceBuilder) WithName(name string) *MetricsServiceBuilder {
+	b.name = name
+	return b
+}
+
+// WithAnnotations merges extra annotations into the generated Prometheus set. Entries passed
+// here win on key collisions, so a product can also restate or replace any of the defaults.
+// The map is copied entry-wise; later calls merge into earlier ones.
+func (b *MetricsServiceBuilder) WithAnnotations(annotations map[string]string) *MetricsServiceBuilder {
+	if b.annotations == nil {
+		b.annotations = map[string]string{}
+	}
+	for k, v := range annotations {
+		b.annotations[k] = v
+	}
 	return b
 }
 
@@ -114,6 +140,10 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 	if b.path != "" {
 		annotations["prometheus.io/path"] = b.path
 	}
+	// Product annotations win over the generated defaults on key collisions.
+	for k, v := range b.annotations {
+		annotations[k] = v
+	}
 
 	selectorSource := b.selector
 	if selectorSource == nil {
@@ -129,9 +159,14 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 		targetPort = intstr.FromString(b.targetPortName)
 	}
 
+	serviceName := b.resourceName + "-metrics"
+	if b.name != "" {
+		serviceName = b.name
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        b.resourceName + "-metrics",
+			Name:        serviceName,
 			Namespace:   b.namespace,
 			Labels:      serviceLabels,
 			Annotations: annotations,

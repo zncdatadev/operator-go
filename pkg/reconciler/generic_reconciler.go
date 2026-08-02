@@ -42,6 +42,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -1179,18 +1180,20 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	// 7. Apply the metrics Service, or reclaim it when metrics are turned off — mirroring the
 	// PDB branch above, so disabling metrics actually removes the stale Service instead of
 	// leaving a scrape target pointing at pods nobody exports metrics from.
-	metricsName := buildCtx.ResourceName + "-metrics"
 	if resources.MetricsService != nil {
-		// The reclaim below deletes by derived name, and "<resource>-metrics" is also a legal
-		// resource name for a role group literally called "<group>-metrics". Stamping the slot
-		// here is what lets the reclaim tell "the metrics Service this framework applied" apart
-		// from a sibling role group's Service, or a product's own object of the same name.
+		// The reclaim below finds the slot by its framework labels — not by name, because
+		// builder.WithName lets a product publish it under any name. Stamping the slot label and
+		// the role group identity here is what makes apply and reclaim agree on the same object,
+		// whatever labels (or name) the handler chose: a role group literally called
+		// "<group>-metrics" still has its own Services, and a product's own object under the
+		// default derived name is still untouched.
+		stampMetricsIdentity(resources.MetricsService, buildCtx)
 		markMetricsService(resources.MetricsService)
 		if err := r.applyResource(ctx, cr, resources.MetricsService); err != nil {
-			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, metricsName, "failed to apply metrics service", err)
+			return NewResourceApplyError("Service", buildCtx.ClusterNamespace, resources.MetricsService.Name, "failed to apply metrics service", err)
 		}
-	} else if err := r.reclaimMetricsService(ctx, buildCtx.ClusterNamespace, metricsName, cr.GetUID(), buildCtx.ClusterName); err != nil {
-		return NewResourceApplyError("Service", buildCtx.ClusterNamespace, metricsName, "failed to delete disabled metrics service", err)
+	} else if err := r.reclaimMetricsService(ctx, buildCtx, cr.GetUID()); err != nil {
+		return NewResourceApplyError("Service", buildCtx.ClusterNamespace, buildCtx.ResourceName+"-metrics", "failed to delete disabled metrics service", err)
 	}
 
 	return nil
@@ -1206,6 +1209,19 @@ func markMetricsService(svc *corev1.Service) {
 		svc.Labels = map[string]string{}
 	}
 	svc.Labels[LabelMetricsService] = valueTrue
+}
+
+// stampMetricsIdentity puts the framework's role group identity labels — the cluster instance
+// label and the role group marker — on a handler-built metrics Service. The handler may have
+// built it with any descriptive label set (or with a custom name through builder.WithName), but
+// the reclaim path must be able to find exactly this role group's slot from the labels alone, so
+// the two labels only the framework knows are guaranteed here.
+func stampMetricsIdentity(svc *corev1.Service, buildCtx *RoleGroupBuildContext) {
+	if svc.Labels == nil {
+		svc.Labels = map[string]string{}
+	}
+	svc.Labels[constant.LabelKubernetesInstance] = buildCtx.ClusterName
+	svc.Labels[RoleGroupMarkerLabelKey(buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName)] = valueTrue
 }
 
 // markRolePodDisruptionBudget stamps the role slot label, carrying the role the PDB covers, on a
@@ -1280,23 +1296,49 @@ func isFrameworkRoleGroupPDB(pdb *policyv1.PodDisruptionBudget, clusterName, rol
 		pdb.Labels[RoleGroupMarkerLabelKey(clusterName, roleName, roleGroupName)] == valueTrue
 }
 
-// reclaimMetricsService deletes the role group's metrics Service, but only when the live object
-// is one this framework applied as the metrics slot. Deleting purely by derived name would also
-// hit the client Service of a role group named "<group>-metrics", and any object a product ships
-// under that name through RoleGroupResources.ExtraResources — both of which carry this CR's
-// controller owner reference, so ownership alone does not distinguish them.
-func (r *GenericReconciler[CR]) reclaimMetricsService(ctx context.Context, namespace, name string, ownerUID types.UID, clusterName string) error {
-	svc := &corev1.Service{}
-	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, svc); err != nil {
+// reclaimMetricsService deletes the role group's metrics Service when the handler stopped
+// supplying one. It finds the slot by the framework labels stamped on the apply path — the slot
+// label plus the role group marker — so a metrics Service published under a custom name
+// (builder.WithName) is reclaimed exactly like the default "<resource>-metrics" one. Deleting by
+// derived name alone would also hit the client Service of a role group literally called
+// "<group>-metrics", and any object a product ships under that name through
+// RoleGroupResources.ExtraResources — all of which carry this CR's controller owner reference,
+// so ownership alone does not distinguish them; the marker label is the precise filter.
+func (r *GenericReconciler[CR]) reclaimMetricsService(ctx context.Context, buildCtx *RoleGroupBuildContext, ownerUID types.UID) error {
+	markerKey := RoleGroupMarkerLabelKey(buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName)
+	svcs := &corev1.ServiceList{}
+	if err := r.client.List(ctx, svcs,
+		client.InNamespace(buildCtx.ClusterNamespace),
+		client.MatchingLabels{LabelMetricsService: valueTrue, markerKey: valueTrue},
+	); err != nil {
+		return err
+	}
+	for i := range svcs.Items {
+		svc := &svcs.Items[i]
+		if ref := metav1.GetControllerOf(svc); ref == nil || ref.UID != ownerUID {
+			continue
+		}
+		if err := r.cleaner.deleteService(ctx, svc.Namespace, svc.Name, ownerUID, buildCtx.ClusterName); err != nil {
+			return err
+		}
+	}
+
+	// Legacy fallback: a metrics Service applied before identity stamping carries the slot label
+	// but no role group marker, so the List above does not see it. The historical derived-name
+	// lookup with the slot-label check keeps those reclaimable; it is a no-op for a Service the
+	// List path already deleted, and for a custom-named slot that never used the derived name.
+	legacy := &corev1.Service{}
+	legacyName := buildCtx.ResourceName + "-metrics"
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: buildCtx.ClusterNamespace, Name: legacyName}, legacy); err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
-	if svc.Labels[LabelMetricsService] != valueTrue {
+	if legacy.Labels[LabelMetricsService] != valueTrue {
 		return nil
 	}
-	return r.cleaner.deleteService(ctx, namespace, name, ownerUID, clusterName)
+	return r.cleaner.deleteService(ctx, legacy.Namespace, legacyName, ownerUID, buildCtx.ClusterName)
 }
 
 // validateSidecars runs the registered sidecar providers' dependency checks for a role group.
