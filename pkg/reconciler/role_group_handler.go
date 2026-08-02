@@ -544,7 +544,11 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 	// 2. Build product-specific ConfigMap data
 	// 3. Build StatefulSet with appropriate containers, volumes, etc.
 	// 4. Build Services if needed
-	// 5. Build PDB if needed
+	//
+	// Do NOT build a PodDisruptionBudget per role group: the PDB is role-level and
+	// framework-built once per role from roleConfig.podDisruptionBudget
+	// (BaseRoleGroupHandler.BuildRolePodDisruptionBudget). RoleGroupResources.PodDisruptionBudget
+	// is an escape hatch for exceptional per-group budgets only.
 	//
 	// Returns RoleGroupResources containing all built resources, or an error.
 	BuildResources(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *RoleGroupBuildContext) (*RoleGroupResources, error)

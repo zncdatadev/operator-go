@@ -112,6 +112,14 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### docs (RoleGroupHandler PDB guidance)
+
+- The `RoleGroupHandler.BuildResources` doc comment no longer instructs implementers to "Build PDB
+  if needed" (#592, fixes #588). Per-group PDB construction contradicts the role-level design: the framework
+  builds one PDB per role from `roleConfig.podDisruptionBudget`
+  (`BaseRoleGroupHandler.BuildRolePodDisruptionBudget`), and `RoleGroupResources.PodDisruptionBudget`
+  is an escape hatch for exceptional per-group budgets. The comment now states this explicitly.
+
 ### features (image conventions)
 
 - **`constant.KubedoopJmxAgentJar` and `constant.JMXJavaAgentOpt(port, configFile)`** render the
