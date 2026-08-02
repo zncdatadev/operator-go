@@ -89,7 +89,7 @@ operator-go/
 │   ├── builder/                  # Fluent resource builders (see pkg/builder/AGENTS.md)
 │   ├── common/                   # Core interfaces, extensions, errors
 │   ├── config/                   # Config file generation and override merging (see pkg/config/AGENTS.md)
-│   ├── constant/                 # Kubedoop paths, labels, domains, restarter annotations
+│   ├── constant/                 # Kubedoop paths, labels, domains, restarter annotations, JMX agent
 │   ├── listener/                 # Listener provisioner (CSI volume registration)
 │   ├── productlogging/           # Product logging config generation (Log4j, Log4j2, Logback, Python)
 │   ├── reconciler/               # Reconciliation framework (see pkg/reconciler/AGENTS.md)
@@ -571,6 +571,39 @@ stated level overrides. The effective default (root logger `INFO`, no appender t
 the renderers at consumption time.
 
 Default config file names come from each generator's `DefaultFileName()`: `logback.xml`, `log4j.properties`, `log4j2.properties` and — deliberately **not** `logging.py` — `log_config.py`, since a config directory on `sys.path` would otherwise shadow the standard library's `logging` module. `ContainerLogging.FileName` overrides the name per container. The rolling *log* file the Vector sources glob is separate and framework-owned: `<KubedoopLogDir>/<lowercased container>/<container><suffix>`, with `.log4j.xml` (log4j/logback), `.log4j2.xml` (log4j2) or `.py.json` (python) selecting the Vector edge parser; `ContainerLogging.LogFileName` may rename it only if the suffix survives and it stays a bare file name.
+
+### 9b. Image Conventions the Framework Requires
+
+Two conventions the kubedoop images define, that the framework's own behaviour depends on, and that
+every product previously re-typed as string literals.
+
+**The JMX exporter runs as a java agent.** `constant.KubedoopJmxAgentJar` is the unversioned symlink
+the images provide, and `constant.JMXJavaAgentOpt(port, configFile)` renders the JVM option:
+
+```go
+constant.JMXJavaAgentOpt(8081, "config.yaml")
+// -javaagent:/kubedoop/jmx/jmx_prometheus_javaagent.jar=8081:/kubedoop/jmx/config.yaml
+```
+
+The config file is a **parameter**, not a constant: the hadoop image ships no `config.yaml`, only
+`namenode.yaml` / `datanode.yaml` / `journalnode.yaml`, because the metrics worth exporting differ
+per role. This is a different mechanism from `pkg/sidecar/jmx_exporter.go`, which runs
+`jmx_prometheus_httpserver.jar` from `/opt/jmx_exporter` as a separate container — a path no
+kubedoop image contains.
+
+**The config mount is read-only.** The generated ConfigMap is mounted read-only at
+`BaseRoleGroupHandler.ConfigMountPath` (default `constant.KubedoopConfigDirMount`), so a product
+whose start-up rewrites a config file must copy it to a writable directory first:
+
+```sh
+mkdir -p /kubedoop/config/
+cp -RL /kubedoop/mount/config/* /kubedoop/config/
+```
+
+`-L` is load-bearing: a ConfigMap volume is a farm of symlinks into a hidden `..data/` directory, so
+a copy that preserves them leaves dangling links. The SDK ships no helper for this — the existing
+call sites disagree on flags and the mount path is configurable — but the requirement is now stated
+in `docs/architecture.md` §4.1.5 rather than discoverable only by reading a sibling operator.
 
 ### 10. Product Config (`ProductConfig`)
 Products contribute their computed configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductConfig` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):

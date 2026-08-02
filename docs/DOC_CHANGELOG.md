@@ -4,6 +4,39 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-03e] (the handler contract stops being source-only)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.1.5 Writing a Role Group Handler**, the section #579 asks for: the build-context
+  read/write split (12 fields the framework writes, 9 the handler does), what a nil
+  `RoleGroupResources` field *instructs* rather than omits, the container contract (name resolution
+  before `Build()`, the `Ports[0]` readiness probe, the reserved `config`/`data` volume names,
+  `JvmArgs` reaching nothing), the read-only config mount, the eleven ways to fail a build, and a
+  four-item checklist for a handler that does not embed `BaseRoleGroupHandler`.
+- **Three doc-vs-code corrections found while writing it.** §4.11.2 attributed the `stopped`
+  replica forcing to the Reconciler; it is in `BaseRoleGroupHandler.buildStatefulSet`, which is
+  exactly what a non-embedding handler has to reproduce. The terminology section said a RoleGroup
+  maps to a StatefulSet "and associated Service, ConfigMap, PDB" — the PDB is **role**-level.
+- Records that `BaseRoleGroupHandler.WithSidecarManager` is **inert under the reconciler**, which
+  always supplies a non-nil manager on the build context.
+
+### Framework Documentation (`AGENTS.md`)
+
+- New §9b for the two image conventions: the JMX java agent and the read-only config mount, both
+  with the reason the obvious simplification is wrong (per-role JMX configs; `cp -RL` and the
+  `..data/` symlink farm).
+
+### Go doc comments
+
+- `BaseRoleGroupHandler.ConfigMountPath` states the mount is read-only and what that costs.
+- `RoleGroupHandler.BuildResources`'s stale "5. Build PDB if needed" is deliberately NOT touched
+  here: PR #592 already fixes it, and duplicating the fix would only produce a conflict. §4.1.5
+  carries the part that PR does not — that a nil `RoleGroupResources` field is an instruction to
+  delete rather than an omission.
+
+---
+
 ## [2026-08-03d] (the product-config seam can read the cluster it documents)
 
 ### Core Architecture (`architecture.md`)
