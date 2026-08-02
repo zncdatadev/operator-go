@@ -607,6 +607,12 @@ func (b *StatefulSetBuilder) DisableStartupProbe() *StatefulSetBuilder {
 // rewrites the template when pod overrides are applied), so sharing would let a pod-level change
 // contaminate ObjectMeta, the immutable .spec.selector, or a second Build() from the same builder.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
+	// Reset here, not next to the podOverrides reset below: customizedContainer runs inside
+	// buildPodSpec, which the struct literal calls before we ever reach that point. Same reason as
+	// there — the list describes THIS build, so a reused builder must not report the previous
+	// build's violations, nor report this one's twice.
+	b.mainContainerViolations = nil
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,

@@ -36,7 +36,7 @@ const (
 	// address changes when the pod is rescheduled.
 	//
 	// This comment previously said "LoadBalancer with dynamic IPs", which is what the name is NOT:
-	// a LoadBalancer is the STABLE class. builder.ListenerClassServiceType is the executable form
+	// a LoadBalancer is the STABLE class. ServiceTypeFor is the executable form
 	// of the mapping, and two downstream operators had already drawn opposite conclusions from the
 	// old wording.
 	ListenerClassExternalUnstable ListenerClass = "external-unstable"
