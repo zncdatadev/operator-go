@@ -8,7 +8,7 @@ This document tracks all changes made to the SDK documentation.
 
 ### Core Architecture (`architecture.md`)
 
-- New **§4.4.4 Handler Lifetime and Per-CR Inputs**: one handler instance serves every cluster, a
+- New **§4.1.4 Handler Lifetime and Per-CR Inputs**: one handler instance serves every cluster, a
   table of what belongs on the handler versus the build context, and the two failure modes of
   getting it wrong — the race above `MaxConcurrentReconciles: 1`, and the quieter stale-value leak
   at concurrency 1 that spark-k8s-operator actually shipped.

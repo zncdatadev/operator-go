@@ -344,7 +344,7 @@ between clusters; at 1 they still leak, because a product that conditionally ski
 inherits the previous CR's value (spark-k8s-operator shipped exactly that). Handler fields remain
 correct for reconcile-**invariant** configuration; `sidecar.SidecarManager.CloneForBuild` covers the
 framework's own instance of the same hazard, a handler-registered manager whose configs
-`SetProductImage` writes into. See `docs/architecture.md` §4.4.4.
+`SetProductImage` writes into. See `docs/architecture.md` §4.1.4.
 
 **Role and role group names are constrained by the CRD, not by convention.** The keys of
 `spec.roles` and `spec.roles.<role>.roleGroups` must be lowercase RFC 1123 labels — a CEL
