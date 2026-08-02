@@ -115,7 +115,7 @@ changes are listed below.**
 ### docs (RoleGroupHandler PDB guidance)
 
 - The `RoleGroupHandler.BuildResources` doc comment no longer instructs implementers to "Build PDB
-  if needed" (#588). Per-group PDB construction contradicts the role-level design: the framework
+  if needed" (#592, fixes #588). Per-group PDB construction contradicts the role-level design: the framework
   builds one PDB per role from `roleConfig.podDisruptionBudget`
   (`BaseRoleGroupHandler.BuildRolePodDisruptionBudget`), and `RoleGroupResources.PodDisruptionBudget`
   is an escape hatch for exceptional per-group budgets. The comment now states this explicitly.
