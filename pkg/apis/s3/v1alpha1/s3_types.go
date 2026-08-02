@@ -41,7 +41,7 @@ type S3ConnectionSpec struct {
 	// PathStyle selects the S3 addressing style: true addresses the bucket as a path
 	// (`https://<host>/<bucket>`), false as a virtual host (`https://<bucket>.<host>`).
 	//
-	// It defaults to **false**, which is right for AWS S3 and wrong for most self-hosted
+	// It defaults to false, which is right for AWS S3 and wrong for most self-hosted
 	// backends. MinIO in particular serves path-style only: with virtual-host addressing the
 	// client resolves `<bucket>.<host>` — e.g. `warehouse.minio` in-cluster — which does not
 	// exist in DNS. Nothing rejects that at admission; the pods start and fail on first access.
