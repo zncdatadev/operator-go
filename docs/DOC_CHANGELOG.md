@@ -4,6 +4,21 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-03b] (an object whose content must not converge)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.9.4 Generate-Once Secrets**: why the SDK's usual "rebuild and overwrite" shape is wrong
+  for a generated value, what `EnsureGeneratedSecret` guarantees, why filling a *missing* key is a
+  deliberate choice, and why the Secret is not created from a sidecar provider's `Validate`.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- New §11b next to the discovery-ConfigMap section, with the call and the oauth2-proxy case.
+- `generated_secret.go` added to the reconciler file table.
+
+---
+
 ## [2026-08-03a] (handler lifetime, and where per-CR inputs go)
 
 ### Core Architecture (`architecture.md`)

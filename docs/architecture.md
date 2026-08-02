@@ -693,6 +693,16 @@ The SDK adopts a layered security strategy, addressing both **Infrastructure Sec
 
 > **Note**: For detailed architecture, backend mechanisms, and workflow regarding Application Security and SecretClass, please refer to the dedicated security documentation: [Operator-Go Security Architecture](security.md).
 
+### 4.9.4 Generate-Once Secrets
+
+Everything the framework applies is idempotent against a desired state — the handler rebuilds it every reconcile and the apply path overwrites the live object. A **generated** secret is the exact opposite: rewriting it is the failure. The oauth2-proxy session cookie key signs every session the proxy trusts, so a fresh value on each pass rolls the pods and logs every user out.
+
+`reconciler.EnsureGeneratedSecret` is the ensure-helper for that shape, alongside `EnsureDiscoveryConfigMap`. It creates the Secret with generated values when absent, fills in only **missing** keys when it exists, and **never rewrites an existing value**; it sets a controller owner reference, and tolerates the `IsAlreadyExists` of a concurrent reconcile by re-reading — one generated value, whoever generated it.
+
+Filling a missing key is a deliberate choice rather than an oversight. Sidecar providers fail the reconcile on a missing key (`OAuth2ProxySidecarProvider.Validate` does), so a Secret that lost one — a partial restore from backup, a hand-edit — would wedge the cluster with no recovery short of deleting the whole Secret, which rotates every *other* key too and logs out every user to fix one. Filling only what is absent keeps the blast radius at the key that was actually lost.
+
+The Secret is **not** created from the sidecar provider's `Validate`: a validation hook that creates objects is a side effect in the one step whose job is to have none. Products call the helper from a `ClusterExtension` `PreReconcile` hook, mirroring how discovery ConfigMaps are published from `PostReconcile`.
+
 ## 4.10 Network Access & Service Exposure Module
 
 ### 4.10.1 Design Background

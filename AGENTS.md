@@ -594,6 +594,32 @@ err := reconciler.EnsureDiscoveryConfigMap(ctx, client, scheme, cr, cr.GetName()
 
 The helper is idempotent (CreateOrUpdate), sets a controller owner reference (the ConfigMap is GC'd with the CR), and applies canonical labels (`app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`, plus `app.kubernetes.io/name` via `WithDiscoveryProductName`); extra labels/annotations are merged via options, but canonical labels always win. Data is replaced wholesale.
 
+### 11b. Generate-Once Secrets
+
+Some objects must **not** converge. `reconciler.EnsureGeneratedSecret` is the counterpart to
+`EnsureDiscoveryConfigMap` for those: it creates the Secret with generated values if absent, fills
+in only **missing** keys if it exists, and **never rewrites an existing value**.
+
+```go
+_, err := reconciler.EnsureGeneratedSecret(ctx, c, scheme, cr, cr.GetName()+"-oauth2-cookie",
+    map[string]func() (string, error){"cookie-secret": sidecar.GenerateCookieSecret},
+    reconciler.WithGeneratedSecretProductName("trino"),
+)
+```
+
+The oauth2-proxy session cookie key is the shipped case: `GenerateCookieSecret`'s doc says to call
+it once and store the result, because a fresh value every pass rolls the pods and logs every user
+out — so `RoleGroupResources.ExtraResources`, whose apply path is idempotent `CreateOrUpdate`
+against a desired object, cannot serve. `OAuth2ProxySidecarProvider.Validate` fails the reconcile
+when the key is missing, so the framework *requires* such a Secret.
+
+Filling a missing key is deliberate: a Secret that lost one key (a partial restore, a hand-edit)
+would otherwise wedge the cluster with no recovery short of deleting the whole Secret, which rotates
+every *other* key too. Generators run only for absent keys, so the steady-state path invokes none of
+them. Call it from a `common.ClusterExtension` `PreReconcile` hook, where a ctx and client exist and
+the workload has not been built yet; it is deliberately **not** created from the sidecar provider's
+`Validate`, a step whose job is to have no side effects.
+
 ### 12. External Dependencies
 
 `GenericReconcilerConfig.Dependencies` declares the external objects a CR references but does not
