@@ -544,17 +544,7 @@ type RoleGroupHandler[CR common.ClusterInterface] interface {
 	// 2. Build product-specific ConfigMap data
 	// 3. Build StatefulSet with appropriate containers, volumes, etc.
 	// 4. Build Services if needed
-	//
-	// A PodDisruptionBudget is NOT built here: the framework's PDB comes from
-	// roleConfig.podDisruptionBudget and is ROLE-level, built once per role by
-	// BuildRolePodDisruptionBudget and applied by the reconciler.
-	// RoleGroupResources.PodDisruptionBudget remains an escape hatch for an extra per-group one —
-	// and, like MetricsService, a nil there is an instruction rather than an omission: the
-	// framework deletes a live object the handler stops returning.
-	//
-	// The full contract — which build-context fields a handler writes, the container and label
-	// contracts, and what a handler that does NOT embed BaseRoleGroupHandler must reproduce — is
-	// docs/architecture.md §4.1.5.
+	// 5. Build PDB if needed
 	//
 	// Returns RoleGroupResources containing all built resources, or an error.
 	BuildResources(ctx context.Context, k8sClient client.Client, cr CR, buildCtx *RoleGroupBuildContext) (*RoleGroupResources, error)

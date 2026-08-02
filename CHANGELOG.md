@@ -135,9 +135,9 @@ changes are listed below.**
   read/write split, what a nil `RoleGroupResources` field instructs rather than omits, the container
   contract, the read-only config mount, the ways to fail a build, and what a handler that does not
   embed `BaseRoleGroupHandler` must reproduce.
-- Three doc-vs-code corrections: `stopped` is forced in the base handler and not the reconciler; the
-  PodDisruptionBudget is role-level, not per role group; and `BuildResources`'s doc comment no
-  longer tells implementers to "Build PDB if needed".
+- Two doc-vs-code corrections: `stopped` is forced in the base handler and not the reconciler, and
+  the PodDisruptionBudget is role-level rather than per role group. A third — `BuildResources`'s
+  stale "5. Build PDB if needed" — is left to PR #592, which already fixes it.
 - `WithSidecarManager` is documented as **inert under the reconciler**, which always supplies a
   non-nil `SidecarManager` on the build context.
 

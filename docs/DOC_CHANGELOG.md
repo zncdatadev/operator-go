@@ -29,9 +29,11 @@ This document tracks all changes made to the SDK documentation.
 
 ### Go doc comments
 
-- `RoleGroupHandler.BuildResources`'s "5. Build PDB if needed" was stale — the framework's PDB is
-  role-level — and now states the nil-means-delete rule and points at §4.1.5.
 - `BaseRoleGroupHandler.ConfigMountPath` states the mount is read-only and what that costs.
+- `RoleGroupHandler.BuildResources`'s stale "5. Build PDB if needed" is deliberately NOT touched
+  here: PR #592 already fixes it, and duplicating the fix would only produce a conflict. §4.1.5
+  carries the part that PR does not — that a nil `RoleGroupResources` field is an instruction to
+  delete rather than an omission.
 
 ---
 
