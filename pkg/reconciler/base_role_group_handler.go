@@ -148,6 +148,12 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// container. Products whose application reads config from a specific directory (e.g.
 	// "/etc/trino") set this. Defaults to the kubedoop-canonical config mount path
 	// (constant.KubedoopConfigDirMount) when empty.
+	//
+	// The mount is READ-ONLY. A product whose start-up rewrites a config file (Kerberos realm
+	// substitution, credential interpolation) must copy it to a writable directory first —
+	// conventionally constant.KubedoopConfigDir — with `cp -RL`: a ConfigMap volume is a farm of
+	// symlinks into a hidden ..data/ directory, so a copy that preserves symlinks leaves dangling
+	// links at the destination. See docs/architecture.md §4.1.5.
 	ConfigMountPath string
 
 	// MainContainerName, when set, renames the primary (first) container of the StatefulSet.

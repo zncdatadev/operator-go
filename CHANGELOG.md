@@ -112,6 +112,35 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (image conventions)
+
+- **`constant.KubedoopJmxAgentJar` and `constant.JMXJavaAgentOpt(port, configFile)`** render the
+  `-javaagent` option six operators hand-build today (#578). The config file is a **parameter**
+  rather than a baked-in `config.yaml`: the hadoop image ships no `config.yaml`, only
+  `namenode.yaml` / `datanode.yaml` / `journalnode.yaml`, so baking it in would have excluded the
+  product with the most roles.
+- This is a different mechanism from `pkg/sidecar/jmx_exporter.go`, which runs
+  `jmx_prometheus_httpserver.jar` from `/opt/jmx_exporter` as a separate container — **a path no
+  kubedoop image contains**, so that provider cannot run against a kubedoop product image as
+  `SetProductImage` wires it. Filed separately; not changed here.
+- **No `CopyMountedConfigScript` helper**, which the issue also proposed. The read-only config mount
+  is real and is now documented, but the nine existing copy sites across ten operators disagree on
+  flags and paths and `ConfigMountPath` is configurable, so a helper would be wrong for most callers
+  or so parameterised it saves nothing. The transferable knowledge — that `-L` is required because a
+  ConfigMap volume is a symlink farm into `..data/` — is documented instead.
+
+### docs (the role group handler contract)
+
+- **`docs/architecture.md` §4.1.5 "Writing a Role Group Handler"** (#579): the build-context
+  read/write split, what a nil `RoleGroupResources` field instructs rather than omits, the container
+  contract, the read-only config mount, the ways to fail a build, and what a handler that does not
+  embed `BaseRoleGroupHandler` must reproduce.
+- Three doc-vs-code corrections: `stopped` is forced in the base handler and not the reconciler; the
+  PodDisruptionBudget is role-level, not per role group; and `BuildResources`'s doc comment no
+  longer tells implementers to "Build PDB if needed".
+- `WithSidecarManager` is documented as **inert under the reconciler**, which always supplies a
+  non-nil `SidecarManager` on the build context.
+
 ### BREAKING (product config)
 
 - **`GenericReconcilerConfig.ProductConfig` gains a `ctx`, a `client.Client` and an `error`** (#574):
