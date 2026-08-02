@@ -145,6 +145,28 @@ The SDK distinguishes **two different mechanisms** by which a product supplies v
 | **Upgrade propagation** | No — frozen into the Spec at admission time | **Yes** — recomputed with the current operator each reconcile |
 | **Derived-from-live-state** | Freezes / goes stale | **Recomputed every reconcile** |
 
+**Image resolution is the case that shows why the split matters, and it was on the wrong side.**
+Kubedoop product images are published only with the `-kubedoop<version>` suffix, and the natural
+value of that suffix is the **operator's own build version** — a reconcile-time fact that moves when
+the operator binary is upgraded. Defaulting it in a webhook persists it into the spec at admission,
+so a cluster admitted by operator 0.1.0 keeps asking for `-kubedoop0.1.0` images forever and an
+operator upgrade cannot move it onto the co-released image. `BaseRoleGroupHandler.ImageDefaults` is
+therefore evaluated on every reconcile, and `ImageSpec.ResolveImage(productName, defaults)` folds it
+under whatever the user wrote:
+
+| layer | source | when |
+| --- | --- | --- |
+| user | `spec.image` | whatever the CR states, per field |
+| product | `handler.ImageDefaults` | every reconcile |
+
+`ProductName` no longer decides *whether* `spec.image` is read — it supplies the product name, which
+is both the `app.kubernetes.io/name` value and the repository path segment. Coupling the two meant a
+product that wanted the labels had to accept an image path that could not express the tag
+convention, and three migrated operators consequently hand-rolled image resolution and dropped
+`app.kubernetes.io/version` entirely. An unresolvable `spec.image` is now an **error** rather than a
+silent fall back to the handler's static image: running a version nobody asked for is not a safe
+default for a stateful product (the same call as `config.affinity` above).
+
 - **`ProductDefaulter`** is the right place for stable, user-facing **typed Spec defaults** (see §4.3). The value becomes part of the user's persisted Spec and is visible via `kubectl get`.
 - **`ProductConfig`** is the right place for **product-intrinsic and derived config-file content** — e.g. a ZooKeeper connection string built from the actual resources, a quorum peer list from pod ordinals, or a JVM heap sized from the role group's resources. It is *config generation, not defaulting*: computing it at reconcile time (rather than freezing it into the Spec at admission) means an operator upgrade **recomputes** the configuration for existing clusters, and values derived from mutable state stay fresh. It is injected as the lowest merge layer (§2.5), so user overrides still win.
 

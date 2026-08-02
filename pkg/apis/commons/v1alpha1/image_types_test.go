@@ -133,3 +133,137 @@ var _ = Describe("ImageSpec", func() {
 		})
 	})
 })
+
+var _ = Describe("ResolveImage", func() {
+	defaults := v1alpha1.ImageSpec{
+		Repo:            "quay.io/zncdatadev",
+		ProductVersion:  "4.0.1",
+		KubedoopVersion: "0.0.0-dev",
+	}
+
+	It("fills what the user left empty, so a bare productVersion resolves", func() {
+		// The case that made three operators hand-roll image resolution. Kubedoop publishes only
+		// the "-kubedoop<version>" tag, and GetImage appends that suffix only when the USER wrote
+		// kubedoopVersion — so a spec carrying just productVersion produced
+		// "quay.io/zncdatadev/hive:4.0.1", which does not exist in the registry.
+		spec := &v1alpha1.ImageSpec{ProductVersion: "4.1.0"}
+		Expect(spec.ResolveImage("hive", defaults)).
+			To(Equal("quay.io/zncdatadev/hive:4.1.0-kubedoop0.0.0-dev"))
+	})
+
+	It("resolves entirely from defaults when the user states nothing", func() {
+		Expect((&v1alpha1.ImageSpec{}).ResolveImage("hive", defaults)).
+			To(Equal("quay.io/zncdatadev/hive:4.0.1-kubedoop0.0.0-dev"))
+	})
+
+	It("treats a nil spec as an empty one", func() {
+		var spec *v1alpha1.ImageSpec
+		Expect(spec.ResolveImage("hive", defaults)).
+			To(Equal("quay.io/zncdatadev/hive:4.0.1-kubedoop0.0.0-dev"))
+	})
+
+	It("ignores pullPolicy when deciding whether the user stated anything", func() {
+		// pullPolicy carries a CRD default, so it is filled the moment `image: {}` exists. Counting
+		// it would make every stored spec look like a user opinion.
+		spec := &v1alpha1.ImageSpec{PullPolicy: corev1.PullAlways}
+		Expect(spec.ResolveImage("hive", v1alpha1.ImageSpec{Custom: "pinned:1"})).To(Equal("pinned:1"))
+	})
+
+	It("lets the spec's custom win outright", func() {
+		spec := &v1alpha1.ImageSpec{Custom: "my-registry/hive:local", ProductVersion: "9.9.9"}
+		Expect(spec.ResolveImage("hive", defaults)).To(Equal("my-registry/hive:local"))
+	})
+
+	It("does not let a default custom discard a version the user asked for", func() {
+		// The whole point of this change is that a user's stated version reaches the container.
+		// A product pinning ImageDefaults.Custom must not silently undo that.
+		spec := &v1alpha1.ImageSpec{ProductVersion: "4.1.0"}
+		withCustomDefault := defaults
+		withCustomDefault.Custom = "pinned/hive:frozen"
+		Expect(spec.ResolveImage("hive", withCustomDefault)).
+			To(Equal("quay.io/zncdatadev/hive:4.1.0-kubedoop0.0.0-dev"))
+	})
+
+	It("uses a default custom when the user states nothing", func() {
+		Expect((&v1alpha1.ImageSpec{}).ResolveImage("hive", v1alpha1.ImageSpec{Custom: "pinned/hive:frozen"})).
+			To(Equal("pinned/hive:frozen"))
+	})
+
+	It("errors, naming the missing field, rather than resolving to nothing", func() {
+		// Returning "" here is what let a caller fall back to its static image and run a version
+		// nobody asked for, with no error and no event.
+		_, err := (&v1alpha1.ImageSpec{ProductVersion: "4.1.0"}).ResolveImage("hive", v1alpha1.ImageSpec{})
+		Expect(err).To(MatchError(ContainSubstring("repo is unset")))
+		Expect(err).To(MatchError(ContainSubstring("hive")))
+	})
+
+	It("says nothing when nobody expressed an opinion", func() {
+		image, err := (&v1alpha1.ImageSpec{}).ResolveImage("hive", v1alpha1.ImageSpec{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(image).To(BeEmpty(), "the caller falls back to whatever it would have used")
+	})
+
+	It("resolves only custom when no product name is given, without erroring", func() {
+		// An empty product name means the caller resolves images itself — the shape hive and
+		// zookeeper use today. Erroring here would break every one of their clusters, and it is
+		// the caller's own arrangement rather than a user mistake.
+		image, err := (&v1alpha1.ImageSpec{Repo: "r", ProductVersion: "1"}).ResolveImage("", defaults)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(image).To(BeEmpty())
+
+		Expect((&v1alpha1.ImageSpec{Custom: "pinned:1"}).ResolveImage("", defaults)).To(Equal("pinned:1"))
+	})
+
+	It("keeps GetImage in step by delegating to it", func() {
+		spec := &v1alpha1.ImageSpec{Repo: "quay.io/kubedoop", ProductVersion: "3.4.1", KubedoopVersion: "0.2.0"}
+		Expect(spec.GetImage("trino")).To(Equal("quay.io/kubedoop/trino:3.4.1-kubedoop0.2.0"))
+		Expect((&v1alpha1.ImageSpec{ProductVersion: "3.4.1"}).GetImage("trino")).To(BeEmpty(),
+			"the legacy form still reports nothing rather than the reason")
+	})
+})
+
+var _ = Describe("pull policy", func() {
+	It("is nil-safe", func() {
+		// spec.image is an optional pointer, so a CR declaring no image reaches this as nil. It
+		// used to panic, and only surfaced once ImageDefaults made a nil spec resolve to a real
+		// image instead of stopping earlier.
+		var spec *v1alpha1.ImageSpec
+		Expect(spec.GetPullPolicy()).To(Equal(corev1.PullIfNotPresent))
+		Expect(spec.ResolvedPullPolicy(v1alpha1.ImageSpec{})).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	It("layers like the image does: user, then product, then IfNotPresent", func() {
+		defaults := v1alpha1.ImageSpec{PullPolicy: corev1.PullNever}
+		Expect((&v1alpha1.ImageSpec{PullPolicy: corev1.PullAlways}).ResolvedPullPolicy(defaults)).
+			To(Equal(corev1.PullAlways))
+		Expect((&v1alpha1.ImageSpec{}).ResolvedPullPolicy(defaults)).To(Equal(corev1.PullNever))
+		Expect((&v1alpha1.ImageSpec{}).ResolvedPullPolicy(v1alpha1.ImageSpec{})).
+			To(Equal(corev1.PullIfNotPresent))
+	})
+})
+
+var _ = Describe("ResolvedProductVersion", func() {
+	defaults := v1alpha1.ImageSpec{Repo: "quay.io/zncdatadev", ProductVersion: "4.0.1"}
+
+	It("reports the version the resolved image runs", func() {
+		Expect((&v1alpha1.ImageSpec{ProductVersion: "4.1.0"}).ResolvedProductVersion(defaults)).To(Equal("4.1.0"))
+		Expect((&v1alpha1.ImageSpec{}).ResolvedProductVersion(defaults)).To(Equal("4.0.1"),
+			"the default is what the pods actually run, so the label must say so")
+	})
+
+	It("keeps the user's declaration alongside a custom reference", func() {
+		// `custom` replaces the image REFERENCE; productVersion remains the user's statement of
+		// which product version that reference is. Nothing else knows, and they do.
+		spec := &v1alpha1.ImageSpec{Custom: "my-registry/hive:local", ProductVersion: "9.9.9"}
+		Expect(spec.ResolvedProductVersion(defaults)).To(Equal("9.9.9"))
+
+		Expect((&v1alpha1.ImageSpec{Custom: "my-registry/hive:local"}).ResolvedProductVersion(defaults)).
+			To(BeEmpty(), "with no declaration there is nothing to publish")
+	})
+
+	It("is empty when the custom reference came from defaults rather than the spec", func() {
+		// A product's default productVersion says nothing about an image it did not build.
+		Expect((&v1alpha1.ImageSpec{}).ResolvedProductVersion(
+			v1alpha1.ImageSpec{Custom: "pinned:1", ProductVersion: "4.0.1"})).To(BeEmpty())
+	})
+})

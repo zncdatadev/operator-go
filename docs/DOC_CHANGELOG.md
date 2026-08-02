@@ -4,6 +4,27 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-02d] (image resolution moves to reconcile time)
+
+### Core Architecture (`architecture.md`)
+
+- §2.6 now carries the case that shows why the webhook/reconcile split matters, and that image
+  resolution was on the wrong side of it: the `-kubedoop<version>` suffix's natural value is the
+  operator's own build version, which a webhook freezes into the spec at admission. Documents the
+  two-layer fold (user `spec.image` over `handler.ImageDefaults`), that `ProductName` no longer
+  gates whether `spec.image` is read, and that an unresolvable image is now an error rather than a
+  silent fall back.
+- Closes the gap #569 named: `ProductName`, `ImageDefaults` and the resolution precedence had **no**
+  mention in the authoritative document at all.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §3 replaces the "ProductName opts a handler into CR-driven images" sentence with the two fields
+  and their precedence, the reason `ImageDefaults` cannot be a webhook's job, and the
+  ProductName-less path that never errors.
+
+---
+
 ## [2026-08-02c] (the no-CRD-default-inside-config rule becomes checkable)
 
 ### Core Architecture (`architecture.md`)

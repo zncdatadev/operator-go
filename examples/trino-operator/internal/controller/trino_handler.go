@@ -80,6 +80,11 @@ func NewTrinoRoleGroupHandler(scheme *runtime.Scheme) *TrinoRoleGroupHandler {
 	// Opting into the product name lets the framework resolve spec.image itself, for the main
 	// container and for the sidecars that ship inside the product image alike.
 	base.ProductName = constants.ProductName
+	// Evaluated on every reconcile, so an operator upgrade moves existing clusters onto the
+	// co-released product image. A mutating webhook cannot do this: its defaults are persisted into
+	// the spec at admission and never recomputed, which would freeze kubedoopVersion at whatever
+	// operator version first admitted the CR.
+	base.ImageDefaults = constants.ImageDefaults()
 
 	// Declarative logging: the framework renders the Log4j2 config file into the ConfigMap
 	// from the deep-merged CRD logging spec.

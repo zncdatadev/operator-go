@@ -70,13 +70,41 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// ImagePullPolicy is the default image pull policy.
 	ImagePullPolicy corev1.PullPolicy
 
-	// ProductName is the kubedoop product name (e.g. "trino") used to resolve the cluster CR's
-	// spec.image into a concrete image reference: "{repo}/{ProductName}:{version}-kubedoop{v}".
-	// When set, the CR-declared image wins over RoleImages and Image for every role, so products
-	// no longer have to patch the built container themselves — a post-build patch would also miss
-	// the sidecars, which are told the image before the StatefulSet is built. Empty keeps the
-	// static Image/RoleImages behavior (backward compatible).
+	// ProductName is the kubedoop product name (e.g. "trino"). It supplies two unrelated things:
+	// the app.kubernetes.io/name label value, and the repository path segment used when resolving
+	// spec.image into "{repo}/{ProductName}:{version}-kubedoop{v}".
+	//
+	// It no longer decides WHETHER spec.image is read — that is ImageDefaults' job now. The two
+	// were coupled, and because the image half could not express the kubedoop tag convention (see
+	// ImageDefaults), three migrated operators gave up all of it: they left ProductName empty,
+	// hand-rolled image resolution, and two of them emit no app.kubernetes.io/version at all.
+	//
+	// Left empty, only spec.image.custom can be honored — without a product name there is no
+	// repository path segment to build a reference from — and the handler otherwise runs its
+	// static Image/RoleImages. That is the shape a product uses when it resolves images itself.
 	ProductName string
+
+	// ImageDefaults fills in whatever spec.image leaves empty. It is read on every reconcile,
+	// which is the whole point:
+	//
+	//	handler.ProductName = "hive"
+	//	handler.ImageDefaults = commonsv1alpha1.ImageSpec{
+	//	    Repo:            "quay.io/zncdatadev",
+	//	    ProductVersion:  "4.0.1",
+	//	    KubedoopVersion: version.BuildVersion, // the operator's own build version
+	//	}
+	//
+	// KubedoopVersion is why this cannot be a webhook's job. Kubedoop product images are published
+	// only with the "-kubedoop<version>" suffix, and the natural value of that suffix is the
+	// operator's build version — a reconcile-time fact that moves when the operator binary is
+	// upgraded. Webhook defaults are persisted into the spec at admission and never recomputed
+	// (docs/architecture.md §2.6), so a cluster admitted by operator 0.1.0 would keep asking for
+	// -kubedoop0.1.0 images forever. Evaluated here, an operator upgrade moves existing clusters
+	// onto the co-released product image.
+	//
+	// Precedence is per field, user first: spec.image wins wherever it states something, these
+	// fill the rest. A spec that states nothing at all leaves these deciding alone.
+	ImageDefaults v1alpha1.ImageSpec
 
 	// RoleImages maps role names to specific images.
 	// If a role is not found here, the default Image is used.
@@ -279,7 +307,10 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		if sidecarMgr == nil {
 			sidecarMgr = h.sidecarManager
 		}
-		image, pullPolicy := h.containerImage(buildCtx, buildCtx.RoleName)
+		image, pullPolicy, err := h.containerImage(buildCtx, buildCtx.RoleName)
+		if err != nil {
+			return nil, err
+		}
 		if err := sidecarMgr.SetProductImage(image, pullPolicy); err != nil {
 			return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
 		}
@@ -402,18 +433,29 @@ func (h *BaseRoleGroupHandler[CR]) LogVolumeSizeLimit() string {
 	return h.LogVolumeSize
 }
 
-// clusterImage resolves the image the cluster CR declares in spec.image. It returns "" unless the
-// product opted in by setting ProductName — spec.image is product-scoped
-// ("{repo}/{ProductName}:{version}"), so the framework cannot resolve it on its own.
-func (h *BaseRoleGroupHandler[CR]) clusterImage(buildCtx *RoleGroupBuildContext) (string, corev1.PullPolicy) {
-	if h.ProductName == "" || buildCtx == nil || buildCtx.ClusterSpec == nil || buildCtx.ClusterSpec.Image == nil {
-		return "", ""
+// clusterImage resolves the image from the cluster CR's spec.image folded over ImageDefaults.
+//
+// It returns ("", "", nil) when neither the user nor the product expressed an opinion, leaving the
+// caller to fall back. It returns an ERROR when they did and the result cannot be turned into a
+// reference: the alternative is running the handler's static image, i.e. silently deploying a
+// version nobody asked for. Same call as `config.affinity` — a contract the framework cannot honor
+// is reported, not ignored.
+func (h *BaseRoleGroupHandler[CR]) clusterImage(
+	buildCtx *RoleGroupBuildContext,
+) (string, corev1.PullPolicy, error) {
+	var spec *v1alpha1.ImageSpec
+	if buildCtx != nil && buildCtx.ClusterSpec != nil {
+		spec = buildCtx.ClusterSpec.Image
 	}
-	image := buildCtx.ClusterSpec.Image.GetImage(h.ProductName)
+
+	image, err := spec.ResolveImage(h.ProductName, h.ImageDefaults)
+	if err != nil {
+		return "", "", err
+	}
 	if image == "" {
-		return "", ""
+		return "", "", nil
 	}
-	return image, buildCtx.ClusterSpec.Image.GetPullPolicy()
+	return image, spec.ResolvedPullPolicy(h.ImageDefaults), nil
 }
 
 // containerImage returns the container image and pull policy for a role, in precedence order:
@@ -421,14 +463,20 @@ func (h *BaseRoleGroupHandler[CR]) clusterImage(buildCtx *RoleGroupBuildContext)
 // default. Resolving it here — rather than leaving each product to patch the built container —
 // keeps the image the sidecars are told about (SetProductImage, e.g. the Vector agent, which ships
 // inside the product image) identical to the one the main container actually runs.
-func (h *BaseRoleGroupHandler[CR]) containerImage(buildCtx *RoleGroupBuildContext, roleName string) (string, corev1.PullPolicy) {
-	if image, pullPolicy := h.clusterImage(buildCtx); image != "" {
-		return image, pullPolicy
+func (h *BaseRoleGroupHandler[CR]) containerImage(
+	buildCtx *RoleGroupBuildContext, roleName string,
+) (string, corev1.PullPolicy, error) {
+	image, pullPolicy, err := h.clusterImage(buildCtx)
+	if err != nil {
+		return "", "", err
+	}
+	if image != "" {
+		return image, pullPolicy, nil
 	}
 	if image, ok := h.RoleImages[roleName]; ok {
-		return image, h.ImagePullPolicy
+		return image, h.ImagePullPolicy, nil
 	}
-	return h.Image, h.ImagePullPolicy
+	return h.Image, h.ImagePullPolicy, nil
 }
 
 // containerPorts returns the container ports for a role group.
@@ -456,16 +504,26 @@ func RoleLabelKey(domain string) string { return domain + "/role" }
 // RoleGroupLabelKey returns the identity label key for the role group, under the given domain.
 func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
 
-// productVersion returns the value for app.kubernetes.io/version: spec.image.productVersion, but
-// only when the handler is CR-image driven. With ProductName unset the handler runs its static
-// Image and ignores spec.image entirely (see clusterImage), so publishing a version read from a
-// field that does not reach the container would label the pods with a version they are not
-// running.
+// productVersion returns the value for app.kubernetes.io/version: the product version the image
+// this handler actually resolves is running.
+//
+// It reads the RESOLVED version — spec.image's when the user stated one, ImageDefaults' otherwise —
+// so the label tracks the tag the pods run rather than only what the user happened to type. It is
+// empty in the two cases where that version is unknowable or unused: a Custom reference (the tag was
+// written by hand, and spec.image.productVersion never reached the container), and a handler with no
+// ProductName, which runs its static Image and resolves nothing from the CR.
+//
+// Labelling pods with a version they are not running is the one thing this label must never do,
+// which is why both exclusions are silence rather than a guess.
 func (h *BaseRoleGroupHandler[CR]) productVersion(clusterSpec *v1alpha1.GenericClusterSpec) string {
-	if h.ProductName == "" || clusterSpec == nil || clusterSpec.Image == nil {
+	if h.ProductName == "" {
 		return ""
 	}
-	return clusterSpec.Image.ProductVersion
+	var spec *v1alpha1.ImageSpec
+	if clusterSpec != nil {
+		spec = clusterSpec.Image
+	}
+	return spec.ResolvedProductVersion(h.ImageDefaults)
 }
 
 // recommendedLabels returns the Kubernetes recommended labels the framework stamps on every
@@ -704,7 +762,10 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	}
 
 	// Set basic properties
-	image, pullPolicy := h.containerImage(buildCtx, buildCtx.RoleName)
+	image, pullPolicy, err := h.containerImage(buildCtx, buildCtx.RoleName)
+	if err != nil {
+		return nil, err
+	}
 	stsBuilder.WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithReplicas(replicas).
