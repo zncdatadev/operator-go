@@ -25,8 +25,23 @@ import (
 // reflecting the resolved spec: endpoint, addressing style, SSL flag, and (when set) the
 // signing region. Products merge these into their config files, prefixing as their product
 // requires (e.g. Spark prefixes each key with "spark.hadoop."). Keys a product needs to
-// pin differently (e.g. forcing path-style for a backend that requires it) can simply be
-// overwritten after merging.
+// pin differently can simply be overwritten after merging.
+//
+// # Adoption note: fs.s3a.path.style.access defaults to false
+//
+// This renders the user's `spec.pathStyle`, whose CRD default is **false** (virtual-host
+// addressing). Every product implementation this replaces pinned the key to "true" instead,
+// because MinIO — the backend most of these clusters actually run against — serves path-style
+// only; with virtual-host addressing the client resolves `<bucket>.<host>` and gets NXDOMAIN.
+//
+// So a product switching from its own rendering to this method CHANGES BEHAVIOUR for every
+// existing cluster whose S3Connection does not say `pathStyle: true`, and the change surfaces
+// at first bucket access rather than at admission. Adding `pathStyle: true` to those
+// S3Connection resources is part of the migration, not a follow-up.
+//
+// Honouring the field rather than pinning it is deliberate: a value the user wrote must reach
+// the client, and AWS S3 has deprecated path-style addressing. The trap is the silent default,
+// not the rendering.
 func (c *ConnectionInfo) S3AProperties() map[string]string {
 	props := map[string]string{
 		"fs.s3a.endpoint":               c.Endpoint.String(),

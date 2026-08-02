@@ -4,6 +4,37 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-02a] (pkg/s3 pathStyle: the default, and what adopting S3AProperties changes)
+
+### Core Architecture (`architecture.md`)
+
+- §4.12.2 gains the `pathStyle` adoption note: the CRD default is `false` (virtual-host
+  addressing), MinIO serves path-style **only**, and every product implementation
+  `S3AProperties()` replaces pinned the key to `true`. A product migrating onto the helper
+  therefore flips the addressing mode for every existing cluster whose `S3Connection` omits
+  `pathStyle: true` — and the failure lands at first bucket access, not at admission. Also records
+  why the helper honours the field instead of pinning it.
+
+### CRD Examples (`docs/examples/crd-hive-example.yaml`)
+
+- The commented inline `s3` block now shows `pathStyle` with the MinIO caveat, so someone copying
+  the example meets the field rather than inheriting the default unseen.
+
+### Framework Documentation (`pkg/AGENTS.md`)
+
+- The `pkg/s3` bullet states the default and the adoption consequence.
+
+### API and package docs
+
+- `s3v1alpha1.S3ConnectionSpec.PathStyle` had **no doc comment at all**, so `kubectl explain
+  s3connection.spec.pathStyle` printed nothing. It now explains both addressing styles and names
+  the backends that need `true`. This changes the generated CRD description in downstream repos on
+  their next bump.
+- `s3.ConnectionInfo.S3AProperties` carries the adoption note as a godoc section, where a product
+  author reaches it at the call site.
+
+---
+
 ## [2026-08-01c] (the Chinese architecture document is removed)
 
 ### Core Architecture

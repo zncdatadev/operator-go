@@ -38,6 +38,14 @@ type S3ConnectionSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	Port int `json:"port,omitempty"`
 
+	// PathStyle selects the S3 addressing style: true addresses the bucket as a path
+	// (`https://<host>/<bucket>`), false as a virtual host (`https://<bucket>.<host>`).
+	//
+	// It defaults to **false**, which is right for AWS S3 and wrong for most self-hosted
+	// backends. MinIO in particular serves path-style only: with virtual-host addressing the
+	// client resolves `<bucket>.<host>` — e.g. `warehouse.minio` in-cluster — which does not
+	// exist in DNS. Nothing rejects that at admission; the pods start and fail on first access.
+	// Set `pathStyle: true` for MinIO, Ceph RGW and similar.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=false
 	PathStyle bool `json:"pathStyle,omitempty"`
