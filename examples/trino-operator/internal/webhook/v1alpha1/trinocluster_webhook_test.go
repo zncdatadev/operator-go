@@ -49,21 +49,37 @@ var _ = Describe("TrinoCluster Webhook", func() {
 	})
 
 	Context("When creating TrinoCluster under Defaulting Webhook", func() {
-		It("Should apply default image when not specified", func() {
+		It("Should NOT default the image — that is the handler's job now", func() {
+			// Webhook defaults are persisted into the spec at admission and never recomputed, so
+			// writing kubedoopVersion here froze every cluster on the operator version that first
+			// admitted it: an operator upgrade could not move an existing cluster onto the
+			// co-released product image. The handler's ImageDefaults fills the same fields on every
+			// reconcile instead (internal/controller/trino_handler.go), which is also what lets a
+			// user write only `productVersion` and still get a valid kubedoop tag.
 			obj.Spec.Image = nil
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-			Expect(obj.Spec.Image).NotTo(BeNil())
-			Expect(obj.Spec.Image.Repo).To(Equal(constants.DefaultImageRepo))
-			Expect(obj.Spec.Image.ProductVersion).To(Equal(constants.DefaultImageProductVersion))
-			Expect(obj.Spec.Image.KubedoopVersion).To(Equal(constants.DefaultImageKubedoopVersion))
+			Expect(obj.Spec.Image).To(BeNil(), "the spec must record only what the user wrote")
 		})
 
-		It("Should not override image when specified", func() {
+		It("Should leave a user-specified image untouched", func() {
 			obj.Spec.Image = &commonsv1alpha1.ImageSpec{Custom: "custom/trino:latest"}
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 			Expect(obj.Spec.Image.Custom).To(Equal("custom/trino:latest"))
 			Expect(obj.Spec.Image.Repo).To(BeEmpty())
 			Expect(obj.Spec.Image.ProductVersion).To(BeEmpty())
+		})
+
+		It("Should let the handler resolve what the webhook no longer writes", func() {
+			// The end-to-end statement of the change: a spec carrying only productVersion — which
+			// GetImage could not turn into a reference at all — resolves against the same defaults
+			// the handler uses, including the -kubedoop suffix the registry requires.
+			obj.Spec.Image = &commonsv1alpha1.ImageSpec{ProductVersion: "999"}
+			Expect(defaulter.Default(ctx, obj)).To(Succeed())
+
+			image, err := obj.Spec.Image.ResolveImage(constants.ProductName, constants.ImageDefaults())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(image).To(Equal(constants.DefaultImageRepo + "/" + constants.ProductName +
+				":999-kubedoop" + constants.DefaultImageKubedoopVersion))
 		})
 
 		It("Should initialize coordinators with default port", func() {

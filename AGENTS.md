@@ -252,7 +252,31 @@ handler.SetRoleContainerPorts("coordinator", ports)
 handler.SetRoleServicePorts("coordinator", svcPorts)
 ```
 
-`ProductName` is what opts a handler into CR-driven images: with it set, `spec.image` is resolved per role group through `ImageSpec.GetImage(ProductName)`; left empty, the handler's static `Image` (and any per-role override) is used and `spec.image` is ignored.
+**`ProductName` names the product; `ImageDefaults` supplies the image.** They used to be one
+switch, and because the image half could not express the kubedoop tag convention, a product that
+wanted `app.kubernetes.io/name` had to give up all of it.
+
+```go
+handler.ProductName = "trino"                 // app.kubernetes.io/name AND the repo path segment
+handler.ImageDefaults = commonsv1alpha1.ImageSpec{
+    Repo:            "quay.io/zncdatadev",
+    ProductVersion:  "476",
+    KubedoopVersion: version.BuildVersion,      // the operator's own build version
+}
+```
+
+`ImageSpec.ResolveImage(productName, defaults)` folds the two layers per field, user first, so a CR
+stating only `productVersion` still yields a valid `…:476-kubedoop0.2.0` reference. `ImageDefaults`
+is read **every reconcile**, which is what a webhook cannot do: webhook defaults are persisted at
+admission and never recomputed, freezing `kubedoopVersion` at whatever operator version first
+admitted the CR (§10 and `docs/architecture.md` §2.6).
+
+An unresolvable `spec.image` **fails the role group**, naming the missing field, instead of silently
+falling back to the handler's static image and running a version nobody asked for. With
+`ProductName` empty the handler resolves nothing from the CR beyond `spec.image.custom` — the shape
+a product uses when it resolves images itself — and that path never errors.
+`app.kubernetes.io/version` follows the **resolved** version, so it is present whenever the image
+came from `ImageDefaults` too.
 
 `BaseRoleGroupHandler` also implements `reconciler.RoleNameProvider`:
 ```go

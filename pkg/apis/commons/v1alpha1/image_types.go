@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -56,28 +59,166 @@ type ImageSpec struct {
 	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
 }
 
-// GetImage returns the resolved container image reference for the given product name.
-// If Custom is set it is returned directly.
-// Otherwise the image is constructed from Repo, productName, ProductVersion and KubedoopVersion.
-// Returns an empty string if productName is empty or if both Repo and ProductVersion are unset.
-func (i *ImageSpec) GetImage(productName string) string {
-	if i.Custom != "" {
-		return i.Custom
+// ResolveImage builds the container image reference from this spec, filling every field the user
+// left empty from defaults, and reports what it could not resolve.
+//
+// # Why defaults are a parameter rather than a webhook's job
+//
+// The kubedoop tag convention is `{repo}/{product}:{productVersion}-kubedoop{kubedoopVersion}`, and
+// the natural value of that last part is the OPERATOR's own build version — a reconcile-time fact
+// that moves when the operator binary is upgraded. A mutating webhook cannot supply it: webhook
+// defaults are persisted into the spec at admission and never recomputed (docs/architecture.md
+// §2.6), so a cluster admitted by operator 0.1.0 would keep asking for `-kubedoop0.1.0` images
+// forever. Passing defaults here evaluates them on every reconcile, so an operator upgrade moves
+// existing clusters onto the co-released product image.
+//
+// # Resolution order
+//
+//   - The spec's Custom wins outright — a fully qualified reference is the whole answer.
+//   - Otherwise, if the spec states ANY structured field (repo / productVersion / kubedoopVersion),
+//     the reference is built from those fields with defaults filling the gaps. `defaults.Custom` is
+//     deliberately ignored on this path: a product pinning a custom default must not silently
+//     discard a version the user asked for.
+//   - Otherwise the user has no opinion, and defaults decide alone — including `defaults.Custom`.
+//
+// PullPolicy is excluded from "states anything" on purpose: it carries a CRD default, so it is
+// filled the moment `image: {}` exists and would make every spec look non-empty.
+//
+// # Errors
+//
+// A nil/empty result with a nil error means "nobody expressed an opinion"; the caller falls back to
+// whatever image it would have used anyway. A non-nil error means the user (or the product's
+// defaults) asked for something that cannot be turned into a reference, and names the missing
+// fields — running some other image instead would silently deploy a version nobody requested.
+// An empty productName is NOT an error: it means the caller resolves images itself, and only
+// Custom can be honored.
+func (i *ImageSpec) ResolveImage(productName string, defaults ImageSpec) (string, error) {
+	spec := ImageSpec{}
+	if i != nil {
+		spec = *i
 	}
-	if productName == "" || i.Repo == "" || i.ProductVersion == "" {
+
+	if spec.Custom != "" {
+		return spec.Custom, nil
+	}
+
+	stated := spec.Repo != "" || spec.ProductVersion != "" || spec.KubedoopVersion != ""
+	if !stated {
+		if defaults.Custom != "" {
+			return defaults.Custom, nil
+		}
+	}
+
+	repo := firstNonEmpty(spec.Repo, defaults.Repo)
+	productVersion := firstNonEmpty(spec.ProductVersion, defaults.ProductVersion)
+	kubedoopVersion := firstNonEmpty(spec.KubedoopVersion, defaults.KubedoopVersion)
+
+	if productName == "" {
+		// The caller did not declare a product, so there is no repository path segment to build
+		// with. That is the caller's own arrangement (it resolves images itself), not a user error.
+		return "", nil
+	}
+	if repo == "" || productVersion == "" {
+		if !stated && defaults.Repo == "" && defaults.ProductVersion == "" {
+			// Nothing anywhere. No opinion to honor and nothing to complain about.
+			return "", nil
+		}
+		// Worded for a `kubectl apply` reader: a product's validating webhook forwards this
+		// verbatim, and "the handler's ImageDefaults" is SDK-internal vocabulary that means nothing
+		// to whoever is editing the CR.
+		return "", fmt.Errorf(
+			"cannot resolve spec.image for product %q: %s. Set it in spec.image, or ask the "+
+				"operator's administrator to configure a default for it",
+			productName, missingImageFields(repo, productVersion))
+	}
+
+	image := repo + "/" + productName + ":" + productVersion
+	if kubedoopVersion != "" {
+		image += "-kubedoop" + kubedoopVersion
+	}
+	return image, nil
+}
+
+// ResolvedProductVersion returns the product version to publish as app.kubernetes.io/version for
+// the image ResolveImage would build from the same inputs.
+//
+// On the structured path it is the version that actually reaches the container: the user's when
+// they stated one, the defaults' otherwise. That second half is the fix — a cluster running the
+// operator's default version used to carry no version label at all, because the field the label was
+// read from was empty.
+//
+// With a Custom reference in the SPEC, the user's own productVersion is still published: `custom`
+// replaces the image *reference*, and productVersion remains their declaration of which product
+// version that reference is. It is empty when they declared none, and empty when the custom
+// reference came from `defaults` rather than the spec — a product's default version says nothing
+// about an image it did not build.
+func (i *ImageSpec) ResolvedProductVersion(defaults ImageSpec) string {
+	spec := ImageSpec{}
+	if i != nil {
+		spec = *i
+	}
+	if spec.Custom != "" {
+		return spec.ProductVersion
+	}
+	stated := spec.Repo != "" || spec.ProductVersion != "" || spec.KubedoopVersion != ""
+	if !stated && defaults.Custom != "" {
 		return ""
 	}
-	image := i.Repo + "/" + productName + ":" + i.ProductVersion
-	if i.KubedoopVersion != "" {
-		image += "-kubedoop" + i.KubedoopVersion
+	return firstNonEmpty(spec.ProductVersion, defaults.ProductVersion)
+}
+
+// missingImageFields renders the unresolved half of a reference for an error message.
+func missingImageFields(repo, productVersion string) string {
+	var missing []string
+	if repo == "" {
+		missing = append(missing, "repo is unset")
 	}
+	if productVersion == "" {
+		missing = append(missing, "productVersion is unset")
+	}
+	return strings.Join(missing, " and ")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// GetImage returns the resolved container image reference for the given product name, with no
+// defaults layer.
+//
+// Retained for callers that resolve against a spec a webhook has already filled (the trino example
+// validates with it). It is ResolveImage with empty defaults and the error dropped, so the two can
+// never disagree; new code should prefer ResolveImage, which reports why it could not resolve
+// instead of returning "" and letting the caller run some other image.
+func (i *ImageSpec) GetImage(productName string) string {
+	image, _ := i.ResolveImage(productName, ImageSpec{})
 	return image
 }
 
 // GetPullPolicy returns the configured pull policy, defaulting to IfNotPresent.
+//
+// Nil-safe: `spec.image` is an optional pointer, so a CR that declares no image at all reaches this
+// as a nil receiver.
 func (i *ImageSpec) GetPullPolicy() corev1.PullPolicy {
-	if i.PullPolicy == "" {
+	if i == nil || i.PullPolicy == "" {
 		return corev1.PullIfNotPresent
 	}
 	return i.PullPolicy
+}
+
+// ResolvedPullPolicy is GetPullPolicy with a defaults layer, matching ResolveImage: the user's
+// choice when they made one, the product's otherwise, IfNotPresent if neither.
+func (i *ImageSpec) ResolvedPullPolicy(defaults ImageSpec) corev1.PullPolicy {
+	if i != nil && i.PullPolicy != "" {
+		return i.PullPolicy
+	}
+	if defaults.PullPolicy != "" {
+		return defaults.PullPolicy
+	}
+	return corev1.PullIfNotPresent
 }

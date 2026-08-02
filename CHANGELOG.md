@@ -112,6 +112,45 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (image resolution)
+
+- **`BaseRoleGroupHandler.ProductName` no longer decides whether `spec.image` is read** (#569). It
+  now only names the product: the `app.kubernetes.io/name` value and the repository path segment.
+  The new **`BaseRoleGroupHandler.ImageDefaults`** (a `commonsv1alpha1.ImageSpec`) supplies whatever
+  `spec.image` leaves empty, evaluated **every reconcile**.
+- **New: `ImageSpec.ResolveImage(productName string, defaults ImageSpec) (string, error)`**, plus
+  `ResolvedProductVersion(defaults)` and `ResolvedPullPolicy(defaults)`. `GetImage` is retained and
+  now delegates to `ResolveImage`, so the two cannot disagree.
+- **Why this could not stay in a webhook.** Kubedoop publishes product images only with the
+  `-kubedoop<version>` suffix, whose natural value is the operator's own build version — a
+  reconcile-time fact. Webhook defaults are persisted into the spec at admission and never
+  recomputed, so a cluster admitted by operator 0.1.0 kept asking for `-kubedoop0.1.0` images
+  forever. `ImageDefaults` is read per reconcile, so an operator upgrade moves existing clusters
+  onto the co-released image.
+- **What was broken.** `GetImage` appended the `-kubedoop` suffix only when the *user* wrote
+  `kubedoopVersion`, so a CR stating just `productVersion` produced `quay.io/…/hive:4.0.1` — a tag
+  that does not exist. And when `repo` or `productVersion` was empty it returned `""`, after which
+  the handler silently ran its static image: the user's `productVersion` discarded with no error, no
+  event and no status change. Three migrated operators worked around this by hand-rolling image
+  resolution, and two of them consequently emit no `app.kubernetes.io/version` at all.
+- **An unresolvable `spec.image` now fails the role group**, naming the missing field. Running a
+  version nobody asked for is not a safe default for a stateful product — the same call as
+  `config.affinity`. With `ProductName` empty nothing is resolved from the CR beyond
+  `spec.image.custom`, and that path never errors, so operators that resolve images themselves are
+  unaffected.
+- `spec.image.custom` is now honoured even when `ProductName` is empty; it used to be ignored, so a
+  user pinning an image on such an operator was silently overruled.
+- `app.kubernetes.io/version` follows the **resolved** version, so it is emitted when the version
+  came from `ImageDefaults` too. A `custom` reference still publishes the user's own
+  `productVersion` when they stated one — `custom` replaces the *reference*, and that field remains
+  their declaration of which version it is.
+- `ImageSpec.GetPullPolicy()` is now nil-safe. `spec.image` is an optional pointer, and it began
+  reaching that method as nil once a nil spec could still resolve to a real image.
+- **Adopters**: set `ProductName` + `ImageDefaults` and delete the hand-rolled resolver; drop the
+  image branch of any defaulting webhook. `examples/trino-operator` is migrated in this change and
+  is the reference. Rendered YAML gains `app.kubernetes.io/version` on the pod template (one rolling
+  update); `.spec.selector` is untouched.
+
 ### features (CRD default guard)
 
 - **`testutil.HaveNoInheritedConfigDefaults()` and `testutil.FindInheritedConfigDefaults()`** export

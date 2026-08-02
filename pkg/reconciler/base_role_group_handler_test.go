@@ -2321,15 +2321,87 @@ var _ = Describe("Container image resolution", func() {
 		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
 	})
 
-	It("falls back to the per-role image when the CR carries no resolvable image", func() {
+	It("fails rather than running a different version than the user asked for", func() {
+		// This used to fall back to the per-role image and start it, so a user writing
+		// `productVersion: 4.7.0` with no repo anywhere silently got whatever the handler was
+		// built with — no error, no event, no status change. Deploying an unrequested version of a
+		// stateful product is not a safe default; the same call as config.affinity.
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
 		handler.ProductName = "trino"
 		handler.SetRoleImage("server", "role-image:1")
 
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
+		Expect(err).To(MatchError(ContainSubstring("repo is unset")))
+	})
+
+	It("falls back to the per-role image when nobody stated an image at all", func() {
+		// No opinion anywhere is not a misconfiguration — it is a handler running its own image.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.SetRoleImage("server", "role-image:1")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("role-image:1"))
+	})
+
+	It("completes a partial spec.image from ImageDefaults", func() {
+		// The case that made three operators hand-roll image resolution: kubedoop publishes only
+		// the "-kubedoop<version>" tag, and a user writing just productVersion could not produce
+		// one, because the suffix was appended only when the USER supplied kubedoopVersion.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.ImageDefaults = v1alpha1.ImageSpec{
+			Repo:            "quay.io/zncdatadev",
+			ProductVersion:  "476",
+			KubedoopVersion: "0.0.0-dev",
+		}
+
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
 			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("role-image:1"))
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
+			To(Equal("quay.io/zncdatadev/trino:4.7.0-kubedoop0.0.0-dev"))
+	})
+
+	It("runs the defaults when the CR states no image, so an operator upgrade moves the cluster", func() {
+		// ImageDefaults is read every reconcile. A webhook could not do this: its values are
+		// persisted at admission and never recomputed, freezing kubedoopVersion at whatever
+		// operator version first admitted the CR.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.ImageDefaults = v1alpha1.ImageSpec{
+			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "0.2.0",
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
+			To(Equal("quay.io/zncdatadev/trino:476-kubedoop0.2.0"))
+	})
+
+	It("keeps a ProductName-less handler on its static image, and never errors", func() {
+		// The shape hive and zookeeper use today: they resolve images themselves and leave
+		// ProductName empty. Their CRs DO carry a webhook-filled spec.image, so treating an
+		// unresolvable spec as an error here would have broken every one of their clusters.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{Repo: "quay.io/kubedoop", ProductVersion: "4.7.0"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
+	})
+
+	It("honours spec.image.custom even without a ProductName", func() {
+		// A fully qualified reference needs no product name to build, and ignoring it meant a user
+		// pinning an image on such an operator was silently overruled.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{Custom: "my-registry/trino:pinned"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("my-registry/trino:pinned"))
 	})
 
 	It("gives the sidecars the same CR-resolved image as the main container", func() {
