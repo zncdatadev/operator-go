@@ -57,11 +57,23 @@ func role(configProps map[string]apiextensionsv1.JSONSchemaProps) apiextensionsv
 
 // writeCRD marshals a CRD whose `spec` carries the given properties, and returns a glob for it.
 func writeCRD(specProps map[string]apiextensionsv1.JSONSchemaProps) string {
+	return writeCRDWithStatus(specProps, nil)
+}
+
+// writeCRDWithStatus is writeCRD plus a `status` schema, for proving what is out of scope.
+func writeCRDWithStatus(
+	specProps, statusProps map[string]apiextensionsv1.JSONSchemaProps,
+) string {
 	// Every fixture carries a legitimate default OUTSIDE any config block, so a spec asserting
 	// "found 2" also proves this one was not counted.
 	specProps["image"] = object(map[string]apiextensionsv1.JSONSchemaProps{
 		"pullPolicy": {Type: "string", Default: str("IfNotPresent")},
 	})
+
+	root := map[string]apiextensionsv1.JSONSchemaProps{"spec": object(specProps)}
+	if statusProps != nil {
+		root["status"] = object(statusProps)
+	}
 
 	crd := &apiextensionsv1.CustomResourceDefinition{
 		TypeMeta: metav1.TypeMeta{
@@ -77,10 +89,8 @@ func writeCRD(specProps map[string]apiextensionsv1.JSONSchemaProps) string {
 				Name: "v1alpha1", Served: true, Storage: true,
 				Schema: &apiextensionsv1.CustomResourceValidation{
 					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-						Type: "object",
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"spec": object(specProps),
-						},
+						Type:       "object",
+						Properties: root,
 					},
 				},
 			}},
@@ -178,6 +188,52 @@ var _ = Describe("FindInheritedConfigDefaults", func() {
 				map[string]apiextensionsv1.JSONSchemaProps{"queryMaxMemory": {Type: "string"}}))}))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeEmpty())
+	})
+
+	It("ignores a roleGroups/config shape under status", func() {
+		// The contract covers the DESIRED state the framework folds Role -> RoleGroup. A `config`
+		// under `.status` is written by the operator and never merged, so a default there means
+		// nothing to this rule. Not hypothetical: GenericClusterStatus already carries a
+		// `roleGroups` field, so an unscoped walk treats `.status` as a role node.
+		found, err := testutil.FindInheritedConfigDefaults(writeCRDWithStatus(
+			map[string]apiextensionsv1.JSONSchemaProps{"roles": mapOf(role(
+				map[string]apiextensionsv1.JSONSchemaProps{"queryMaxMemory": {Type: "string"}}))},
+			map[string]apiextensionsv1.JSONSchemaProps{"roles": mapOf(role(
+				map[string]apiextensionsv1.JSONSchemaProps{
+					"observed": {Type: "string", Default: str("whatever")},
+				}))},
+		))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeEmpty())
+	})
+
+	It("still reads a CRD whose description contains a YAML document separator", func() {
+		// A `---` inside a block scalar is ordinary text, and CRD descriptions are block scalars
+		// carrying whatever a Go doc comment said. Splitting the file on "\n---" cuts such a
+		// document in half; the halves fail to parse, and a skipped CRD makes the guard report
+		// success over a file it never read — the exact failure mode this package exists to
+		// prevent.
+		props := map[string]apiextensionsv1.JSONSchemaProps{
+			"queryMaxMemory": {
+				Type:        "string",
+				Default:     str("5GB"),
+				Description: "Query memory cap.\n\n---\n\nSee the tuning guide.",
+			},
+		}
+		found, err := testutil.FindInheritedConfigDefaults(writeCRD(
+			map[string]apiextensionsv1.JSONSchemaProps{"roles": mapOf(role(props))}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(HaveLen(2), "the document must survive splitting")
+	})
+
+	It("errors on a malformed CustomResourceDefinition instead of skipping it", func() {
+		dir := GinkgoT().TempDir()
+		Expect(os.WriteFile(filepath.Join(dir, "crd.yaml"),
+			[]byte("apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nspec: [this is not a spec]\n"),
+			0o600)).To(Succeed())
+
+		_, err := testutil.FindInheritedConfigDefaults(filepath.Join(dir, "*.yaml"))
+		Expect(err).To(MatchError(ContainSubstring("CustomResourceDefinition")))
 	})
 
 	It("errors when the arguments match no files", func() {

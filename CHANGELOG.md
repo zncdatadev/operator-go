@@ -133,7 +133,15 @@ changes are listed below.**
   fields (`spec.coordinators`, `spec.workers`). Verified against the pre-#573 CRDs, where it finds
   all 18 real defects with exact paths.
 - Arguments matching no files are an **error**, not a pass: a guard that silently inspects nothing
-  reports success, which is worse than having no guard.
+  reports success, which is worse than having no guard. So is a document that says it is a
+  CustomResourceDefinition and fails to parse.
+- The scan is scoped to `.spec`. The contract covers the desired state the framework folds Role ->
+  RoleGroup; a `config` under `.status` is written by the operator and never merged. This is not
+  only noise reduction — `GenericClusterStatus` already carries a `roleGroups` field, so an unscoped
+  walk treats `.status` as a role node.
+- Multi-document files are split with apimachinery's YAML reader rather than on `"\n---"`: a `---`
+  inside a block scalar is ordinary text, and CRD descriptions are block scalars carrying whatever a
+  Go doc comment said.
 - `FindInheritedConfigDefaults` returns `[]InheritedConfigDefault` (CRD, version, JSON path,
   default, file) for callers that want to report differently.
 - Wired into this repository's own suite and into `examples/trino-operator`, which is also the

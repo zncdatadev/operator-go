@@ -17,8 +17,11 @@ limitations under the License.
 package testutil
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +29,8 @@ import (
 
 	"github.com/onsi/gomega/types"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 )
 
@@ -58,7 +63,7 @@ type InheritedConfigDefault struct {
 	// Version is the schema version the default was found in, e.g. "v1alpha1". A CRD serving several
 	// versions is reported once per version, because they carry independent schemas.
 	Version string
-	// Path is the dotted JSON path from the schema root, e.g.
+	// Path is the dotted JSON path from `.spec`, e.g.
 	// ".spec.roles[*].roleGroups[*].config.queryMaxMemory". Map-valued nodes render as `[*]`.
 	Path string
 	// Default is the default value as it appears in the schema.
@@ -99,22 +104,38 @@ func FindInheritedConfigDefaults(pathsOrGlobs ...string) ([]InheritedConfigDefau
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", file, err)
 		}
-		for _, doc := range splitYAMLDocuments(raw) {
-			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := yaml.Unmarshal(doc, crd); err != nil {
-				// Not every document in a matched file has to be a CRD; only complain about ones
-				// that claim to be.
+		docs, err := splitYAMLDocuments(raw)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", file, err)
+		}
+		for _, doc := range docs {
+			// Check the kind before the full decode, so a malformed CRD is an ERROR while an
+			// unrelated document (a kustomization.yaml caught by a glob) is skipped. Swallowing
+			// both would reopen the failure mode this package exists to prevent: a guard that
+			// passes because it inspected fewer CRDs than the caller believes.
+			var meta metav1.TypeMeta
+			if err := yaml.Unmarshal(doc, &meta); err != nil || meta.Kind != "CustomResourceDefinition" {
 				continue
 			}
-			if crd.Kind != "CustomResourceDefinition" {
-				continue
+			crd := &apiextensionsv1.CustomResourceDefinition{}
+			if err := yaml.Unmarshal(doc, crd); err != nil {
+				return nil, fmt.Errorf("parsing a CustomResourceDefinition in %s: %w", file, err)
 			}
 			for _, version := range crd.Spec.Versions {
 				if version.Schema == nil || version.Schema.OpenAPIV3Schema == nil {
 					continue
 				}
-				found = append(found, walkForRoles(
-					version.Schema.OpenAPIV3Schema, "", crd.Name, version.Name, file)...)
+				// Only `.spec`. The contract is about the DESIRED state the framework folds Role ->
+				// RoleGroup; a `config` under `.status` is written by the operator and never merged,
+				// so a default there means nothing to this rule. Scoping is not just noise
+				// reduction — the generic status already carries a `roleGroups` field, so an
+				// unscoped walk treats `.status` as a role node today and would fire on any product
+				// that later adds a `config` alongside it.
+				spec, ok := version.Schema.OpenAPIV3Schema.Properties["spec"]
+				if !ok {
+					continue
+				}
+				found = append(found, walkForRoles(&spec, ".spec", crd.Name, version.Name, file)...)
 			}
 		}
 	}
@@ -160,15 +181,28 @@ func resolveCRDFiles(pathsOrGlobs []string) ([]string, error) {
 	return files, nil
 }
 
-// splitYAMLDocuments splits a multi-document YAML file on its `---` separators.
-func splitYAMLDocuments(raw []byte) [][]byte {
+// splitYAMLDocuments splits a multi-document YAML file into its documents.
+//
+// It uses apimachinery's reader rather than splitting on "\n---": a `---` inside a block scalar is
+// ordinary text, and CRD descriptions are block scalars carrying whatever a Go doc comment said. A
+// naive split cuts such a document in half, the halves fail to parse, and — before this was
+// tightened — the CRD was silently skipped, so the guard reported success over a file it never
+// read. Line-ending handling comes for free with the same change.
+func splitYAMLDocuments(raw []byte) ([][]byte, error) {
+	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(raw)))
 	var docs [][]byte
-	for _, doc := range bytes.Split(raw, []byte("\n---")) {
+	for {
+		doc, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
 		if len(bytes.TrimSpace(doc)) > 0 {
 			docs = append(docs, doc)
 		}
 	}
-	return docs
 }
 
 // walkForRoles descends the schema looking for role nodes — those declaring a `roleGroups`
