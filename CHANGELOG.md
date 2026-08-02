@@ -112,6 +112,15 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### docs (single architecture document)
+
+- **`docs/architecture_zh.md` is removed.** `docs/architecture.md` is now the only architecture
+  document. A translated copy of an authoritative design document is authoritative only while it is
+  current, and it was not: its status-condition sections spent a whole review round describing a
+  model the code had already replaced, telling readers the framework behaves in a way it does not.
+  A design change now costs one edit instead of two and cannot half-land.
+- `README_zh-CN.md` is unaffected.
+
 ### features (framework metrics)
 
 - **The orphan cleanup state machine now has a metrics surface.** `pkg/reconciler/metrics.go` exports

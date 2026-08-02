@@ -30,7 +30,6 @@
 | File | Description |
 |------|-------------|
 | `docs/architecture.md` | **Core Technical Architecture** — design philosophy, layered architecture, core module specifications, design patterns, key problem solutions. This is the primary reference for all SDK design decisions. |
-| `docs/architecture_zh.md` | Chinese version of the architecture document |
 | `docs/security.md` | **Security Architecture** — application security (SecretClass, CSI, AutoTLS, Kerberos) and infrastructure security (RBAC, ServiceAccounts, Pod security) |
 | `docs/DOC_CHANGELOG.md` | Changelog tracking all documentation updates |
 | `docs/examples/` | CRD example YAMLs demonstrating the SDK's data model |
@@ -102,8 +101,7 @@ operator-go/
 │   ├── util/                     # K8s utilities, exec utilities
 │   └── webhook/                  # Webhook infrastructure (defaulter, validator)
 ├── docs/                         # Architecture and design documentation (authoritative design source)
-│   ├── architecture.md           # Core Technical Architecture (English)
-│   ├── architecture_zh.md        # Core Technical Architecture (Chinese)
+│   ├── architecture.md           # Core Technical Architecture
 │   ├── security.md               # Security Architecture (SecretClass, CSI, RBAC, Pod security)
 │   ├── DOC_CHANGELOG.md          # Documentation changelog
 │   └── examples/                 # CRD example YAMLs (base, HDFS, Hive)
