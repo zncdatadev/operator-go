@@ -18,6 +18,7 @@ package reconciler_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -1913,7 +1915,8 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.NewMockCluster("proto", namespace),
-			ProductConfig: func(_ *testutil.MockCluster, roleName, _ string) *v1alpha1.OverridesSpec {
+			ProductConfig: func(_ context.Context, _ client.Client, _ *testutil.MockCluster,
+				roleName, _ string) (*v1alpha1.OverridesSpec, error) {
 				overrides := map[string]map[string]string{
 					"config.properties": {
 						"shared":       "from-product",
@@ -1924,7 +1927,7 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 				if roleName == "coordinator" {
 					overrides["config.properties"]["coordinator"] = "true"
 				}
-				return &v1alpha1.OverridesSpec{ConfigOverrides: overrides}
+				return &v1alpha1.OverridesSpec{ConfigOverrides: overrides}, nil
 			},
 		}
 
@@ -1968,6 +1971,108 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		props := captured.ConfigFiles["config.properties"]
 		Expect(props).To(HaveKeyWithValue("shared", "from-crd"))
 		Expect(props).NotTo(HaveKey("product-only"))
+	})
+
+	It("is handed a ctx and a client, so it can read the cluster it is documented to read", func() {
+		// The hook's doc has always said it "may derive from live cluster state". Without a ctx or
+		// a client it could only be a pure function of the CR, so the products that needed a
+		// product-config layer — an S3Connection reference resolved to an endpoint — were exactly
+		// the ones it could not serve. Two of them hand-wrote the same workaround instead.
+		source := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: crName + "-source", Namespace: namespace},
+			Data:       map[string]string{"endpoint": "resolved-from-cluster"},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, source) })
+
+		var captured *config.MergedConfig
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: newCapturingHandler(&captured),
+			Prototype:        testutil.NewMockCluster("proto", namespace),
+			ProductConfig: func(hookCtx context.Context, c client.Client, cr *testutil.MockCluster,
+				_, _ string) (*v1alpha1.OverridesSpec, error) {
+				cm := &corev1.ConfigMap{}
+				if err := c.Get(hookCtx, types.NamespacedName{
+					Namespace: cr.Namespace, Name: cr.Name + "-source"}, cm); err != nil {
+					return nil, err
+				}
+				return &v1alpha1.OverridesSpec{ConfigOverrides: map[string]map[string]string{
+					"config.properties": {
+						"shared":       cm.Data["endpoint"],
+						"product-only": "p",
+					},
+				}}, nil
+			},
+		}
+
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(captured).NotTo(BeNil())
+		props := captured.ConfigFiles["config.properties"]
+		Expect(props).To(HaveKeyWithValue("product-only", "p"), "the lookup's result reaches the config")
+		Expect(props).To(HaveKeyWithValue("shared", "from-crd"),
+			"and still sits beneath what the user wrote")
+	})
+
+	It("fails the role group when the lookup fails", func() {
+		// Previously a Get error could only be swallowed — rendering a silently wrong config — or
+		// panicked, because the signature had nowhere to put it.
+		var captured *config.MergedConfig
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: newCapturingHandler(&captured),
+			Prototype:        testutil.NewMockCluster("proto", namespace),
+			ProductConfig: func(context.Context, client.Client, *testutil.MockCluster,
+				string, string) (*v1alpha1.OverridesSpec, error) {
+				return nil, fmt.Errorf("the S3Connection reference could not be resolved")
+			},
+		}
+
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}})
+		Expect(err).To(MatchError(ContainSubstring("could not be resolved")))
+		Expect(captured).To(BeNil(), "no workload is built from a config that failed to compute")
+	})
+
+	It("keeps the lookup's error chain intact", func() {
+		// A product distinguishes "the S3Connection does not exist yet" from a real failure with
+		// k8serrors.IsNotFound. Flattening the cause to a string — which ConfigError forced, being
+		// the one error type in the package without an Unwrap — takes that away.
+		var captured *config.MergedConfig
+		notFound := k8serrors.NewNotFound(
+			schema.GroupResource{Group: "s3.kubedoop.dev", Resource: "s3connections"}, "warehouse")
+
+		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: newCapturingHandler(&captured),
+			Prototype:        testutil.NewMockCluster("proto", namespace),
+			ProductConfig: func(context.Context, client.Client, *testutil.MockCluster,
+				string, string) (*v1alpha1.OverridesSpec, error) {
+				return nil, fmt.Errorf("resolving the warehouse connection: %w", notFound)
+			},
+		}
+
+		r, err := reconciler.NewGenericReconciler(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: namespace, Name: crName}})
+
+		Expect(err).To(HaveOccurred())
+		Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "errors.As must still reach the cause")
+		Expect(errors.Is(err, notFound)).To(BeTrue())
 	})
 })
 

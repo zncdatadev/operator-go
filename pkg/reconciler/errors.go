@@ -26,18 +26,38 @@ import (
 type ConfigError struct {
 	Field   string
 	Message string
+	// Cause is the underlying failure, when there is one. It was the only error type in this
+	// package without one, so a ConfigError built from another error had to flatten it to a
+	// string — and callers lost errors.Is/errors.As, which is exactly how a product tells an
+	// apierrors.IsNotFound lookup failure from a real one.
+	Cause error
 }
 
 // Error implements error.
 func (e *ConfigError) Error() string {
+	if e.Cause != nil && e.Message == "" {
+		return fmt.Sprintf("config error in field %q: %s", e.Field, e.Cause.Error())
+	}
 	return fmt.Sprintf("config error in field %q: %s", e.Field, e.Message)
 }
+
+// Unwrap exposes the underlying failure to errors.Is and errors.As.
+func (e *ConfigError) Unwrap() error { return e.Cause }
 
 // NewConfigError creates a new ConfigError.
 func NewConfigError(field, message string) *ConfigError {
 	return &ConfigError{
 		Field:   field,
 		Message: message,
+	}
+}
+
+// WrapConfigError creates a ConfigError that carries cause, so errors.Is and errors.As still see
+// through it. Prefer this over NewConfigError(field, err.Error()), which flattens the chain.
+func WrapConfigError(field string, cause error) *ConfigError {
+	return &ConfigError{
+		Field: field,
+		Cause: cause,
 	}
 }
 

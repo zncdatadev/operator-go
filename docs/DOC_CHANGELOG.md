@@ -4,6 +4,133 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-03e] (the handler contract stops being source-only)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.1.5 Writing a Role Group Handler**, the section #579 asks for: the build-context
+  read/write split (12 fields the framework writes, 9 the handler does), what a nil
+  `RoleGroupResources` field *instructs* rather than omits, the container contract (name resolution
+  before `Build()`, the `Ports[0]` readiness probe, the reserved `config`/`data` volume names,
+  `JvmArgs` reaching nothing), the read-only config mount, the eleven ways to fail a build, and a
+  four-item checklist for a handler that does not embed `BaseRoleGroupHandler`.
+- **Three doc-vs-code corrections found while writing it.** §4.11.2 attributed the `stopped`
+  replica forcing to the Reconciler; it is in `BaseRoleGroupHandler.buildStatefulSet`, which is
+  exactly what a non-embedding handler has to reproduce. The terminology section said a RoleGroup
+  maps to a StatefulSet "and associated Service, ConfigMap, PDB" — the PDB is **role**-level.
+- Records that `BaseRoleGroupHandler.WithSidecarManager` is **inert under the reconciler**, which
+  always supplies a non-nil manager on the build context.
+
+### Framework Documentation (`AGENTS.md`)
+
+- New §9b for the two image conventions: the JMX java agent and the read-only config mount, both
+  with the reason the obvious simplification is wrong (per-role JMX configs; `cp -RL` and the
+  `..data/` symlink farm).
+
+### Go doc comments
+
+- `BaseRoleGroupHandler.ConfigMountPath` states the mount is read-only and what that costs.
+- `RoleGroupHandler.BuildResources`'s stale "5. Build PDB if needed" is deliberately NOT touched
+  here: PR #592 already fixes it, and duplicating the fix would only produce a conflict. §4.1.5
+  carries the part that PR does not — that a nil `RoleGroupResources` field is an instruction to
+  delete rather than an omission.
+
+---
+
+## [2026-08-03d] (the product-config seam can read the cluster it documents)
+
+### Core Architecture (`architecture.md`)
+
+- §2.6 records that `ProductConfig` now receives a `ctx` and a client and may fail — "recomputed
+  every reconcile, and may reflect the current state of the cluster" was only true if the hook could
+  *read* the cluster — and that zero adoption was the symptom rather than the disease.
+- Documents `ApplyProductDefaults` as the imperative counterpart for products that already perform
+  the lookup inside `BuildResources`.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §10 carries the new signature, both entry points, and why the env-var precedence rule two
+  operators hand-wrote needs no ordering dance here.
+
+---
+
+## [2026-08-03c] (declaring intent before Build, instead of patching after)
+
+### Core Architecture (`architecture.md`)
+
+- §4.1.4 gains the second half of the build-context story: `MainContainerCustomizer` and
+  `ListenerClass` replace the post-build patch, with a table of what each one replaces and why the
+  *timing* is the point rather than the hook's existence.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §4 documents both fields, the pre-`podOverrides` ordering, the rejection of an image change, and
+  where `listener.ServiceTypeFor` lives and why.
+
+### API doc correction (`pkg/listener`)
+
+- `ListenerClassExternalUnstable`'s comment said "creates LoadBalancer with dynamic IPs". It is a
+  **NodePort** — the LoadBalancer is the *stable* class. The wrong wording is the documented reason
+  two downstream operators reached opposite conclusions about `external-stable`.
+
+---
+
+## [2026-08-03b] (an object whose content must not converge)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.9.4 Generate-Once Secrets**: why the SDK's usual "rebuild and overwrite" shape is wrong
+  for a generated value, what `EnsureGeneratedSecret` guarantees, why filling a *missing* key is a
+  deliberate choice, and why the Secret is not created from a sidecar provider's `Validate`.
+
+### Framework Documentation (`AGENTS.md`, `pkg/reconciler/AGENTS.md`)
+
+- New §11b next to the discovery-ConfigMap section, with the call and the oauth2-proxy case.
+- `generated_secret.go` added to the reconciler file table.
+
+---
+
+## [2026-08-03a] (handler lifetime, and where per-CR inputs go)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.1.4 Handler Lifetime and Per-CR Inputs**: one handler instance serves every cluster, a
+  table of what belongs on the handler versus the build context, and the two failure modes of
+  getting it wrong — the race above `MaxConcurrentReconciles: 1`, and the quieter stale-value leak
+  at concurrency 1 that spark-k8s-operator actually shipped.
+- Records that `BuildResources` is read-only on the handler, and that the framework's own instance
+  of the hazard (a handler-registered `SidecarManager`, whose configs `SetProductImage` writes into)
+  is now cloned per build.
+- Answers the first of the three gaps #579 names.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §4 documents the per-CR input fields on `RoleGroupBuildContext`, with the example call and the
+  reason the older handler-mutating idiom is unsafe.
+
+---
+
+## [2026-08-02d] (image resolution moves to reconcile time)
+
+### Core Architecture (`architecture.md`)
+
+- §2.6 now carries the case that shows why the webhook/reconcile split matters, and that image
+  resolution was on the wrong side of it: the `-kubedoop<version>` suffix's natural value is the
+  operator's own build version, which a webhook freezes into the spec at admission. Documents the
+  two-layer fold (user `spec.image` over `handler.ImageDefaults`), that `ProductName` no longer
+  gates whether `spec.image` is read, and that an unresolvable image is now an error rather than a
+  silent fall back.
+- Closes the gap #569 named: `ProductName`, `ImageDefaults` and the resolution precedence had **no**
+  mention in the authoritative document at all.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §3 replaces the "ProductName opts a handler into CR-driven images" sentence with the two fields
+  and their precedence, the reason `ImageDefaults` cannot be a webhook's job, and the
+  ProductName-less path that never errors.
+
+---
+
 ## [2026-08-02c] (the no-CRD-default-inside-config rule becomes checkable)
 
 ### Core Architecture (`architecture.md`)

@@ -19,7 +19,9 @@ package reconciler_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -2321,15 +2323,87 @@ var _ = Describe("Container image resolution", func() {
 		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
 	})
 
-	It("falls back to the per-role image when the CR carries no resolvable image", func() {
+	It("fails rather than running a different version than the user asked for", func() {
+		// This used to fall back to the per-role image and start it, so a user writing
+		// `productVersion: 4.7.0` with no repo anywhere silently got whatever the handler was
+		// built with — no error, no event, no status change. Deploying an unrequested version of a
+		// stateful product is not a safe default; the same call as config.affinity.
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
 		handler.ProductName = "trino"
 		handler.SetRoleImage("server", "role-image:1")
 
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
+		Expect(err).To(MatchError(ContainSubstring("repo is unset")))
+	})
+
+	It("falls back to the per-role image when nobody stated an image at all", func() {
+		// No opinion anywhere is not a misconfiguration — it is a handler running its own image.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.SetRoleImage("server", "role-image:1")
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("role-image:1"))
+	})
+
+	It("completes a partial spec.image from ImageDefaults", func() {
+		// The case that made three operators hand-roll image resolution: kubedoop publishes only
+		// the "-kubedoop<version>" tag, and a user writing just productVersion could not produce
+		// one, because the suffix was appended only when the USER supplied kubedoopVersion.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.ImageDefaults = v1alpha1.ImageSpec{
+			Repo:            "quay.io/zncdatadev",
+			ProductVersion:  "476",
+			KubedoopVersion: "0.0.0-dev",
+		}
+
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
 			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("role-image:1"))
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
+			To(Equal("quay.io/zncdatadev/trino:4.7.0-kubedoop0.0.0-dev"))
+	})
+
+	It("runs the defaults when the CR states no image, so an operator upgrade moves the cluster", func() {
+		// ImageDefaults is read every reconcile. A webhook could not do this: its values are
+		// persisted at admission and never recomputed, freezing kubedoopVersion at whatever
+		// operator version first admitted the CR.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.ImageDefaults = v1alpha1.ImageSpec{
+			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "0.2.0",
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
+			To(Equal("quay.io/zncdatadev/trino:476-kubedoop0.2.0"))
+	})
+
+	It("keeps a ProductName-less handler on its static image, and never errors", func() {
+		// The shape hive and zookeeper use today: they resolve images themselves and leave
+		// ProductName empty. Their CRs DO carry a webhook-filled spec.image, so treating an
+		// unresolvable spec as an error here would have broken every one of their clusters.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{Repo: "quay.io/kubedoop", ProductVersion: "4.7.0"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
+	})
+
+	It("honours spec.image.custom even without a ProductName", func() {
+		// A fully qualified reference needs no product name to build, and ignoring it meant a user
+		// pinning an image on such an operator was silently overruled.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{Custom: "my-registry/trino:pinned"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("my-registry/trino:pinned"))
 	})
 
 	It("gives the sidecars the same CR-resolved image as the main container", func() {
@@ -2744,5 +2818,283 @@ var _ = Describe("fsGroup ownership recursion", func() {
 		Expect(*podSC.FSGroup).To(Equal(int64(1001)))
 		Expect(podSC.RunAsNonRoot).NotTo(BeNil())
 		Expect(*podSC.RunAsNonRoot).To(BeTrue())
+	})
+})
+
+var _ = Describe("Per-CR inputs on the build context", func() {
+	// The handler is constructed once in main.go and shared across every CR and every reconcile.
+	// These specs pin the channel that lets a product supply per-cluster values without writing
+	// them into that shared instance.
+	var mockCR *testutil.MockCluster
+
+	BeforeEach(func() { mockCR = testutil.NewMockCluster("test-cluster", "default") })
+
+	buildCtxWith := func(mutate func(*reconciler.RoleGroupBuildContext)) *reconciler.RoleGroupBuildContext {
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+		}
+		if mutate != nil {
+			mutate(buildCtx)
+		}
+		return buildCtx
+	}
+
+	It("prefers the per-call image and ports over the handler's own", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+		handler.SetRoleImage("server", "role-image:1")
+		handler.SetRoleContainerPorts("server", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
+		handler.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
+				b.Image = "per-call:2"
+				b.ImagePullPolicy = corev1.PullAlways
+				b.ContainerPorts = []corev1.ContainerPort{{Name: "https", ContainerPort: 8443}}
+				b.ServicePorts = []corev1.ServicePort{{Name: "https", Port: 8443}}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("per-call:2"))
+		Expect(container.ImagePullPolicy).To(Equal(corev1.PullAlways))
+		Expect(container.Ports).To(HaveLen(1))
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8443)))
+		Expect(resources.Service.Spec.Ports[0].Port).To(Equal(int32(8443)))
+	})
+
+	It("falls back to the handler when the build states nothing", func() {
+		// Reconcile-INVARIANT settings still belong on the handler; this channel is only for the
+		// values that depend on which cluster is being built.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+		handler.SetRoleContainerPorts("server", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtxWith(nil))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("handler-image:1"))
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
+	})
+
+	It("does not carry one cluster's values into the next through the shared handler", func() {
+		// The quiet half of the hazard, and the one that bites at the default concurrency of 1:
+		// spark-k8s-operator shipped a CR inheriting the previous CR's pullPolicy, with a serial
+		// reconcile loop and no race involved.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+
+		first, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
+				b.Image = "cluster-a:1"
+				b.ImagePullPolicy = corev1.PullAlways
+				b.ContainerPorts = []corev1.ContainerPort{{Name: "https", ContainerPort: 8443}}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("cluster-a:1"))
+
+		// The second cluster states nothing — under the old idiom it would inherit cluster A's.
+		second, err := handler.BuildResources(context.Background(), k8sClient,
+			testutil.NewMockCluster("other-cluster", "default"), buildCtxWith(nil))
+		Expect(err).NotTo(HaveOccurred())
+
+		container := second.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(container.Image).To(Equal("handler-image:1"), "cluster A's image must not leak")
+		Expect(container.ImagePullPolicy).NotTo(Equal(corev1.PullAlways))
+		Expect(container.Ports).To(BeEmpty(), "cluster A's ports must not leak")
+	})
+
+	It("builds concurrently on one handler without crossing values", func() {
+		// The loud half: this is what raising MaxConcurrentReconciles above 1 does. `make test`
+		// runs with -race in CI, so a handler-side write would be reported as a data race here
+		// rather than as a wrong value.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+
+		const workers = 8
+		images := make([]string, workers)
+		var wg sync.WaitGroup
+		for i := range workers {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				want := fmt.Sprintf("cluster-%d:1", i)
+				resources, err := handler.BuildResources(context.Background(), k8sClient,
+					testutil.NewMockCluster(fmt.Sprintf("cluster-%d", i), "default"),
+					buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
+						b.ClusterName = fmt.Sprintf("cluster-%d", i)
+						b.ResourceName = fmt.Sprintf("cluster-%d-server-default", i)
+						b.Image = want
+					}))
+				Expect(err).NotTo(HaveOccurred())
+				images[i] = resources.StatefulSet.Spec.Template.Spec.Containers[0].Image
+			}()
+		}
+		wg.Wait()
+
+		for i := range workers {
+			Expect(images[i]).To(Equal(fmt.Sprintf("cluster-%d:1", i)))
+		}
+	})
+
+	It("does not write one cluster's image into a handler-wide sidecar manager", func() {
+		// The framework's own instance of the same defect: SetProductImage writes into the
+		// manager's configs, and a manager registered on the handler outlives the build.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
+		mgr := sidecar.NewSidecarManager()
+		mgr.Register(&recordingSidecarProvider{name: "probe"}, &sidecar.SidecarConfig{Enabled: true})
+		handler.WithSidecarManager(mgr)
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) { b.Image = "cluster-a:1" }))
+		Expect(err).NotTo(HaveOccurred())
+
+		cfg, ok := mgr.GetConfig("probe")
+		Expect(ok).To(BeTrue())
+		Expect(cfg.Image).To(BeEmpty(),
+			"the handler's manager is process-wide; this cluster's image must not be written into it")
+	})
+})
+
+// recordingSidecarProvider is a minimal provider: it only has to be registered so SetProductImage
+// has a config to write into.
+type recordingSidecarProvider struct{ name string }
+
+func (p *recordingSidecarProvider) Name() string { return p.name }
+func (p *recordingSidecarProvider) Inject(podSpec *corev1.PodSpec, cfg *sidecar.SidecarConfig) error {
+	podSpec.InitContainers = append(podSpec.InitContainers,
+		corev1.Container{Name: p.name, Image: cfg.Image})
+	return nil
+}
+func (p *recordingSidecarProvider) Validate(context.Context, client.Client, string) error { return nil }
+
+var _ = Describe("Declaring intent before Build", func() {
+	// Both of these replace the same shape: the framework builds a complete object and the product
+	// reaches in and edits it. Declaring the intent first keeps ordering framework-owned.
+	var mockCR *testutil.MockCluster
+
+	BeforeEach(func() { mockCR = testutil.NewMockCluster("test-cluster", "default") })
+
+	declareCtx := func(mutate func(*reconciler.RoleGroupBuildContext)) *reconciler.RoleGroupBuildContext {
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			ClusterName:      "test-cluster",
+			ClusterNamespace: "default",
+			RoleName:         "server",
+			RoleSpec:         &v1alpha1.RoleSpec{},
+			RoleGroupName:    "default",
+			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:     &config.MergedConfig{},
+			ResourceName:     "test-cluster-server-default",
+			ServicePorts:     []corev1.ServicePort{{Name: "http", Port: 8080}},
+		}
+		if mutate != nil {
+			mutate(buildCtx)
+		}
+		return buildCtx
+	}
+
+	It("sets the client Service type from the declared listener class", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.ListenerClass = listener.ListenerClassExternalUnstable
+			}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.Service.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+	})
+
+	It("leaves the Service a ClusterIP when no class is declared", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, declareCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.Service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+	})
+
+	It("hands the customizer the primary container, whichever index it ends up at", func() {
+		// zookeeper-operator located it as Containers[0], an assumption the framework never made:
+		// a sidecar provider inserting a container earlier silently configures the wrong one.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.MainContainerName = "zookeeper"
+
+		var sawName string
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MainContainerCustomizer = func(c *corev1.Container) error {
+					sawName = c.Name
+					c.Command = []string{"/bin/zkServer.sh"}
+					c.Args = []string{"start-foreground"}
+					c.Env = append(c.Env, corev1.EnvVar{Name: "ZK_ID", Value: "1"})
+					return nil
+				}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sawName).To(Equal("zookeeper"), "the customizer is handed the container by identity, not by index")
+
+		main := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(main.Command).To(Equal([]string{"/bin/zkServer.sh"}))
+		Expect(main.Args).To(Equal([]string{"start-foreground"}))
+		Expect(main.Env).To(ContainElement(corev1.EnvVar{Name: "ZK_ID", Value: "1"}))
+	})
+
+	It("lets podOverrides outrank the customizer", func() {
+		// The reason this is a pre-Build hook rather than a post-build patch. A product editing the
+		// returned StatefulSet would land AFTER the strategic merge and silently beat the user.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler.MainContainerName = "main"
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MergedConfig.PodOverrides = &corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name: "main",
+						Env:  []corev1.EnvVar{{Name: "LEVEL", Value: "from-user"}},
+					}}},
+				}
+				b.MainContainerCustomizer = func(c *corev1.Container) error {
+					c.Env = append(c.Env, corev1.EnvVar{Name: "LEVEL", Value: "from-product"})
+					return nil
+				}
+			}))
+		Expect(err).NotTo(HaveOccurred())
+
+		main := resources.StatefulSet.Spec.Template.Spec.Containers[0]
+		Expect(main.Env).To(ContainElement(corev1.EnvVar{Name: "LEVEL", Value: "from-user"}))
+		Expect(main.Env).NotTo(ContainElement(corev1.EnvVar{Name: "LEVEL", Value: "from-product"}))
+	})
+
+	It("fails the role group when the customizer errors", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MainContainerCustomizer = func(*corev1.Container) error {
+					return fmt.Errorf("no JVM heap could be computed")
+				}
+			}))
+		Expect(err).To(MatchError(ContainSubstring("no JVM heap could be computed")))
+		Expect(reconciler.IsValidationError(err)).To(BeTrue())
+	})
+
+	It("refuses an image change from the customizer, and keeps the resolved one", func() {
+		// The image is propagated to the sidecars before the StatefulSet is built (the Vector agent
+		// ships inside the product image), so changing it here would leave them on the old one.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
+				b.MainContainerCustomizer = func(c *corev1.Container) error {
+					c.Image = "sneaky:2"
+					return nil
+				}
+			}))
+		Expect(err).To(MatchError(ContainSubstring("RoleGroupBuildContext.Image")))
+		Expect(err).To(MatchError(ContainSubstring("sneaky:2")))
 	})
 })

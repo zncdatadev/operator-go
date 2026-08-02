@@ -170,10 +170,23 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// string built from the actual resources, a quorum peer list from pod ordinals, or a JVM
 	// heap sized from the role group's resources. Computing here, rather than freezing values
 	// into the spec at admission, means operator upgrades propagate config changes to existing
-	// clusters. It is a pure function of the CR and the role/role group identity; returning nil
-	// contributes nothing for that role group.
+	// clusters. Returning a nil spec contributes nothing for that role group.
+	//
+	// The ctx and client are what make "may derive from live cluster state" true rather than
+	// aspirational. Without them the hook could only be a pure function of the CR, so a product
+	// needing an API lookup — resolving an S3Connection reference to an endpoint — could not use
+	// it at all, and had no way to report a failed lookup either: a Get error could only be
+	// swallowed, rendering a silently wrong config, or panicked. Zero operators used the hook,
+	// which was the symptom; the products that needed a product-config layer were exactly the
+	// ones it could not serve.
+	//
+	// A returned error fails the role group. For a product that already performs its lookup
+	// inside BuildResources and does not want to repeat it here, the imperative counterpart is
+	// RoleGroupBuildContext.ApplyProductDefaults.
 	// +optional
-	ProductConfig func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
+	ProductConfig func(
+		ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string,
+	) (*v1alpha1.OverridesSpec, error)
 
 	// Dependencies, when set, returns the external objects the CR references (ConfigMaps and
 	// Secrets that the product does not create itself, e.g. a Kerberos keytab Secret or an
@@ -252,7 +265,7 @@ type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	// serviceAccountNameFunc, when set, resolves a per-CR SA name that takes precedence over
 	// the static serviceAccountName (see resolveServiceAccountName).
 	serviceAccountNameFunc func(cr CR) string
-	productConfig          func(cr CR, roleName, roleGroupName string) *v1alpha1.OverridesSpec
+	productConfig          func(ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
 	dependencies           func(cr CR) []Dependency
 }
 
@@ -798,7 +811,10 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	}
 
 	// Build context
-	buildCtx := r.buildRoleGroupContext(cr, roleName, roleSpec, groupName, groupSpec)
+	buildCtx, err := r.buildRoleGroupContext(ctx, cr, roleName, roleSpec, groupName, groupSpec)
+	if err != nil {
+		return WrapConfigError(fmt.Sprintf("role %s group %s", roleName, groupName), err)
+	}
 
 	// A podOverrides layer that fails to decode is dropped by the merger so the rest of the
 	// configuration still applies, but dropping a user's override silently is worse than a
@@ -911,13 +927,18 @@ func RoleGroupMarkerLabelKey(clusterName, roleName, roleGroupName string) string
 }
 
 // buildRoleGroupContext creates the build context for a role group.
-func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec) *RoleGroupBuildContext {
+func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec) (*RoleGroupBuildContext, error) {
 	// Merge configurations in increasing precedence: product config (lowest) < role < role
 	// group (highest). The product's computed config flows through the same merge pipeline as
 	// CRD overrides, so a value set anywhere in the CRD always wins over it.
 	var productConfig *v1alpha1.OverridesSpec
 	if r.productConfig != nil {
-		productConfig = r.productConfig(cr, roleName, groupName)
+		var err error
+		productConfig, err = r.productConfig(ctx, r.client, cr, roleName, groupName)
+		if err != nil {
+			return nil, fmt.Errorf("computing the product config for role %s group %s: %w",
+				roleName, groupName, err)
+		}
 	}
 	mergedConfig := r.configMerger.Merge(productConfig, roleSpec.GetOverrides(), groupSpec.GetOverrides())
 	// Deep-merge logging (role + role group) once, so both Vector enablement and per-container
@@ -948,7 +969,7 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(cr CR, roleName string, ro
 		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
 		// empty when no SA is configured (backward compatible).
 		ServiceAccountName: r.resolveServiceAccountName(cr),
-	}
+	}, nil
 }
 
 // buildSidecarManager creates a SidecarManager based on CRD configuration.

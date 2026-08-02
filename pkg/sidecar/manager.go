@@ -245,6 +245,40 @@ func (m *SidecarManager) Count() int {
 	return len(m.providers)
 }
 
+// CloneForBuild returns a copy safe to mutate for one build.
+//
+// SetProductImage writes the resolved image into every enabled config, so a manager that outlives a
+// single build — one a product registered on its handler with
+// BaseRoleGroupHandler.WithSidecarManager, which is process-wide and shared across every CR — would
+// otherwise carry one cluster's image into the next cluster's pods, and race outright above
+// MaxConcurrentReconciles 1. That is the same defect as the handler's per-CR fields
+// (RoleGroupBuildContext.Image), on the framework's own side of the line.
+//
+// The configs map and its entries are copied because they are what gets written. Providers and
+// phases are shared: they are read-only during a build, and a provider is a product-supplied
+// implementation that must not be duplicated. Client and namespace are plain values.
+func (m *SidecarManager) CloneForBuild() *SidecarManager {
+	if m == nil {
+		return nil
+	}
+	clone := &SidecarManager{
+		providers: m.providers,
+		phases:    m.phases,
+		client:    m.client,
+		namespace: m.namespace,
+		configs:   make(map[string]*SidecarConfig, len(m.configs)),
+	}
+	for name, config := range m.configs {
+		if config == nil {
+			clone.configs[name] = nil
+			continue
+		}
+		copied := *config
+		clone.configs[name] = &copied
+	}
+	return clone
+}
+
 // SetProductImage sets the product image on all enabled sidecar configs that
 // don't already have an image or pull policy set. This is used to propagate
 // the product container image to built-in sidecars (e.g. JMX Exporter) that

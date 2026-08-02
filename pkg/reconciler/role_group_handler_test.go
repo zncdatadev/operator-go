@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
@@ -132,5 +133,115 @@ var _ = Describe("MergeRoleGroupConfig leaf granularity", func() {
 		// handler edit corrupt the object the reconciler later compares against.
 		Expect(role.Resources.CPU.Max.String()).To(Equal("2"))
 		Expect(group.Resources.CPU.Min).NotTo(BeNil())
+	})
+})
+
+var _ = Describe("ApplyProductDefaults", func() {
+	// The imperative half of the product-config seam: for a product whose configuration depends on
+	// an API lookup, which happens inside BuildResources where a ctx and a client already exist.
+	// hive-operator and spark-k8s-operator each hand-wrote the same "set only keys the user did not
+	// set" helper, byte for byte including its doc comment.
+
+	newCtx := func(user *v1alpha1.OverridesSpec) *reconciler.RoleGroupBuildContext {
+		return &reconciler.RoleGroupBuildContext{
+			MergedConfig: config.NewConfigMerger().Merge(user),
+		}
+	}
+
+	It("contributes only what the user left unset", func() {
+		buildCtx := newCtx(&v1alpha1.OverridesSpec{
+			ConfigOverrides: map[string]map[string]string{
+				"hive-site.xml": {"fs.s3a.endpoint": "from-user"},
+			},
+		})
+
+		buildCtx.ApplyProductDefaults(&v1alpha1.OverridesSpec{
+			ConfigOverrides: map[string]map[string]string{
+				"hive-site.xml": {
+					"fs.s3a.endpoint":          "from-product",
+					"fs.s3a.path.style.access": "true",
+				},
+				"core-site.xml": {"hadoop.tmp.dir": "/tmp"},
+			},
+		})
+
+		hive := buildCtx.MergedConfig.ConfigFiles["hive-site.xml"]
+		Expect(hive).To(HaveKeyWithValue("fs.s3a.endpoint", "from-user"), "the user always wins")
+		Expect(hive).To(HaveKeyWithValue("fs.s3a.path.style.access", "true"), "and the rest is contributed")
+		Expect(buildCtx.MergedConfig.ConfigFiles).To(HaveKey("core-site.xml"), "a whole new file too")
+	})
+
+	It("applies the same rule to env vars, with no ordering dance", func() {
+		// Both operators independently discovered that product env must not overwrite envOverrides,
+		// and both solved it by PREPENDING to the container's env list. Contributing beneath the
+		// merged config is a map operation, so the ordering question never arises.
+		buildCtx := newCtx(&v1alpha1.OverridesSpec{
+			EnvOverrides: map[string]string{"JAVA_OPTS": "from-user"},
+		})
+
+		buildCtx.ApplyProductDefaults(&v1alpha1.OverridesSpec{
+			EnvOverrides: map[string]string{"JAVA_OPTS": "from-product", "HIVE_HOME": "/opt/hive"},
+		})
+
+		Expect(buildCtx.MergedConfig.EnvVars).To(HaveKeyWithValue("JAVA_OPTS", "from-user"))
+		Expect(buildCtx.MergedConfig.EnvVars).To(HaveKeyWithValue("HIVE_HOME", "/opt/hive"))
+	})
+
+	It("supplies CLI args only when the user set none", func() {
+		// cliOverrides replace rather than accumulate (§15), and an empty override means "unset".
+		withUser := newCtx(&v1alpha1.OverridesSpec{CliOverrides: []string{"--from-user"}})
+		withUser.ApplyProductDefaults(&v1alpha1.OverridesSpec{CliOverrides: []string{"--from-product"}})
+		Expect(withUser.MergedConfig.CliArgs).To(Equal([]string{"--from-user"}))
+
+		withoutUser := newCtx(nil)
+		withoutUser.ApplyProductDefaults(&v1alpha1.OverridesSpec{CliOverrides: []string{"--from-product"}})
+		Expect(withoutUser.MergedConfig.CliArgs).To(Equal([]string{"--from-product"}))
+	})
+
+	It("carries JVM args through, which no overrides layer can contribute", func() {
+		// OverridesSpec has no JVM-args field, so the lower layer cannot supply any; a caller that
+		// populated them imperatively (MergedConfig.AddJvmArg) must not lose them.
+		buildCtx := newCtx(nil)
+		buildCtx.MergedConfig.AddJvmArg("-Xmx4g")
+
+		buildCtx.ApplyProductDefaults(&v1alpha1.OverridesSpec{
+			EnvOverrides: map[string]string{"HIVE_HOME": "/opt/hive"},
+		})
+
+		Expect(buildCtx.MergedConfig.JvmArgs).To(Equal([]string{"-Xmx4g"}))
+		Expect(buildCtx.MergedConfig.EnvVars).To(HaveKeyWithValue("HIVE_HOME", "/opt/hive"))
+	})
+
+	It("is a no-op for a nil layer or a context with no merged config", func() {
+		buildCtx := newCtx(&v1alpha1.OverridesSpec{
+			EnvOverrides: map[string]string{"KEEP": "me"},
+		})
+		buildCtx.ApplyProductDefaults(nil)
+		Expect(buildCtx.MergedConfig.EnvVars).To(HaveKeyWithValue("KEEP", "me"))
+
+		bare := &reconciler.RoleGroupBuildContext{}
+		Expect(func() {
+			bare.ApplyProductDefaults(&v1alpha1.OverridesSpec{EnvOverrides: map[string]string{"X": "1"}})
+		}).NotTo(Panic())
+		Expect(bare.MergedConfig).To(BeNil())
+	})
+
+	It("accumulates across calls, each landing beneath what is already merged", func() {
+		// A product resolving two independent things (an S3 endpoint, a metastore URI) contributes
+		// each as it learns it, and neither may displace the user or the earlier contribution.
+		buildCtx := newCtx(&v1alpha1.OverridesSpec{
+			ConfigOverrides: map[string]map[string]string{"hive-site.xml": {"a": "from-user"}},
+		})
+		buildCtx.ApplyProductDefaults(&v1alpha1.OverridesSpec{
+			ConfigOverrides: map[string]map[string]string{"hive-site.xml": {"a": "first", "b": "first"}},
+		})
+		buildCtx.ApplyProductDefaults(&v1alpha1.OverridesSpec{
+			ConfigOverrides: map[string]map[string]string{"hive-site.xml": {"b": "second", "c": "second"}},
+		})
+
+		hive := buildCtx.MergedConfig.ConfigFiles["hive-site.xml"]
+		Expect(hive).To(HaveKeyWithValue("a", "from-user"))
+		Expect(hive).To(HaveKeyWithValue("b", "first"), "the earlier contribution outranks the later one")
+		Expect(hive).To(HaveKeyWithValue("c", "second"))
 	})
 })

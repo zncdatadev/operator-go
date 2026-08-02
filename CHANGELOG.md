@@ -120,6 +120,193 @@ changes are listed below.**
   (`BaseRoleGroupHandler.BuildRolePodDisruptionBudget`), and `RoleGroupResources.PodDisruptionBudget`
   is an escape hatch for exceptional per-group budgets. The comment now states this explicitly.
 
+### features (image conventions)
+
+- **`constant.KubedoopJmxAgentJar` and `constant.JMXJavaAgentOpt(port, configFile)`** render the
+  `-javaagent` option six operators hand-build today (#578). The config file is a **parameter**
+  rather than a baked-in `config.yaml`: the hadoop image ships no `config.yaml`, only
+  `namenode.yaml` / `datanode.yaml` / `journalnode.yaml`, so baking it in would have excluded the
+  product with the most roles.
+- This is a different mechanism from `pkg/sidecar/jmx_exporter.go`, which runs
+  `jmx_prometheus_httpserver.jar` from `/opt/jmx_exporter` as a separate container — **a path no
+  kubedoop image contains**, so that provider cannot run against a kubedoop product image as
+  `SetProductImage` wires it. Filed separately; not changed here.
+- **No `CopyMountedConfigScript` helper**, which the issue also proposed. The read-only config mount
+  is real and is now documented, but the nine existing copy sites across ten operators disagree on
+  flags and paths and `ConfigMountPath` is configurable, so a helper would be wrong for most callers
+  or so parameterised it saves nothing. The transferable knowledge — that `-L` is required because a
+  ConfigMap volume is a symlink farm into `..data/` — is documented instead.
+
+### docs (the role group handler contract)
+
+- **`docs/architecture.md` §4.1.5 "Writing a Role Group Handler"** (#579): the build-context
+  read/write split, what a nil `RoleGroupResources` field instructs rather than omits, the container
+  contract, the read-only config mount, the ways to fail a build, and what a handler that does not
+  embed `BaseRoleGroupHandler` must reproduce.
+- Two doc-vs-code corrections: `stopped` is forced in the base handler and not the reconciler, and
+  the PodDisruptionBudget is role-level rather than per role group. A third — `BuildResources`'s
+  stale "5. Build PDB if needed" — is left to PR #592, which already fixes it.
+- `WithSidecarManager` is documented as **inert under the reconciler**, which always supplies a
+  non-nil `SidecarManager` on the build context.
+
+### BREAKING (product config)
+
+- **`GenericReconcilerConfig.ProductConfig` gains a `ctx`, a `client.Client` and an `error`** (#574):
+
+  ```go
+  ProductConfig func(ctx context.Context, c client.Client, cr CR,
+      roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
+  ```
+
+  Adopters add the two parameters and `, nil` to the return. `examples/trino-operator` is migrated
+  in this change.
+- **Why.** The hook's own doc says it "may derive from live cluster state", but the signature had no
+  `ctx`, no client and no error return — so it could only be a pure function of the CR, and a failed
+  lookup could only be swallowed (rendering a silently wrong config) or panicked. The products that
+  most needed a product-config layer were exactly the ones it could not serve, which is why **zero**
+  operators used it while two hand-wrote the same workaround.
+- **New: `RoleGroupBuildContext.ApplyProductDefaults(*OverridesSpec)`**, the imperative counterpart
+  for a product that performs its lookup inside `BuildResources` and does not want to repeat it. It
+  folds the layer **beneath** everything already merged.
+- **New: `config.ConfigMerger.MergeBeneath(*MergedConfig, *OverridesSpec)`** implements that fold
+  once, by the merge's own per-dimension rules — config files and env vars per key, CLI/JVM args as
+  a whole, podOverrides through the same strategic merge patch. `Merge` could not express it: it
+  folds left to right, so the lowest layer must be known before the merge runs, which a product
+  computing from a live lookup cannot promise.
+- The env-var half needs no ordering dance. Both operators had discovered that product defaults must
+  not overwrite `envOverrides` and both solved it by **prepending** to the container's env list;
+  `MergedConfig.EnvVars` is a map, so contributing beneath is simply "set what is absent".
+- `mergePodTemplates` is extracted so the `RawExtension` path and `MergeBeneath` share one strategic
+  merge implementation rather than two that can drift.
+- **`reconciler.ConfigError` now carries a `Cause` and implements `Unwrap`**, with the new
+  `WrapConfigError(field, cause)` constructor. It was the only error type in the package without
+  one, so building it from another error flattened the chain to a string and callers lost
+  `errors.Is` / `errors.As` — which is exactly how a product tells "the S3Connection does not exist
+  yet" (`apierrors.IsNotFound`) from a real failure. `NewConfigError` is unchanged.
+- `MergedConfig.JvmArgs` has no `OverridesSpec` field, so a lower layer cannot contribute any;
+  `MergeBeneath` carries the higher config's through for callers that populated them imperatively
+  via `AddJvmArg`.
+
+### features (declare intent before Build)
+
+- **`RoleGroupBuildContext.MainContainerCustomizer`** (#577) hands a product the assembled primary
+  container just before `podOverrides` are strategic-merged. The framework owns the container's
+  name, image, ports, security context, mounts and probes and nothing else, so every migrated
+  product edited the StatefulSet the framework had just returned — zookeeper-operator locating the
+  container as `Containers[0]`, an assumption the framework never made and which a sidecar provider
+  inserting a container earlier silently invalidates.
+- **The timing is the point, not the hook.** Running before the strategic merge is what keeps a
+  user's `podOverrides` outranking the product; a post-build edit inverts that precedence silently.
+  A customizer that returns an error fails the role group with a `*ValidationError`, and so does one
+  that changes the **image** — the image is resolved once and propagated to the sidecars before the
+  StatefulSet is built (the Vector agent ships inside the product image), so
+  `RoleGroupBuildContext.Image` is that channel.
+- **`RoleGroupBuildContext.ListenerClass` and `listener.ServiceTypeFor`** (#576) restore the
+  class→Service-type mapping v0.12.6 shipped as `builder.ListenerClass2ServiceType`, which v0.13
+  dropped while keeping the class constants: `cluster-internal` → ClusterIP, `external-unstable` →
+  **NodePort**, `external-stable` → LoadBalancer, anything unrecognised → ClusterIP (the narrowest
+  exposure, never an accidental public address). The client Service now gets its type at `Build()`
+  instead of being patched afterwards.
+- It lives in `pkg/listener`, not `pkg/builder` where the issue proposed it: `pkg/listener` already
+  imports `pkg/builder`, so that direction does not compile. It pairs with the Service builder's
+  existing `WithServiceType` rather than adding a second entry point.
+- **Doc correction with teeth**: `ListenerClassExternalUnstable`'s comment said "creates LoadBalancer
+  with dynamic IPs". It is a NodePort — the LoadBalancer is the *stable* class — and that wording is
+  the documented reason two migrated operators disagreed about what `external-stable` meant.
+- Both fields are additive: unset, the Service is a ClusterIP and no customizer runs, so an
+  unmigrated product renders byte-identical output.
+
+### features (generate-once secrets)
+
+- **`reconciler.EnsureGeneratedSecret`** creates a Secret whose values are generated once and then
+  never change (#575). It creates with generated values when absent, fills only **missing** keys
+  when it exists, **never rewrites an existing value**, sets a controller owner reference, and
+  tolerates the `IsAlreadyExists` of a concurrent reconcile by re-reading.
+- **Why it was needed.** v0.13 made a generated Secret mandatory —
+  `OAuth2ProxySidecarProvider.Validate` fails the reconcile when the cookie key is missing, and
+  `GenerateCookieSecret`'s doc says to call it once and store the result — while removing
+  `builder.SecretBuilder`, the only way to make one. `RoleGroupResources.ExtraResources` cannot
+  serve: its apply path is idempotent `CreateOrUpdate` against a desired object, which rewrites the
+  value every pass and produces exactly the "log every user out" failure the doc warns about. Five
+  operators need this primitive; spark-k8s-operator hand-wrote 58 lines of it while migrating.
+- **Filling a missing key is deliberate.** Providers fail the reconcile on a missing key, so a
+  Secret that lost one — a partial restore, a hand-edit — would wedge the cluster with no recovery
+  short of deleting the whole Secret, which rotates every *other* key too. Generators run only for
+  absent keys, so the steady-state path invokes none of them and a generator with a side effect (an
+  external KMS call) is not re-triggered.
+- `Type` is applied only at creation, because it is immutable and writing it on update would make
+  every later reconcile fail. Options mirror the discovery helper
+  (`WithGeneratedSecretProductName` / `ExtraLabels` / `Annotations` / `Type`), and the canonical
+  labels always win.
+- No `sidecar.WithOAuth2ProxyManagedCookieSecret` convenience: the provider's `Validate` is the only
+  place it could create from, and a validation hook that creates objects is a side effect in the one
+  step whose job is to have none. Products call the helper from a `ClusterExtension` `PreReconcile`.
+
+### fix (shared handler state)
+
+- **`RoleGroupBuildContext` gains `Image`, `ImagePullPolicy`, `ContainerPorts` and `ServicePorts`**
+  (#525) — the per-CR inputs a product derives from the cluster it is building for. They outrank the
+  handler's own values, and the context is rebuilt per role group per reconcile.
+- **Why it matters.** One handler instance is constructed in `main.go` and serves every CR and every
+  reconcile, so the established idiom — assigning `h.Image` or calling `h.SetRoleContainerPorts`
+  from inside `BuildResources` — writes per-cluster values into process-wide state. Above
+  `MaxConcurrentReconciles: 1` those writes **race** between clusters; at the default of 1 they
+  still **leak**, because a product that conditionally skips one assignment inherits the previous
+  CR's value. spark-k8s-operator shipped exactly that (a CR omitting `pullPolicy` took the last
+  CR's), with a serial reconcile loop and no race involved.
+- **The framework held one too.** `SidecarManager.SetProductImage` writes the resolved image into
+  the manager's configs, so a manager registered through `BaseRoleGroupHandler.WithSidecarManager` —
+  process-wide — carried one cluster's image into the next. New
+  `sidecar.SidecarManager.CloneForBuild()` copies the configs for the build; providers and phases
+  are shared, being read-only during it. The reconciler-created manager is already per-role-group
+  and is used as-is.
+- Additive and backward compatible: unset context fields fall back to the handler exactly as before,
+  so a product that has not migrated renders byte-identical output. Handler fields stay correct for
+  reconcile-**invariant** configuration — this is a split, not a deprecation — and their doc
+  comments plus the `SetRole*` setters now say which is which.
+- Pinned by five specs, one of which builds eight clusters concurrently through a single handler.
+  `make test` runs with `-race` in CI, so the old idiom is reported there as a data race rather than
+  as a wrong value — verified by temporarily reintroducing it.
+
+### BREAKING (image resolution)
+
+- **`BaseRoleGroupHandler.ProductName` no longer decides whether `spec.image` is read** (#569). It
+  now only names the product: the `app.kubernetes.io/name` value and the repository path segment.
+  The new **`BaseRoleGroupHandler.ImageDefaults`** (a `commonsv1alpha1.ImageSpec`) supplies whatever
+  `spec.image` leaves empty, evaluated **every reconcile**.
+- **New: `ImageSpec.ResolveImage(productName string, defaults ImageSpec) (string, error)`**, plus
+  `ResolvedProductVersion(defaults)` and `ResolvedPullPolicy(defaults)`. `GetImage` is retained and
+  now delegates to `ResolveImage`, so the two cannot disagree.
+- **Why this could not stay in a webhook.** Kubedoop publishes product images only with the
+  `-kubedoop<version>` suffix, whose natural value is the operator's own build version — a
+  reconcile-time fact. Webhook defaults are persisted into the spec at admission and never
+  recomputed, so a cluster admitted by operator 0.1.0 kept asking for `-kubedoop0.1.0` images
+  forever. `ImageDefaults` is read per reconcile, so an operator upgrade moves existing clusters
+  onto the co-released image.
+- **What was broken.** `GetImage` appended the `-kubedoop` suffix only when the *user* wrote
+  `kubedoopVersion`, so a CR stating just `productVersion` produced `quay.io/…/hive:4.0.1` — a tag
+  that does not exist. And when `repo` or `productVersion` was empty it returned `""`, after which
+  the handler silently ran its static image: the user's `productVersion` discarded with no error, no
+  event and no status change. Three migrated operators worked around this by hand-rolling image
+  resolution, and two of them consequently emit no `app.kubernetes.io/version` at all.
+- **An unresolvable `spec.image` now fails the role group**, naming the missing field. Running a
+  version nobody asked for is not a safe default for a stateful product — the same call as
+  `config.affinity`. With `ProductName` empty nothing is resolved from the CR beyond
+  `spec.image.custom`, and that path never errors, so operators that resolve images themselves are
+  unaffected.
+- `spec.image.custom` is now honoured even when `ProductName` is empty; it used to be ignored, so a
+  user pinning an image on such an operator was silently overruled.
+- `app.kubernetes.io/version` follows the **resolved** version, so it is emitted when the version
+  came from `ImageDefaults` too. A `custom` reference still publishes the user's own
+  `productVersion` when they stated one — `custom` replaces the *reference*, and that field remains
+  their declaration of which version it is.
+- `ImageSpec.GetPullPolicy()` is now nil-safe. `spec.image` is an optional pointer, and it began
+  reaching that method as nil once a nil spec could still resolve to a real image.
+- **Adopters**: set `ProductName` + `ImageDefaults` and delete the hand-rolled resolver; drop the
+  image branch of any defaulting webhook. `examples/trino-operator` is migrated in this change and
+  is the reference. Rendered YAML gains `app.kubernetes.io/version` on the pod template (one rolling
+  update); `.spec.selector` is untouched.
+
 ### features (CRD default guard)
 
 - **`testutil.HaveNoInheritedConfigDefaults()` and `testutil.FindInheritedConfigDefaults()`** export

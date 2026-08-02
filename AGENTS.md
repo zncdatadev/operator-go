@@ -89,7 +89,7 @@ operator-go/
 │   ├── builder/                  # Fluent resource builders (see pkg/builder/AGENTS.md)
 │   ├── common/                   # Core interfaces, extensions, errors
 │   ├── config/                   # Config file generation and override merging (see pkg/config/AGENTS.md)
-│   ├── constant/                 # Kubedoop paths, labels, domains, restarter annotations
+│   ├── constant/                 # Kubedoop paths, labels, domains, restarter annotations, JMX agent
 │   ├── listener/                 # Listener provisioner (CSI volume registration)
 │   ├── productlogging/           # Product logging config generation (Log4j, Log4j2, Logback, Python)
 │   ├── reconciler/               # Reconciliation framework (see pkg/reconciler/AGENTS.md)
@@ -252,7 +252,31 @@ handler.SetRoleContainerPorts("coordinator", ports)
 handler.SetRoleServicePorts("coordinator", svcPorts)
 ```
 
-`ProductName` is what opts a handler into CR-driven images: with it set, `spec.image` is resolved per role group through `ImageSpec.GetImage(ProductName)`; left empty, the handler's static `Image` (and any per-role override) is used and `spec.image` is ignored.
+**`ProductName` names the product; `ImageDefaults` supplies the image.** They used to be one
+switch, and because the image half could not express the kubedoop tag convention, a product that
+wanted `app.kubernetes.io/name` had to give up all of it.
+
+```go
+handler.ProductName = "trino"                 // app.kubernetes.io/name AND the repo path segment
+handler.ImageDefaults = commonsv1alpha1.ImageSpec{
+    Repo:            "quay.io/zncdatadev",
+    ProductVersion:  "476",
+    KubedoopVersion: version.BuildVersion,      // the operator's own build version
+}
+```
+
+`ImageSpec.ResolveImage(productName, defaults)` folds the two layers per field, user first, so a CR
+stating only `productVersion` still yields a valid `…:476-kubedoop0.2.0` reference. `ImageDefaults`
+is read **every reconcile**, which is what a webhook cannot do: webhook defaults are persisted at
+admission and never recomputed, freezing `kubedoopVersion` at whatever operator version first
+admitted the CR (§10 and `docs/architecture.md` §2.6).
+
+An unresolvable `spec.image` **fails the role group**, naming the missing field, instead of silently
+falling back to the handler's static image and running a version nobody asked for. With
+`ProductName` empty the handler resolves nothing from the CR beyond `spec.image.custom` — the shape
+a product uses when it resolves images itself — and that path never errors.
+`app.kubernetes.io/version` follows the **resolved** version, so it is present whenever the image
+came from `ImageDefaults` too.
 
 `BaseRoleGroupHandler` also implements `reconciler.RoleNameProvider`:
 ```go
@@ -300,6 +324,51 @@ product-config/role/role-group overrides), `ResourceName` (`{cluster}-{role}-{gr
 with a hash suffix by `RoleGroupResourceName`), `ServiceAccountName` (the SA the reconciler
 resolved and ensured), `SidecarManager`, `VolumeProviders` (see §16) and
 `VectorAggregatorAddress`.
+
+**It is also where a product puts its per-CR inputs.** `Image`, `ImagePullPolicy`, `ContainerPorts`
+and `ServicePorts` on the context outrank the handler's own, and the context is rebuilt per role
+group per reconcile:
+
+```go
+func (h *MyHandler) BuildResources(ctx context.Context, c client.Client, cr *MyCluster,
+    buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
+    buildCtx.ContainerPorts = h.portsFor(cr, buildCtx.RoleName) // depends on cr.Spec.Tls
+    return h.BaseRoleGroupHandler.BuildResources(ctx, c, cr, buildCtx)
+}
+```
+
+`ListenerClass` and `MainContainerCustomizer` ride the same channel, and replace the other
+post-build habit: **the framework builds a complete object and the product reaches in to edit it.**
+
+```go
+buildCtx.ListenerClass = listener.ListenerClassExternalUnstable   // Service type set at Build()
+buildCtx.MainContainerCustomizer = func(c *corev1.Container) error {
+    c.Command = []string{"/bin/zkServer.sh"}                      // no Containers[0] lookup
+    return nil
+}
+```
+
+The customizer runs on the assembled primary container **before** `podOverrides` are strategic-merged,
+which is why it cannot be a post-build patch: a product editing the returned StatefulSet lands
+*after* the merge and silently beats the user. It is handed the container by identity, so nobody
+indexes `Containers[0]` — an assumption the framework never made, and which a sidecar provider
+inserting a container earlier quietly breaks. Returning an error fails the role group with a
+`*ValidationError`; **changing the image is rejected the same way**, since the image is resolved once
+and propagated to the sidecars before the StatefulSet is built (`buildCtx.Image` is that channel).
+
+`listener.ServiceTypeFor` is the shared class→type mapping restored from v0.12.6:
+`cluster-internal` → ClusterIP, `external-unstable` → **NodePort**, `external-stable` →
+LoadBalancer, anything else → ClusterIP. It lives in `pkg/listener` rather than `pkg/builder`
+because `pkg/listener` already imports `pkg/builder`.
+
+**One handler instance serves every cluster** — it is built once in `main.go` — so the older idiom
+of assigning `h.Image` or calling `h.SetRoleContainerPorts` inside `BuildResources` writes
+per-cluster values into process-wide state. Above `MaxConcurrentReconciles: 1` those writes race
+between clusters; at 1 they still leak, because a product that conditionally skips one assignment
+inherits the previous CR's value (spark-k8s-operator shipped exactly that). Handler fields remain
+correct for reconcile-**invariant** configuration; `sidecar.SidecarManager.CloneForBuild` covers the
+framework's own instance of the same hazard, a handler-registered manager whose configs
+`SetProductImage` writes into. See `docs/architecture.md` §4.1.4.
 
 **Role and role group names are constrained by the CRD, not by convention.** The keys of
 `spec.roles` and `spec.roles.<role>.roleGroups` must be lowercase RFC 1123 labels — a CEL
@@ -503,23 +572,82 @@ the renderers at consumption time.
 
 Default config file names come from each generator's `DefaultFileName()`: `logback.xml`, `log4j.properties`, `log4j2.properties` and — deliberately **not** `logging.py` — `log_config.py`, since a config directory on `sys.path` would otherwise shadow the standard library's `logging` module. `ContainerLogging.FileName` overrides the name per container. The rolling *log* file the Vector sources glob is separate and framework-owned: `<KubedoopLogDir>/<lowercased container>/<container><suffix>`, with `.log4j.xml` (log4j/logback), `.log4j2.xml` (log4j2) or `.py.json` (python) selecting the Vector edge parser; `ContainerLogging.LogFileName` may rename it only if the suffix survives and it stays a bare file name.
 
+### 9b. Image Conventions the Framework Requires
+
+Two conventions the kubedoop images define, that the framework's own behaviour depends on, and that
+every product previously re-typed as string literals.
+
+**The JMX exporter runs as a java agent.** `constant.KubedoopJmxAgentJar` is the unversioned symlink
+the images provide, and `constant.JMXJavaAgentOpt(port, configFile)` renders the JVM option:
+
+```go
+constant.JMXJavaAgentOpt(8081, "config.yaml")
+// -javaagent:/kubedoop/jmx/jmx_prometheus_javaagent.jar=8081:/kubedoop/jmx/config.yaml
+```
+
+The config file is a **parameter**, not a constant: the hadoop image ships no `config.yaml`, only
+`namenode.yaml` / `datanode.yaml` / `journalnode.yaml`, because the metrics worth exporting differ
+per role. This is a different mechanism from `pkg/sidecar/jmx_exporter.go`, which runs
+`jmx_prometheus_httpserver.jar` from `/opt/jmx_exporter` as a separate container — a path no
+kubedoop image contains.
+
+**The config mount is read-only.** The generated ConfigMap is mounted read-only at
+`BaseRoleGroupHandler.ConfigMountPath` (default `constant.KubedoopConfigDirMount`), so a product
+whose start-up rewrites a config file must copy it to a writable directory first:
+
+```sh
+mkdir -p /kubedoop/config/
+cp -RL /kubedoop/mount/config/* /kubedoop/config/
+```
+
+`-L` is load-bearing: a ConfigMap volume is a farm of symlinks into a hidden `..data/` directory, so
+a copy that preserves them leaves dangling links. The SDK ships no helper for this — the existing
+call sites disagree on flags and the mount path is configurable — but the requirement is now stated
+in `docs/architecture.md` §4.1.5 rather than discoverable only by reading a sibling operator.
+
 ### 10. Product Config (`ProductConfig`)
 Products contribute their computed configuration **as data through the same merge pipeline as CRD overrides**, instead of imperatively constructing resources. Set the optional `ProductConfig` field on `GenericReconcilerConfig` — a pure function returning an `*v1alpha1.OverridesSpec` (the same shape users write in the CRD):
 
 ```go
 reconcilerCfg := &reconciler.GenericReconcilerConfig[*v1alpha1.TrinoCluster]{
     // ...
-    ProductConfig: func(cr *v1alpha1.TrinoCluster, roleName, roleGroupName string) *commonsv1alpha1.OverridesSpec {
+    ProductConfig: func(ctx context.Context, c client.Client, cr *v1alpha1.TrinoCluster,
+        roleName, roleGroupName string) (*commonsv1alpha1.OverridesSpec, error) {
         overrides := map[string]map[string]string{
             "config.properties": {"http-server.http.port": "8080"},
         }
         if roleName == "coordinators" {
             overrides["config.properties"]["coordinator"] = "true"
         }
-        return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}
+        return &commonsv1alpha1.OverridesSpec{ConfigOverrides: overrides}, nil
     },
 }
 ```
+
+**The `ctx` and client are what make "may derive from live cluster state" true.** Without them the
+hook could only be a pure function of the CR, so a product needing an API lookup — resolving an
+`S3Connection` reference to an endpoint — could not use it at all, and a `Get` failure could only be
+swallowed (rendering a silently wrong config) or panicked. A returned error fails the role group.
+
+**`RoleGroupBuildContext.ApplyProductDefaults(*OverridesSpec)` is the imperative counterpart**, for a
+product that performs its lookup inside `BuildResources` and does not want to repeat it:
+
+```go
+conn, err := s3.ResolveConnection(ctx, c, cr.Namespace, inline, ref)
+if err != nil { return nil, err }
+buildCtx.ApplyProductDefaults(&commonsv1alpha1.OverridesSpec{
+    ConfigOverrides: map[string]map[string]string{"hive-site.xml": conn.S3AProperties()},
+})
+```
+
+It folds the layer **beneath** everything already merged, using the merge's own per-dimension rules
+(`config.ConfigMerger.MergeBeneath`): config files and env vars per key, CLI/JVM args as a whole,
+podOverrides through the same strategic merge patch. Repeated calls accumulate, each landing beneath
+the last. hive-operator and spark-k8s-operator each hand-wrote the same "set only keys the user did
+not set" helper, and both then discovered the same second rule for env vars — that product defaults
+must not overwrite `envOverrides`, which they solved by prepending to the container's env list. Both
+rules are the framework's own precedence, and neither needs an ordering dance here because
+`MergedConfig.EnvVars` is a map.
 
 Precedence (low → high): **product config < role overrides < role group overrides**. Any value a user sets in the CRD always wins. `ConfigMerger.Merge` is variadic (`Merge(...*OverridesSpec)`) and folds layers in order; the previous two-argument call (`Merge(role, group)`) is still valid.
 
@@ -548,6 +676,32 @@ err := reconciler.EnsureDiscoveryConfigMap(ctx, client, scheme, cr, cr.GetName()
 ```
 
 The helper is idempotent (CreateOrUpdate), sets a controller owner reference (the ConfigMap is GC'd with the CR), and applies canonical labels (`app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`, plus `app.kubernetes.io/name` via `WithDiscoveryProductName`); extra labels/annotations are merged via options, but canonical labels always win. Data is replaced wholesale.
+
+### 11b. Generate-Once Secrets
+
+Some objects must **not** converge. `reconciler.EnsureGeneratedSecret` is the counterpart to
+`EnsureDiscoveryConfigMap` for those: it creates the Secret with generated values if absent, fills
+in only **missing** keys if it exists, and **never rewrites an existing value**.
+
+```go
+_, err := reconciler.EnsureGeneratedSecret(ctx, c, scheme, cr, cr.GetName()+"-oauth2-cookie",
+    map[string]func() (string, error){"cookie-secret": sidecar.GenerateCookieSecret},
+    reconciler.WithGeneratedSecretProductName("trino"),
+)
+```
+
+The oauth2-proxy session cookie key is the shipped case: `GenerateCookieSecret`'s doc says to call
+it once and store the result, because a fresh value every pass rolls the pods and logs every user
+out — so `RoleGroupResources.ExtraResources`, whose apply path is idempotent `CreateOrUpdate`
+against a desired object, cannot serve. `OAuth2ProxySidecarProvider.Validate` fails the reconcile
+when the key is missing, so the framework *requires* such a Secret.
+
+Filling a missing key is deliberate: a Secret that lost one key (a partial restore, a hand-edit)
+would otherwise wedge the cluster with no recovery short of deleting the whole Secret, which rotates
+every *other* key too. Generators run only for absent keys, so the steady-state path invokes none of
+them. Call it from a `common.ClusterExtension` `PreReconcile` hook, where a ctx and client exist and
+the workload has not been built yet; it is deliberately **not** created from the sidecar provider's
+`Validate`, a step whose job is to have no side effects.
 
 ### 12. External Dependencies
 
