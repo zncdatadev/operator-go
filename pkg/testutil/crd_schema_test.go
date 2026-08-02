@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -164,6 +165,68 @@ var _ = Describe("Generated test CRD schema", func() {
 		Expect(group.Config.Resources.Storage.Capacity).To(BeNil(),
 			"overriding one leaf must not silently downgrade the capacity the role asked for")
 		Expect(group.Config.Resources.Storage.StorageClass).To(HaveValue(Equal("fast-ssd")))
+	})
+
+	It("does not stamp a log level into a group that declared an empty console block", func() {
+		// The same defect class as the two specs above, on the field where it survived longest.
+		// LogLevelSpec.Level used to carry +kubebuilder:default:="INFO", and `console` is an object
+		// a role group declares deliberately — so `console: {}` came back from the API server as
+		// `console: {level: INFO}`, and the role's DEBUG lost the merge. mergeContainerLogging has
+		// a guard written for exactly this case; the default made it unreachable, because the
+		// field was already filled before the merge ever saw it.
+		stored := createCluster(v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				"broker": {
+					Config: &v1alpha1.RoleGroupConfigSpec{Logging: &v1alpha1.LoggingSpec{
+						Containers: map[string]v1alpha1.LoggingConfigSpec{
+							"broker": {Console: &v1alpha1.LogLevelSpec{Level: "DEBUG"}},
+						},
+					}},
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Config: &v1alpha1.RoleGroupConfigSpec{Logging: &v1alpha1.LoggingSpec{
+							Containers: map[string]v1alpha1.LoggingConfigSpec{
+								"broker": {Console: &v1alpha1.LogLevelSpec{}},
+							},
+						}}},
+					},
+				},
+			},
+		})
+
+		role := stored.Spec.Roles["broker"]
+		group := role.RoleGroups["default"]
+		Expect(group.Config.Logging.Containers["broker"].Console.Level).To(BeEmpty(),
+			"an empty level is what lets the role's DEBUG win the merge")
+
+		merged := productlogging.MergeLoggingSpec(role.Config.Logging, group.Config.Logging)
+		Expect(merged.Containers["broker"].Console.Level).To(Equal("DEBUG"),
+			"the role's threshold must survive a group that named console without setting a level")
+	})
+
+	It("keeps a level the group actually asked for", func() {
+		// The other half of the contract: nothing about the fix may make a stated value inheritable.
+		stored := createCluster(v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				"broker": {
+					Config: &v1alpha1.RoleGroupConfigSpec{Logging: &v1alpha1.LoggingSpec{
+						Containers: map[string]v1alpha1.LoggingConfigSpec{
+							"broker": {Console: &v1alpha1.LogLevelSpec{Level: "DEBUG"}},
+						},
+					}},
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Config: &v1alpha1.RoleGroupConfigSpec{Logging: &v1alpha1.LoggingSpec{
+							Containers: map[string]v1alpha1.LoggingConfigSpec{
+								"broker": {Console: &v1alpha1.LogLevelSpec{Level: "WARN"}},
+							},
+						}}},
+					},
+				},
+			},
+		})
+
+		role := stored.Spec.Roles["broker"]
+		merged := productlogging.MergeLoggingSpec(role.Config.Logging, role.RoleGroups["default"].Config.Logging)
+		Expect(merged.Containers["broker"].Console.Level).To(Equal("WARN"))
 	})
 
 	It("omits an unset capacity from a Go-constructed spec", func() {

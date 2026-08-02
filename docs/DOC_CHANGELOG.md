@@ -4,6 +4,25 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-02b] (log levels inherit; the CRD default that stopped them is gone)
+
+### Core Architecture (`architecture.md`)
+
+- The `config` merge-granularity table now states that `logging` folds **per level** inside a
+  container: an entry naming `console`, `file` or a logger without stating a level means "inherit",
+  not "clear".
+- The no-CRD-default rule under that table gains the case that proves it is easy to satisfy in one
+  place and forget in another — `LogLevelSpec.Level` kept `+kubebuilder:default:="INFO"` long after
+  `resources` was fixed, and it was not inert. Records the transferable lesson: **a guard against a
+  defaulted field must be verified through the API server**, because a Go-constructed spec never
+  meets structural defaulting, which is why the unit test covering that guard passed throughout.
+
+### Framework Documentation (`AGENTS.md`)
+
+- §9 states the inheritance rule and why the field carries no CRD default.
+
+---
+
 ## [2026-08-02a] (pkg/s3 pathStyle: the default, and what adopting S3AProperties changes)
 
 ### Core Architecture (`architecture.md`)

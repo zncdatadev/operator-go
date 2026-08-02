@@ -112,6 +112,35 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### BREAKING (log levels)
+
+- **`LogLevelSpec.Level` no longer carries `+kubebuilder:default:="INFO"`** (#570). It sits inside
+  `config`, the block folded Role -> RoleGroup, where structural defaulting fills a leaf as soon as
+  its *enclosing object* exists — so a role group that wrote `console: {}` got `console:
+  {level: INFO}` back from the API server, and a role asking for `DEBUG` lost. This is the same
+  defect #544 fixed for `resources`, still live on the logging fields.
+- `mergeContainerLogging` already carried a guard for exactly this case, with a comment saying so.
+  **It could never fire**: it tested `group.Console.Level != ""`, and the API server had filled the
+  field before the merge ever saw it. The unit test covering that guard passed throughout, because a
+  Go-constructed spec never meets structural defaulting — verified in envtest that role `DEBUG` +
+  group `console: {}` produced `INFO`.
+- The loggers map had **no** such guard at all: group entries were copied in unconditionally, so
+  `loggers: {ROOT: {}}` replaced the role's entry with a level-less one, which the renderers skip —
+  the logger fell back to the product's built-in default rather than the role's value. `console`,
+  `file` and `loggers` now share one rule: **an entry that states no level means "inherit"**.
+- A level-less logger entry with nothing to inherit is now **dropped** rather than carried into the
+  merged map, which also keeps that map free of nil values. `loggers: {foo: null}` is a legal
+  spelling of `loggers: {foo: {}}`, and the old unconditional copy carried the nil through, so a
+  product reading `merged.Loggers[k].Level` had to know which spelling the user chose.
+- **What changes for users.** A role group writing `console: {}` (or `file: {}`, or a level-less
+  logger) now inherits the role's threshold instead of silently getting `INFO`; where no role value
+  exists, no appender threshold is emitted instead of an `INFO` one — a no-op whenever the root
+  logger is at `INFO`, and the *requested* behaviour when the root is `DEBUG` (today that case
+  suppresses the debug output the user asked for). Explicit levels are unaffected. `kubectl get`
+  stops showing `level: INFO` on blocks where the user wrote none. **CRs stored before this change
+  keep the `INFO` the API server already persisted** — nothing rewrites them; re-applying the
+  manifest clears it.
+
 ### docs (s3 pathStyle)
 
 - **Documented that `spec.pathStyle` defaults to `false` and what that costs on adoption** (#571).
