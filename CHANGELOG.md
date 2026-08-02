@@ -112,6 +112,48 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### features (Deployment workloads)
+
+- **A role can now run as a Deployment** (#599). `BaseRoleGroupHandler.RoleWorkloadKinds` (set via
+  `SetRoleWorkloadKind`) maps role names to a `reconciler.WorkloadKind` — `WorkloadKindStatefulSet`,
+  the default, or `WorkloadKindDeployment` — and `RoleGroupResources` gains a `Deployment` slot,
+  mutually exclusive with `StatefulSet` (both non-nil fails the role group at apply time) and
+  applied at exactly the StatefulSet's position in the resource order. A role never configured
+  builds byte-identical output to what it always built.
+- **Why.** Every role group was a StatefulSet, and for a stateless role — a web UI, an API server
+  in front of a stateful backend — that shape is pure cost: per-pod identity machinery nothing
+  uses, a headless Service advertising DNS names nobody resolves, and rollout semantics built for
+  pods that are not interchangeable. The kind is per ROLE and reconcile-invariant (a property of
+  the process the role runs, decided when the operator is written), so it lives on the handler
+  rather than on `RoleGroupBuildContext` — the same split #582 established for per-CR inputs, from
+  the other side. Switching a live role group's kind is not supported: the old workload's
+  immutable fields cannot become the new one's.
+- **One pod-template implementation, not two.** The new `builder.DeploymentBuilder` and the
+  existing `StatefulSetBuilder` embed a shared internal `workloadBuilder` that owns the entire
+  pod-template assembly, so the two kinds render identical pods for identical inputs — same
+  containers, volumes, probes, security contexts, the same `MainContainerCustomizer` timing
+  (before the `podOverrides` merge, so a user's overrides still win) and the same violation
+  surface; a parity spec pins it. What a Deployment does not have, its builder deliberately does
+  not offer: no volumeClaimTemplates (`StorageMountPath` is documented as ignored for Deployment
+  roles), no serviceName, no podManagementPolicy, and `.spec.strategy` is left unset so the
+  Kubernetes RollingUpdate default (25%/25%) applies instead of pinning a server default.
+- **A Deployment role group gets no `-headless` Service.** The headless Service exists to give
+  each StatefulSet pod a stable DNS identity, which a Deployment's pods do not have — emitting one
+  would advertise addresses that break on every rollout. The client-facing ClusterIP Service is
+  still emitted whenever service ports are declared: how clients reach the role does not depend on
+  how its pods are managed.
+- The rest of the machinery follows the kind. The apply path preserves the Deployment's immutable
+  `.spec.selector` with the same `ImmutableFieldIgnored` warning the StatefulSet fields get; the
+  health manager consults the new `WorkloadKindProvider` interface (asserted on the handler,
+  falling back to StatefulSet when not implemented) so a Deployment role group is judged from its
+  Deployment's ready replicas and rollout state instead of from a StatefulSet that never existed;
+  the orphan cleaner inventories Deployments under the same label + exact-name + controller-owner
+  gates as StatefulSets and retires one by scaling to zero under `RetryOnConflict` and then
+  deleting **without** the ordered-drain wait — a ReplicaSet terminates its pods all at once
+  whether it is scaled down or garbage-collected, so there is no order to preserve and waiting
+  would only stall the rest of the teardown; and `SetupWithManager` adds
+  `Owns(&appsv1.Deployment{})` so out-of-band edits to a Deployment produce reconcile events.
+
 ### features (declare intent before Build)
 
 - **`RoleGroupBuildContext.MainContainerCustomizer`** (#577) hands a product the assembled primary

@@ -287,6 +287,13 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 	if cfg.ServiceHealthCheck != nil {
 		healthManager.WithServiceHealthCheck(cfg.ServiceHealthCheck)
 	}
+	// Let the health manager read the right workload per role. The assertion mirrors the
+	// role-PDB one (rolePodDisruptionBudgetBuilder): a handler embedding BaseRoleGroupHandler
+	// satisfies the interface through the promoted method, and one that does not is treated as
+	// all-StatefulSet — exactly what every handler was before workload kinds existed.
+	if provider, ok := cfg.RoleGroupHandler.(WorkloadKindProvider); ok {
+		healthManager.WithWorkloadKindProvider(provider)
+	}
 
 	eventManager := NewEventManager(cfg.Recorder, cfg.Scheme)
 
@@ -1101,12 +1108,21 @@ func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Conte
 }
 
 // applyResources applies all resources in the correct dependency order.
-// Order: ConfigMap -> Headless Service -> Service -> ExtraResources -> StatefulSet -> PDB -> MetricsService
-// ExtraResources are applied before the StatefulSet because they are typically prerequisites
+// Order: ConfigMap -> Headless Service -> Service -> ExtraResources -> workload (StatefulSet or
+// Deployment) -> PDB -> MetricsService.
+// ExtraResources are applied before the workload because they are typically prerequisites
 // for pod scheduling (e.g. a Listener CR referenced by an ephemeral CSI volume).
 // Each resource is created when absent and updated to the handler-built desired state when it
 // already exists (see applyResource / copyDesiredState for the exact update semantics).
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
+
+	// A role group is exactly one workload. Both slots filled means the handler built two
+	// workloads that would fight over the same name, selector and pods — reject it before
+	// anything is written, so the mistake costs a failed role group instead of a live conflict.
+	if resources.StatefulSet != nil && resources.Deployment != nil {
+		return NewValidationError("workload", buildCtx.RoleName, buildCtx.RoleGroupName,
+			fmt.Errorf("both StatefulSet and Deployment are set; RoleGroupResources carries exactly one workload per role group"))
+	}
 
 	// 1. Apply ConfigMap
 	if resources.ConfigMap != nil {
@@ -1152,10 +1168,16 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 		return err
 	}
 
-	// 5. Apply StatefulSet
+	// 5. Apply the workload — the StatefulSet, or the Deployment in exactly the same slot: both
+	// kinds have the same prerequisites (config, DNS, extras) and the same dependants (the PDB).
 	if resources.StatefulSet != nil {
 		if err := r.applyResource(ctx, cr, resources.StatefulSet); err != nil {
 			return NewResourceApplyError("StatefulSet", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
+		}
+	}
+	if resources.Deployment != nil {
+		if err := r.applyResource(ctx, cr, resources.Deployment); err != nil {
+			return NewResourceApplyError("Deployment", buildCtx.ClusterNamespace, buildCtx.ResourceName, "failed to apply", err)
 		}
 	}
 
@@ -1536,6 +1558,7 @@ func (r *GenericReconciler[CR]) ControllerBuilder(mgr ctrl.Manager, opts SetupWi
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(r.prototype).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&policyv1.PodDisruptionBudget{}).

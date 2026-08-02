@@ -257,8 +257,9 @@ func (c *RoleGroupCleaner) emitDeleted(clusterName string, obj client.Object) {
 }
 
 // Cleanup removes orphaned resources for a cluster.
-// Resources are deleted in order: PDB → StatefulSet → ConfigMap → Service → headless Service →
-// metrics Service, and the role-level PDB of any role that disappeared from the spec entirely.
+// Resources are deleted in order: PDB → workload (StatefulSet, then Deployment) → ConfigMap →
+// Service → headless Service → metrics Service, and the role-level PDB of any role that
+// disappeared from the spec entirely.
 // PVCs are intentionally preserved to protect data unless AnnotationDeletePVCs is set in crAnnotations.
 // Only resources with an ownerReference pointing to ownerUID (with controller=true) are deleted.
 // If GrayDeleteGracePeriod > 0, resources are annotated on first detection and only deleted
@@ -266,8 +267,10 @@ func (c *RoleGroupCleaner) emitDeleted(clusterName string, obj client.Object) {
 //
 // Deletion is a state machine, not a single pass: each step waits for the previous one to be
 // observably gone before the next is issued, and an orphaned StatefulSet is scaled to zero and
-// left to the StatefulSet controller's ordered drain before it is deleted. A step that is still
-// in flight ends the pass for that role group and is resumed on a later reconcile.
+// left to the StatefulSet controller's ordered drain before it is deleted (an orphaned Deployment
+// is scaled to zero and then deleted without the drain wait — see deleteDeployment for why there
+// is no order to preserve). A step that is still in flight ends the pass for that role group and
+// is resumed on a later reconcile.
 //
 // Orphans are discovered from the live cluster and from status.roleGroups (see discoverOrphans),
 // so a lost status entry no longer hides a role group's resources from this cleaner. A role group
@@ -560,13 +563,16 @@ func (c *RoleGroupCleaner) discoverOrphans(
 	return orphans, nil
 }
 
-// discoverLiveOrphans lists the role group ConfigMaps and StatefulSets this cluster owns and
-// returns the slots the spec no longer declares.
+// discoverLiveOrphans lists the role group ConfigMaps, StatefulSets and Deployments this cluster
+// owns and returns the slots the spec no longer declares.
 //
-// Both kinds are listed because the teardown deletes the StatefulSet before the ConfigMap: a pass
-// interrupted in between leaves a ConfigMap whose StatefulSet is already gone, and looking only at
-// StatefulSets would never see it again. Services are derived by suffix from the same base name,
-// so they add no slot these two do not already cover.
+// The ConfigMaps are listed alongside the workloads because the teardown deletes the workload
+// before the ConfigMap: a pass interrupted in between leaves a ConfigMap whose workload is already
+// gone, and a workload-only inventory would never see it again. Deployments are in the inventory
+// under exactly the gates the StatefulSets are (labels + controller owner + derived name), so a
+// Deployment role group removed from the spec is found even after its ledger entry is lost.
+// Services are derived by suffix from the same base name, so they add no slot these three do not
+// already cover.
 func (c *RoleGroupCleaner) discoverLiveOrphans(
 	ctx context.Context,
 	namespace, clusterName string,
@@ -592,14 +598,21 @@ func (c *RoleGroupCleaner) discoverLiveOrphans(
 	if err := c.Client.List(ctx, stsList, listOpts...); err != nil {
 		return nil, c.apiError(fmt.Errorf("failed to list StatefulSets for orphan discovery: %w", err))
 	}
+	deploymentList := &appsv1.DeploymentList{}
+	if err := c.Client.List(ctx, deploymentList, listOpts...); err != nil {
+		return nil, c.apiError(fmt.Errorf("failed to list Deployments for orphan discovery: %w", err))
+	}
 	cmList := &corev1.ConfigMapList{}
 	if err := c.Client.List(ctx, cmList, listOpts...); err != nil {
 		return nil, c.apiError(fmt.Errorf("failed to list ConfigMaps for orphan discovery: %w", err))
 	}
 
-	candidates := make([]metav1.Object, 0, len(stsList.Items)+len(cmList.Items))
+	candidates := make([]metav1.Object, 0, len(stsList.Items)+len(deploymentList.Items)+len(cmList.Items))
 	for i := range stsList.Items {
 		candidates = append(candidates, &stsList.Items[i])
+	}
+	for i := range deploymentList.Items {
+		candidates = append(candidates, &deploymentList.Items[i])
 	}
 	for i := range cmList.Items {
 		candidates = append(candidates, &cmList.Items[i])
@@ -690,16 +703,22 @@ func (c *RoleGroupCleaner) cleanupRoleGroup(
 		}
 	}
 
-	// Delete in order: PDB → StatefulSet → ConfigMap → Service → headless Service → metrics Service.
-	// The order only means something because each step is confirmed gone before the next is issued:
-	// the PDB goes first so it cannot block the eviction of the pods that follow, and the Services
-	// go last so the pods still resolve each other while they terminate.
+	// Delete in order: PDB → workload (StatefulSet, then Deployment) → ConfigMap → Service →
+	// headless Service → metrics Service. The order only means something because each step is
+	// confirmed gone before the next is issued: the PDB goes first so it cannot block the eviction
+	// of the pods that follow, and the Services go last so the pods still resolve each other while
+	// they terminate. A role group holds exactly one workload kind, so of the two workload steps
+	// one always settles trivially on a NotFound — running both is what lets the cleaner reclaim a
+	// group without knowing (or trusting a record of) which kind it was.
 	steps := []func() (deletionState, error){
 		func() (deletionState, error) {
 			return deleteOwned[policyv1.PodDisruptionBudget](ctx, c, namespace, resourceName, ownerUID, clusterName)
 		},
 		func() (deletionState, error) {
 			return c.deleteStatefulSet(ctx, namespace, resourceName, ownerUID, deletePVCs, clusterName)
+		},
+		func() (deletionState, error) {
+			return c.deleteDeployment(ctx, namespace, resourceName, ownerUID, clusterName)
 		},
 		// The product's own extras go after the workload, mirroring the apply path that creates
 		// them BEFORE it: they are typically pod-scheduling prerequisites (a Listener CR the pods
@@ -773,10 +792,11 @@ func (c *RoleGroupCleaner) confirmRoleGroupReclaimed(
 ) (deletionState, error) {
 	key := types.NamespacedName{Namespace: namespace, Name: resourceName}
 
-	checks := make([]func() (bool, error), 0, 4+len(derivedServices))
+	checks := make([]func() (bool, error), 0, 5+len(derivedServices))
 	checks = append(checks,
 		func() (bool, error) { return stillOwned[policyv1.PodDisruptionBudget](ctx, c, key, ownerUID) },
 		func() (bool, error) { return stillOwned[appsv1.StatefulSet](ctx, c, key, ownerUID) },
+		func() (bool, error) { return stillOwned[appsv1.Deployment](ctx, c, key, ownerUID) },
 		func() (bool, error) { return stillOwned[corev1.ConfigMap](ctx, c, key, ownerUID) },
 		func() (bool, error) { return stillOwned[corev1.Service](ctx, c, key, ownerUID) },
 	)
@@ -895,11 +915,12 @@ func confirmDeleted[T any, PT ptrObject[T]](ctx context.Context, c *RoleGroupCle
 
 // checkOrMarkGrayDelete checks whether the grace period for a gray-deleted role group has elapsed.
 //
-// The mark is written to EVERY primary resource that exists (the StatefulSet and the ConfigMap),
-// carrying the same timestamp, so the grace gate is evaluated ONCE per teardown. Annotating only
-// the preferred primary would restart the clock as the state machine progresses: the StatefulSet
-// is deleted first, the next pass finds a never-annotated ConfigMap, stamps a fresh timestamp, and
-// the remaining resources wait another whole grace period.
+// The mark is written to EVERY primary resource that exists (the workload — StatefulSet or
+// Deployment — and the ConfigMap), carrying the same timestamp, so the grace gate is evaluated
+// ONCE per teardown. Annotating only the preferred primary would restart the clock as the state
+// machine progresses: the workload is deleted first, the next pass finds a never-annotated
+// ConfigMap, stamps a fresh timestamp, and the remaining resources wait another whole grace
+// period.
 //
 // Only resources owned by ownerUID are annotated; a foreign primary carries no grace period at all
 // (see below). Returns true if the resources should be deleted now, false if still within the
@@ -914,6 +935,13 @@ func (c *RoleGroupCleaner) checkOrMarkGrayDelete(ctx context.Context, namespace,
 	switch err := c.Client.Get(ctx, key, sts); {
 	case err == nil:
 		primaries = append(primaries, sts)
+	case !errors.IsNotFound(err):
+		return false, 0, c.apiError(err)
+	}
+	deployment := &appsv1.Deployment{}
+	switch err := c.Client.Get(ctx, key, deployment); {
+	case err == nil:
+		primaries = append(primaries, deployment)
 	case !errors.IsNotFound(err):
 		return false, 0, c.apiError(err)
 	}
@@ -1128,6 +1156,60 @@ func (c *RoleGroupCleaner) deleteStatefulSet(
 	return confirmDeleted[appsv1.StatefulSet](ctx, c, key)
 }
 
+// deleteDeployment retires an orphaned Deployment: scale to zero, then delete — with no drain wait
+// in between, which is the deliberate difference from deleteStatefulSet. The StatefulSet's wait
+// exists for its controller's ordered, reverse-ordinal retirement, which a stateful product relies
+// on to shut down cleanly; a Deployment's ReplicaSet terminates its pods all at once whether it is
+// scaled down or garbage-collected, so there is no order to preserve and waiting on
+// .status.replicas would only stall the rest of the teardown. The scale-down still goes first so
+// the pods begin their graceful termination under the Deployment's own controller while the object
+// is still there to manage them; the next pass deletes it regardless of how far they got. No drain
+// deadline is stamped (there is no wait to bound) and no PVCs are collected (a Deployment has no
+// volumeClaimTemplates).
+//
+// clusterName names the owning cluster in the emitted Deleted event.
+func (c *RoleGroupCleaner) deleteDeployment(
+	ctx context.Context,
+	namespace, name string,
+	ownerUID types.UID,
+	clusterName string,
+) (deletionState, error) {
+	logger := log.FromContext(ctx)
+	deployment := &appsv1.Deployment{}
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+
+	if err := c.Client.Get(ctx, key, deployment); err != nil {
+		if errors.IsNotFound(err) {
+			return deletionSettled, nil
+		}
+		return deletionInFlight, c.apiError(err)
+	}
+
+	if !isOwnedByCluster(deployment, ownerUID) {
+		logger.Info("Skipping Deployment deletion: not owned by this cluster", "name", name)
+		return deletionSettled, nil
+	}
+
+	// A nil replica count means the API server default of 1, so it is a scale-down like any other.
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas > 0 {
+		if err := c.scaleDeploymentToZero(ctx, key); err != nil {
+			return deletionInFlight, err
+		}
+		logger.Info("Scaled orphaned Deployment to zero", "name", name)
+		return deletionInFlight, nil
+	}
+
+	if err := c.Client.Delete(ctx, deployment); err != nil {
+		if errors.IsNotFound(err) {
+			return deletionSettled, nil
+		}
+		return deletionInFlight, c.apiError(err)
+	}
+	c.emitDeleted(clusterName, deployment)
+
+	return confirmDeleted[appsv1.Deployment](ctx, c, key)
+}
+
 // drainDeadlineExpired reports whether the ordered drain of an orphaned StatefulSet has been
 // waiting longer than the configured timeout. The start of the drain is recorded on the object
 // itself (AnnotationDrainStarted) rather than in memory, so the deadline survives an operator
@@ -1178,6 +1260,28 @@ func (c *RoleGroupCleaner) scaleToZero(ctx context.Context, key types.Namespaced
 		return c.Client.Update(ctx, live)
 	})
 	// The StatefulSet disappeared while it was being scaled down: there is nothing left to drain.
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	return c.apiError(err)
+}
+
+// scaleDeploymentToZero is scaleToZero for a Deployment, under the same RetryOnConflict for the
+// same reason: the apply path and any autoscaler write the same object, and a routine 409 must not
+// turn into a failed cleanup pass that leaves the role group half-deleted.
+func (c *RoleGroupCleaner) scaleDeploymentToZero(ctx context.Context, key types.NamespacedName) error {
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		live := &appsv1.Deployment{}
+		if err := c.Client.Get(ctx, key, live); err != nil {
+			return err
+		}
+		if live.Spec.Replicas != nil && *live.Spec.Replicas == 0 {
+			return nil
+		}
+		live.Spec.Replicas = ptr.To(int32(0))
+		return c.Client.Update(ctx, live)
+	})
+	// The Deployment disappeared while it was being scaled down: the next pass settles on NotFound.
 	if errors.IsNotFound(err) {
 		return nil
 	}
@@ -1251,7 +1355,7 @@ func (c *RoleGroupCleaner) deleteService(ctx context.Context, namespace, name st
 // so one unwritable object does not leave the other still carrying stale progress.
 func (c *RoleGroupCleaner) clearTeardownProgress(ctx context.Context, namespace, name string, ownerUID types.UID) error {
 	key := types.NamespacedName{Namespace: namespace, Name: name}
-	primaries := []client.Object{&appsv1.StatefulSet{}, &corev1.ConfigMap{}}
+	primaries := []client.Object{&appsv1.StatefulSet{}, &appsv1.Deployment{}, &corev1.ConfigMap{}}
 
 	var errs []error
 	for _, primary := range primaries {

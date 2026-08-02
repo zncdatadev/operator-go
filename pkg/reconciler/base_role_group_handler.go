@@ -131,6 +131,17 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// RoleServicePorts maps role names to service ports. Reconcile-invariant, as above.
 	RoleServicePorts map[string][]corev1.ServicePort
 
+	// RoleWorkloadKinds maps role names to the workload kind their role groups are built as.
+	// A role not in the map is a StatefulSet, which is what every role was before this field
+	// existed. It is keyed per ROLE, not per role group: the kind is a property of the process a
+	// role runs (does it hold per-pod state and identity?), never of one group's sizing.
+	//
+	// Reconcile-invariant by nature — a product decides it when the operator is written — which is
+	// why it is a handler field and not a RoleGroupBuildContext one: the build context carries the
+	// inputs that depend on WHICH cluster is being built, and the workload kind depends on none of
+	// them (see docs/architecture.md §4.1.4 for the split).
+	RoleWorkloadKinds map[string]WorkloadKind
+
 	// ConfigGenerator is used to generate configuration files.
 	// Optional - if nil, config files are generated from MergedConfig only.
 	ConfigGenerator *config.MultiFormatConfigGenerator
@@ -142,6 +153,10 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// StatefulSet then gets a VolumeClaimTemplate built from RoleGroupConfig.Resources.Storage
 	// mounted at this path, keeping the volume/mount contract consistent. Left empty for
 	// backward compatibility (no data PVC unless a product opts in).
+	//
+	// IGNORED for Deployment roles (RoleWorkloadKinds): a Deployment has no volumeClaimTemplates,
+	// because its pods are interchangeable and own no per-pod storage — a role that needs a data
+	// PVC is precisely a role that must stay a StatefulSet.
 	StorageMountPath string
 
 	// ConfigMountPath is where the generated config ConfigMap is mounted in the primary
@@ -240,6 +255,7 @@ func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *r
 		RoleServicePorts:      make(map[string][]corev1.ServicePort),
 		RoleMainContainerName: make(map[string]string),
 		RoleLoggingContainers: make(map[string][]productlogging.ContainerLogging),
+		RoleWorkloadKinds:     make(map[string]WorkloadKind),
 		Scheme:                scheme,
 	}
 }
@@ -288,9 +304,9 @@ func (h *BaseRoleGroupHandler[CR]) resolveSecurityContext() (*corev1.SecurityCon
 // BuildResources builds the default Kubernetes resources for a role group.
 // This implementation creates:
 // - ConfigMap from merged configuration
-// - Headless Service for StatefulSet
+// - Headless Service for StatefulSet roles (a Deployment role gets none — see below)
 // - Service (if ports are defined)
-// - StatefulSet with standard configuration
+// - the role's workload — a StatefulSet, or a Deployment when RoleWorkloadKinds says so
 //
 // The PodDisruptionBudget is intentionally NOT built here: it is a role-level resource
 // (roleConfig.podDisruptionBudget covers all pods of a role across every role group), so the
@@ -347,22 +363,37 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	}
 	resources.ConfigMap = configMap
 
-	// Build Headless Service
-	headlessSvc := h.buildHeadlessService(buildCtx, labels)
-	resources.HeadlessService = headlessSvc
-
-	// Build Service (if ports are defined)
+	// Build Service (if ports are defined). Both workload kinds get the client-facing ClusterIP
+	// Service: how clients reach the role does not depend on how its pods are managed.
 	svcPorts := h.servicePorts(buildCtx, buildCtx.RoleName)
 	if len(svcPorts) > 0 {
 		resources.Service = h.buildService(buildCtx, labels, svcPorts)
 	}
 
-	// Build StatefulSet
-	sts, err := h.buildStatefulSet(ctx, k8sClient, cr, buildCtx, labels)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build StatefulSet: %w", err)
+	// Build the role's workload. The headless Service is built only alongside a StatefulSet: its
+	// whole job is per-pod DNS identity ("pod-0.<svc>..."), and a Deployment's pods have no stable
+	// identity for it to name — emitting one would advertise addresses that break on every
+	// rollout. The kind switch fails loudly on a value it does not know, because silently falling
+	// back to a StatefulSet would deploy a workload shape nobody asked for.
+	switch kind := h.WorkloadKindFor(buildCtx.RoleName); kind {
+	case WorkloadKindStatefulSet:
+		resources.HeadlessService = h.buildHeadlessService(buildCtx, labels)
+
+		sts, err := h.buildStatefulSet(ctx, k8sClient, cr, buildCtx, labels)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build StatefulSet: %w", err)
+		}
+		resources.StatefulSet = sts
+	case WorkloadKindDeployment:
+		deployment, err := h.buildDeployment(ctx, k8sClient, cr, buildCtx, labels)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build Deployment: %w", err)
+		}
+		resources.Deployment = deployment
+	default:
+		return nil, fmt.Errorf("role %q declares unknown workload kind %q (supported: %q, %q)",
+			buildCtx.RoleName, kind, WorkloadKindStatefulSet, WorkloadKindDeployment)
 	}
-	resources.StatefulSet = sts
 
 	logger.V(1).Info("Built role group resources",
 		"role", buildCtx.RoleName,
@@ -419,6 +450,17 @@ func (h *BaseRoleGroupHandler[CR]) loggingContainersFor(roleName string) []produ
 		return lc
 	}
 	return h.LoggingContainers
+}
+
+// WorkloadKindFor implements WorkloadKindProvider: the workload kind a role's role groups are
+// built as, defaulting to WorkloadKindStatefulSet for every role RoleWorkloadKinds does not name.
+// The default is what makes the field backward compatible — a handler that never touches it
+// builds exactly what it always built.
+func (h *BaseRoleGroupHandler[CR]) WorkloadKindFor(roleName string) WorkloadKind {
+	if kind, ok := h.RoleWorkloadKinds[roleName]; ok && kind != "" {
+		return kind
+	}
+	return WorkloadKindStatefulSet
 }
 
 // mainContainerNameFor returns the role-specific primary container name when set, else the global
@@ -792,13 +834,60 @@ func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext,
 	return svcBuilder.Build()
 }
 
-// wireVolumes attaches the role group ConfigMap and the product's CSI volumes to the builder.
+// workloadBuilderAPI is the fluent surface builder.StatefulSetBuilder and builder.DeploymentBuilder
+// share, expressed as a self-referential constraint (each satisfies it with B = its own pointer
+// type, because the fluent methods return the concrete builder to chain). It exists so
+// configureWorkloadBuilder is written ONCE: the two workload kinds must wire the CRD config —
+// replicas, image, affinity, gracefulShutdownTimeout, security context, podOverrides — through
+// identical decisions, and a second copy of that function is where the kinds would start to drift.
 //
-// Extracted from buildStatefulSet, which was over the cyclomatic budget: this is the one part of it
-// that is a self-contained unit (pod volumes plus the matching mounts on the primary container),
-// and it runs before the container rename and sidecar injection so both see the final shape.
-func (h *BaseRoleGroupHandler[CR]) wireVolumes(
-	stsBuilder *builder.StatefulSetBuilder, buildCtx *RoleGroupBuildContext,
+// WithStorage is deliberately absent: it is the one step only a StatefulSet has, and
+// configureWorkloadBuilder reaches it through the storageCapableBuilder assertion below.
+type workloadBuilderAPI[B any] interface {
+	WithLabels(map[string]string) B
+	WithSelectorLabels(map[string]string) B
+	WithReplicas(int32) B
+	WithImage(string, corev1.PullPolicy) B
+	WithConfig(*config.MergedConfig) B
+	WithPorts([]corev1.ContainerPort) B
+	WithServiceAccount(string) B
+	WithResources(*v1alpha1.ResourcesSpec) B
+	WithAffinity(*corev1.Affinity) B
+	WithTerminationGracePeriod(int64) B
+	WithSecurityContext(*corev1.SecurityContext, *corev1.PodSecurityContext) B
+	WithEnableServiceLinks(bool) B
+	WithPodOverrides(*corev1.PodTemplateSpec) B
+	AddVolume(corev1.Volume) B
+	AddVolumeMount(corev1.VolumeMount) B
+	WithMainContainerName(string) B
+	WithMainContainerCustomizer(func(*corev1.Container) error) B
+}
+
+// storageCapableBuilder is the data-PVC surface only the StatefulSet builder offers. The
+// Deployment builder not having the method is what makes StorageMountPath ignored for Deployment
+// roles — there is no field to misconfigure and no code path to forget.
+type storageCapableBuilder interface {
+	WithStorage(*v1alpha1.StorageResource, string) *builder.StatefulSetBuilder
+}
+
+// workloadViolationsReporter is the read-back half both builders share: Build() cannot return an
+// error, so the violations are collected on the builder and surfaced afterwards (see
+// completeWorkloadPod).
+type workloadViolationsReporter interface {
+	PodOverrideViolations() []error
+	MainContainerViolations() []error
+}
+
+// wireWorkloadVolumes attaches the role group ConfigMap and the product's CSI volumes to the
+// builder.
+//
+// Extracted from the workload configuration, which was over the cyclomatic budget: this is the one
+// part of it that is a self-contained unit (pod volumes plus the matching mounts on the primary
+// container), and it runs before the container rename and sidecar injection so both see the final
+// shape. It is a free function rather than a method because it adds a builder type parameter, and
+// Go methods cannot introduce type parameters of their own.
+func wireWorkloadVolumes[CR common.ClusterInterface, B workloadBuilderAPI[B]](
+	h *BaseRoleGroupHandler[CR], wb B, buildCtx *RoleGroupBuildContext,
 ) {
 	// Mount the role group ConfigMap as the "config" volume at configMountPath().
 	//
@@ -810,7 +899,7 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 	// their config in the common no-overrides case, forcing them to hand-create a config volume
 	// and strip the framework's. The mount references buildCtx.ResourceName, which the same
 	// handler's buildConfigMap always creates, so the referenced ConfigMap always exists.
-	stsBuilder.AddVolume(corev1.Volume{
+	wb.AddVolume(corev1.Volume{
 		Name: "config",
 		VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -820,7 +909,7 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 			},
 		},
 	})
-	stsBuilder.AddVolumeMount(corev1.VolumeMount{
+	wb.AddVolumeMount(corev1.VolumeMount{
 		Name:      "config",
 		MountPath: h.configMountPath(),
 		ReadOnly:  true,
@@ -835,28 +924,29 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 			continue
 		}
 		for _, v := range vp.Volumes() {
-			stsBuilder.AddVolume(v)
+			wb.AddVolume(v)
 		}
 		for _, m := range vp.VolumeMounts() {
-			stsBuilder.AddVolumeMount(m)
+			wb.AddVolumeMount(m)
 		}
 	}
 }
 
-// buildStatefulSet creates the StatefulSet for the role group.
-func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
-	ctx context.Context,
-	_ client.Client,
-	_ CR,
+// configureWorkloadBuilder wires everything a role group's workload shares across kinds into the
+// builder: identity labels, replicas, image, ports, the declared runtime config, the security
+// context, the volumes and the pre-Build hooks. buildStatefulSet and buildDeployment both run
+// through it, so the two kinds cannot disagree about a decision that has nothing to do with the
+// workload kind. A free function for the same reason as wireWorkloadVolumes: it introduces the
+// builder type parameter a method cannot.
+func configureWorkloadBuilder[CR common.ClusterInterface, B workloadBuilderAPI[B]](
+	h *BaseRoleGroupHandler[CR],
+	wb B,
 	buildCtx *RoleGroupBuildContext,
 	labels map[string]string,
-) (*appsv1.StatefulSet, error) {
-	// Use the builder pattern from the existing codebase
-	stsBuilder := builder.NewStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace)
-
+) error {
 	// Effective replica count. Normally the role group's declared replicas, but when the cluster
 	// is stopped (ClusterOperation.stopped) it is forced to 0: stopping a cluster means "run zero
-	// pods while every resource — ConfigMap, Service, StatefulSet, PDB, ServiceAccount, PVCs — is
+	// pods while every resource — ConfigMap, Service, workload, PDB, ServiceAccount, PVCs — is
 	// still reconciled and preserved so the cluster can be resumed". Only the pod count changes;
 	// the full resource set is created/updated (and spec/config changes are applied) as usual.
 	replicas := buildCtx.RoleGroupSpec.GetReplicas()
@@ -869,9 +959,9 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// Set basic properties
 	image, pullPolicy, err := h.containerImage(buildCtx, buildCtx.RoleName)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	stsBuilder.WithLabels(labels).
+	wb.WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithReplicas(replicas).
 		WithImage(image, pullPolicy).
@@ -882,22 +972,26 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// created SA is actually used. Empty leaves ServiceAccountName unset (pods use the namespace
 	// default SA), preserving backward compatibility.
 	if buildCtx.ServiceAccountName != "" {
-		stsBuilder.WithServiceAccount(buildCtx.ServiceAccountName)
+		wb.WithServiceAccount(buildCtx.ServiceAccountName)
 	}
 
 	// Wire the role group's declared runtime config (commons RoleGroupConfigSpec) into the
-	// StatefulSet. All of these land on the builder BEFORE pod overrides take effect: the
+	// workload. All of these land on the builder BEFORE pod overrides take effect: the
 	// builder applies PodOverrides last in Build(), so a user-supplied pod override (e.g. an
 	// affinity in podOverrides) always keeps precedence over the config-declared value.
 	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
 	if roleGroupConfig != nil {
 		if roleGroupConfig.Resources != nil {
-			stsBuilder.WithResources(roleGroupConfig.Resources)
+			wb.WithResources(roleGroupConfig.Resources)
 			// Opt-in data PVC: when a product sets StorageMountPath, build a VolumeClaimTemplate
 			// from the configured storage and mount it, so the volume/mount contract is enforced
-			// by the builder instead of being hand-assembled by each product.
+			// by the builder instead of being hand-assembled by each product. Only the StatefulSet
+			// builder has the method — asserting for it is what makes StorageMountPath a no-op for
+			// Deployment roles, whose pods own no per-pod storage to claim.
 			if h.StorageMountPath != "" && roleGroupConfig.Resources.Storage != nil {
-				stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
+				if sb, ok := any(wb).(storageCapableBuilder); ok {
+					sb.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
+				}
 			}
 		}
 
@@ -906,14 +1000,14 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		// constraints could place pods on nodes the user explicitly excluded (same loud-failure
 		// stance as a Vector misconfiguration). Backward compatible: the framework sets affinity
 		// only when the CRD config provides one, so products that post-process the built
-		// StatefulSet with `if podSpec.Affinity == nil { ... }` default guards remain correct.
+		// workload with `if podSpec.Affinity == nil { ... }` default guards remain correct.
 		if roleGroupConfig.Affinity != nil && len(roleGroupConfig.Affinity.Raw) > 0 {
 			affinity, err := DecodeAffinity(roleGroupConfig.Affinity)
 			if err != nil {
-				return nil, fmt.Errorf("invalid affinity in role group config (role %q, group %q): %w",
+				return fmt.Errorf("invalid affinity in role group config (role %q, group %q): %w",
 					buildCtx.RoleName, buildCtx.RoleGroupName, err)
 			}
-			stsBuilder.WithAffinity(affinity)
+			wb.WithAffinity(affinity)
 		}
 
 		// GracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds (see
@@ -929,21 +1023,21 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		timeout := roleGroupConfig.GetGracefulShutdownTimeout()
 		d, err := time.ParseDuration(timeout)
 		if err != nil {
-			return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): %w",
+			return fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): %w",
 				timeout, buildCtx.RoleName, buildCtx.RoleGroupName, err)
 		}
 		if d <= 0 {
-			return nil, fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): must be a positive duration",
+			return fmt.Errorf("invalid gracefulShutdownTimeout %q in role group config (role %q, group %q): must be a positive duration",
 				timeout, buildCtx.RoleName, buildCtx.RoleGroupName)
 		}
-		stsBuilder.WithTerminationGracePeriod(int64((d + time.Second - 1) / time.Second))
+		wb.WithTerminationGracePeriod(int64((d + time.Second - 1) / time.Second))
 	}
 
 	// Apply the security context (framework canonical default unless the product overrode it).
 	// This is set before pod overrides are applied so that any security context supplied via
 	// MergedConfig.PodOverrides takes precedence over (replaces) the default.
 	containerSecurityCtx, podSecurityCtx := h.resolveSecurityContext()
-	stsBuilder.WithSecurityContext(containerSecurityCtx, podSecurityCtx)
+	wb.WithSecurityContext(containerSecurityCtx, podSecurityCtx)
 
 	// Default enableServiceLinks to false — the kubedoop standard. Products use DNS + config and
 	// never the <SVC>_SERVICE_HOST/PORT env vars kubelet injects for every Service in the
@@ -951,50 +1045,60 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// applied, so a value supplied via MergedConfig.PodOverrides takes precedence. The builder's
 	// WithEnableServiceLinks itself serves as the escape hatch (e.g. a product embedding this
 	// handler could reconfigure the builder), so no separate handler field is needed.
-	stsBuilder.WithEnableServiceLinks(false)
+	wb.WithEnableServiceLinks(false)
 
 	// Set pod overrides if present
 	if buildCtx.MergedConfig.PodOverrides != nil {
-		stsBuilder.WithPodOverrides(buildCtx.MergedConfig.PodOverrides)
+		wb.WithPodOverrides(buildCtx.MergedConfig.PodOverrides)
 	}
 
-	h.wireVolumes(stsBuilder, buildCtx)
+	wireWorkloadVolumes(h, wb, buildCtx)
 
 	// Name the primary container when the product needs a significant name (e.g. to match its
 	// per-container logging key). This must reach the builder BEFORE Build(): podOverrides are
 	// strategic-merged by container name inside Build(), so an override addressing the
 	// user-facing name (e.g. "node") must find the primary container already carrying it — a
 	// post-build rename would leave the override appended as a phantom, image-less container.
-	// Sidecar injection below also sees the final name (the Vector provider RW-mounts the
-	// shared log volume on the producer containers by name).
+	// Sidecar injection (completeWorkloadPod) also sees the final name (the Vector provider
+	// RW-mounts the shared log volume on the producer containers by name).
 	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" {
-		stsBuilder.WithMainContainerName(mainName)
+		wb.WithMainContainerName(mainName)
 	}
 
 	// Registered BEFORE Build(): the customizer runs on the assembled container and podOverrides
 	// are strategic-merged afterwards, so the user's overrides keep the last word.
 	if buildCtx.MainContainerCustomizer != nil {
-		stsBuilder.WithMainContainerCustomizer(buildCtx.MainContainerCustomizer)
+		wb.WithMainContainerCustomizer(buildCtx.MainContainerCustomizer)
 	}
 
-	// Build the StatefulSet
-	sts := stsBuilder.Build()
+	return nil
+}
 
+// completeWorkloadPod is the post-Build half both workload kinds share: surface the violations
+// Build() recorded, inject the sidecars, and reject image-less containers. mainContainerName is
+// the builder's (possibly empty) primary container name; podSpec is the built workload's pod spec,
+// mutated in place by sidecar injection.
+func (h *BaseRoleGroupHandler[CR]) completeWorkloadPod(
+	wb workloadViolationsReporter,
+	mainContainerName string,
+	podSpec *corev1.PodSpec,
+	buildCtx *RoleGroupBuildContext,
+) error {
 	// A podOverrides mount at a mountPath the framework owns REPLACES the framework's mount
 	// (strategic merge keys volumeMounts by mountPath, not by name). When the override also
 	// declares its volume the result is a valid pod spec the API server accepts, with the config
 	// ConfigMap no longer mounted anywhere — the product then starts on an empty config directory.
 	// Refusing to build is the only way that stops being silent.
-	if violations := stsBuilder.PodOverrideViolations(); len(violations) > 0 {
-		return nil, NewValidationError("podOverrides", buildCtx.RoleName, buildCtx.RoleGroupName,
+	if violations := wb.PodOverrideViolations(); len(violations) > 0 {
+		return NewValidationError("podOverrides", buildCtx.RoleName, buildCtx.RoleGroupName,
 			stderrors.Join(violations...))
 	}
 
 	// A customizer that failed would otherwise ship a workload missing the command, args or probes
 	// the product meant to set — the same reason podOverrides violations fail the build rather than
 	// being logged.
-	if violations := stsBuilder.MainContainerViolations(); len(violations) > 0 {
-		return nil, NewValidationError("mainContainerCustomizer", buildCtx.RoleName, buildCtx.RoleGroupName,
+	if violations := wb.MainContainerViolations(); len(violations) > 0 {
+		return NewValidationError("mainContainerCustomizer", buildCtx.RoleName, buildCtx.RoleGroupName,
 			stderrors.Join(violations...))
 	}
 
@@ -1004,35 +1108,84 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 		sidecarMgr = h.sidecarManager
 	}
 	if sidecarMgr != nil {
-		if err := sidecarMgr.InjectAll(&sts.Spec.Template.Spec); err != nil {
-			return nil, fmt.Errorf("sidecar injection failed: %w", err)
+		if err := sidecarMgr.InjectAll(podSpec); err != nil {
+			return fmt.Errorf("sidecar injection failed: %w", err)
 		}
 	}
 
-	// Fail loudly on image-less containers instead of shipping a StatefulSet the API server
+	// Fail loudly on image-less containers instead of shipping a workload the API server
 	// rejects (a silent Degraded loop). The typical cause: a podOverride container whose name
 	// matches nothing — a typo, or a sidecar name; sidecars are injected AFTER the overrides
 	// merge, so they cannot be addressed by podOverrides.
-	mainName := stsBuilder.MainContainerName
+	mainName := mainContainerName
 	if mainName == "" {
 		mainName = buildCtx.ResourceName
 	}
-	for _, c := range sts.Spec.Template.Spec.Containers {
+	for _, c := range podSpec.Containers {
 		if c.Image == "" {
-			return nil, fmt.Errorf(
+			return fmt.Errorf(
 				"container %q has no image: a podOverrides container must either address an existing container by name (main container: %q) or be fully specified; sidecar containers cannot be overridden via podOverrides",
 				c.Name, mainName)
 		}
 	}
-	for _, c := range sts.Spec.Template.Spec.InitContainers {
+	for _, c := range podSpec.InitContainers {
 		if c.Image == "" {
-			return nil, fmt.Errorf(
+			return fmt.Errorf(
 				"init container %q has no image: a podOverrides container must either address an existing container by name or be fully specified",
 				c.Name)
 		}
 	}
 
+	return nil
+}
+
+// buildStatefulSet creates the StatefulSet for the role group.
+func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
+	_ context.Context,
+	_ client.Client,
+	_ CR,
+	buildCtx *RoleGroupBuildContext,
+	labels map[string]string,
+) (*appsv1.StatefulSet, error) {
+	stsBuilder := builder.NewStatefulSetBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+
+	if err := configureWorkloadBuilder(h, stsBuilder, buildCtx, labels); err != nil {
+		return nil, err
+	}
+
+	sts := stsBuilder.Build()
+
+	if err := h.completeWorkloadPod(stsBuilder, stsBuilder.MainContainerName, &sts.Spec.Template.Spec, buildCtx); err != nil {
+		return nil, err
+	}
+
 	return sts, nil
+}
+
+// buildDeployment creates the Deployment for a role RoleWorkloadKinds declares as one. It runs the
+// same configuration and the same post-Build validation as buildStatefulSet — only the builder
+// differs, and with it the parts a Deployment does not have (no volumeClaimTemplates, so
+// StorageMountPath is ignored; no serviceName; no podManagementPolicy).
+func (h *BaseRoleGroupHandler[CR]) buildDeployment(
+	_ context.Context,
+	_ client.Client,
+	_ CR,
+	buildCtx *RoleGroupBuildContext,
+	labels map[string]string,
+) (*appsv1.Deployment, error) {
+	deploymentBuilder := builder.NewDeploymentBuilder(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+
+	if err := configureWorkloadBuilder(h, deploymentBuilder, buildCtx, labels); err != nil {
+		return nil, err
+	}
+
+	deployment := deploymentBuilder.Build()
+
+	if err := h.completeWorkloadPod(deploymentBuilder, deploymentBuilder.MainContainerName, &deployment.Spec.Template.Spec, buildCtx); err != nil {
+		return nil, err
+	}
+
+	return deployment, nil
 }
 
 // BuildRolePodDisruptionBudget builds the role-level PodDisruptionBudget from
@@ -1151,6 +1304,21 @@ func (h *BaseRoleGroupHandler[CR]) SetRoleServicePorts(roleName string, ports []
 	h.RoleServicePorts[roleName] = ports
 }
 
+// SetRoleWorkloadKind sets the workload kind for a specific role's role groups. Roles never set
+// this way are StatefulSets (see RoleWorkloadKinds).
+//
+// Call this at CONSTRUCTION. It writes into the shared handler instance — the same rule as
+// SetRoleContainerPorts — and unlike the other per-role settings there is no per-CR channel to
+// move it to: the workload kind may not depend on which cluster is being built, because switching
+// it on a live role group would try to rebuild an existing workload under the other kind's
+// immutable fields.
+func (h *BaseRoleGroupHandler[CR]) SetRoleWorkloadKind(roleName string, kind WorkloadKind) {
+	if h.RoleWorkloadKinds == nil {
+		h.RoleWorkloadKinds = make(map[string]WorkloadKind)
+	}
+	h.RoleWorkloadKinds[roleName] = kind
+}
+
 // RoleNameProvider is implemented by handlers that carry per-role configuration keyed by role name
 // (BaseRoleGroupHandler's Set* methods). A role name is a bare string that has to match a key of
 // the CR's spec.roles; when it does not, every lookup silently returns nil — no ports, no image
@@ -1179,6 +1347,9 @@ func (h *BaseRoleGroupHandler[CR]) ConfiguredRoleNames() []string {
 	for name := range h.RoleLoggingContainers {
 		names[name] = struct{}{}
 	}
+	for name := range h.RoleWorkloadKinds {
+		names[name] = struct{}{}
+	}
 	return slices.Sorted(maps.Keys(names))
 }
 
@@ -1204,3 +1375,7 @@ func (h *BaseRoleGroupHandler[CR]) FetchSecret(ctx context.Context, k8sClient cl
 
 // Verify that BaseRoleGroupHandler implements RoleGroupHandler.
 var _ RoleGroupHandler[common.ClusterInterface] = &BaseRoleGroupHandler[common.ClusterInterface]{}
+
+// Verify that BaseRoleGroupHandler implements WorkloadKindProvider (the health manager asserts
+// for it on the reconciler's handler).
+var _ WorkloadKindProvider = &BaseRoleGroupHandler[common.ClusterInterface]{}

@@ -11,11 +11,12 @@ Every non-test file in this package:
 | File | Purpose |
 |------|---------|
 | `generic_reconciler.go` | `GenericReconcilerConfig` / `GenericReconciler` — the reconcile loop, panic recovery, ServiceAccount provisioning, dependency checks, role/role-group iteration, sidecar validation, status write, `SetupWithManager*` |
-| `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
-| `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters |
-| `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
-| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → [PVCs] → StatefulSet → [product extras] → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), `WithExtraResourceKinds`, gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithDrainTimeout` / `WithAPIReader` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` / `AnnotationDrainStarted`, `LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`, `ConditionOrphanCleanupPending`, `DefaultDrainPollInterval` / `DefaultDrainTimeout` |
-| `health.go` | `HealthManager` — role group aggregation into Available/Progressing, pod-failure detection into Degraded, the `Paused` condition, plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
+| `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources` (one workload per role group: the `StatefulSet` slot or the mutually exclusive `Deployment` slot), `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
+| `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters (including `SetRoleWorkloadKind` / `RoleWorkloadKinds`); `configureWorkloadBuilder` is the single wiring both workload kinds run through |
+| `workload_kind.go` | `WorkloadKind` (`WorkloadKindStatefulSet` default / `WorkloadKindDeployment`) and the `WorkloadKindProvider` interface the health manager asserts on the handler |
+| `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Deployment selector; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
+| `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → [PVCs] → StatefulSet → Deployment (scale to zero, no drain wait) → [product extras] → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), `WithExtraResourceKinds`, gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithDrainTimeout` / `WithAPIReader` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` / `AnnotationDrainStarted`, `LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`, `ConditionOrphanCleanupPending`, `DefaultDrainPollInterval` / `DefaultDrainTimeout` |
+| `health.go` | `HealthManager` — role group aggregation into Available/Progressing (reading the StatefulSet or Deployment per the handler's `WorkloadKindProvider`; StatefulSet without one), pod-failure detection into Degraded, the `Paused` condition, plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
 | `dependency.go` | `Dependency` / `DependencyKind` / `DependencyResolver` — declarative existence checks for referenced ConfigMaps and Secrets, plus the explicit `ValidateS3Connection` / `ValidateDatabaseConnection` / `ValidateZKConfig` helpers |
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
 | `event.go` | `EventManager` — Normal/Warning event emission on the CR. `NewEventManager(recorder, scheme)`: the scheme resolves the Kind named in resource events, which the typed objects `pkg/builder` produces do not carry. The framework emits exactly `Created`/`Updated`/`Deleted` (Normal) and `ReconcileError`/`ReconcilePanic`/`PodOverrideIgnored`/`UnknownConfiguredRole`/`ImmutableFieldIgnored`/`VectorSidecarSkipped` (Warning) — **there are no reconcile start/completion events**. `LogAndEmitError`/`LogAndEmitInfo` exist for product code and the framework never calls them |
@@ -90,7 +91,8 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    `DependencyResolver.Validate` is a retained no-op that the reconcile flow no longer calls;
    richer checks (`ValidateS3Connection`, `ValidateDatabaseConnection`, `ValidateZKConfig`) are
    explicit product-side calls, because only the product knows where those specs live.
-6. **Watches:** `SetupWithManager` covers only the kinds the framework owns. Products emitting
+6. **Watches:** `SetupWithManager` covers only the kinds the framework owns (StatefulSet,
+   Deployment, ConfigMap, Service, PDB, ServiceAccount). Products emitting
    `RoleGroupResources.ExtraResources` must register those GVKs through
    `SetupWithManagerOpts(mgr, SetupWithManagerOptions{ExtraOwns: ...})` (or build on
    `ControllerBuilder`), otherwise out-of-band changes to them produce no reconcile event.
@@ -109,7 +111,7 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    types needs one registry per type, and sharing one is a compile error.
 9. **Pre-apply validation:** registered, enabled sidecar providers are validated via
    `SidecarManager.ValidateAll` after the ConfigMap/Services/extras are applied and **before** the
-   StatefulSet. A failure aborts the role group with a `*ValidationError` (`NewValidationError` /
+   workload. A failure aborts the role group with a `*ValidationError` (`NewValidationError` /
    `IsValidationError`) instead of creating pods that crash-loop on a missing mount.
 10. **Configuration mistakes are surfaced, not swallowed:** a handler implementing
     `RoleNameProvider` has its `ConfiguredRoleNames()` checked against `spec.roles`; names the CR
@@ -144,8 +146,8 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     (`LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`), because a product's own
     PDB may share the derived name and carries the same controller owner reference.
 12. **Orphans are discovered from the live cluster, not only from the status ledger.**
-    `discoverOrphans` unions two sources: the role group ConfigMaps and StatefulSets this CR
-    controller-owns that carry the framework's labels, and `status.roleGroups`. The ledger alone is
+    `discoverOrphans` unions two sources: the role group ConfigMaps, StatefulSets and Deployments
+    this CR controller-owns that carry the framework's labels, and `status.roleGroups`. The ledger alone is
     a record the operator must have *successfully written*, so anything that loses it — a process
     death between applying a role group's resources and updating the CR, a backup tool restoring
     the CR without its status subresource, a `kubectl replace` — used to make those resources
@@ -155,9 +157,9 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     instance/managed-by/component/role-group label set, is controller-owned by this CR, and is
     named exactly what `RoleGroupResourceName` produces for those labels. The name check is the
     decisive one: a discovery ConfigMap carries the same instance/managed-by pair and owner
-    reference, and a product's `ExtraResources` may carry the handler's whole label set. Both kinds
-    are listed because the teardown deletes the StatefulSet before the ConfigMap. An empty owner UID
-    disables live discovery, as it does the role-PDB reclaim.
+    reference, and a product's `ExtraResources` may carry the handler's whole label set. The
+    ConfigMaps are listed alongside the workloads because the teardown deletes the workload before
+    the ConfigMap. An empty owner UID disables live discovery, as it does the role-PDB reclaim.
 
     `status.roleGroups` remains, written by the reconciler and pruned on a real deletion — it is
     still the only source that can attribute a *pre-labels* resource to a role group.
@@ -260,6 +262,21 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     days produces no error, no failing reconcile and no condition transition. Do not grow this file
     into a second copy of tools that already exist.
 
+18. **Workload kinds are a per-role, construction-time choice.** `SetRoleWorkloadKind(role,
+    reconciler.WorkloadKindDeployment)` builds every group of that role as a Deployment: no
+    `-headless` Service (nothing has a stable pod identity to name), no data PVC
+    (`StorageMountPath` is ignored — a Deployment has no volumeClaimTemplates), the Kubernetes
+    RollingUpdate default rollout, and the client Service still emitted when service ports are
+    declared. Roles never configured stay StatefulSets and render byte-identical output. The kind
+    lives on the handler, not on `RoleGroupBuildContext`: it is reconcile-invariant, and switching
+    a live role group's kind is a delete/recreate migration (the old workload's immutable fields
+    cannot become the new one's). `RoleGroupResources.StatefulSet` and `.Deployment` are mutually
+    exclusive — both non-nil fails the role group at apply time. The health manager follows the
+    kind through `WorkloadKindProvider` (promoted from the base handler); the cleaner does not need
+    to — its teardown runs both workload steps and the absent kind settles on `NotFound`, with the
+    Deployment step skipping the ordered-drain wait (a ReplicaSet retires pods all at once, so
+    there is no order to preserve).
+
 ## Reconcile Flow
 
 `Reconcile` fetches the CR (NotFound ⇒ done), then runs `reconcile` under a deferred panic
@@ -273,8 +290,8 @@ recovery that turns a recovered panic into a returned error plus a `ReconcilePan
 3. Declared dependency validation.
 4. Per role: role `PreReconcile` → per role group (`PreReconcile` → build context →
    `BuildResources` → apply `ConfigMap → HeadlessService → Service → ExtraResources →
-   [sidecar validation] → StatefulSet → per-group PDB → MetricsService` → status tracking →
-   `PostReconcile`) → role-level PDB → role `PostReconcile`.
+   [sidecar validation] → workload (StatefulSet | Deployment) → per-group PDB → MetricsService` →
+   status tracking → `PostReconcile`) → role-level PDB → role `PostReconcile`.
 5. Orphan cleanup (returns the earliest pending wakeup — a gray-delete deadline or a deletion in
    flight; errors are logged and non-fatal, except a `*RateLimitError`, which aborts the cycle into
    a backoff).

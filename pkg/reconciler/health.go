@@ -29,6 +29,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -39,6 +40,10 @@ type HealthManager struct {
 	CheckInterval      time.Duration
 	Timeout            time.Duration
 	serviceHealthCheck common.ServiceHealthCheck
+	// workloadKinds says which workload object to read per role. Optional: nil means every role
+	// group is judged from its StatefulSet, which is what every cluster was before workload kinds
+	// existed (and what a hand-built HealthManager without the wiring still gets).
+	workloadKinds WorkloadKindProvider
 }
 
 // NewHealthManager creates a new HealthManager.
@@ -58,6 +63,26 @@ func (h *HealthManager) WithServiceHealthCheck(check common.ServiceHealthCheck) 
 	return h
 }
 
+// WithWorkloadKindProvider tells the health manager which workload kind each role runs, so a
+// Deployment role group is judged from its Deployment instead of from a StatefulSet that does not
+// exist (which would report the whole role group unreadable forever). GenericReconciler wires the
+// role group handler here when it implements WorkloadKindProvider; without it every role falls
+// back to StatefulSet.
+func (h *HealthManager) WithWorkloadKindProvider(provider WorkloadKindProvider) *HealthManager {
+	h.workloadKinds = provider
+	return h
+}
+
+// workloadKindFor resolves the workload kind to read for a role. Anything but an explicit
+// Deployment answer means StatefulSet: health is a read-only pass, and the build path has already
+// failed loudly on a kind it does not know.
+func (h *HealthManager) workloadKindFor(roleName string) WorkloadKind {
+	if h.workloadKinds != nil && h.workloadKinds.WorkloadKindFor(roleName) == WorkloadKindDeployment {
+		return WorkloadKindDeployment
+	}
+	return WorkloadKindStatefulSet
+}
+
 // Check evaluates the cluster's workloads and writes the Available, Progressing, Degraded,
 // ServiceHealthy and Paused conditions. It reads only; nothing here mutates a cluster resource.
 //
@@ -73,8 +98,8 @@ func (h *HealthManager) WithServiceHealthCheck(check common.ServiceHealthCheck) 
 // change reported Degraded=True — a scale-down reported it with Progressing=False, so nothing in the
 // status even hinted that the cluster was mid-operation. A signal that fires on every planned change
 // is one nobody can alert on. Degraded is therefore computed from *failure states* instead: a pod
-// wedged in CrashLoopBackOff or unable to pull its image, a pod nowhere to schedule, a StatefulSet
-// that cannot be read, or a failing application health check. Those are state-based, not
+// wedged in CrashLoopBackOff or unable to pull its image, a pod nowhere to schedule, a workload
+// object that cannot be read, or a failing application health check. Those are state-based, not
 // time-based, so a stuck rollout still reports Degraded=True — the pods are visibly failing — while
 // a healthy rollout does not.
 func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string, spec *v1alpha1.GenericClusterSpec, status *v1alpha1.GenericClusterStatus) error {
@@ -97,56 +122,31 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		return nil
 	}
 
-	// Evaluate every role group's workload. The two ways a role group can be unavailable are kept
-	// apart, because they need different words: one has replica counts to compare, the other has no
-	// StatefulSet to read at all.
-	progressing := false
-	evaluated := 0
-	var shortOfReplicas, unreadable []string
-
-	for roleName, roleSpec := range spec.Roles {
-		for groupName, groupSpec := range roleSpec.RoleGroups {
-			evaluated++
-			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
-			available, isProgressing, err := h.checkRoleGroupHealth(ctx, namespace, resourceName, groupSpec.GetReplicas())
-			if err != nil {
-				// A role group whose StatefulSet cannot even be read is both not available and a
-				// genuine fault: the object the operator applied is gone or unreachable.
-				logger.Error(err, "Failed to check role group health", "role", roleName, "group", groupName)
-				unreadable = append(unreadable, roleName+"/"+groupName)
-				continue
-			}
-
-			if !available {
-				shortOfReplicas = append(shortOfReplicas, roleName+"/"+groupName)
-			}
-			if isProgressing {
-				progressing = true
-			}
-		}
-	}
+	evaluated, progressing, shortOfReplicas, unreadable := h.evaluateRoleGroups(ctx, namespace, clusterName, spec)
 
 	sort.Strings(shortOfReplicas)
-	sort.Strings(unreadable)
+	totalUnreadable := 0
+	for _, kind := range workloadKindMessageOrder {
+		sort.Strings(unreadable[kind])
+		totalUnreadable += len(unreadable[kind])
+	}
 
 	switch {
 	case evaluated == 0:
 		// No role group was evaluated, so nothing runs. Reporting "all replicas are available"
 		// for a cluster with zero workloads would make Available useless as a readiness gate.
 		status.SetUnavailable(v1alpha1.ReasonCreating, "Cluster declares no role groups")
-	case len(shortOfReplicas) == 0 && len(unreadable) == 0:
+	case len(shortOfReplicas) == 0 && totalUnreadable == 0:
 		status.SetAvailable(v1alpha1.ReasonAvailable, "All replicas are available")
 	default:
 		// Name the offenders, and say which kind of problem each one is: with several roles the
-		// generic message forced an operator to go looking, and calling an unreadable StatefulSet
+		// generic message forced an operator to go looking, and calling an unreadable workload
 		// "short of ready replicas" would send them looking for replica counts that do not exist.
 		var parts []string
 		if len(shortOfReplicas) > 0 {
 			parts = append(parts, "fewer ready replicas than desired: "+strings.Join(shortOfReplicas, ", "))
 		}
-		if len(unreadable) > 0 {
-			parts = append(parts, "StatefulSet could not be read: "+strings.Join(unreadable, ", "))
-		}
+		parts = append(parts, unreadableWorkloadParts(unreadable, "%s could not be read: %s")...)
 		reason := v1alpha1.ReasonPodsNotReady
 		if len(shortOfReplicas) == 0 {
 			reason = v1alpha1.ReasonWorkloadUnreadable
@@ -169,10 +169,11 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 	degradedReason := v1alpha1.ReasonAvailable
 	degradedMessage := "No failing pods"
 
-	if len(unreadable) > 0 {
+	if totalUnreadable > 0 {
 		degraded = true
 		degradedReason = v1alpha1.ReasonWorkloadUnreadable
-		degradedMessage = fmt.Sprintf("StatefulSet could not be read for role groups: %s", strings.Join(unreadable, ", "))
+		degradedMessage = strings.Join(
+			unreadableWorkloadParts(unreadable, "%s could not be read for role groups: %s"), "; ")
 	} else if failures, err := h.findFailingPods(ctx, namespace, clusterName); err != nil {
 		// Not being able to list pods says nothing about the cluster, so it must not be reported as
 		// the cluster's fault. It is logged and the verdict falls back to "no failures observed".
@@ -233,17 +234,96 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 	return nil
 }
 
+// workloadKindMessageOrder fixes the order unreadable-workload messages list the kinds in.
+// StatefulSet first keeps the message byte-identical to what all-StatefulSet clusters always got,
+// and a stable order is what lets the no-op guard in updateStatus skip the write on a condition
+// that has not really changed.
+var workloadKindMessageOrder = []WorkloadKind{WorkloadKindStatefulSet, WorkloadKindDeployment}
+
+// unreadableWorkloadParts renders the unreadable role groups per workload kind, in the fixed
+// message order. format receives the kind and the joined role/group list.
+func unreadableWorkloadParts(unreadable map[WorkloadKind][]string, format string) []string {
+	var parts []string
+	for _, kind := range workloadKindMessageOrder {
+		if names := unreadable[kind]; len(names) > 0 {
+			parts = append(parts, fmt.Sprintf(format, kind, strings.Join(names, ", ")))
+		}
+	}
+	return parts
+}
+
+// evaluateRoleGroups reads every role group's workload and buckets the results for the condition
+// writer: how many groups were evaluated, whether any is mid-change, which are short of ready
+// replicas, and which could not be read at all — the latter keyed by workload kind, so the message
+// names the object an operator would actually go looking for. Sending someone to a StatefulSet
+// that a Deployment role never had is worse than saying nothing.
+func (h *HealthManager) evaluateRoleGroups(
+	ctx context.Context, namespace, clusterName string, spec *v1alpha1.GenericClusterSpec,
+) (evaluated int, progressing bool, shortOfReplicas []string, unreadable map[WorkloadKind][]string) {
+	logger := log.FromContext(ctx)
+	unreadable = map[WorkloadKind][]string{}
+
+	for roleName, roleSpec := range spec.Roles {
+		kind := h.workloadKindFor(roleName)
+		for groupName, groupSpec := range roleSpec.RoleGroups {
+			evaluated++
+			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
+			available, isProgressing, err := h.checkRoleGroupHealth(ctx, namespace, resourceName, kind, groupSpec.GetReplicas())
+			if err != nil {
+				// A role group whose workload cannot even be read is both not available and a
+				// genuine fault: the object the operator applied is gone or unreachable.
+				logger.Error(err, "Failed to check role group health", "role", roleName, "group", groupName)
+				unreadable[kind] = append(unreadable[kind], roleName+"/"+groupName)
+				continue
+			}
+
+			if !available {
+				shortOfReplicas = append(shortOfReplicas, roleName+"/"+groupName)
+			}
+			if isProgressing {
+				progressing = true
+			}
+		}
+	}
+
+	return evaluated, progressing, shortOfReplicas, unreadable
+}
+
 // checkRoleGroupHealth reports whether a role group has at least as many ready replicas as the spec
-// asks for, and whether the StatefulSet controller is mid-change.
+// asks for, and whether its workload controller is mid-change. kind selects which object is read —
+// the health manager must look at the workload the role actually runs, or a Deployment role group
+// would be judged forever-unreadable from a StatefulSet that never existed.
 //
 // available uses >= rather than ==. A role group scaled DOWN briefly reports more ready replicas
 // than desired while the extra pods terminate, and that is not a problem — the previous `==` test
 // made a plain scale-down look unhealthy, with no rollout in flight to explain it. A role group
 // scaled to 0 on purpose is available at 0 ready replicas for the same reason.
-func (h *HealthManager) checkRoleGroupHealth(ctx context.Context, namespace, name string, expectedReplicas int32) (available, progressing bool, err error) {
-	sts := &appsv1.StatefulSet{}
+func (h *HealthManager) checkRoleGroupHealth(ctx context.Context, namespace, name string, kind WorkloadKind, expectedReplicas int32) (available, progressing bool, err error) {
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
+	if kind == WorkloadKindDeployment {
+		deployment := &appsv1.Deployment{}
+		if err = h.Client.Get(ctx, key, deployment); err != nil {
+			return false, false, err
+		}
+
+		available = deployment.Status.ReadyReplicas >= expectedReplicas
+
+		// The Deployment analogue of the StatefulSet's revision/replica comparison. A Deployment
+		// has no revision fields on its status; a rollout in flight shows as updatedReplicas
+		// lagging replicas (old-ReplicaSet pods not yet replaced), a replica change the controller
+		// has not finished shows as status.replicas disagreeing with spec.replicas, and an
+		// observedGeneration behind the object's generation means the controller has not even seen
+		// the change yet — without that clause a just-edited Deployment would briefly read as
+		// stable on counts computed from the previous spec.
+		progressing = deployment.Status.ObservedGeneration < deployment.Generation ||
+			deployment.Status.UpdatedReplicas != deployment.Status.Replicas ||
+			ptr.Deref(deployment.Spec.Replicas, 1) != deployment.Status.Replicas
+
+		return available, progressing, nil
+	}
+
+	sts := &appsv1.StatefulSet{}
 	if err = h.Client.Get(ctx, key, sts); err != nil {
 		return false, false, err
 	}

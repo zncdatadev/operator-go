@@ -37,10 +37,21 @@ import (
 )
 
 // RoleGroupResources contains all Kubernetes resources for a role group.
-// Each role group maps to exactly one StatefulSet and its associated resources.
+// Each role group maps to exactly one workload — a StatefulSet, or a Deployment for the roles
+// whose handler declares WorkloadKindDeployment — and its associated resources.
 type RoleGroupResources struct {
-	// StatefulSet is the main workload resource.
+	// StatefulSet is the main workload resource for StatefulSet roles (the default kind).
+	// Mutually exclusive with Deployment: a role group is exactly one workload, and the apply
+	// path rejects a handler that fills both slots.
 	StatefulSet *appsv1.StatefulSet
+
+	// Deployment is the main workload resource for roles the handler declares as
+	// WorkloadKindDeployment (BaseRoleGroupHandler.RoleWorkloadKinds). Mutually exclusive with
+	// StatefulSet — both non-nil is a validation error at apply time, because two workloads under
+	// one role group name would fight over the same pods, Services and status entry. It is applied
+	// in exactly the StatefulSet's slot of the apply order (after ConfigMap, Services and extras;
+	// before the PDB), since its prerequisites are the same.
+	Deployment *appsv1.Deployment
 
 	// ConfigMap contains configuration files for the role group.
 	ConfigMap *corev1.ConfigMap
@@ -48,7 +59,9 @@ type RoleGroupResources struct {
 	// Service is the client-facing service (optional).
 	Service *corev1.Service
 
-	// HeadlessService is the headless service for StatefulSet network identity.
+	// HeadlessService is the headless service for StatefulSet network identity. Deployment role
+	// groups have none: a headless Service exists to give each pod a stable DNS name, and a
+	// Deployment's pods have no stable identity to name.
 	HeadlessService *corev1.Service
 
 	// PodDisruptionBudget is an optional escape hatch for a custom, role-group-scoped PDB.
