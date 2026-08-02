@@ -4,6 +4,24 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-02c] (the no-CRD-default-inside-config rule becomes checkable)
+
+### Core Architecture (`architecture.md`)
+
+- The no-CRD-default rule is now stated as a **constraint on product operators**, not only as an
+  explanation of the SDK's own field shapes, with the evidence that documentation alone did not
+  hold: the rule has been written here since #544, and trino-operator carries
+  `+kubebuilder:default:="5GB"` inside `config` today.
+- Records the executable form (`testutil.HaveNoInheritedConfigDefaults`), that it applies **no depth
+  heuristic**, that roles are detected structurally so flattened-role CRDs are covered, and that an
+  argument matching no files is an error rather than a pass.
+
+### Framework Documentation (`AGENTS.md`, `pkg/AGENTS.md`)
+
+- Testing section documents the exported guard and the three-line product-side usage.
+
+---
+
 ## [2026-08-02b] (log levels inherit; the CRD default that stopped them is gone)
 
 ### Core Architecture (`architecture.md`)
