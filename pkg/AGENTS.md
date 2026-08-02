@@ -42,6 +42,13 @@ Every directory under `pkg/`:
   `S3AProperties()` / `S3AURI()` / `CredentialsProvisioner()`; the product merges the results into
   its own config. `pkg/config`'s generators know nothing about connection objects.
 
+  `S3AProperties()` renders `fs.s3a.path.style.access` from `spec.pathStyle`, whose CRD default is
+  **`false`** (virtual-host addressing). Every product implementation it replaces pinned that key
+  to `true`, because MinIO serves path-style only — virtual-host addressing resolves
+  `<bucket>.<host>` and gets NXDOMAIN. A product adopting this method therefore changes behaviour
+  for existing clusters whose `S3Connection` omits `pathStyle: true`, and the failure appears at
+  first bucket access rather than at admission.
+
 ## Working Instructions
 
 1. **Adding a new resource builder:** create it in `builder/` following the pattern of the existing

@@ -112,6 +112,19 @@ changes are listed below.**
     progress markers. A product that needs e.g. cloud LoadBalancer annotations on the client Service
     has no supported way to set them; tracked in #553.
 
+### docs (s3 pathStyle)
+
+- **Documented that `spec.pathStyle` defaults to `false` and what that costs on adoption** (#571).
+  `ConnectionInfo.S3AProperties()` renders `fs.s3a.path.style.access` from the user's field, whose
+  CRD default is virtual-host addressing. Every product implementation the helper replaces pinned
+  the key to `true`, because MinIO serves path-style **only** — with virtual-host addressing the
+  client resolves `<bucket>.<host>` and gets NXDOMAIN. A product switching to the helper therefore
+  changes behaviour for every existing cluster whose `S3Connection` omits `pathStyle: true`, and
+  the failure appears at first bucket access rather than at admission.
+- `S3ConnectionSpec.PathStyle` gained a doc comment; it had none, so `kubectl explain` printed
+  nothing for it. Downstream CRD descriptions pick this up on their next bump. No behaviour change:
+  the rendering, the default and the field are all unchanged.
+
 ### docs (single architecture document)
 
 - **`docs/architecture_zh.md` is removed.** `docs/architecture.md` is now the only architecture

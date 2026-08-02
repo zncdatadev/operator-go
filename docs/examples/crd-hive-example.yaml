@@ -36,6 +36,12 @@ spec:
       # inline:
       #   bucket: "my-warehouse"
       #   endpoint: "s3.amazonaws.com"
+      #   # pathStyle defaults to false (virtual-host addressing: <bucket>.<host>), which is
+      #   # correct for AWS S3 as written above. Set it to true for MinIO, Ceph RGW and most
+      #   # other self-hosted backends — MinIO serves path-style ONLY, and with the default the
+      #   # client resolves "my-warehouse.minio", which does not exist in DNS. Nothing rejects
+      #   # this at admission; the pods start and fail on first warehouse access.
+      #   pathStyle: false
       #   ...
     # Sidecar Injection:
     # Injects Vector agent for collecting Hive Metastore audit and application logs.
