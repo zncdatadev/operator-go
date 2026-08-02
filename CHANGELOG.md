@@ -10,7 +10,7 @@ changes are listed below.**
 
 ### features (metrics service customization)
 
-- **The per-role-group metrics Service slot is now name- and annotation-customizable.**
+- **The per-role-group metrics Service slot is now name- and annotation-customizable** (#586).
   `builder.MetricsServiceBuilder` gains `WithName` — overriding the default `{resourceName}-metrics`
   name — and `WithAnnotations`, merged into the generated Prometheus annotation set with caller
   entries winning on key collisions. Products migrating from pre-framework operators that published
