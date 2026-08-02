@@ -61,14 +61,26 @@ func WithGeneratedSecretProductName(product string) GeneratedSecretOption {
 	return func(o *GeneratedSecretOptions) { o.ProductName = product }
 }
 
-// WithGeneratedSecretExtraLabels merges extra labels into the Secret.
+// WithGeneratedSecretExtraLabels merges extra labels into the Secret. Repeated calls accumulate,
+// matching WithDiscoveryExtraLabels — these two helpers sit side by side with parallel option
+// names, so a divergence here would be a trap rather than a nuance.
 func WithGeneratedSecretExtraLabels(labels map[string]string) GeneratedSecretOption {
-	return func(o *GeneratedSecretOptions) { o.ExtraLabels = labels }
+	return func(o *GeneratedSecretOptions) {
+		if o.ExtraLabels == nil {
+			o.ExtraLabels = make(map[string]string, len(labels))
+		}
+		maps.Copy(o.ExtraLabels, labels)
+	}
 }
 
-// WithGeneratedSecretAnnotations merges annotations into the Secret.
+// WithGeneratedSecretAnnotations merges annotations into the Secret. Repeated calls accumulate.
 func WithGeneratedSecretAnnotations(annotations map[string]string) GeneratedSecretOption {
-	return func(o *GeneratedSecretOptions) { o.Annotations = annotations }
+	return func(o *GeneratedSecretOptions) {
+		if o.Annotations == nil {
+			o.Annotations = make(map[string]string, len(annotations))
+		}
+		maps.Copy(o.Annotations, annotations)
+	}
 }
 
 // WithGeneratedSecretType sets the Secret type, applied only at creation.

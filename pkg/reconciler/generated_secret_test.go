@@ -175,6 +175,25 @@ var _ = Describe("EnsureGeneratedSecret", func() {
 			"a framework-owned label must not be overridable")
 	})
 
+	It("accumulates repeated label and annotation options", func() {
+		// The sibling WithDiscoveryExtraLabels merges, and these two helpers sit side by side with
+		// parallel option names — replacing here would silently drop the earlier call's keys.
+		_, err := reconciler.EnsureGeneratedSecret(ctx, k8sClient, testScheme, mockCR, secretName,
+			map[string]func() (string, error){"cookie-secret": fixedValue("v")},
+			reconciler.WithGeneratedSecretExtraLabels(map[string]string{"team": "data"}),
+			reconciler.WithGeneratedSecretExtraLabels(map[string]string{"tier": "backend"}),
+			reconciler.WithGeneratedSecretAnnotations(map[string]string{"note": "first"}),
+			reconciler.WithGeneratedSecretAnnotations(map[string]string{"owner": "platform"}),
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		live := getSecret()
+		Expect(live.Labels).To(HaveKeyWithValue("team", "data"))
+		Expect(live.Labels).To(HaveKeyWithValue("tier", "backend"))
+		Expect(live.Annotations).To(HaveKeyWithValue("note", "first"))
+		Expect(live.Annotations).To(HaveKeyWithValue("owner", "platform"))
+	})
+
 	It("does not re-set the immutable type on an existing secret", func() {
 		_, err := reconciler.EnsureGeneratedSecret(ctx, k8sClient, testScheme, mockCR, secretName,
 			map[string]func() (string, error){"cookie-secret": fixedValue("v")},
