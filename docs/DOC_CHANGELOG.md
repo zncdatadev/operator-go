@@ -4,6 +4,35 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-04] (slot identity: neither forgeable nor unaddressable)
+
+### Core Architecture (`architecture.md`)
+
+- **§4.1.5** now states the fixed-slot name and namespace contract as a rule with a reason, next to
+  the "nil is an instruction to delete" paragraph it follows from: that instruction only works if
+  the framework can find the object it refers to, and it finds all six fixed slots by derived name.
+  Generalised to the design rule — *an optional, product-supplied resource slot must have either a
+  framework-owned name or a framework-stamped identity, never neither* — with why the fixed slots
+  take the first branch (a name is checkable at build time, an identity label only against a live
+  List whose stale answer is terminal) and `ExtraResources` the second.
+- Records that three CR label keys are withheld from `ClusterLabels`, and the principle behind it:
+  a marker a user can set is a delete instruction a user can forge. Notes why the filter is an
+  enumerated set rather than a `kubedoop.dev` prefix rule.
+- The non-embedding-handler checklist item 1 was "the headless Service must be named
+  `<ResourceName>-headless`" as a convention; it is now checked and rejected.
+
+### Package guides
+
+- `pkg/reconciler/AGENTS.md`: new §18 on slot names (which names, why pre-flight rather than
+  per-step, why a hard failure); §16 gains the reserved-label paragraph with the concrete
+  `pdb.kubedoop.dev/role` failure it prevents.
+- `pkg/builder/AGENTS.md`: `WithAnnotations` semantics, and why `MetricsServiceBuilder` exposes no
+  name or ClusterIP override.
+- Root `AGENTS.md`: the contract in §3, the reserved keys next to the restarter-label passage, and
+  a pointer from the "Validation failures are loud" paragraph.
+
+---
+
 ## [2026-08-03e] (the handler contract stops being source-only)
 
 ### Core Architecture (`architecture.md`)

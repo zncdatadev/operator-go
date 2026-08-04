@@ -442,6 +442,13 @@ func setOrphanCleanupCondition(status *v1alpha1.GenericClusterStatus, pending []
 // the framework's slot apart from it. An empty ownerUID disables the reclaim entirely — without an
 // owner to match, every labelled PDB in the namespace (including a sibling cluster's) would look
 // like this cluster's.
+//
+// The role name is read from the label's VALUE, and a value naming no declared role is what selects
+// a PDB for deletion. That is only safe because LabelRolePodDisruptionBudget is in
+// reservedSlotLabelKeys and so never reaches a built resource from the CR's own labels: otherwise
+// `kubectl label <cr> pdb.kubedoop.dev/role=anything` would stamp it on every per-group PDB a
+// product ships through the RoleGroupResources.PodDisruptionBudget escape hatch and this List would
+// reap all of them.
 func (c *RoleGroupCleaner) cleanupOrphanedRolePDBs(
 	ctx context.Context,
 	namespace, clusterName string,
