@@ -1320,11 +1320,16 @@ func validateRoleGroupResources(resources *RoleGroupResources, buildCtx *RoleGro
 					"register its kind in SetupWithManagerOptions.ExtraOwns so it is reclaimed by label",
 					name, slot.want))
 		}
-		if ns := slot.obj.GetNamespace(); ns != "" && ns != buildCtx.ClusterNamespace {
+		// An UNSET namespace is rejected along with a wrong one. Nothing downstream fills it in:
+		// applyResource hands the object straight to CreateOrUpdate, and SetControllerReference
+		// refuses any namespace that is not the owner's — including the empty one. Letting it
+		// through would fail at this slot's own apply step, which for a late slot means the
+		// earlier ones are already applied: exactly the half-converged state this check prevents.
+		if ns := slot.obj.GetNamespace(); ns != buildCtx.ClusterNamespace {
 			return NewValidationError("RoleGroupResources."+slot.field, buildCtx.RoleName, buildCtx.RoleGroupName,
 				fmt.Errorf("the slot must live in the cluster's namespace: got %q, want %q. "+
-					"A cross-namespace owner reference is ignored by Kubernetes garbage collection, so the "+
-					"object would outlive even the cluster CR", ns, buildCtx.ClusterNamespace))
+					"Kubernetes disallows a cross-namespace owner reference, and an unset namespace is "+
+					"not filled in by the framework", ns, buildCtx.ClusterNamespace))
 		}
 	}
 

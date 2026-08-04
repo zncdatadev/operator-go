@@ -27,6 +27,7 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -103,6 +104,9 @@ func createSlotCR(ctx context.Context, name string, labels map[string]string, ro
 					_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: objMeta})
 					_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: objMeta})
 					_ = k8sClient.Delete(ctx, &policyv1.PodDisruptionBudget{ObjectMeta: objMeta})
+					// envtest runs no garbage collector, so owner references reclaim nothing here:
+					// every object a spec creates has to be deleted by name or it accumulates.
+					_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: objMeta})
 				}
 			}
 		}
@@ -172,6 +176,31 @@ var _ = Describe("Fixed role group slot names", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(reconciler.IsValidationError(err)).To(BeTrue(), "want a *ValidationError, got %T: %v", err, err)
 		Expect(err.Error()).To(ContainSubstring("kube-system"))
+	})
+
+	It("fails the role group when a slot carries no namespace at all", func() {
+		name := slotCRName("slot-nons")
+		createSlotCR(ctx, name, nil, map[string]v1alpha1.RoleSpec{"worker": defaultGroupRole()})
+		resourceName := reconciler.RoleGroupResourceName(name, "worker", "default")
+
+		// Unset is rejected like wrong: nothing downstream fills it in, so this would fail at the
+		// metrics slot's own apply step — with the ConfigMap, Services and StatefulSet of the same
+		// role group already applied.
+		r := slotReconciler(k8sClient, nil, func(buildCtx *reconciler.RoleGroupBuildContext, res *reconciler.RoleGroupResources) {
+			res.MetricsService = &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ResourceName + "-metrics"},
+				Spec:       corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "m", Port: 9505}}},
+			}
+		})
+
+		err := reconcileSlotCR(ctx, r, name)
+		Expect(err).To(HaveOccurred())
+		Expect(reconciler.IsValidationError(err)).To(BeTrue(), "want a *ValidationError, got %T: %v", err, err)
+		Expect(err.Error()).To(ContainSubstring(testNamespace))
+
+		cm := &corev1.ConfigMap{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, cm)
+		Expect(k8serrors.IsNotFound(getErr)).To(BeTrue(), "no resource may be applied when the declaration is rejected")
 	})
 
 	It("accepts everything BaseRoleGroupHandler builds, including the suffixed Services", func() {
