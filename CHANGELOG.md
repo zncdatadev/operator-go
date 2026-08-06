@@ -42,6 +42,46 @@ changes are listed below.**
   override: the reconciler's metrics slot is addressed by derived name (above), and the Service is
   always headless.
 
+### BREAKING (log producer declarations)
+
+- **`vector.WithProducers` takes `[]productlogging.ContainerLogging` instead of `[]string`.** The
+  provider needs two names per producer and they may now differ: the shared log volume is mounted
+  on the pod container (`ContainerLogging.Container`), while the Vector command pre-creates the
+  producer's log directory (`productlogging.LogDirFor`, which honours the new `LogDirName`).
+  Passing one string for both is what made the log tag inseparable from the container name.
+  Migration is mechanical: `WithProducers([]string{"node"})` becomes
+  `WithProducers([]productlogging.ContainerLogging{{Container: "node"}})`. Handlers that go through
+  `BaseRoleGroupHandler.LoggingContainers` are unaffected — the reconciler passes the declarations
+  it already had.
+- **A log producer that names no container in the assembled pod now fails the role group**
+  (`*reconciler.ValidationError`) instead of being skipped in silence. The silence produced a pod
+  whose log directory was created and whose generated config pointed into it, with no container
+  mounting the shared volume: the appender wrote into the container's own filesystem, Vector
+  collected nothing, and every signal reported healthy. Two fixtures in this repository's own
+  suite were declaring a phantom producer and passing.
+
+### features (log tag decoupling)
+
+- **`productlogging.ContainerLogging.LogDirName`** overrides the log-directory segment a producer
+  writes under — and therefore the `container` field Vector tags its events with, since the
+  collector extracts that field from the path segment and from nothing else. Empty keeps today's
+  behaviour byte for byte. It moves only the directory and the tag: the volume mount still follows
+  `Container`, `logging.containers.<Container>` is still the CRD key (it must be able to address
+  containers that produce no log directory at all), and the default log-file base name still
+  follows `Container`, which is what keeps two producers sharing a directory from resolving to one
+  file. `productlogging.LogDirFor` / `LogDirSegment` expose the effective values; `ValidateProducers`
+  checks a declaration list as a whole.
+- An explicit `LogDirName` must be a single lowercase RFC 1123 label. The segment lands unquoted in
+  the Vector container's `mkdir -p … && exec vector …` command — previously always a pod container
+  name the API server had already constrained — and as one path segment where an embedded `/`
+  silently truncates the tag, `.`/`..` escape the log root, and a space becomes a second `mkdir`
+  argument against a read-only rootfs. Rejecting rather than quoting is deliberate: the command is
+  part of the pod template, so quoting would roll every pod of every product on upgrade.
+- Two producers resolving to the **same absolute log file** are rejected — two appenders with
+  independent rotation policies on one file in one emptyDir lose entries with nothing to show for
+  it. Sharing a *directory* stays legal, which is the coherent shape (one product tag, several
+  containers, distinct files).
+
 ### BREAKING CHANGES
 
 - `common.ClusterInterface` shrank from twelve methods to `client.Object` plus `GetSpec` and

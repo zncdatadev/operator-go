@@ -378,7 +378,7 @@ func TestProvider_Inject_Command(t *testing.T) {
 // path convention) before exec'ing vector. log4j 1.x and python's FileHandler do not create
 // parent directories.
 func TestProvider_Inject_CommandPreCreatesProducerLogDirs(t *testing.T) {
-	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]string{"Main", "sidekick"}))
+	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]productlogging.ContainerLogging{{Container: "Main"}, {Container: "sidekick"}}))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "Main", Image: "main-image"},
@@ -579,7 +579,7 @@ func TestProvider_Inject_NoProducers_NoProducerMount(t *testing.T) {
 // TestProvider_Inject_ProducerGetsRWLogMount asserts the provider RW-mounts the shared log volume
 // on each configured producer container at the canonical log dir.
 func TestProvider_Inject_ProducerGetsRWLogMount(t *testing.T) {
-	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]string{"main"}))
+	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]productlogging.ContainerLogging{{Container: "main"}}))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{
 			{Name: "main", Image: "main-image"},

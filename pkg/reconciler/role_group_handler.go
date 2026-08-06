@@ -371,6 +371,13 @@ func RenderContainerLogging(buildCtx *RoleGroupBuildContext, decl productlogging
 // embedding BaseRoleGroupHandler get it automatically. Returns an empty map when there are no
 // producers and Vector is disabled.
 func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []productlogging.ContainerLogging) (map[string]string, error) {
+	// Whole-list checks first: an unusable log directory or two producers writing the same log
+	// file are properties of the declaration set, not of any one entry, and both must fail the
+	// role group before a single resource is applied.
+	if err := productlogging.ValidateProducers(producers); err != nil {
+		return nil, NewValidationError("logging", buildCtx.RoleName, buildCtx.RoleGroupName, err)
+	}
+
 	data := make(map[string]string)
 	for _, lc := range producers {
 		filename, content, err := RenderContainerLogging(buildCtx, lc)

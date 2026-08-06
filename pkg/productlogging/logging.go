@@ -24,6 +24,7 @@ package productlogging
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -52,6 +53,114 @@ type ContainerLogging struct {
 	// Vector pipeline selects its edge parser by that suffix, so RenderConfigFile rejects a
 	// name that drops it. The per-container log directory is unaffected.
 	LogFileName string
+	// LogDirName overrides the log-directory segment this producer writes under — and therefore
+	// the "container" field Vector tags its events with, since the collector extracts that field
+	// from the directory segment and from nothing else. Empty keeps the default (the lowercased
+	// Container), byte for byte.
+	//
+	// It exists because one string used to do two jobs: name the pod container, and identify the
+	// log stream. A product whose container name is pinned by an existing contract could not keep
+	// a different, equally pinned log tag. This changes NEITHER of the other jobs Container still
+	// does — the pod container the shared log volume is mounted into is matched by Container, and
+	// per-container logging is still configured under logging.containers.<Container> — nor the
+	// default rolling log-file base name, which stays derived from Container so that two producers
+	// sharing a directory cannot resolve to the same file.
+	//
+	// Products that compose their own log paths (a stdout redirect in the entrypoint, a
+	// hand-written config file) must read the directory from LogDirFor rather than hardcoding it:
+	// the framework pre-creates only the effective directory, so a stale hardcoded path either
+	// fails to open or ships one container's streams under two different tags.
+	//
+	// Must be a single lowercase RFC 1123 label when set.
+	LogDirName string
+}
+
+// LogDirSegment returns the log-directory segment a producer declaration writes under: the
+// lowercased LogDirName when set, else the lowercased Container. It is the value Vector reports
+// as the event's "container" field.
+func LogDirSegment(decl ContainerLogging) string {
+	if decl.LogDirName != "" {
+		return strings.ToLower(decl.LogDirName)
+	}
+	return strings.ToLower(decl.Container)
+}
+
+// LogDirFor returns the absolute per-producer log directory
+// ("<KubedoopLogDir>/<LogDirSegment(decl)>") under which the declaration's rolling log file is
+// written.
+//
+// It is the single source of the convention: the file appender (this package) and the Vector
+// sidecar's pre-creating mkdir (pkg/vector) both call it, so the directory that is created is
+// always the directory the producer writes to. Two implementations would diverge on the
+// lowercasing alone.
+func LogDirFor(decl ContainerLogging) string {
+	return path.Join(constant.KubedoopLogDir, LogDirSegment(decl))
+}
+
+// logDirNameRE is the shape an explicit LogDirName must have: one lowercase RFC 1123 label.
+var logDirNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// validateLogDirName rejects an explicit LogDirName that is not a single lowercase RFC 1123
+// label. The bound is not stylistic — the segment reaches two places that cannot defend
+// themselves:
+//
+//   - It is concatenated unquoted into the Vector container's `/bin/sh -c` command, which
+//     pre-creates the directory ("mkdir -p <dir> && exec vector ..."). Until this field existed
+//     the value was always a pod container name, which the API server had already constrained to
+//     a DNS-1123 label; a free-form string removes that implicit guard. Quoting instead of
+//     rejecting is not an option: the command is part of the pod template, so changing it would
+//     roll every pod of every product on upgrade, whereas rejecting an input nobody has yet
+//     supplied changes nothing.
+//   - It is one path segment under KubedoopLogDir and one capture of the collector's
+//     `^<LogDir>(?P<container>.*?)/(?P<file>.*?)$`. An empty segment or "." collapses to the log
+//     root, where the `<LogDir>*/*` glob no longer matches; ".." escapes it; and an embedded "/"
+//     silently truncates the tag at the first separator, because that capture is non-greedy.
+//     LogFileName already rejects "/" for the same reason.
+//
+// The default (an empty LogDirName, i.e. the container name) is deliberately NOT validated: it is
+// already constrained upstream, and checking it here would newly fail declarations that render
+// correctly today.
+func validateLogDirName(decl ContainerLogging) error {
+	if decl.LogDirName == "" {
+		return nil
+	}
+	lowered := strings.ToLower(decl.LogDirName)
+	if len(lowered) > 63 || !logDirNameRE.MatchString(lowered) {
+		return fmt.Errorf(
+			"logDirName %q for container %q must be a single lowercase RFC 1123 label (it becomes one path segment under %s, the Vector event's container tag, and part of the sidecar's mkdir command)",
+			decl.LogDirName, decl.Container, constant.KubedoopLogDir)
+	}
+	return nil
+}
+
+// ValidateProducers checks a producer declaration list as a whole, before anything is built.
+//
+// Two rules. Each declaration's LogDirName must be a legal segment (validateLogDirName), and no
+// two declarations may resolve to the same absolute log file — two writers with two independent
+// rotation policies on one file in one emptyDir, which neither Kubernetes nor the products
+// notice. The collision is narrow by construction: the default log-file base name follows the
+// pod container name, which is unique within a pod, so it is only reachable when a product also
+// pins LogFileName on two producers that share a directory. Sharing a directory is otherwise
+// legal and coherent — one product tag, several containers, distinct file names.
+func ValidateProducers(decls []ContainerLogging) error {
+	seen := make(map[string]string, len(decls))
+	for _, decl := range decls {
+		if err := validateLogDirName(decl); err != nil {
+			return err
+		}
+		logFileName := ContainerLogFileName(decl.Framework, decl.Container)
+		if decl.LogFileName != "" {
+			logFileName = decl.LogFileName
+		}
+		full := path.Join(LogDirFor(decl), logFileName)
+		if other, clash := seen[full]; clash {
+			return fmt.Errorf(
+				"containers %q and %q both write their log file to %q: two appenders rotating one file lose entries silently. Give them different logDirName values, or different logFileName values",
+				other, decl.Container, full)
+		}
+		seen[full] = decl.Container
+	}
+	return nil
 }
 
 // LoggingFramework defines the logging framework type.
@@ -127,8 +236,11 @@ func ContainerLogFileName(framework LoggingFramework, container string) string {
 // container>") under which the container's rolling log file is written. The Vector sidecar
 // calls it too, to pre-create the directory (it starts first), and extracts the .container
 // field from the same path.
+//
+// It is the convention for a producer that declares no LogDirName. A declaration that may carry
+// one must go through LogDirFor instead, which is what this delegates to.
 func ContainerLogDir(container string) string {
-	return path.Join(constant.KubedoopLogDir, strings.ToLower(container))
+	return LogDirFor(ContainerLogging{Container: container})
 }
 
 // RenderConfigFile generates the logging config file for a container declaration from its
@@ -145,6 +257,11 @@ func ContainerLogDir(container string) string {
 func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, withFileAppender bool) (string, string, error) {
 	gen, err := GeneratorFor(decl.Framework)
 	if err != nil {
+		return "", "", err
+	}
+	// Outside the withFileAppender branch on purpose: an unusable logDirName is a mistake in the
+	// declaration, and whether it is caught should not depend on whether Vector is on this cycle.
+	if err := validateLogDirName(decl); err != nil {
 		return "", "", err
 	}
 	fileName := decl.FileName
@@ -167,9 +284,9 @@ func RenderConfigFile(spec *v1alpha1.LoggingConfigSpec, decl ContainerLogging, w
 			}
 			logFileName = decl.LogFileName
 		}
-		// The stable path convention: "<KubedoopLogDir>/<lowercased container>/<file>". path.Join
+		// The stable path convention: "<KubedoopLogDir>/<log dir segment>/<file>". path.Join
 		// collapses the trailing slash constant.KubedoopLogDir carries.
-		opts.FileOutputPath = path.Join(ContainerLogDir(decl.Container), logFileName)
+		opts.FileOutputPath = path.Join(LogDirFor(decl), logFileName)
 	}
 	content, err := gen.Render(LogConfigFromSpec(spec), opts)
 	if err != nil {

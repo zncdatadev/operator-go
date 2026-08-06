@@ -4,6 +4,32 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-07] (the log tag stops being the container name)
+
+### Package guides
+
+- Root `AGENTS.md` §9: the log path was documented as `<KubedoopLogDir>/<lowercased container>/…`
+  with no mention that the directory segment *is* the Vector event's `container` field. Now states
+  the coupling, what `LogDirName` decouples and — as importantly — what it does **not** move (the
+  volume mount, the CRD key, the log-file base name), plus why an explicit value must be an RFC
+  1123 label and why a producer naming no container is now a build failure rather than a silent
+  skip.
+
+### Design rationale recorded
+
+- Which name each derived artifact follows is the whole design, and getting one on the wrong side
+  is the defect: the appender directory, the Vector tag and the sidecar's `mkdir` follow the log
+  dir; the volume mount, the CRD `logging.containers.<key>` and the default log-file base name
+  follow the pod container. The CRD key must stay on the container because that map has to be able
+  to address containers producing no log directory at all — a sidecar, an init container — which
+  have no tag to key on.
+- `vector.yaml` is deliberately untouched: its source globs are wildcard per framework
+  (`<LogDir>*/*<suffix>`), not per container, so the tag follows the directory mechanically with no
+  pipeline change. The issue's proposal to make the globs honour the override would have broken
+  byte-identity for every product and stopped collecting undeclared containers' stdout.
+
+---
+
 ## [2026-08-04] (slot identity: neither forgeable nor unaddressable)
 
 ### Core Architecture (`architecture.md`)
