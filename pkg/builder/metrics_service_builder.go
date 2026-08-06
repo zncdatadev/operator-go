@@ -33,7 +33,15 @@ import (
 //   - Service labels: input labels + "prometheus.io/scrape=true"
 //   - Selector: input labels (without prometheus annotation)
 //
-// Override defaults with WithScheme() and WithPath().
+// Override defaults with WithScheme(), WithPath() and WithAnnotations().
+//
+// The name and the headless ClusterIP are deliberately NOT overridable. The reconciler addresses
+// the per-role-group metrics slot (RoleGroupResources.MetricsService) by the derived name on both
+// of its lifecycle paths — the in-spec reclaim when a handler stops shipping one, and the orphan
+// teardown when the role group leaves the spec — so a Service under any other name would be
+// applied and owner-referenced but reclaimed by neither. A product that genuinely needs a
+// differently named metrics Service ships it through RoleGroupResources.ExtraResources, whose
+// reclaim is label-based (see SetupWithManagerOptions.ExtraOwns).
 type MetricsServiceBuilder struct {
 	resourceName   string
 	namespace      string
@@ -42,6 +50,7 @@ type MetricsServiceBuilder struct {
 	targetPortName string
 	labels         map[string]string
 	selector       map[string]string
+	annotations    map[string]string
 	scheme         string
 	path           string
 }
@@ -73,6 +82,22 @@ func (b *MetricsServiceBuilder) WithScheme(scheme string) *MetricsServiceBuilder
 // WithPath sets the Prometheus metrics path (default: "" which means /metrics).
 func (b *MetricsServiceBuilder) WithPath(path string) *MetricsServiceBuilder {
 	b.path = path
+	return b
+}
+
+// WithAnnotations merges extra annotations into the generated Prometheus set. Caller entries win
+// on key collisions, so any generated default can be restated or replaced; repeated calls
+// accumulate. The map is copied entry-wise, so a caller that keeps mutating the map it passed does
+// not change what this builder produces later.
+//
+// This is the channel for the scrape configuration the framework does not model — a
+// `prometheus.io/param_*` key, a product's own scrape hints, or a relabelling marker a downstream
+// ServiceMonitor keys off.
+func (b *MetricsServiceBuilder) WithAnnotations(annotations map[string]string) *MetricsServiceBuilder {
+	if b.annotations == nil {
+		b.annotations = make(map[string]string, len(annotations))
+	}
+	maps.Copy(b.annotations, annotations)
 	return b
 }
 
@@ -114,6 +139,8 @@ func (b *MetricsServiceBuilder) Build() *corev1.Service {
 	if b.path != "" {
 		annotations["prometheus.io/path"] = b.path
 	}
+	// Applied last so a caller entry wins over the generated default for the same key.
+	maps.Copy(annotations, b.annotations)
 
 	selectorSource := b.selector
 	if selectorSource == nil {

@@ -38,6 +38,19 @@ import (
 
 // RoleGroupResources contains all Kubernetes resources for a role group.
 // Each role group maps to exactly one StatefulSet and its associated resources.
+//
+// The framework owns the NAME and NAMESPACE of every fixed slot below; the handler owns their
+// content. The names are derived from RoleGroupBuildContext.ResourceName —
+// "<resource>" for the ConfigMap, Service, StatefulSet and PodDisruptionBudget,
+// "<resource>-headless" and "<resource>-metrics" for the two suffixed Services — and both paths
+// that REMOVE a slot address it by that name: the in-spec reclaim when a handler stops shipping
+// one, and RoleGroupCleaner's teardown when the role group leaves the spec. A slot filled under a
+// different name is therefore applied and owner-referenced but reclaimed by nothing, surviving
+// until the cluster CR itself is deleted. Rather than leak it silently, the framework fails the
+// role group with a *ValidationError before applying anything (see validateRoleGroupResources).
+//
+// ExtraResources takes the other branch of that trade: the product owns those names, so their
+// reclaim is label-based and opt-in.
 type RoleGroupResources struct {
 	// StatefulSet is the main workload resource.
 	StatefulSet *appsv1.StatefulSet

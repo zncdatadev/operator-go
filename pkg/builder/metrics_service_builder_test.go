@@ -166,4 +166,61 @@ var _ = Describe("MetricsServiceBuilder", func() {
 			Expect(svc.Spec.Ports[0].TargetPort).To(Equal(intstr.FromString("jmx")))
 		})
 	})
+
+	Describe("WithAnnotations", func() {
+		It("should merge extra annotations into the generated Prometheus set", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithAnnotations(map[string]string{"example.com/team": "data"}).
+				Build()
+
+			Expect(svc.Annotations).To(HaveKeyWithValue("example.com/team", "data"))
+			// Merged, not replaced: the generated set has to survive alongside the caller's.
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9505"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/scheme", "http"))
+		})
+
+		It("should let a caller entry win over the generated default for the same key", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithPath("/generated").
+				WithAnnotations(map[string]string{
+					"prometheus.io/path": "/override",
+					"prometheus.io/port": "19505",
+				}).
+				Build()
+
+			// Merging in the other order would silently discard the override, which is the whole
+			// reason this method exists — a product cannot otherwise correct a generated value.
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/path", "/override"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("prometheus.io/port", "19505"))
+		})
+
+		It("should accumulate across calls", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).
+				WithAnnotations(map[string]string{"a": "1"}).
+				WithAnnotations(map[string]string{"b": "2"}).
+				Build()
+
+			Expect(svc.Annotations).To(HaveKeyWithValue("a", "1"))
+			Expect(svc.Annotations).To(HaveKeyWithValue("b", "2"))
+		})
+
+		It("should copy the caller's map rather than alias it", func() {
+			caller := map[string]string{"a": "1"}
+			b := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).WithAnnotations(caller)
+			caller["a"] = "mutated"
+			caller["late"] = "entry"
+
+			svc := b.Build()
+			Expect(svc.Annotations).To(HaveKeyWithValue("a", "1"))
+			Expect(svc.Annotations).NotTo(HaveKey("late"))
+		})
+
+		It("should leave the generated set untouched when never called", func() {
+			svc := builder.NewMetricsServiceBuilder(resourceName, namespace, port, labels).Build()
+
+			Expect(svc.Annotations).To(HaveLen(3))
+			Expect(svc.Name).To(Equal(resourceName + "-metrics"))
+		})
+	})
 })

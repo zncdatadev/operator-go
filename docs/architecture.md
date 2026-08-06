@@ -355,6 +355,14 @@ Both fail loudly: a customizer that returns an error, or that changes the image 
 
 `RoleGroupResources` is not a bag of optional outputs. The apply path treats **nil as an instruction**, not as "leave it alone": a nil `MetricsService` or `PodDisruptionBudget` makes the framework *delete* the corresponding live object, because that is how a role group that stops declaring one is converged. `ExtraResources` carries arbitrary GVKs, which must be registered in the reconciler's scheme and live in the CR's namespace — the framework sets a controller owner reference, and a cross-namespace owner is rejected by Kubernetes.
 
+**The framework owns the fixed slots' names, and the handler owns their content.** `ConfigMap`, `Service`, `StatefulSet` and `PodDisruptionBudget` must be named `buildCtx.ResourceName`; `HeadlessService` and `MetricsService` that name plus `-headless` and `-metrics`; all six must live in `buildCtx.ClusterNamespace`. A slot that breaks either rule fails the role group with a `*ValidationError` *before any resource is applied*.
+
+This is the direct consequence of the paragraph above. "Nil is an instruction to delete" only works if the framework can find the object the instruction refers to, and it finds all six by their derived names — in the in-spec reclaims and, when the role group leaves the spec, in `RoleGroupCleaner`. Nothing recovers a slot filled under a different name: live-orphan discovery rejects any object whose name is not the derived one, and the teardown's final confirmation re-checks the same fixed list before pruning the group's status entry. Such an object is applied, owner-referenced, reported healthy, and then outlives every teardown until the cluster CR is deleted.
+
+The general rule this encodes: **an optional, product-supplied resource slot must have either a framework-owned name or a framework-stamped identity — never neither.** The framework picks the name for the fixed slots because a name is checkable at build time, against no cluster and in one reconcile; an identity label is only checkable against a live List, on a path where a stale cache answering "nothing here" is terminal. `ExtraResources` takes the other branch deliberately, because there the names are the product's: its reclaim is label-selected and opt-in through `SetupWithManagerOptions.ExtraOwns`. A product that needs a metrics Service under its own name uses that door.
+
+The same reasoning bounds what a CR label may say. Labels are the one channel from a cluster's *deployer* to the built resources (§4.1.4), but three keys — `metrics.kubedoop.dev/service`, `pdb.kubedoop.dev/role`, `pdb.kubedoop.dev/role-group` — are the framework's own slot markers, and a reclaim deletes by their presence or value. They are filtered out of `ClusterLabels` for that reason: a marker that a user can set is a delete instruction that a user can forge. The filter is an enumerated set, not a domain prefix rule, because `restarter.kubedoop.dev/enable` establishes that `kubedoop.dev` is shared with the platform rather than private to this framework.
+
 #### The container contract
 
 - The primary container's name resolves `RoleMainContainerName[role]` → `MainContainerName` → the role group's resource name, and must be settled **before** `Build()`: `podOverrides` are strategic-merged by container name, so a later rename leaves the user's override appended as a phantom, image-less container.
@@ -381,7 +389,7 @@ Eleven causes across twelve sites inside `BaseRoleGroupHandler.BuildResources`. 
 
 A handler implementing the interface directly inherits none of the conventions, and four of them are load-bearing:
 
-1. the headless Service must be named `<ResourceName>-headless` — the StatefulSet's `serviceName` is derived, and it is immutable;
+1. every fixed slot must carry its derived name — the headless Service `<ResourceName>-headless` above all, since the StatefulSet's `serviceName` is derived from it and immutable. This one the framework now checks and rejects rather than leaving to convention;
 2. the pod must mount the ConfigMap named `buildCtx.ResourceName`, which is what the framework's own ConfigMap is called;
 3. `clusterOperation.stopped` must force replicas to 0 — it is implemented in the base handler, not in the reconciler;
 4. `RoleNameProvider`, `LoggingProducerProvider` and `BuildRolePodDisruptionBudget` are optional capability interfaces the reconciler type-asserts for; not implementing them silently disables the role-name typo warning, the Vector wiring and the role-level PDB.

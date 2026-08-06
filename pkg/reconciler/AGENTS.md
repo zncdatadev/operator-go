@@ -223,6 +223,20 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     *user* wants on the workloads — above all the platform opt-ins the SDK does not own, such as
     `restarter.kubedoop.dev/enable` — is set by labelling the CR.
 
+    **Three label keys are withheld from that channel** (`reservedSlotLabelKeys` in
+    `generic_reconciler.go`): `metrics.kubedoop.dev/service`, `pdb.kubedoop.dev/role` and
+    `pdb.kubedoop.dev/role-group`. These are the framework's *slot markers* — labels whose presence,
+    or whose value, makes a reclaim SELECT an object for deletion — and unlike the
+    `app.kubernetes.io/*` set nothing downstream overwrites them, so a CR carrying one would stamp
+    it on every resource the handler builds and make each of them answer to a reclaim aimed at the
+    slot. A CR labelled `pdb.kubedoop.dev/role=anything` was enough to make
+    `cleanupOrphanedRolePDBs` reap every per-group PDB shipped through the
+    `RoleGroupResources.PodDisruptionBudget` escape hatch, since it reads the role name from the
+    label's value and deletes any PDB naming a role the spec does not declare. The filter is an
+    enumerated set rather than a `kubedoop.dev` prefix rule precisely because
+    `restarter.kubedoop.dev/enable` proves that domain is shared with the platform, not
+    framework-private; every other CR label still propagates unchanged.
+
     `BaseRoleGroupHandler.ExtraLabels` and `ExtraAnnotations` are **gone**. They were compile-time
     fields on a handler, i.e. a decision frozen when the operator was built, for something decided
     when a cluster is deployed; and `ExtraLabels` specifically existed to paper over the three
@@ -259,6 +273,30 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     it is retiring, and reports the rest in log lines, so a role group stuck mid-teardown for three
     days produces no error, no failing reconcile and no condition transition. Do not grow this file
     into a second copy of tools that already exist.
+
+18. **The framework owns the NAME of every fixed `RoleGroupResources` slot; the handler owns its
+    content.** `validateRoleGroupResources` runs before step 1 of `applyResources` and fails the
+    role group with a `*ValidationError` when a slot's name is not the derived one —
+    `<resource>` for `ConfigMap`, `Service`, `StatefulSet` and `PodDisruptionBudget`,
+    `<resource>-headless` and `<resource>-metrics` for the two suffixed Services — or when its
+    namespace is not the cluster's.
+
+    The rule is not stylistic. Both paths that REMOVE a slot address it by that derived name: the
+    in-spec reclaims (`reclaimMetricsService`, `reclaimRoleGroupPDB`) and `RoleGroupCleaner`'s
+    teardown. Nothing recovers a slot filled under another name — `discoverLiveOrphans` rejects any
+    object whose name is not what `RoleGroupResourceName` produces, and `confirmRoleGroupReclaimed`
+    re-checks the same fixed list before pruning the group's status entry — so such an object was
+    applied, owner-referenced, reported healthy, and then survived every teardown until the cluster
+    CR itself was deleted. For the metrics slot that is a Prometheus target with no endpoints; for
+    the ConfigMap and StatefulSet it is a workload nothing will ever look at again.
+
+    The check is **pre-flight** rather than at each slot's apply step, so a rejected declaration
+    leaves nothing half-converged. It is a hard failure rather than a warning for the same reason
+    the `podOverrides` mountPath violation is (§10): the alternative reinstates the leak.
+
+    `ExtraResources` takes the other branch of the same trade — the product owns those names, so
+    their reclaim is label-based and opt-in through `SetupWithManagerOptions.ExtraOwns`. That is
+    the supported route for a differently named metrics Service.
 
 ## Reconcile Flow
 

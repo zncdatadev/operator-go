@@ -735,17 +735,52 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 	return nil
 }
 
-// handlerWritableLabels returns the CR's labels as a map a handler may both read and write.
+// reservedSlotLabelKeys are the framework's slot markers: labels whose presence (or value) makes
+// the framework SELECT an object for deletion. They are excluded from the CR labels that reach a
+// handler, because nothing downstream overwrites them.
+//
+// Every other CR label is deliberately propagated — that is the documented channel for platform
+// opt-ins the framework does not own, restarter.kubedoop.dev/enable above all — and the
+// app.kubernetes.io/* set is safe to propagate because recommendedLabels and
+// frameworkSelectorLabels are applied over it. These three have no such backstop: BaseRoleGroupHandler
+// stamps them only on the objects that really are the slot, so a CR label using one of these keys
+// would travel to every built resource and make each of them answer to a reclaim aimed at the slot.
+//
+//   - LabelMetricsService on the client Service of a role group named "<x>-metrics" makes the
+//     reclaim of role group "<x>" delete it, every reconcile.
+//   - LabelRolePodDisruptionBudget carries the ROLE NAME in its value, and cleanupOrphanedRolePDBs
+//     deletes every PDB whose value names a role the spec does not declare — so one CR label with a
+//     bogus value reaps the per-group PDBs a product ships through the escape hatch.
+//
+// Filtering here rather than at each List keeps the rule in one place and makes it true for any
+// future reclaim that keys off a marker.
+var reservedSlotLabelKeys = []string{
+	LabelMetricsService,
+	LabelRolePodDisruptionBudget,
+	LabelRoleGroupPodDisruptionBudget,
+}
+
+// handlerWritableLabels returns the CR's labels as a map a handler may both read and write, minus
+// the framework's own slot markers (see reservedSlotLabelKeys).
 //
 // It is cloned because cr.GetLabels() hands out the live object's map, and a handler that adds an
 // entry to ClusterLabels would otherwise mutate the object this cycle's status write is computed
 // from. It is materialized because maps.Clone preserves nil and a CR carrying no labels is
 // perfectly ordinary: RoleGroupBuildContext.ClusterLabels and RoleBuildContext.ClusterLabels are
 // documented as the handler's to build on, and writing to a nil map panics.
-func handlerWritableLabels(labels map[string]string) map[string]string {
+func handlerWritableLabels(ctx context.Context, labels map[string]string) map[string]string {
 	cloned := maps.Clone(labels)
 	if cloned == nil {
 		cloned = make(map[string]string)
+	}
+	for _, key := range reservedSlotLabelKeys {
+		if _, present := cloned[key]; !present {
+			continue
+		}
+		delete(cloned, key)
+		log.FromContext(ctx).V(1).Info(
+			"Dropped a reserved framework label from the CR's labels: it marks a resource slot for reclaim and is not propagated to built resources",
+			"label", key)
 	}
 	return cloned
 }
@@ -775,7 +810,7 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 	pdb := handler.BuildRolePodDisruptionBudget(&RoleBuildContext{
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
-		ClusterLabels:    handlerWritableLabels(cr.GetLabels()),
+		ClusterLabels:    handlerWritableLabels(ctx, cr.GetLabels()),
 		ClusterSpec:      cr.GetSpec(),
 		RoleName:         roleName,
 		RoleSpec:         roleSpec,
@@ -957,7 +992,7 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 	return &RoleGroupBuildContext{
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
-		ClusterLabels:    handlerWritableLabels(cr.GetLabels()),
+		ClusterLabels:    handlerWritableLabels(ctx, cr.GetLabels()),
 		ClusterSpec:      cr.GetSpec(),
 		RoleName:         roleName,
 		RoleSpec:         roleSpec,
@@ -1129,6 +1164,12 @@ func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Conte
 // already exists (see applyResource / copyDesiredState for the exact update semantics).
 func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
 
+	// 0. Reject a declaration the lifecycle cannot honour, BEFORE anything is applied — a role
+	// group that half-converged and then failed is worse than one that did not start.
+	if err := validateRoleGroupResources(resources, buildCtx); err != nil {
+		return err
+	}
+
 	// 1. Apply ConfigMap
 	if resources.ConfigMap != nil {
 		if err := r.applyResource(ctx, cr, resources.ConfigMap); err != nil {
@@ -1217,6 +1258,98 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 	return nil
 }
 
+// apiError maps an API-server error the framework cannot act on into the framework's own type. A
+// 429 becomes a *RateLimitError, which aborts the pass and backs off rather than marking the
+// cluster Degraded: pushing the remaining roles through a throttled API server only deepens the
+// backlog, and a throttled cluster is not a broken one. Everything else is returned unchanged.
+//
+// It is a method rather than an inline check because the mapping used to live only inside
+// applyResource, so every reclaim path added afterwards reported a throttled Get as a resource
+// failure — and the reclaims run on EVERY role group of EVERY cluster, being the branch taken when
+// a handler ships no metrics Service or no per-group PDB. RoleGroupCleaner carries its own copy
+// (RoleGroupCleaner.apiError) for the teardown side.
+func (r *GenericReconciler[CR]) apiError(err error) error {
+	if errors.IsTooManyRequests(err) {
+		return NewRateLimitError(r.rateLimitRetryAfter, err)
+	}
+	return err
+}
+
+// validateRoleGroupResources rejects a RoleGroupResources the lifecycle cannot honour.
+//
+// The six fixed slots are addressed BY DERIVED NAME on every path that removes them: the in-spec
+// reclaims here in applyResources, and the orphan teardown in RoleGroupCleaner when the role group
+// leaves the spec. Nothing recovers a slot filled under a different name — discoverLiveOrphans
+// rejects any object whose name is not what RoleGroupResourceName produces, and confirmRoleGroupReclaimed
+// re-checks the same fixed list before the group's status entry is pruned. Such an object is
+// applied, owner-referenced, reported healthy, and then survives every teardown until the cluster
+// CR itself is deleted: a Service that keeps a Prometheus target with no endpoints, a ConfigMap and
+// a StatefulSet nothing will ever look at again.
+//
+// So the framework owns these names and says so at build time, where the answer is checkable
+// without a live cluster and costs one reconcile instead of a silent leak. A product that needs to
+// choose its own name ships the object through RoleGroupResources.ExtraResources, whose reclaim is
+// label-based precisely because its names are the product's (see SetupWithManagerOptions.ExtraOwns).
+//
+// The namespace is checked for the same reason and one more: a cross-namespace owner reference is
+// not honoured by Kubernetes garbage collection, so the object would outlive even the CR.
+func validateRoleGroupResources(resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
+	slots := []struct {
+		field string
+		want  string
+		obj   client.Object
+	}{
+		{"ConfigMap", buildCtx.ResourceName, objectOrNil(resources.ConfigMap)},
+		{"HeadlessService", buildCtx.ResourceName + "-headless", objectOrNil(resources.HeadlessService)},
+		{"Service", buildCtx.ResourceName, objectOrNil(resources.Service)},
+		{"StatefulSet", buildCtx.ResourceName, objectOrNil(resources.StatefulSet)},
+		{"PodDisruptionBudget", buildCtx.ResourceName, objectOrNil(resources.PodDisruptionBudget)},
+		{"MetricsService", buildCtx.ResourceName + "-metrics", objectOrNil(resources.MetricsService)},
+	}
+
+	for _, slot := range slots {
+		if slot.obj == nil {
+			continue
+		}
+		if name := slot.obj.GetName(); name != slot.want {
+			return NewValidationError("RoleGroupResources."+slot.field, buildCtx.RoleName, buildCtx.RoleGroupName,
+				fmt.Errorf("the framework owns the name of this slot: got %q, want %q. "+
+					"A slot filled under any other name is applied but reclaimed by neither the in-spec "+
+					"reclaim nor the orphan teardown, both of which address it by that name. Ship a "+
+					"differently named object through RoleGroupResources.ExtraResources instead, and "+
+					"register its kind in SetupWithManagerOptions.ExtraOwns so it is reclaimed by label",
+					name, slot.want))
+		}
+		// An UNSET namespace is rejected along with a wrong one. Nothing downstream fills it in:
+		// applyResource hands the object straight to CreateOrUpdate, and SetControllerReference
+		// refuses any namespace that is not the owner's — including the empty one. Letting it
+		// through would fail at this slot's own apply step, which for a late slot means the
+		// earlier ones are already applied: exactly the half-converged state this check prevents.
+		if ns := slot.obj.GetNamespace(); ns != buildCtx.ClusterNamespace {
+			return NewValidationError("RoleGroupResources."+slot.field, buildCtx.RoleName, buildCtx.RoleGroupName,
+				fmt.Errorf("the slot must live in the cluster's namespace: got %q, want %q. "+
+					"Kubernetes disallows a cross-namespace owner reference, and an unset namespace is "+
+					"not filled in by the framework", ns, buildCtx.ClusterNamespace))
+		}
+	}
+
+	return nil
+}
+
+// objectOrNil converts a typed slot pointer to client.Object without the typed-nil trap: a nil
+// *corev1.Service assigned to a client.Object interface is non-nil, so `obj == nil` on the
+// interface would be false and every unset slot would be validated as an object with an empty name.
+func objectOrNil[T interface {
+	client.Object
+	comparable
+}](obj T) client.Object {
+	var zero T
+	if obj == zero {
+		return nil
+	}
+	return obj
+}
+
 // LabelMetricsService marks a Service as the framework's per-role-group metrics slot. Only
 // Services carrying it are reclaimed when a role group stops producing a MetricsService.
 const LabelMetricsService = "metrics." + constant.KubedoopDomain + "/service"
@@ -1259,7 +1392,7 @@ func (r *GenericReconciler[CR]) reclaimRolePDB(ctx context.Context, namespace, n
 		if errors.IsNotFound(err) {
 			return nil
 		}
-		return err
+		return r.apiError(err)
 	}
 	if pdb.Labels[LabelRolePodDisruptionBudget] != roleName {
 		return nil
@@ -1280,7 +1413,7 @@ func (r *GenericReconciler[CR]) reclaimRoleGroupPDB(ctx context.Context, buildCt
 		if errors.IsNotFound(err) {
 			return nil
 		}
-		return err
+		return r.apiError(err)
 	}
 	if !isFrameworkRoleGroupPDB(pdb, buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName) {
 		return nil
@@ -1306,13 +1439,19 @@ func isFrameworkRoleGroupPDB(pdb *policyv1.PodDisruptionBudget, clusterName, rol
 // hit the client Service of a role group named "<group>-metrics", and any object a product ships
 // under that name through RoleGroupResources.ExtraResources — both of which carry this CR's
 // controller owner reference, so ownership alone does not distinguish them.
+//
+// That separation holds only because LabelMetricsService cannot arrive on an object by any route
+// other than this framework stamping it: it is in reservedSlotLabelKeys, so a CR carrying it does
+// not propagate it to the resources a handler builds. Without that filter one `kubectl label` on
+// the cluster CR puts the slot label on every built object, and this Get finds the neighbouring
+// role group's client Service wearing it.
 func (r *GenericReconciler[CR]) reclaimMetricsService(ctx context.Context, namespace, name string, ownerUID types.UID, clusterName string) error {
 	svc := &corev1.Service{}
 	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, svc); err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
-		return err
+		return r.apiError(err)
 	}
 	if svc.Labels[LabelMetricsService] != valueTrue {
 		return nil
@@ -1389,10 +1528,7 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 		return copyErr
 	})
 	if err != nil {
-		if errors.IsTooManyRequests(err) {
-			return NewRateLimitError(r.rateLimitRetryAfter, err)
-		}
-		return err
+		return r.apiError(err)
 	}
 
 	// Tell the user their change was dropped. The framework preserving an immutable field is

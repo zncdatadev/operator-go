@@ -8,6 +8,40 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### fixes (role group slot identity)
+
+- **A `RoleGroupResources` slot under a name the framework does not own is now a build failure**
+  instead of a permanent leak (#584). The six fixed slots must be named `<resource>` (ConfigMap,
+  Service, StatefulSet, PodDisruptionBudget), `<resource>-headless` or `<resource>-metrics`, and
+  must live in the cluster's namespace; anything else fails the role group with a
+  `*reconciler.ValidationError` **before any resource is applied**. Both paths that remove a slot
+  address it by that derived name — the in-spec reclaim and the orphan teardown — so a
+  differently named one was applied, owner-referenced, reported healthy and then survived every
+  teardown until the cluster CR was deleted (for the metrics slot: a Prometheus target with no
+  endpoints). Products needing their own name use `RoleGroupResources.ExtraResources` plus
+  `SetupWithManagerOptions.ExtraOwns`, whose reclaim is label-based for exactly that reason.
+  Nothing in any operator is affected today — every Gen 3 branch builds these names already.
+- **CR labels can no longer forge a framework slot marker.** `metrics.kubedoop.dev/service`,
+  `pdb.kubedoop.dev/role` and `pdb.kubedoop.dev/role-group` are dropped from the CR labels that
+  reach a handler. A reclaim selects objects for deletion by these keys' presence or value, and
+  nothing overwrote them downstream, so `kubectl label <cr> pdb.kubedoop.dev/role=anything` made
+  the role-PDB cleaner reap every per-group PDB shipped through the escape hatch, and
+  `metrics.kubedoop.dev/service=true` made a role group's reclaim delete the client Service of a
+  sibling group named `<x>-metrics`. `restarter.kubedoop.dev/enable` and every other CR label are
+  unaffected — the filter is an enumerated set, not a domain rule.
+- **A 429 from a reclaim backs off instead of degrading the cluster.** `reclaimMetricsService`,
+  `reclaimRolePDB` and `reclaimRoleGroupPDB` returned the raw API error, so throttling was
+  reported as a resource-apply failure. These are the branches every role group of every product
+  takes, since nothing in the SDK fills the metrics slot.
+
+### features
+
+- `builder.MetricsServiceBuilder.WithAnnotations(map[string]string)` merges extra annotations into
+  the generated Prometheus set, with caller entries winning on key collisions, so a product can add
+  its own scrape hints or correct a generated value. The builder still exposes no name or ClusterIP
+  override: the reconciler's metrics slot is addressed by derived name (above), and the Service is
+  always headless.
+
 ### BREAKING CHANGES
 
 - `common.ClusterInterface` shrank from twelve methods to `client.Object` plus `GetSpec` and

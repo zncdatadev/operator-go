@@ -207,6 +207,14 @@ reconciler passes a writable clone of `cr.GetLabels()` as `RoleGroupBuildContext
 restarter watches. Opting in is a **deployment** decision by whoever runs the cluster, not something
 the operator's author hardcodes.
 
+Three keys are withheld from that channel — `metrics.kubedoop.dev/service`, `pdb.kubedoop.dev/role`
+and `pdb.kubedoop.dev/role-group`. They are the framework's **slot markers**: a reclaim selects an
+object for deletion by their presence or value, and unlike the `app.kubernetes.io/*` set nothing
+overwrites them afterwards, so a CR carrying one would stamp it on every built resource and make
+each answer to a reclaim aimed at the slot. The filter is an enumerated set rather than a
+`kubedoop.dev` prefix rule precisely because `restarter.kubedoop.dev/enable` shows that domain is
+shared with the platform; every other CR label propagates unchanged.
+
 > **Caveat (upstream bug).** commons-operator's `getRefConfigMapRefs` returns after the *first*
 > ConfigMap volume it finds, so a pod mounting several ConfigMaps only ever gets one of them
 > watched — see zncdatadev/commons-operator#298. The secret path (`getRefSecretRefs`) is correct.
@@ -232,7 +240,7 @@ restarter involved.
 
 **Deletion uses owner-reference garbage collection, not finalizers.** The SDK registers **no** finalizer anywhere, so deleting a cluster CR runs **no SDK teardown code**. Everything the framework applies carries a controller owner reference and is reclaimed by Kubernetes GC. `Reconcile` detects deletion on two paths: background propagation (the `kubectl delete` default) removes the CR immediately and hits the `IsNotFound` branch, while foreground propagation (`--cascade=foreground`) and any product-registered finalizer leave the CR readable with a `deletionTimestamp` — checked right after the fetch, before the ClusterOperation gate and any mutating step. The second check is load-bearing: without it the pass re-creates every owned resource with `BlockOwnerDeletion: true`, which foreground deletion can never get past, producing a permanently `Terminating` CR in an un-backed-off recreate loop. The `operator.zncdata.dev/delete-pvcs` annotation (`reconciler.AnnotationDeletePVCs`) therefore only affects the **orphan** path — PVCs of a StatefulSet whose role group was removed or renamed in the spec. On cluster deletion those PVCs remain, because the SDK sets no `persistentVolumeClaimRetentionPolicy` and StatefulSet-managed PVCs carry no owner reference. Products with state outside owner-reference GC must clean it up themselves.
 
-**Validation failures are loud.** Registered, enabled sidecar providers are validated before the StatefulSet is applied; a failure aborts the role group with `*reconciler.ValidationError` (`NewValidationError` / `IsValidationError`). A `podOverrides` layer that fails to decode is recorded on `config.MergedConfig.PodOverrideErrors` and re-emitted as a `PodOverrideIgnored` Warning event rather than being dropped silently.
+**Validation failures are loud.** Registered, enabled sidecar providers are validated before the StatefulSet is applied; a failure aborts the role group with `*reconciler.ValidationError` (`NewValidationError` / `IsValidationError`). A `podOverrides` layer that fails to decode is recorded on `config.MergedConfig.PodOverrideErrors` and re-emitted as a `PodOverrideIgnored` Warning event rather than being dropped silently. A fixed `RoleGroupResources` slot built under a name or namespace the framework does not own fails the same way, **before anything is applied** (§3).
 
 **A `podOverrides` volumeMount at a framework-owned `mountPath` replaces it — and that is now a build failure.** Strategic merge patch keys `volumeMounts` by **`mountPath`**, not by `name`, so a mount declared at a path the framework already owns (`/kubedoop/config`, a CSI secret/listener path, the shared log volume) does not sit alongside the framework's — it rewrites the framework's entry to point at a different volume. When the override also declares that volume the resulting pod spec is **completely valid**, the API server accepts it, and the pods come up with the generated ConfigMap mounted nowhere: the product reads an empty config directory and crash-loops or silently runs on its built-in defaults. When it declares only the mount, the API server rejects the StatefulSet naming `spec.template.spec.containers[0].volumeMounts[0].name` — a field the user never wrote, with no mention of `podOverrides`. `StatefulSetBuilder` records both on `PodOverrideViolations()` and `BaseRoleGroupHandler` turns them into a `*reconciler.ValidationError` naming the mountPath, the displaced volume and `podOverrides`. Mounting at a *new* path is unaffected, which is what users normally mean.
 
@@ -309,6 +317,17 @@ inheritance was tried and reverted: it invented a semantic users would have to l
 the only way to say "this group has no affinity", which a single-node development group needs.
 
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
+
+**The framework owns the NAME of every fixed slot; the handler owns its content.** `ConfigMap`,
+`Service`, `StatefulSet` and `PodDisruptionBudget` must be named `RoleGroupBuildContext.ResourceName`,
+`HeadlessService` and `MetricsService` that name plus `-headless` / `-metrics`, and all six must sit
+in the cluster's namespace. Both paths that *remove* a slot address it by that derived name — the
+in-spec reclaim and the orphan teardown — so a slot filled under another name used to be applied,
+owner-referenced and then reclaimed by nothing, surviving until the cluster CR itself was deleted (a
+metrics Service left as a Prometheus target with no endpoints). It is now a `*ValidationError`
+raised **before any resource is applied**, so a rejected declaration leaves nothing half-converged.
+`builder.MetricsServiceBuilder` therefore exposes no name override, and `ExtraResources` is the
+supported route for an object whose name the product chooses.
 
 Besides the fixed fields (ConfigMap, Services, StatefulSet, PDB, MetricsService), `RoleGroupResources.ExtraResources []client.Object` lets products ship arbitrary per-role-group resources (e.g. a `listeners.kubedoop.dev` Listener CR) through the framework's apply path: same controller owner reference, applied BEFORE the StatefulSet because extras are typically pod-scheduling prerequisites. **Extras of a removed role group are reclaimed too**, provided the product registers their kinds through `SetupWithManagerOptions.ExtraOwns` and labels them with the role group's labels; the teardown deletes them right after the StatefulSet, mirroring the apply order. Unregistered or unlabelled extras keep the old behaviour and wait for owner-reference GC on cluster deletion (see §13 and the field's doc comment).
 
