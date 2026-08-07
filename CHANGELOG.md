@@ -42,6 +42,22 @@ changes are listed below.**
   override: the reconciler's metrics slot is addressed by derived name (above), and the Service is
   always headless.
 
+### fixes (config propagation)
+
+- **The apply path no longer wipes the restarter's pod-template annotation**, which made a cluster
+  that opted into `restarter.kubedoop.dev/enable` roll its pods indefinitely. `copyStatefulSetState`
+  assigns `live.Spec = desired.Spec` wholesale — deliberately, so new mutable fields converge — and
+  the pod template is inside that spec, so the `configmap.restarter.kubedoop.dev/<name>` key
+  commons-operator stamps there was removed on the next reconcile. The resulting Update woke the
+  restarter (its predicate matches the label on every Update, not only on Create), which re-stamped,
+  which woke the reconciler through its own `Owns(&appsv1.StatefulSet{})` watch. Neither side errors,
+  so the workqueue `Forget`s every pass and nothing backs off. Pod-template annotations are now
+  merged with desired winning per key — the same rule the object's own annotations already followed —
+  while pod-template *labels* stay replaced wholesale, because they must match the StatefulSet's
+  immutable `.spec.selector`. This is the framework's only documented mechanism for delivering a
+  `configOverrides` change to running pods, so it was broken for exactly the users who followed the
+  documentation.
+
 ### BREAKING (log producer declarations)
 
 - **`vector.WithProducers` takes `[]productlogging.ContainerLogging` instead of `[]string`.** The
