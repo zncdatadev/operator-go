@@ -179,7 +179,7 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
 10. PostReconcile Extensions
 11. Final Status Update, then requeue
 
-Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile.
+Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive, at both the object level and inside the StatefulSet's pod template), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile.
 
 **A `configOverrides` change does not roll the pods by itself — the platform restarter does.**
 Editing `configOverrides` makes the framework rewrite the role group ConfigMap, and stop there: the
@@ -222,6 +222,17 @@ shared with the platform; every other CR label propagates unchanged.
 The framework already satisfies the restarter's precondition: the role group ConfigMap is mounted as
 the `config` volume. What it does **not** do is set the label, and without it a `configOverrides`
 change simply does not roll.
+
+**The apply path preserves the restarter's stamp.** The pod template's annotations are MERGED, not
+replaced — the same rule the object's own annotations follow, for the same reason: another controller
+writes there. `copyStatefulSetState` assigns `live.Spec = desired.Spec` wholesale so that new mutable
+fields converge by default, and the pod template lives inside that spec, so before this rule a
+handler that never builds `configmap.restarter.kubedoop.dev/<name>` silently removed it on the next
+reconcile. That Update woke the restarter — its predicate matches the label on every Update, not only
+on Create — which re-stamped, which woke the reconciler through its own `Owns(&appsv1.StatefulSet{})`
+watch. Neither side is failing, so the workqueue `Forget`s each pass and nothing backs off: the pods
+rolled for as long as the label was set. Pod-template *labels* are still replaced wholesale, because
+they must match the StatefulSet's immutable `.spec.selector`.
 
 This applies to `configOverrides` alone. `envOverrides` and `cliOverrides` reach the container as
 env vars and args through `MergedConfig` (`StatefulSetBuilder.WithConfig`), and `podOverrides`

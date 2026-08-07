@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"fmt"
+	"maps"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -162,14 +163,47 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 		ignored = append(ignored, "spec.podManagementPolicy")
 	}
 
+	// The pod template's annotations are merged, not replaced — the same rule copyDesiredState
+	// applies to the object's own annotations, and for the same reason: another controller writes
+	// there and the framework must not undo it.
+	//
+	// This is not hypothetical tidiness. commons-operator's restarter delivers a configOverrides
+	// change to running pods by writing "configmap.restarter.kubedoop.dev/<name>: <uid>/<rv>" into
+	// exactly this map, which rolls the pods — and AGENTS.md documents that as the ONLY mechanism
+	// that does so, since a ConfigMap rewrite leaves the pod template byte-identical. The handler
+	// never builds that key, so a wholesale spec assignment removes it; the resulting Update wakes
+	// the restarter (its predicate matches the label on every Update, not only on Create), which
+	// re-stamps, which wakes this reconciler through its own Owns(&appsv1.StatefulSet{}) watch.
+	// Neither side is failing, so the workqueue Forgets each pass and nothing backs off: the pods
+	// roll for as long as the label is set.
+	//
+	// Labels are deliberately NOT given the same treatment. The pod template's labels have to match
+	// the StatefulSet's immutable .spec.selector, so they are framework-owned and come from
+	// desired, exactly like the object's labels.
+	templateAnnotations := live.Spec.Template.Annotations
+
 	live.Spec = desired.Spec
 
 	live.Spec.Selector = selector
 	live.Spec.ServiceName = serviceName
 	live.Spec.VolumeClaimTemplates = volumeClaimTemplates
 	live.Spec.PodManagementPolicy = podManagementPolicy
+	live.Spec.Template.Annotations = mergeAnnotations(templateAnnotations, desired.Spec.Template.Annotations)
 
 	return ignored
+}
+
+// mergeAnnotations returns live's annotations with desired's merged over them, desired winning per
+// key. A nil result is preserved when both are empty, so an object that never had annotations does
+// not gain an empty map and churn its resourceVersion.
+func mergeAnnotations(live, desired map[string]string) map[string]string {
+	if len(live) == 0 {
+		return desired
+	}
+	merged := make(map[string]string, len(live)+len(desired))
+	maps.Copy(merged, live)
+	maps.Copy(merged, desired)
+	return merged
 }
 
 // copyServiceState copies the desired Service spec onto the live one, preserving the fields the
