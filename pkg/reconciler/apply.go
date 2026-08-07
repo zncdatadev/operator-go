@@ -23,6 +23,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -97,6 +98,20 @@ func copyDesiredState(desired, live client.Object) ([]string, error) {
 		// A ServiceAccount has no spec the framework owns; labels/annotations (above) and the
 		// controller owner reference (set by the caller) are the whole desired state. Never
 		// touch Secrets/ImagePullSecrets — the token controller manages them.
+		return nil, nil
+	case *rbacv1.RoleBinding:
+		desiredObj, err := desiredAs[*rbacv1.RoleBinding](desired, live)
+		if err != nil {
+			return nil, err
+		}
+		return copyRoleBindingState(desiredObj, liveObj), nil
+	case *rbacv1.Role:
+		desiredObj, err := desiredAs[*rbacv1.Role](desired, live)
+		if err != nil {
+			return nil, err
+		}
+		// Rules are replaced wholesale: a rule the product removed must stop granting.
+		liveObj.Rules = desiredObj.Rules
 		return nil, nil
 	case *policyv1.PodDisruptionBudget:
 		desiredObj, err := desiredAs[*policyv1.PodDisruptionBudget](desired, live)
@@ -204,6 +219,34 @@ func mergeAnnotations(live, desired map[string]string) map[string]string {
 	maps.Copy(merged, live)
 	maps.Copy(merged, desired)
 	return merged
+}
+
+// copyRoleBindingState copies the desired RoleBinding onto the live one, preserving the one field
+// Kubernetes declares immutable after creation:
+//
+//   - RoleRef — "cannot change roleRef" is a hard API-server rejection, not a silent no-op.
+//
+// Without this case a RoleBinding fell through to copyGenericState, which copies every top-level
+// field except apiVersion/kind/metadata/status — so it copied roleRef, and had no preserve-and-report
+// path, so the ImmutableFieldIgnored warning never fired either. A product that shipped a
+// RoleBinding through the documented ExtraResources route and later changed its roleRef (from a
+// Role to a ClusterRole, say) wedged every existing cluster's role group at the extras step
+// permanently, with no event and no recovery short of a human deleting each binding.
+//
+// Subjects are NOT preserved: they are mutable, and a subject the product removed must stop being
+// bound.
+func copyRoleBindingState(desired, live *rbacv1.RoleBinding) []string {
+	roleRef := live.RoleRef
+
+	var ignored []string
+	if desired.RoleRef != (rbacv1.RoleRef{}) && desired.RoleRef != roleRef {
+		ignored = append(ignored, "roleRef")
+	}
+
+	live.Subjects = desired.Subjects
+	live.RoleRef = roleRef
+
+	return ignored
 }
 
 // copyServiceState copies the desired Service spec onto the live one, preserving the fields the

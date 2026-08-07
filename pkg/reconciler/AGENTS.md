@@ -82,8 +82,30 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    `RoleGroupBuildContext.ServiceAccountName` to the STS pod template. A static name shared by two
    clusters in one namespace permanently fails the second cluster's reconcile (AlreadyOwnedError,
    surfaced as a clear both-owners error) and GC-deletes the SA under the survivor when the owner
-   cluster is deleted. The SDK creates no Role/RoleBinding — see `pkg/builder` for the builders a
-   product uses to emit its own RBAC as `RoleGroupResources.ExtraResources`.
+   cluster is deleted. The reconcile flow creates no Role/RoleBinding of its own accord;
+   `EnsurePodRBAC(ctx, c, scheme, cr, saName, rules, opts...)` is the seam, called from a
+   `common.ClusterExtension` `PreReconcile` hook. It maintains a namespaced Role + RoleBinding named
+   after the resolved ServiceAccount, controller-owned by the CR, rules replaced wholesale so a
+   narrowed permission actually narrows.
+
+   **Not `ExtraResources`.** That seam is per-role-group and workload RBAC is per-CR, so a labelled
+   Role is reclaimed when any ONE role group leaves the spec while the others still run; and
+   `applyResource` sets a controller owner reference unconditionally, which a cluster-scoped object
+   cannot carry from a namespaced CR — `ClusterRole`/`ClusterRoleBinding` fail there with
+   `cluster-scoped resource must not have a namespace-scoped owner` on every reconcile, at the extras
+   step, before the workload is created. A product needing a `ClusterRole` owns its lifecycle itself.
+
+   `EnsurePodRBAC` re-explains an RBAC **escalation** refusal rather than pre-checking it: Kubernetes
+   forbids granting permissions the granter lacks, so the operator's own ClusterRole must be a
+   superset of every rule passed. The API server has already done that rule-covering computation
+   against the operator's real effective permissions and names the missing rule; a framework
+   pre-check would reimplement wildcards, resourceNames and aggregated ClusterRoles and be wrong in
+   both directions. The failure is invisible in any test running as cluster-admin, which envtest does.
+
+   `copyDesiredState` gained typed `Role` and `RoleBinding` cases so an object applied through any
+   path converges correctly: a RoleBinding's `roleRef` is immutable, and before this it fell through
+   to `copyGenericState`, which replaced it with no `ImmutableFieldIgnored` report — wedging every
+   later Update with `cannot change roleRef` and no event.
 5. **External dependencies:** Declare referenced ConfigMaps/Secrets with
    `GenericReconcilerConfig.Dependencies func(cr CR) []Dependency`. They are checked before any
    role is reconciled; a missing one aborts the cycle with a Degraded condition. Nil = no checks.

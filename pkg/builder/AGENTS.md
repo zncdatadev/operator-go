@@ -20,10 +20,13 @@ Every non-test file in this package:
 | `pod_override_merge.go` | The pod template strategic merge patch and `clearSupersededUnions`, which resolves the collisions the patch format cannot express |
 | `copy.go` | `cloneSlice` / `clonePtr` — the internal deep-copy helpers the builders use so `Build()` never hands out builder-owned slices or pointers |
 
-Nothing in this package writes to the API server. The RBAC builders in particular are helpers only:
-`GenericReconciler` creates no Role/RoleBinding, so a product that needs workload RBAC builds the
-objects here and ships them through `reconciler.RoleGroupResources.ExtraResources` (or its own
-extension).
+Nothing in this package writes to the API server. For **namespaced** workload RBAC the applying
+counterpart is `reconciler.EnsurePodRBAC`, not these builders and not `ExtraResources`: the extras
+seam is per-role-group while workload RBAC is per-CR, and `applyResource` sets a controller owner
+reference unconditionally, which a cluster-scoped object cannot have from a namespaced CR. So
+`ClusterRoleBuilder` and `ClusterRoleBindingBuilder` have no framework apply path at all — a product
+needing a `ClusterRole` builds it here and owns its lifecycle itself, because a cluster-scoped object
+is outside a namespaced CR's owner-reference graph.
 
 ## Builder Semantics
 

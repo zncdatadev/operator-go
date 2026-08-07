@@ -206,8 +206,10 @@ A Product Cluster managed by the SDK can operate with its own distinct identity.
 - **Per-CR Naming (recommended)**: Products should configure `GenericReconcilerConfig.ServiceAccountNameFunc` to derive the SA name from the CR (e.g. `"<product>-<cluster name>"`). Resolution order is: per-CR func result > static `ServiceAccountName` > empty (SA management skipped). A static name shared by two clusters of the same product in one namespace breaks isolation and reconciliation: the second cluster can never take controller ownership of the shared SA (the SDK surfaces a clear error naming both owners), and deleting the first cluster garbage-collects the SA out from under the second cluster's running pods.
 - **Scope**: Pods run as this ServiceAccount, meaning any audit logs in Kubernetes will reflect the specific application identity rather than a generic "default" account.
 - **Customization**: the name is chosen by the operator author through the two config fields above —
-  the common CRD types (`GenericClusterSpec`) carry **no** `serviceAccountName` field, so there is no
-  SDK-level way for a user to override it in the CR. A product that needs external IAM integration
+  the common CRD types (`GenericClusterSpec`) carry **no** `serviceAccountName` field. It is not
+  unreachable by a user, though: `podOverrides` patches the pod template and `serviceAccountName` is
+  a `PodSpec` field, so a role group override replaces the framework-resolved value — and with it
+  the permissions `EnsurePodRBAC` granted. A product that needs external IAM integration
   (AWS IRSA, Google Workload Identity) adds its own spec field and feeds it to
   `ServiceAccountNameFunc`, and applies the IAM annotations to the SA itself.
 
@@ -215,13 +217,22 @@ A Product Cluster managed by the SDK can operate with its own distinct identity.
 
 Workloads often need to interact with the Kubernetes API (e.g., Flink JobManager creating generic Jobs, Spark driver creating executor pods).
 
-- **Builders, not automation**: the SDK ships `builder.RoleBuilder`, `RoleBindingBuilder`,
-  `ClusterRoleBuilder` and `ClusterRoleBindingBuilder`, including
-  `AddServiceAccountSubject(name, namespace)` for binding the workload's SA. The
-  `GenericReconciler` itself creates **no** RBAC object: a product that needs workload RBAC builds
-  the objects and ships them through `reconciler.RoleGroupResources.ExtraResources` (or from a
-  cluster extension), which gives them the same controller owner reference and garbage-collection
-  as any other framework-applied resource.
+- **`reconciler.EnsurePodRBAC` is the supported route**: it maintains a namespaced Role and
+  RoleBinding named after the resolved ServiceAccount, in the CR's namespace, both controller-owned
+  by the CR and garbage-collected with it. Call it from a `common.ClusterExtension` `PreReconcile`
+  hook. The `GenericReconciler` creates no RBAC object of its own accord — the product declares the
+  rules, because only it knows what its pods call.
+- **`ExtraResources` is NOT that route**, despite what this document said before. Two structural
+  reasons. `applyResource` sets a *controller* owner reference unconditionally, and a cluster-scoped
+  object cannot have a namespace-scoped owner — so `ClusterRole` and `ClusterRoleBinding` fail with
+  `cluster-scoped resource must not have a namespace-scoped owner` on every reconcile, at the extras
+  step, before the workload is ever created. And `ExtraResources` is a **per-role-group** seam while
+  workload RBAC is a **per-CR** object: labelled for reclaim (which `SetupWithManagerOptions.ExtraOwns`
+  arms), removing one role group deletes the Role the surviving groups' pods are still using.
+- **A product that genuinely needs a `ClusterRole`** owns it itself. Cluster-scoped objects are
+  outside a namespaced CR's owner-reference graph entirely, so their lifecycle cannot be the
+  framework's; `builder.ClusterRoleBuilder` and `ClusterRoleBindingBuilder` build them, and cleaning
+  them up is the product's problem.
 - **Benefit**: no manual `kubectl create rolebinding` is needed, yet the permissions are declared in
   the product's own code and scoped strictly to what the application needs, preventing
   over-privileged pods.

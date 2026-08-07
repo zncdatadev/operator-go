@@ -42,6 +42,33 @@ changes are listed below.**
   override: the reconciler's metrics slot is addressed by derived name (above), and the Service is
   always headless.
 
+### features (workload RBAC)
+
+- **`reconciler.EnsurePodRBAC`** maintains the namespaced Role and RoleBinding that give a cluster's
+  workload pods their API permissions — the third member of the `Ensure*` family beside
+  `EnsureDiscoveryConfigMap` and `EnsureGeneratedSecret`. Both objects are named after the resolved
+  ServiceAccount, live in the CR's namespace and are controller-owned by the CR. Rules are replaced
+  wholesale so a narrowed permission actually narrows. It re-explains an RBAC escalation refusal
+  (the operator cannot grant what it does not hold) rather than pre-checking it.
+
+### fixes (RBAC apply and documentation)
+
+- **`copyDesiredState` gained typed `Role` and `RoleBinding` cases.** A RoleBinding's `roleRef` is
+  immutable; it previously fell through to `copyGenericState`, which copies every top-level field
+  except apiVersion/kind/metadata/status — so it replaced `roleRef` and, having no
+  preserve-and-report path, never emitted `ImmutableFieldIgnored` either. A product that changed a
+  binding's `roleRef` wedged every existing cluster's role group at the extras step permanently,
+  with `cannot change roleRef` and no event.
+- **`docs/security.md`, `pkg/builder/AGENTS.md` and `pkg/reconciler/AGENTS.md` pointed products at
+  a route that cannot work.** All three named `RoleGroupResources.ExtraResources` for workload RBAC.
+  `applyResource` sets a *controller* owner reference unconditionally and a cluster-scoped object
+  cannot have a namespace-scoped owner, so `ClusterRole`/`ClusterRoleBinding` fail there on every
+  reconcile before the workload is created; and the extras seam is per-role-group while workload RBAC
+  is per-CR, so a labelled Role is reclaimed when any one role group leaves the spec while its
+  siblings still run.
+- **`docs/security.md` claimed the ServiceAccount name cannot be overridden by a user.** It can:
+  `podOverrides` patches the pod template and `serviceAccountName` is a `PodSpec` field.
+
 ### fixes (config propagation)
 
 - **The apply path no longer wipes the restarter's pod-template annotation**, which made a cluster
