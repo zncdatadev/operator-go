@@ -82,11 +82,23 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    `RoleGroupBuildContext.ServiceAccountName` to the STS pod template. A static name shared by two
    clusters in one namespace permanently fails the second cluster's reconcile (AlreadyOwnedError,
    surfaced as a clear both-owners error) and GC-deletes the SA under the survivor when the owner
-   cluster is deleted. The reconcile flow creates no Role/RoleBinding of its own accord;
-   `EnsurePodRBAC(ctx, c, scheme, cr, saName, rules, opts...)` is the seam, called from a
-   `common.ClusterExtension` `PreReconcile` hook. It maintains a namespaced Role + RoleBinding named
-   after the resolved ServiceAccount, controller-owned by the CR, rules replaced wholesale so a
-   narrowed permission actually narrows.
+   cluster is deleted. `GenericReconcilerConfig.PodRBACRules func(cr CR) []rbacv1.PolicyRule`
+   is the other half: the framework maintains a namespaced Role + RoleBinding named after the
+   ServiceAccount **it just resolved**, controller-owned by the CR, at step 0b — immediately after
+   the SA and before any role is built. The role group then only consumes the result. Reading the
+   name from the framework's own resolution is the point: a shape where the product supplies it a
+   second time drifts, and a Role granting to an SA no pod uses fails only at the first API call.
+
+   **An empty rule set REVOKES** (deletes both objects, subject to the controller-ownership gate) —
+   nil is an instruction here as everywhere else in this package. **A pre-existing RoleBinding is
+   never adopted**: `roleRef` is immutable, so one pointing elsewhere fails the reconcile with a
+   `*ValidationError` naming both refs rather than being rebound to the workload's SA. **The RBAC
+   watches are conditional** on the field being set, so operators that never use it are not forced
+   to grant themselves cluster-wide `roles`/`rolebindings` `list;watch`. Declaring rules while SA
+   management is off emits a `PodRBACSkipped` Warning.
+
+   `EnsurePodRBAC(ctx, c, scheme, cr, saName, rules, opts...)` stays exported for the one shape the
+   field cannot express: a product managing its own ServiceAccount (platform-provisioned, IRSA).
 
    **Not `ExtraResources`.** That seam is per-role-group and workload RBAC is per-CR, so a labelled
    Role is reclaimed when any ONE role group leaves the spec while the others still run; and

@@ -737,6 +737,45 @@ them. Call it from a `common.ClusterExtension` `PreReconcile` hook, where a ctx 
 the workload has not been built yet; it is deliberately **not** created from the sidecar provider's
 `Validate`, a step whose job is to have no side effects.
 
+### 11c. Workload RBAC
+
+`ServiceAccountNameFunc` gives a cluster's pods an **identity**;
+`GenericReconcilerConfig.PodRBACRules func(cr CR) []rbacv1.PolicyRule` gives that identity its
+**permissions**. Both are per-CR, both are maintained at cluster level before any role is built, and
+the role group only consumes the result — `RoleGroupBuildContext.ServiceAccountName` lands on the
+pod template, already bound to the Role.
+
+```go
+PodRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
+    return []rbacv1.PolicyRule{{
+        APIGroups: []string{"coordination.k8s.io"},
+        Resources: []string{"leases"},
+        Verbs:     []string{"get", "list", "watch", "create", "update"},
+    }}
+},
+```
+
+The framework passes the ServiceAccount name **it resolved itself**, which is why this is a config
+field rather than only a helper: any shape where the product supplies that name a second time can
+drift, and the result — a Role granting to a ServiceAccount no pod uses — has no symptom until the
+first API call is denied. `reconciler.EnsurePodRBAC` stays exported for the case the field cannot
+serve: a product managing its own ServiceAccount (platform-provisioned, or externally managed for
+IRSA), where there is no name for the framework to resolve.
+
+Three rules, each following the framework's existing conventions rather than inventing one:
+**an empty rule set REVOKES** (nil is an instruction, as with `MetricsService`); **a pre-existing
+RoleBinding is never adopted**, because `roleRef` is immutable and rebinding it to the workload's SA
+would hand those pods whatever the old ref allows — it is a `*ValidationError` naming both refs;
+**the RBAC watches are conditional** on the field, so an operator that never uses it is not forced
+to grant itself cluster-wide `roles`/`rolebindings` `list;watch` (a forbidden informer fails
+`WaitForCacheSync` for every source and the manager exits).
+
+**Cluster-scoped RBAC is out of scope structurally** — a namespaced CR cannot controller-own a
+`ClusterRole`, so a product needing one builds it with `builder.ClusterRoleBuilder` and owns its
+lifecycle. **The operator must hold what it grants** (Kubernetes forbids granting what the granter
+lacks) *and* separately hold write access to the RBAC API; those are two kubebuilder markers and two
+different 403s, neither visible at compile time nor in a test running as cluster-admin.
+
 ### 12. External Dependencies
 
 `GenericReconcilerConfig.Dependencies` declares the external objects a CR references but does not

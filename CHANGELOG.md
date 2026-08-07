@@ -44,12 +44,28 @@ changes are listed below.**
 
 ### features (workload RBAC)
 
-- **`reconciler.EnsurePodRBAC`** maintains the namespaced Role and RoleBinding that give a cluster's
-  workload pods their API permissions — the third member of the `Ensure*` family beside
-  `EnsureDiscoveryConfigMap` and `EnsureGeneratedSecret`. Both objects are named after the resolved
-  ServiceAccount, live in the CR's namespace and are controller-owned by the CR. Rules are replaced
-  wholesale so a narrowed permission actually narrows. It re-explains an RBAC escalation refusal
-  (the operator cannot grant what it does not hold) rather than pre-checking it.
+- **`GenericReconcilerConfig.PodRBACRules func(cr CR) []rbacv1.PolicyRule`** declares the API
+  permissions a cluster's workload pods need. It is the other half of `ServiceAccountNameFunc`:
+  that field gives the workload an identity, this one gives that identity its permissions, and the
+  framework maintains both at cluster level — once per CR, before any role is built — from the same
+  resolved ServiceAccount name. The role group only consumes the result. The Role and RoleBinding
+  are named after that ServiceAccount, controller-owned by the CR, and garbage-collected with it.
+  **An empty rule set revokes them**, like every other optional slot where nil is an instruction.
+- The framework passing its own resolved ServiceAccount name is the point of the field: any shape
+  where the product supplies that name a second time can drift, and a Role granting to a
+  ServiceAccount no pod uses has no symptom until the first API call is denied.
+  **`reconciler.EnsurePodRBAC` stays exported** for the one shape the field cannot express — a
+  product managing its own ServiceAccount (platform-provisioned, or externally managed for IRSA).
+- **A pre-existing RoleBinding is never adopted.** `roleRef` is immutable, so one already at that
+  name pointing elsewhere fails the reconcile with a `*ValidationError` naming both refs and the
+  command that fixes it — rather than being rebound to the workload's ServiceAccount, which would
+  hand those pods whatever the old ref allows. Migration is exactly when this arises.
+- **The RBAC watches are conditional** on the field being set. An unconditional `Owns` would force
+  every operator built on this SDK to grant itself cluster-wide `list;watch` on `roles`/`rolebindings`
+  or fail to start.
+- Declaring rules while ServiceAccount management is off emits a `PodRBACSkipped` Warning instead of
+  silently granting nothing. An RBAC escalation refusal, and a plain missing-verb 403 on the RBAC API
+  itself, are re-explained as the two different problems they are.
 
 ### fixes (RBAC apply and documentation)
 

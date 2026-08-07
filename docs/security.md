@@ -217,11 +217,16 @@ A Product Cluster managed by the SDK can operate with its own distinct identity.
 
 Workloads often need to interact with the Kubernetes API (e.g., Flink JobManager creating generic Jobs, Spark driver creating executor pods).
 
-- **`reconciler.EnsurePodRBAC` is the supported route**: it maintains a namespaced Role and
-  RoleBinding named after the resolved ServiceAccount, in the CR's namespace, both controller-owned
-  by the CR and garbage-collected with it. Call it from a `common.ClusterExtension` `PreReconcile`
-  hook. The `GenericReconciler` creates no RBAC object of its own accord — the product declares the
-  rules, because only it knows what its pods call.
+- **`GenericReconcilerConfig.PodRBACRules` is the supported route**: the framework maintains a
+  namespaced Role and RoleBinding named after the ServiceAccount **it resolved itself**, in the CR's
+  namespace, both controller-owned by the CR and garbage-collected with it — at cluster level, right
+  after ensuring the ServiceAccount and before any role is built. The role group then consumes the
+  result: the SA on its pod template is the one the RoleBinding grants to. An empty rule set revokes.
+- **`reconciler.EnsurePodRBAC` is the escape hatch**, exported for the one shape the field cannot
+  express: a product managing its own ServiceAccount (platform-provisioned, or externally managed
+  for IRSA / Workload Identity), where the framework has no name to resolve. Call it from a
+  `common.ClusterExtension` `PreReconcile` hook. Prefer the field — it reads the SA name from the
+  framework's own resolution, so the identity and its permissions cannot drift apart.
 - **`ExtraResources` is NOT that route**, despite what this document said before. Two structural
   reasons. `applyResource` sets a *controller* owner reference unconditionally, and a cluster-scoped
   object cannot have a namespace-scoped owner — so `ClusterRole` and `ClusterRoleBinding` fail with
@@ -236,9 +241,21 @@ Workloads often need to interact with the Kubernetes API (e.g., Flink JobManager
 - **Benefit**: no manual `kubectl create rolebinding` is needed, yet the permissions are declared in
   the product's own code and scoped strictly to what the application needs, preventing
   over-privileged pods.
-- **Caveat**: because these are `ExtraResources`, register their GVKs with
-  `SetupWithManagerOpts(mgr, SetupWithManagerOptions{ExtraOwns: ...})`, otherwise out-of-band edits
-  to a Role or RoleBinding produce no reconcile event and are not repaired until the next resync.
+- **The operator must hold what it grants, and must be able to write RBAC at all.** These are two
+  different prerequisites and two different 403s. Kubernetes forbids granting permissions the granter
+  lacks, so the operator's ClusterRole must cover every rule returned; and it separately needs write
+  access to the RBAC API:
+
+  ```go
+  // the rules being granted
+  // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update
+  // write access to the RBAC API itself
+  // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+  ```
+
+  Neither failure is visible at compile time, and neither is visible in a test running as
+  cluster-admin — which envtest does. The framework keeps the two apart in its error messages rather
+  than attributing every refusal to escalation.
 
 ## 3.3 Pod Security Guidelines
 

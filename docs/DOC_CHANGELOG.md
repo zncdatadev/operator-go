@@ -4,6 +4,30 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-08] (workload RBAC gets a recorded design)
+
+### Core Architecture (`architecture.md`)
+
+- New **§4.9.5 Workload RBAC**. The document was **silent** on workload RBAC entirely — the design
+  decision had never been recorded anywhere authoritative, which is how three other documents came
+  to describe a route (`ExtraResources`) that cannot work. States the model the framework actually
+  implements: identity and permissions are two halves of one per-CR, cluster-level concern, and the
+  role group consumes rather than creates. Records why it is a config field rather than only a
+  helper (the framework passes the ServiceAccount name it resolved, so the two cannot drift), why an
+  empty rule set revokes, why a pre-existing RoleBinding is never adopted, why the watches are
+  conditional, and why cluster-scoped RBAC is structurally out of scope.
+
+### Package guides
+
+- Root `AGENTS.md`: new §11c pairing `PodRBACRules` with `ServiceAccountNameFunc`.
+- `pkg/reconciler/AGENTS.md` §4: rewritten around the field; the previous text described the helper
+  as the seam and claimed rules "narrow", which was untrue for the narrowing to zero.
+- `docs/security.md` §3.2: rewritten. It previously pointed at `ExtraResources` and named four
+  builders, two of which have no working call site. §3.1 also claimed the ServiceAccount name cannot
+  be overridden by a user; `podOverrides` can replace it, and with it the permissions granted.
+
+---
+
 ## [2026-08-07] (the log tag stops being the container name)
 
 ### Package guides

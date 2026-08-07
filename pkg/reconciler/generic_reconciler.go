@@ -39,6 +39,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -159,6 +160,45 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// +optional
 	ServiceAccountNameFunc func(cr CR) string
 
+	// PodRBACRules, when set, declares the Kubernetes API permissions this cluster's WORKLOAD pods
+	// need — the product's own processes calling the API, not the operator's permissions, which
+	// come from its ClusterRole and are a separate axis.
+	//
+	// It is the other half of ServiceAccountNameFunc above. That field gives the workload an
+	// IDENTITY; this one gives that identity its PERMISSIONS, and the framework maintains both at
+	// the same point in the same way: once per CR, at cluster level, before any role is built. The
+	// role group then merely consumes the result — the ServiceAccount name reaches the pod template
+	// through RoleGroupBuildContext.ServiceAccountName, and the Role is already bound to it.
+	//
+	//	PodRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
+	//	    return []rbacv1.PolicyRule{{
+	//	        APIGroups: []string{"coordination.k8s.io"},
+	//	        Resources: []string{"leases"},
+	//	        Verbs:     []string{"get", "list", "watch", "create", "update"},
+	//	    }}
+	//	},
+	//
+	// The Role and RoleBinding are named after the resolved ServiceAccount and controller-owned by
+	// the CR, so they are garbage-collected with it. Returning an empty slice REVOKES them: like
+	// every other optional slot in this framework, nil is an instruction rather than "leave it
+	// alone", which is what makes a rule set that shrinks to nothing actually stop granting.
+	//
+	// The framework passes the ServiceAccount name it resolved itself, so the identity and the
+	// permissions cannot drift apart. That is the reason this is a config field and not only the
+	// exported EnsurePodRBAC helper: with the helper the product supplies the name a second time,
+	// and a product that changes ServiceAccountNameFunc without changing its extension gets a Role
+	// granting permissions to a ServiceAccount no pod uses — two objects that both exist, pods that
+	// start fine, and a 403 on the first API call. EnsurePodRBAC stays exported for the case this
+	// field structurally cannot serve: a product that manages its own ServiceAccount (a
+	// platform-provisioned or externally managed one) and therefore has no name for the framework
+	// to resolve.
+	//
+	// Setting this REQUIRES the operator to hold these permissions itself — Kubernetes forbids
+	// granting what the granter lacks — plus write access to the RBAC API. Both are kubebuilder
+	// markers on the operator; see EnsurePodRBAC for the exact failure messages.
+	// +optional
+	PodRBACRules func(cr CR) []rbacv1.PolicyRule
+
 	// ProductConfig, when set, computes the product's configuration contribution for a role
 	// group at reconcile time, returned as an *v1alpha1.OverridesSpec (the same shape users
 	// write in the CRD). The GenericReconciler merges it as the LOWEST-precedence layer,
@@ -265,8 +305,11 @@ type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	// serviceAccountNameFunc, when set, resolves a per-CR SA name that takes precedence over
 	// the static serviceAccountName (see resolveServiceAccountName).
 	serviceAccountNameFunc func(cr CR) string
-	productConfig          func(ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
-	dependencies           func(cr CR) []Dependency
+
+	// podRBACRules, when set, declares the workload pods' API permissions (see the config field).
+	podRBACRules  func(cr CR) []rbacv1.PolicyRule
+	productConfig func(ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
+	dependencies  func(cr CR) []Dependency
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -347,6 +390,7 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 		healthCheckInterval:    healthCheckInterval,
 		serviceAccountName:     cfg.ServiceAccountName,
 		serviceAccountNameFunc: cfg.ServiceAccountNameFunc,
+		podRBACRules:           cfg.PodRBACRules,
 		productConfig:          cfg.ProductConfig,
 		dependencies:           cfg.Dependencies,
 	}, nil
@@ -523,10 +567,19 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// 0. Auto-create ServiceAccount if configured. The name is resolved per CR (per-CR func
 	// wins over the static name; empty means SA management is disabled) so that two clusters
 	// of the same product in one namespace each own their own SA.
-	if saName := r.resolveServiceAccountName(cr); saName != "" {
+	saName := r.resolveServiceAccountName(cr)
+	if saName != "" {
 		if err := r.ensureServiceAccount(ctx, cr, saName); err != nil {
 			return ctrl.Result{}, NewReconcileError("ServiceAccount", "failed to ensure service account", err)
 		}
+	}
+
+	// 0b. The workload's PERMISSIONS, immediately after its IDENTITY and from the same resolved
+	// name, so the two cannot drift. Both are per-CR, both are settled before any role is built,
+	// and the role group only consumes the result (the SA name reaches the pod template through
+	// RoleGroupBuildContext.ServiceAccountName, already bound to the Role).
+	if err := r.ensurePodRBAC(ctx, cr, saName); err != nil {
+		return ctrl.Result{}, NewReconcileError("PodRBAC", "failed to ensure workload RBAC", err)
 	}
 
 	// 1. Execute PreReconcile extensions
@@ -1690,6 +1743,15 @@ func (r *GenericReconciler[CR]) ControllerBuilder(mgr ctrl.Manager, opts SetupWi
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&corev1.ServiceAccount{})
 
+	// The RBAC watches are registered ONLY when the product declares workload rules. An
+	// unconditional Owns() would force every operator built on this SDK to grant itself
+	// cluster-wide list;watch on roles and rolebindings — a forbidden informer fails
+	// WaitForCacheSync for ALL sources, so manager.Start returns and the process exits. Charging
+	// that to operators that never use the feature is the cost that has to stay at zero.
+	if r.podRBACRules != nil {
+		b = b.Owns(&rbacv1.Role{}).Owns(&rbacv1.RoleBinding{})
+	}
+
 	for _, obj := range opts.ExtraOwns {
 		if obj == nil {
 			continue
@@ -1716,6 +1778,30 @@ func (r *GenericReconciler[CR]) resolveServiceAccountName(cr CR) string {
 		}
 	}
 	return r.serviceAccountName
+}
+
+// ensurePodRBAC maintains the workload's Role and RoleBinding from GenericReconcilerConfig.PodRBACRules.
+//
+// It is a no-op when the hook is unset, which is what keeps this free for every operator that does
+// not need workload RBAC: no objects, no requests, and — because ControllerBuilder registers the
+// RBAC watches conditionally — no informers and therefore no cluster-wide roles/rolebindings
+// list;watch grant on the operator itself.
+//
+// The ServiceAccount name is the one the framework just resolved, not one the product repeats.
+// Declaring rules while SA management is off is always a mistake — there is no identity to grant
+// to — so it is reported rather than silently producing nothing.
+func (r *GenericReconciler[CR]) ensurePodRBAC(ctx context.Context, cr CR, saName string) error {
+	if r.podRBACRules == nil {
+		return nil
+	}
+	if saName == "" {
+		r.eventManager.EmitWarningEvent(cr, "PodRBACSkipped",
+			"PodRBACRules is set but ServiceAccount management is disabled (neither ServiceAccountName nor "+
+				"ServiceAccountNameFunc yields a name), so there is no identity to grant permissions to. "+
+				"The workload pods run as the namespace's default ServiceAccount and hold none of these rules.")
+		return nil
+	}
+	return EnsurePodRBAC(ctx, r.client, r.scheme, cr, saName, r.podRBACRules(cr))
 }
 
 // ensureServiceAccount creates or updates the ServiceAccount for the cluster workload and sets

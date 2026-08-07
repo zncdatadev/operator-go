@@ -773,6 +773,24 @@ Filling a missing key is a deliberate choice rather than an oversight. Sidecar p
 
 The Secret is **not** created from the sidecar provider's `Validate`: a validation hook that creates objects is a side effect in the one step whose job is to have none. Products call the helper from a `ClusterExtension` `PreReconcile` hook, mirroring how discovery ConfigMaps are published from `PostReconcile`.
 
+### 4.9.5 Workload RBAC
+
+The framework already gives a cluster's pods an **identity** — `ServiceAccountNameFunc` resolves a per-CR name at step 0 of the reconcile and `ensureServiceAccount` creates it, controller-owned by the CR, before any role is built; the role group then merely consumes it, since `RoleGroupBuildContext.ServiceAccountName` lands on the pod template. `PodRBACRules` is the other half of that: the **permissions** that identity carries, maintained at the same point, in the same way, from the same resolved name.
+
+That last clause is the whole reason it is a config field rather than only an exported helper. Workload RBAC is a per-CR object that must name the ServiceAccount the pods actually run as, so any shape in which the product supplies that name a *second* time can drift: change `ServiceAccountNameFunc` and forget the other call site, and the result is a Role granting permissions to a ServiceAccount no pod uses. Both objects exist, `kubectl get` shows them, the pods start, and the first API call is denied — with nothing in the framework able to notice, because it never saw the second copy. Reading the name from the framework's own resolution removes the failure structurally rather than documenting it.
+
+`reconciler.EnsurePodRBAC` stays exported for the one shape the field cannot express: a product that manages its **own** ServiceAccount — platform-provisioned, or externally managed for IRSA / Workload Identity — where there is no name for the framework to resolve. Declaring rules while SA management is off is always a mistake and is reported as a `PodRBACSkipped` Warning rather than silently producing nothing.
+
+Three rules follow from treating this as a slot like any other:
+
+- **An empty rule set revokes.** Nil is an instruction throughout this framework — a nil `MetricsService` reclaims the Service, a nil per-group PDB reclaims the PDB — and it is the only reading under which "the rules converge" holds in both directions. Narrowing to zero is the largest narrowing there is; treating it as "leave it alone" leaves pods holding permissions the product has stopped granting.
+- **A pre-existing RoleBinding is never adopted.** `roleRef` is immutable, so one already sitting at this name pointing elsewhere cannot be converged. Rewriting its subject to the workload's ServiceAccount while keeping that ref would hand the pods whatever it allows, so the framework fails the reconcile naming both refs and the command that fixes it. Migration is precisely when this arises.
+- **The watches are conditional.** RBAC informers are registered only when the field is set. An unconditional `Owns` would force every operator built on this SDK to grant itself cluster-wide `list;watch` on `roles`/`rolebindings` — a forbidden informer fails `WaitForCacheSync` for *all* sources and the manager exits — which is a cost the operators that never use the feature must not pay.
+
+**Cluster-scoped RBAC is out of scope, structurally.** A namespaced CR cannot controller-own a `ClusterRole` or `ClusterRoleBinding`; Kubernetes rejects the owner reference outright. A product needing one builds it with `builder.ClusterRoleBuilder` and owns its lifecycle itself, because there is no owner-reference graph for the framework to hang it on.
+
+**The operator must hold what it grants.** Kubernetes forbids granting permissions the granter lacks, so the operator's own ClusterRole must cover every rule returned — plus write access to the RBAC API itself. Those are two different kubebuilder markers and two different 403s, and the framework keeps them apart in its error messages rather than attributing every refusal to escalation. Neither failure is visible at compile time, and neither is visible in a test running as cluster-admin, which envtest does.
+
 ## 4.10 Network Access & Service Exposure Module
 
 ### 4.10.1 Design Background
