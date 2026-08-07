@@ -48,15 +48,19 @@ func WithDataVolumeSize(quantity resource.Quantity) ProviderOption {
 	}
 }
 
-// WithProducers sets the names of the log-producer containers. The provider creates the shared
-// log volume and RW-mounts it on each of these containers (if present in the PodSpec), in
-// addition to mounting it on the Vector container, whose command pre-creates each producer's
-// per-container log directory. These are the containers whose log files Vector collects;
-// typically the product's main container.
-func WithProducers(containers []string) ProviderOption {
+// WithProducers declares the log-producer containers whose files Vector collects — typically the
+// product's main container.
+//
+// It takes the declarations rather than bare names because the provider needs TWO names per
+// producer and they may differ. The shared log volume is RW-mounted on the producer's POD
+// CONTAINER (ContainerLogging.Container, matched against the assembled PodSpec), while the Vector
+// container's command pre-creates the producer's LOG DIRECTORY (productlogging.LogDirFor, which
+// honours LogDirName). Passing one string for both is what made the log tag inseparable from the
+// container name; taking the declaration makes it impossible to supply one and forget the other.
+func WithProducers(producers []productlogging.ContainerLogging) ProviderOption {
 	return func(p *VectorSidecarProvider) {
 		// Copy so a later caller mutation of the slice can't change the provider's configuration.
-		p.producers = append([]string(nil), containers...)
+		p.producers = append([]productlogging.ContainerLogging(nil), producers...)
 	}
 }
 
@@ -79,7 +83,7 @@ type VectorSidecarProvider struct {
 	configMapName  string
 	dataVolumeSize *resource.Quantity
 	logVolumeSize  *resource.Quantity
-	producers      []string
+	producers      []productlogging.ContainerLogging
 }
 
 // NewVectorSidecarProvider creates a new VectorSidecarProvider with the given product image and options.
@@ -130,6 +134,13 @@ func (p *VectorSidecarProvider) Validate(ctx context.Context, c client.Client, n
 func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.SidecarConfig) error {
 	if config == nil {
 		config = &sidecar.SidecarConfig{Enabled: true}
+	}
+
+	// Defensive: the framework path validates the same declarations before building, but a product
+	// driving the provider directly reaches here first, and an unusable log directory would land in
+	// this container's shell command.
+	if err := productlogging.ValidateProducers(p.producers); err != nil {
+		return err
 	}
 
 	// Get image
@@ -309,13 +320,34 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 		Name:      VectorLogVolumeName,
 		MountPath: VectorLogMountPath,
 	}
-	for _, name := range p.producers {
-		if c := sidecar.FindContainer(podSpec, name); c != nil {
+	var unmatched []string
+	for _, producer := range p.producers {
+		matched := false
+		if c := sidecar.FindContainer(podSpec, producer.Container); c != nil {
 			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{producerMount})
+			matched = true
 		}
-		if c := sidecar.FindInitContainer(podSpec, name); c != nil {
+		if c := sidecar.FindInitContainer(podSpec, producer.Container); c != nil {
 			sidecar.AddVolumeMounts(c, []corev1.VolumeMount{producerMount})
+			matched = true
 		}
+		if !matched {
+			unmatched = append(unmatched, producer.Container)
+		}
+	}
+	// A producer naming no container in the assembled pod used to be skipped in silence, and that
+	// silence was load-bearing for the workaround this file's LogDirName replaces: declare a
+	// phantom producer to move the log tag, let the mount quietly miss. The result is a pod whose
+	// log directory is created and whose config file points into it, with no container mounting
+	// the volume — so the appender writes into the container's own filesystem and Vector collects
+	// nothing, while everything reports healthy. This is the only place the assembled PodSpec
+	// exists, so it is the only place the check can be made.
+	if len(unmatched) > 0 {
+		return fmt.Errorf(
+			"log producers %v name no container in this pod: the shared log volume cannot be mounted, so their logs are written where nothing collects them. "+
+				"Name the real pod container (BaseRoleGroupHandler.MainContainerName / SetRoleMainContainerName controls the primary one); "+
+				"to change only the log tag, set ContainerLogging.LogDirName instead of the container name",
+			unmatched)
 	}
 
 	return nil
@@ -329,7 +361,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 // RollingFileAppender and Python's FileHandler
 // do not create parent directories, so without this step their file appenders would fail to
 // open on startup. With no producers declared the command execs vector directly.
-func vectorCommand(producers []string) []string {
+func vectorCommand(producers []productlogging.ContainerLogging) []string {
 	if len(producers) == 0 {
 		return []string{
 			VectorSidecarName,
@@ -338,8 +370,8 @@ func vectorCommand(producers []string) []string {
 		}
 	}
 	dirs := make([]string, 0, len(producers))
-	for _, name := range producers {
-		dirs = append(dirs, productlogging.ContainerLogDir(name))
+	for _, p := range producers {
+		dirs = append(dirs, productlogging.LogDirFor(p))
 	}
 	script := "mkdir -p " + strings.Join(dirs, " ") +
 		" && exec " + VectorSidecarName + " --config " + VectorConfigMountPath + "/" + VectorConfigFileName

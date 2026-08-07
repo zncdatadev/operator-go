@@ -1077,7 +1077,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 	// here is intentional.
 	opts := []vector.ProviderOption{
 		vector.WithConfigMapName(buildCtx.ResourceName),
-		vector.WithProducers(producerContainerNames(producers)),
+		vector.WithProducers(producers),
 	}
 	if logVolumeSize != "" {
 		if q, err := resource.ParseQuantity(logVolumeSize); err != nil {
@@ -1109,14 +1109,6 @@ func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, roleName string) b
 }
 
 // producerContainerNames extracts the container names from a log-producer declaration list.
-func producerContainerNames(producers []productlogging.ContainerLogging) []string {
-	names := make([]string, 0, len(producers))
-	for _, p := range producers {
-		names = append(names, p.Container)
-	}
-	return names
-}
-
 // loggingProducers returns the handler's declared log-producer containers when it implements
 // LoggingProducerProvider (nil otherwise). Both Vector sidecar registration and aggregator-address
 // resolution gate on "≥1 producer" so they stay consistent: the framework only wires Vector — and

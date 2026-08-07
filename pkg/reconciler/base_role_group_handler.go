@@ -1011,7 +1011,10 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	}
 	if sidecarMgr != nil {
 		if err := sidecarMgr.InjectAll(&sts.Spec.Template.Spec); err != nil {
-			return nil, fmt.Errorf("sidecar injection failed: %w", err)
+			// A sidecar provider refusing the assembled pod is a declaration fault the product
+			// author can fix (a producer naming no container, an unusable log directory), so it
+			// carries the same type as every other build-time rejection rather than an opaque wrap.
+			return nil, NewValidationError("sidecar", buildCtx.RoleName, buildCtx.RoleGroupName, err)
 		}
 	}
 

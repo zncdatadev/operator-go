@@ -1588,7 +1588,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		sidecarMgr.Register(
 			vector.NewVectorSidecarProvider("test-image:latest",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]string{"test-cluster-default"}),
+				vector.WithProducers([]productlogging.ContainerLogging{{Container: "test-cluster-default"}}),
 			),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
@@ -1679,7 +1679,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		sidecarMgr.Register(
 			vector.NewVectorSidecarProvider("test-image:latest",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]string{"test-cluster-default"}),
+				vector.WithProducers([]productlogging.ContainerLogging{{Container: "test-cluster-default"}}),
 				vector.WithLogVolumeSize(resource.MustParse("128Mi")),
 			),
 			&sidecar.SidecarConfig{Enabled: true},
@@ -2025,11 +2025,14 @@ var _ = Describe("Sidecar product image propagation", func() {
 		}}
 		handler := &embeddingImageHandler{BaseRoleGroupHandler: base, image: "product-image:1.2.3"}
 
+		// The producer must name the pod's primary container, which MainContainerName pins here.
+		base.MainContainerName = "main"
+
 		mgr := sidecar.NewSidecarManager()
 		mgr.Register(
 			vector.NewVectorSidecarProvider("",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]string{"main"})),
+				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main"}})),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
@@ -2411,6 +2414,8 @@ var _ = Describe("Container image resolution", func() {
 		// container after BuildResources leaves the sidecar behind on the stale image.
 		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
 		handler.ProductName = "trino"
+		// The producer must name the pod's primary container, which MainContainerName pins here.
+		handler.MainContainerName = "main"
 		handler.LoggingContainers = []productlogging.ContainerLogging{{
 			Container: "main",
 			Framework: productlogging.LoggingFrameworkLogback,
@@ -2420,7 +2425,7 @@ var _ = Describe("Container image resolution", func() {
 		mgr.Register(
 			vector.NewVectorSidecarProvider("",
 				vector.WithConfigMapName("test-cluster-server-default"),
-				vector.WithProducers([]string{"main"})),
+				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main"}})),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
