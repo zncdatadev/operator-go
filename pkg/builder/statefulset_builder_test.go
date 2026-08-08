@@ -1823,3 +1823,41 @@ var _ = Describe("Main container customizer violations", func() {
 		Expect(b.MainContainerViolations()).To(BeEmpty(), "a fixed customizer must clear the list")
 	})
 })
+
+var _ = Describe("podOverrides and the workload ServiceAccount", func() {
+	build := func(override *corev1.PodTemplateSpec) *builder.StatefulSetBuilder {
+		return builder.NewStatefulSetBuilder("sts", "ns").
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithServiceAccount("framework-sa").
+			WithPodOverrides(override)
+	}
+
+	It("records a violation and keeps the framework's ServiceAccount", func() {
+		b := build(&corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{ServiceAccountName: "someone-elses-sa"},
+		})
+		sts := b.Build()
+
+		// The framework binds the workload's RBAC to its own ServiceAccount, so swapping it here
+		// severs the pods from every permission that was granted — silently, until the first API
+		// call is denied. BaseRoleGroupHandler turns PodOverrideViolations into a *ValidationError.
+		violations := b.PodOverrideViolations()
+		Expect(violations).To(HaveLen(1))
+		Expect(violations[0].Error()).To(ContainSubstring("someone-elses-sa"))
+		Expect(violations[0].Error()).To(ContainSubstring("framework-sa"))
+		Expect(violations[0].Error()).To(ContainSubstring("ServiceAccountAnnotationsFunc"),
+			"the message must name the supported way to reach a cloud identity")
+		Expect(sts.Spec.Template.Spec.ServiceAccountName).To(Equal("framework-sa"))
+	})
+
+	It("does not fire when podOverrides leave the ServiceAccount alone", func() {
+		b := build(&corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"extra": "yes"}},
+		})
+		sts := b.Build()
+
+		Expect(b.PodOverrideViolations()).To(BeEmpty())
+		Expect(sts.Spec.Template.Spec.ServiceAccountName).To(Equal("framework-sa"))
+		Expect(sts.Spec.Template.Labels).To(HaveKeyWithValue("extra", "yes"))
+	})
+})

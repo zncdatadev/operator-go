@@ -4,7 +4,7 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
-## [2026-08-08] (workload RBAC gets a recorded design)
+## [2026-08-08] (workload identity and RBAC get a recorded design)
 
 ### Core Architecture (`architecture.md`)
 
@@ -19,7 +19,8 @@ This document tracks all changes made to the SDK documentation.
 
 ### Package guides
 
-- Root `AGENTS.md`: new §11c pairing `PodRBACRules` with `ServiceAccountNameFunc`.
+- Root `AGENTS.md`: new §11c pairing `WorkloadRBACRules` with the derived ServiceAccount, and
+  recording why the name is derived rather than configured.
 - `pkg/reconciler/AGENTS.md` §4: rewritten around the field; the previous text described the helper
   as the seam and claimed rules "narrow", which was untrue for the narrowing to zero.
 - `docs/security.md` §3.2: rewritten. It previously pointed at `ExtraResources` and named four

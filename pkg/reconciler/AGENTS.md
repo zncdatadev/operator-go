@@ -75,14 +75,16 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
      `deletionTimestamp` from its own controller. The SDK's guard makes that safe — the framework
      stops re-creating resources as soon as the timestamp is set, instead of fighting the product's
      teardown for as long as the finalizer is held.
-4. **ServiceAccounts:** Prefer per-CR naming via `GenericReconcilerConfig.ServiceAccountNameFunc`
-   (e.g. `"<product>-" + cr.GetName()`). The reconciler resolves the SA name per CR (func result >
-   static `ServiceAccountName` > "" = skip), ensures the SA with the CR as controller owner
-   (`ensureServiceAccount`), and propagates the resolved name through
-   `RoleGroupBuildContext.ServiceAccountName` to the STS pod template. A static name shared by two
-   clusters in one namespace permanently fails the second cluster's reconcile (AlreadyOwnedError,
-   surfaced as a clear both-owners error) and GC-deletes the SA under the survivor when the owner
-   cluster is deleted. `GenericReconcilerConfig.PodRBACRules func(cr CR) []rbacv1.PolicyRule`
+4. **ServiceAccounts:** The name is DERIVED — `ServiceAccountResourceName(kind, cluster)`
+   = `"<lowercased kind>-<cluster>"`, e.g. `mockcluster-prod`. There is no config field for it and
+   no switch: every cluster gets an SA, created at step 0 with the CR as controller owner
+   (`ensureServiceAccount`), and the name reaches the STS pod template through
+   `RoleGroupBuildContext.ServiceAccountName`. Deriving is what makes "two clusters share one SA"
+   unrepresentable rather than merely warned about; the `AlreadyOwnedError` guard remains for an
+   object squatting on the derived name. `ServiceAccountAnnotationsFunc` adds annotations (the
+   channel cloud workload-identity bindings need), and a `podOverrides` setting
+   `serviceAccountName` is a build failure, because it would sever the pods from the permissions
+   below. `GenericReconcilerConfig.WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule`
    is the other half: the framework maintains a namespaced Role + RoleBinding named after the
    ServiceAccount **it just resolved**, controller-owned by the CR, at step 0b — immediately after
    the SA and before any role is built. The role group then only consumes the result. Reading the
@@ -94,10 +96,9 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    never adopted**: `roleRef` is immutable, so one pointing elsewhere fails the reconcile with a
    `*ValidationError` naming both refs rather than being rebound to the workload's SA. **The RBAC
    watches are conditional** on the field being set, so operators that never use it are not forced
-   to grant themselves cluster-wide `roles`/`rolebindings` `list;watch`. Declaring rules while SA
-   management is off emits a `PodRBACSkipped` Warning.
+   to grant themselves cluster-wide `roles`/`rolebindings` `list;watch`.
 
-   `EnsurePodRBAC(ctx, c, scheme, cr, saName, rules, opts...)` stays exported for the one shape the
+   `EnsureWorkloadRBAC(ctx, c, scheme, cr, saName, rules, opts...)` stays exported for the one shape the
    field cannot express: a product managing its own ServiceAccount (platform-provisioned, IRSA).
 
    **Not `ExtraResources`.** That seam is per-role-group and workload RBAC is per-CR, so a labelled
@@ -107,7 +108,7 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    `cluster-scoped resource must not have a namespace-scoped owner` on every reconcile, at the extras
    step, before the workload is created. A product needing a `ClusterRole` owns its lifecycle itself.
 
-   `EnsurePodRBAC` re-explains an RBAC **escalation** refusal rather than pre-checking it: Kubernetes
+   `EnsureWorkloadRBAC` re-explains an RBAC **escalation** refusal rather than pre-checking it: Kubernetes
    forbids granting permissions the granter lacks, so the operator's own ClusterRole must be a
    superset of every rule passed. The API server has already done that rule-covering computation
    against the operator's real effective permissions and names the missing rule; a framework

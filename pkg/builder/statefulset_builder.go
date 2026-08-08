@@ -934,6 +934,26 @@ func (b *StatefulSetBuilder) applyPodOverrides(sts *appsv1.StatefulSet) {
 	b.podOverrideViolations = append(b.podOverrideViolations,
 		checkPodOverrideMountInvariants(base, merged, sts.Spec.VolumeClaimTemplates)...)
 
+	// The ServiceAccount is the workload's IDENTITY, and since the framework also binds the
+	// workload's RBAC to it, replacing it here silently severs the pods from every permission the
+	// framework granted them: the pods start, and the first API call is denied with nothing
+	// anywhere reporting why. If the SA does not exist at all, the ServiceAccount admission plugin
+	// refuses to create the pods and the role group produces none — reported as Available=False
+	// with Degraded=False, since a pod that was never created cannot be found failing.
+	//
+	// Reaching an externally-managed identity (IRSA, Workload Identity) is the legitimate need
+	// behind this, and it has its own channel now: GenericReconcilerConfig.ServiceAccountAnnotationsFunc
+	// annotates the ServiceAccount the framework owns, which is what those mechanisms actually key on.
+	if b.ServiceAccountName != "" && sts.Spec.Template.Spec.ServiceAccountName != b.ServiceAccountName {
+		b.podOverrideViolations = append(b.podOverrideViolations, fmt.Errorf(
+			"podOverrides set serviceAccountName to %q, replacing the framework's %q: the workload's "+
+				"permissions are bound to the framework's ServiceAccount, so the pods would run with "+
+				"none of them. To attach a cloud identity, use "+
+				"GenericReconcilerConfig.ServiceAccountAnnotationsFunc instead",
+			sts.Spec.Template.Spec.ServiceAccountName, b.ServiceAccountName))
+		sts.Spec.Template.Spec.ServiceAccountName = b.ServiceAccountName
+	}
+
 	// Re-assert the selector labels: the override may have replaced or removed labels the
 	// immutable .spec.selector matches on.
 	if sts.Spec.Template.Labels == nil {

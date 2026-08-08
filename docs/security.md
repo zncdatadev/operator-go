@@ -195,34 +195,36 @@ This layer focuses on how the Operator constructs the Kubernetes Pods and Resour
 
 A Product Cluster managed by the SDK can operate with its own distinct identity.
 
-- **Opt-in Provisioning**: ServiceAccount management is enabled by the operator author, not by
-  default. When `GenericReconcilerConfig.ServiceAccountNameFunc` or the static
-  `ServiceAccountName` resolves to a non-empty name, the reconciler creates (or updates) that
-  `ServiceAccount` in the CR's namespace with the CR as controller owner, and propagates the name
-  through `RoleGroupBuildContext.ServiceAccountName` into the Pod template. When both are empty, SA
-  management is skipped entirely and Pods run as the namespace `default`.
+- **Unconditional Provisioning**: every cluster gets one. The reconciler creates (or updates) the
+  `ServiceAccount` in the CR's namespace at step 0, with the CR as controller owner, and propagates
+  the name through `RoleGroupBuildContext.ServiceAccountName` into the Pod template. There is no
+  switch: a ServiceAccount is pure metadata, and an opt-in mostly produced clusters running as
+  `default` by accident — which is what made the audit-identity benefit below true only for the
+  products that had remembered to opt in.
 - **Granularity is per CR, not per RoleGroup.** The name is resolved once per cluster CR; there is
   no per-role or per-role-group ServiceAccount.
-- **Per-CR Naming (recommended)**: Products should configure `GenericReconcilerConfig.ServiceAccountNameFunc` to derive the SA name from the CR (e.g. `"<product>-<cluster name>"`). Resolution order is: per-CR func result > static `ServiceAccountName` > empty (SA management skipped). A static name shared by two clusters of the same product in one namespace breaks isolation and reconciliation: the second cluster can never take controller ownership of the shared SA (the SDK surfaces a clear error naming both owners), and deleting the first cluster garbage-collects the SA out from under the second cluster's running pods.
+- **Derived, not configured**: the name is `reconciler.ServiceAccountResourceName(kind, cluster)` — `"<lowercased kind>-<cluster>"`, e.g. `hdfscluster-prod` — and every cluster gets one, with no field to set and no way to turn it off. The Kind is in the formula because a CR name alone is not unique in a namespace: an `HdfsCluster` and a `TrinoCluster` both called `prod` would otherwise select the same ServiceAccount and the second controller could never own it. Deriving also makes the name **predictable**, so an IAM trust policy naming `system:serviceaccount:<ns>:hdfscluster-prod` can be written from the formula rather than read out of an operator's source.
 - **Scope**: Pods run as this ServiceAccount, meaning any audit logs in Kubernetes will reflect the specific application identity rather than a generic "default" account.
-- **Customization**: the name is chosen by the operator author through the two config fields above —
-  the common CRD types (`GenericClusterSpec`) carry **no** `serviceAccountName` field. It is not
-  unreachable by a user, though: `podOverrides` patches the pod template and `serviceAccountName` is
-  a `PodSpec` field, so a role group override replaces the framework-resolved value — and with it
-  the permissions `EnsurePodRBAC` granted. A product that needs external IAM integration
+- **Customization**: the name is not customizable, deliberately (see above). What *is* customizable
+  is the ServiceAccount's **annotations**, through `GenericReconcilerConfig.ServiceAccountAnnotationsFunc`
+  — which is the whole mechanism cloud workload-identity bindings (AWS IRSA, Google Workload
+  Identity) use. A `podOverrides` that sets `serviceAccountName` is **rejected at build time**: the
+  workload's permissions are bound to the framework's ServiceAccount, so swapping it would leave the
+  pods holding none of them, silently, until the first API call is denied. A product that needs external IAM integration
   (AWS IRSA, Google Workload Identity) adds its own spec field and feeds it to
-  `ServiceAccountNameFunc`, and applies the IAM annotations to the SA itself.
+  `ServiceAccountAnnotationsFunc`, which puts the IAM annotation on the ServiceAccount the
+  framework owns.
 
 ## 3.2 RBAC Integration (Principle of Least Privilege)
 
 Workloads often need to interact with the Kubernetes API (e.g., Flink JobManager creating generic Jobs, Spark driver creating executor pods).
 
-- **`GenericReconcilerConfig.PodRBACRules` is the supported route**: the framework maintains a
+- **`GenericReconcilerConfig.WorkloadRBACRules` is the supported route**: the framework maintains a
   namespaced Role and RoleBinding named after the ServiceAccount **it resolved itself**, in the CR's
   namespace, both controller-owned by the CR and garbage-collected with it — at cluster level, right
   after ensuring the ServiceAccount and before any role is built. The role group then consumes the
   result: the SA on its pod template is the one the RoleBinding grants to. An empty rule set revokes.
-- **`reconciler.EnsurePodRBAC` is the escape hatch**, exported for the one shape the field cannot
+- **`reconciler.EnsureWorkloadRBAC` is the escape hatch**, exported for the one shape the field cannot
   express: a product managing its own ServiceAccount (platform-provisioned, or externally managed
   for IRSA / Workload Identity), where the framework has no name to resolve. Call it from a
   `common.ClusterExtension` `PreReconcile` hook. Prefer the field — it reads the SA name from the

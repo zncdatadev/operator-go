@@ -33,10 +33,9 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 )
 
-var _ = Describe("EnsurePodRBAC", func() {
+var _ = Describe("EnsureWorkloadRBAC", func() {
 	var ctx context.Context
 	var cr *testutil.MockCluster
 	var saName string
@@ -65,8 +64,8 @@ var _ = Describe("EnsurePodRBAC", func() {
 	}
 
 	It("creates a Role and a RoleBinding named after the ServiceAccount, bound to it", func() {
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, saName, leaseRules,
-			reconciler.WithPodRBACProductName("nifi"))).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, saName, leaseRules,
+			reconciler.WithWorkloadRBACProductName("nifi"))).To(Succeed())
 
 		role := &rbacv1.Role{}
 		Expect(k8sClient.Get(ctx, key(), role)).To(Succeed())
@@ -94,14 +93,14 @@ var _ = Describe("EnsurePodRBAC", func() {
 	})
 
 	It("is idempotent and converges the rules", func() {
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, saName, leaseRules)).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, saName, leaseRules)).To(Succeed())
 
 		narrowed := []rbacv1.PolicyRule{{
 			APIGroups: []string{"coordination.k8s.io"},
 			Resources: []string{"leases"},
 			Verbs:     []string{"get"},
 		}}
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, saName, narrowed)).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, saName, narrowed)).To(Succeed())
 
 		role := &rbacv1.Role{}
 		Expect(k8sClient.Get(ctx, key(), role)).To(Succeed())
@@ -111,7 +110,7 @@ var _ = Describe("EnsurePodRBAC", func() {
 	})
 
 	It("does nothing for an empty rule set", func() {
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, saName, nil)).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, saName, nil)).To(Succeed())
 
 		// Creating an empty Role would be a grant of nothing that nothing reclaims until the CR
 		// is deleted.
@@ -120,15 +119,15 @@ var _ = Describe("EnsurePodRBAC", func() {
 	})
 
 	It("rejects an empty ServiceAccount name", func() {
-		err := reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, "", leaseRules)
+		err := reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, "", leaseRules)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("ServiceAccount"))
 	})
 
 	It("keeps canonical labels winning over caller-supplied ones", func() {
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, saName, leaseRules,
-			reconciler.WithPodRBACProductName("nifi"),
-			reconciler.WithPodRBACExtraLabels(map[string]string{
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, saName, leaseRules,
+			reconciler.WithWorkloadRBACProductName("nifi"),
+			reconciler.WithWorkloadRBACExtraLabels(map[string]string{
 				constant.LabelKubernetesInstance: "hijacked",
 				"example.com/team":               "data",
 			}),
@@ -168,12 +167,12 @@ var _ = Describe("Workload RBAC lifecycle", func() {
 	}
 
 	It("revokes when the rule set becomes empty", func() {
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, name, rules)).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, name, rules)).To(Succeed())
 		Expect(k8sClient.Get(ctx, key(), &rbacv1.Role{})).To(Succeed())
 
 		// The product turned the feature off. Narrowing to zero is the largest narrowing there
 		// is; leaving the Role in place means the pods keep permissions nobody grants any more.
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, name, nil)).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, name, nil)).To(Succeed())
 
 		Expect(k8serrors.IsNotFound(k8sClient.Get(ctx, key(), &rbacv1.Role{}))).To(BeTrue(),
 			"the Role must be deleted when no rules are declared")
@@ -188,7 +187,7 @@ var _ = Describe("Workload RBAC lifecycle", func() {
 		}
 		Expect(k8sClient.Create(ctx, foreign)).To(Succeed())
 
-		Expect(reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, name, nil)).To(Succeed())
+		Expect(reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, name, nil)).To(Succeed())
 
 		// Deleting an object another controller maintains because it happens to share a name is
 		// the worse failure; the ownership gate is the same one every reclaim here applies.
@@ -206,7 +205,7 @@ var _ = Describe("Workload RBAC lifecycle", func() {
 		}
 		Expect(k8sClient.Create(ctx, pre)).To(Succeed())
 
-		err := reconciler.EnsurePodRBAC(ctx, k8sClient, testScheme, cr, name, rules)
+		err := reconciler.EnsureWorkloadRBAC(ctx, k8sClient, testScheme, cr, name, rules)
 		Expect(err).To(HaveOccurred(), "adopting a foreign roleRef is a privilege escalation")
 		Expect(reconciler.IsValidationError(err)).To(BeTrue(), "want a *ValidationError, got %T", err)
 		for _, want := range []string{"cluster-admin", "immutable", "kubectl"} {
@@ -224,14 +223,15 @@ var _ = Describe("Workload RBAC lifecycle", func() {
 // the role group merely CONSUMES it — the ServiceAccount on the pod template is the very one the
 // RoleBinding grants to. That cross-check is what the config field exists for; with the exported
 // helper the product supplies the name a second time and nothing verifies the two agree.
-var _ = Describe("PodRBACRules wiring", func() {
+var _ = Describe("WorkloadRBACRules wiring", func() {
 	var ctx context.Context
 
 	BeforeEach(func() { ctx = context.Background() })
 
 	It("grants to the same ServiceAccount the role group puts on the pod template", func() {
 		name := fmt.Sprintf("rbac-wire-%d", time.Now().UnixNano())
-		saName := name + "-sa"
+		// Derived, not configured: the framework's own name is the only one in play.
+		saName := reconciler.ServiceAccountResourceName("MockCluster", name)
 		cr := createSlotCR(ctx, name, nil, map[string]v1alpha1.RoleSpec{"w": defaultGroupRole()})
 		DeferCleanup(func() {
 			meta := metav1.ObjectMeta{Name: saName, Namespace: testNamespace}
@@ -242,13 +242,12 @@ var _ = Describe("PodRBACRules wiring", func() {
 
 		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
-			Client:                 k8sClient,
-			Scheme:                 testScheme,
-			Recorder:               recorder,
-			RoleGroupHandler:       base,
-			Prototype:              testutil.NewMockCluster("proto", testNamespace),
-			ServiceAccountNameFunc: func(*testutil.MockCluster) string { return saName },
-			PodRBACRules: func(*testutil.MockCluster) []rbacv1.PolicyRule {
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			Recorder:         recorder,
+			RoleGroupHandler: base,
+			Prototype:        testutil.NewMockCluster("proto", testNamespace),
+			WorkloadRBACRules: func(*testutil.MockCluster) []rbacv1.PolicyRule {
 				return []rbacv1.PolicyRule{{
 					APIGroups: []string{"coordination.k8s.io"},
 					Resources: []string{"leases"},
@@ -281,28 +280,36 @@ var _ = Describe("PodRBACRules wiring", func() {
 		Expect(metav1.GetControllerOf(role).UID).To(Equal(cr.UID))
 	})
 
-	It("warns instead of silently granting nothing when SA management is off", func() {
-		name := fmt.Sprintf("rbac-nosa-%d", time.Now().UnixNano())
+	It("needs no ServiceAccount configuration at all", func() {
+		// There is nothing to forget: the identity is derived and always created, so the
+		// "rules declared but no ServiceAccount" state the previous shape had to warn about is
+		// now unrepresentable.
+		name := fmt.Sprintf("rbac-nocfg-%d", time.Now().UnixNano())
+		saName := reconciler.ServiceAccountResourceName("MockCluster", name)
 		createSlotCR(ctx, name, nil, map[string]v1alpha1.RoleSpec{"w": defaultGroupRole()})
+		DeferCleanup(func() {
+			meta := metav1.ObjectMeta{Name: saName, Namespace: testNamespace}
+			_ = k8sClient.Delete(ctx, &rbacv1.RoleBinding{ObjectMeta: meta})
+			_ = k8sClient.Delete(ctx, &rbacv1.Role{ObjectMeta: meta})
+			_ = k8sClient.Delete(ctx, &corev1.ServiceAccount{ObjectMeta: meta})
+		})
 
-		fake := record.NewFakeRecorder(100)
 		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
-			Recorder:         fake,
+			Recorder:         recorder,
 			RoleGroupHandler: base,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
-			// No ServiceAccountName, no ServiceAccountNameFunc: nothing to grant to.
-			PodRBACRules: func(*testutil.MockCluster) []rbacv1.PolicyRule {
+			WorkloadRBACRules: func(*testutil.MockCluster) []rbacv1.PolicyRule {
 				return []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}
 			},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconcileSlotCR(ctx, r, name)).To(Succeed())
 
-		Expect(drainRecorder(fake)).To(ContainElement(SatisfyAll(
-			ContainSubstring("Warning"), ContainSubstring("PodRBACSkipped"))),
-			"declaring rules with no identity to grant them to is always a mistake")
+		binding := &rbacv1.RoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: saName}, binding)).To(Succeed())
+		Expect(binding.Subjects[0].Name).To(Equal(saName))
 	})
 })

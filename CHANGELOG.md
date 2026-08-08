@@ -42,48 +42,58 @@ changes are listed below.**
   override: the reconciler's metrics slot is addressed by derived name (above), and the Service is
   always headless.
 
-### features (workload RBAC)
+### BREAKING (workload identity)
 
-- **`GenericReconcilerConfig.PodRBACRules func(cr CR) []rbacv1.PolicyRule`** declares the API
-  permissions a cluster's workload pods need. It is the other half of `ServiceAccountNameFunc`:
-  that field gives the workload an identity, this one gives that identity its permissions, and the
-  framework maintains both at cluster level — once per CR, before any role is built — from the same
-  resolved ServiceAccount name. The role group only consumes the result. The Role and RoleBinding
-  are named after that ServiceAccount, controller-owned by the CR, and garbage-collected with it.
-  **An empty rule set revokes them**, like every other optional slot where nil is an instruction.
-- The framework passing its own resolved ServiceAccount name is the point of the field: any shape
-  where the product supplies that name a second time can drift, and a Role granting to a
-  ServiceAccount no pod uses has no symptom until the first API call is denied.
-  **`reconciler.EnsurePodRBAC` stays exported** for the one shape the field cannot express — a
-  product managing its own ServiceAccount (platform-provisioned, or externally managed for IRSA).
+- **`GenericReconcilerConfig.ServiceAccountName` and `ServiceAccountNameFunc` are removed.** The
+  ServiceAccount name is now DERIVED from the CR — `reconciler.ServiceAccountResourceName(kind,
+  cluster)`, i.e. `"<lowercased kind>-<cluster>"` — and every cluster gets one, unconditionally.
+  Delete both fields from your `GenericReconcilerConfig`; nothing replaces them.
+
+  The framework owns the name of what it creates, controller-owns, garbage-collects and binds RBAC
+  to — the same rule the fixed `RoleGroupResources` slots already follow. Offering the choice is
+  what produced a whole class of failures: two CRs able to select one name (permanent
+  `AlreadyOwnedError` for the second, and GC pulling the SA out from under the first's running
+  pods), identity and permissions drifting apart when only one call site was updated, and a rename
+  leaving behind an SA nothing could find. Deriving makes them unrepresentable. The Kind is in the
+  formula because a CR name alone is not unique in a namespace, and the result is predictable — an
+  IAM trust policy naming `system:serviceaccount:<ns>:hdfscluster-prod` follows from the formula.
+
+  **Upgrade note:** an existing cluster's ServiceAccount was named by the operator author; the new
+  one is derived, so the first reconcile after upgrading creates a new SA and rolls the pods onto
+  it. The **old ServiceAccount is not reclaimed** — the framework has no record of the name it used
+  to have — so delete it by hand once the pods have rolled.
+
+- **A `podOverrides` that sets `serviceAccountName` is now a build failure.** The workload's
+  permissions are bound to the framework's ServiceAccount, so replacing it left the pods holding
+  none of them — silently, until the first API call was denied. Use `ServiceAccountAnnotationsFunc`
+  to attach a cloud identity.
+
+### features (workload identity and RBAC)
+
+- **`GenericReconcilerConfig.WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule`** declares the API
+  permissions a cluster's workload pods need. It is the other half of the ServiceAccount: that gives
+  the workload an identity, this gives the identity its permissions, and the framework maintains
+  both at cluster level — once per CR, before any role is built — from the same derived name. The
+  role group only consumes the result. The Role and RoleBinding are named after that ServiceAccount,
+  controller-owned by the CR, and garbage-collected with it. **An empty rule set revokes them**,
+  like every other optional slot where nil is an instruction.
+- **`GenericReconcilerConfig.ServiceAccountAnnotationsFunc func(cr CR) map[string]string`** annotates
+  the ServiceAccount the framework creates. Cloud workload-identity bindings (AWS IRSA, Google
+  Workload Identity) are an annotation on the ServiceAccount and nothing more, so this is the channel
+  for them — and the honest replacement for the two removed name fields, neither of which could
+  actually reach an externally-managed identity.
 - **A pre-existing RoleBinding is never adopted.** `roleRef` is immutable, so one already at that
   name pointing elsewhere fails the reconcile with a `*ValidationError` naming both refs and the
   command that fixes it — rather than being rebound to the workload's ServiceAccount, which would
   hand those pods whatever the old ref allows. Migration is exactly when this arises.
-- **The RBAC watches are conditional** on the field being set. An unconditional `Owns` would force
-  every operator built on this SDK to grant itself cluster-wide `list;watch` on `roles`/`rolebindings`
-  or fail to start.
-- Declaring rules while ServiceAccount management is off emits a `PodRBACSkipped` Warning instead of
-  silently granting nothing. An RBAC escalation refusal, and a plain missing-verb 403 on the RBAC API
-  itself, are re-explained as the two different problems they are.
-
-### fixes (RBAC apply and documentation)
-
-- **`copyDesiredState` gained typed `Role` and `RoleBinding` cases.** A RoleBinding's `roleRef` is
-  immutable; it previously fell through to `copyGenericState`, which copies every top-level field
-  except apiVersion/kind/metadata/status — so it replaced `roleRef` and, having no
-  preserve-and-report path, never emitted `ImmutableFieldIgnored` either. A product that changed a
-  binding's `roleRef` wedged every existing cluster's role group at the extras step permanently,
-  with `cannot change roleRef` and no event.
-- **`docs/security.md`, `pkg/builder/AGENTS.md` and `pkg/reconciler/AGENTS.md` pointed products at
-  a route that cannot work.** All three named `RoleGroupResources.ExtraResources` for workload RBAC.
-  `applyResource` sets a *controller* owner reference unconditionally and a cluster-scoped object
-  cannot have a namespace-scoped owner, so `ClusterRole`/`ClusterRoleBinding` fail there on every
-  reconcile before the workload is created; and the extras seam is per-role-group while workload RBAC
-  is per-CR, so a labelled Role is reclaimed when any one role group leaves the spec while its
-  siblings still run.
-- **`docs/security.md` claimed the ServiceAccount name cannot be overridden by a user.** It can:
-  `podOverrides` patches the pod template and `serviceAccountName` is a `PodSpec` field.
+- **The RBAC watches are conditional** on `WorkloadRBACRules` being set. An unconditional `Owns`
+  would force every operator built on this SDK to grant itself cluster-wide `list;watch` on
+  `roles`/`rolebindings` or fail to start.
+- An RBAC escalation refusal, and a plain missing-verb 403 on the RBAC API itself, are re-explained
+  as the two different problems they are. `ensureServiceAccount` now maps 429 to a `*RateLimitError`
+  like every other write path — it runs on every pass of every cluster, so a throttled API server
+  used to mark them all `Degraded` at step 0.
+- `reconciler.EnsureWorkloadRBAC` is exported for products driving the reconciler's pieces directly.
 
 ### fixes (config propagation)
 

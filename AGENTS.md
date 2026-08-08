@@ -739,14 +739,16 @@ the workload has not been built yet; it is deliberately **not** created from the
 
 ### 11c. Workload RBAC
 
-`ServiceAccountNameFunc` gives a cluster's pods an **identity**;
-`GenericReconcilerConfig.PodRBACRules func(cr CR) []rbacv1.PolicyRule` gives that identity its
+The framework gives every cluster's pods an **identity** — a ServiceAccount named
+`ServiceAccountResourceName(kind, cluster)` (`hdfscluster-prod`), created unconditionally, with no
+field to configure and no switch to disable — and
+`GenericReconcilerConfig.WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule` gives that identity its
 **permissions**. Both are per-CR, both are maintained at cluster level before any role is built, and
 the role group only consumes the result — `RoleGroupBuildContext.ServiceAccountName` lands on the
 pod template, already bound to the Role.
 
 ```go
-PodRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
+WorkloadRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
     return []rbacv1.PolicyRule{{
         APIGroups: []string{"coordination.k8s.io"},
         Resources: []string{"leases"},
@@ -755,12 +757,23 @@ PodRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
 },
 ```
 
-The framework passes the ServiceAccount name **it resolved itself**, which is why this is a config
-field rather than only a helper: any shape where the product supplies that name a second time can
-drift, and the result — a Role granting to a ServiceAccount no pod uses — has no symptom until the
-first API call is denied. `reconciler.EnsurePodRBAC` stays exported for the case the field cannot
-serve: a product managing its own ServiceAccount (platform-provisioned, or externally managed for
-IRSA), where there is no name for the framework to resolve.
+**There is no field for the ServiceAccount's name**, and that is the point. The framework owns the
+name the same way it owns every other fixed slot's (§3), because it creates the object,
+controller-owns it, GCs it with the CR and binds these rules to it — nothing needs to address it by
+a product-chosen string. Letting the product choose is what produced the whole class of problems
+this replaced: two CRs able to select the same name (permanent `AlreadyOwnedError` for the second,
+GC pulling the SA out from under the first's running pods), identity and permissions drifting apart
+when only one call site was updated, and a rename leaving an SA nothing could find. A derived name
+makes all of them unrepresentable.
+
+Reaching an **externally-managed identity** — the legitimate need the removed fields were being used
+for and could not actually serve — is `ServiceAccountAnnotationsFunc`: cloud workload-identity
+bindings are an annotation on the ServiceAccount and nothing more. A `podOverrides` that sets
+`serviceAccountName` is rejected at build time, because it would sever the pods from the permissions
+granted here.
+
+`reconciler.EnsureWorkloadRBAC` stays exported for a product driving the reconciler's pieces itself;
+products using `GenericReconciler` should set the field.
 
 Three rules, each following the framework's existing conventions rather than inventing one:
 **an empty rule set REVOKES** (nil is an instruction, as with `MetricsService`); **a pre-existing

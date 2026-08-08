@@ -39,36 +39,36 @@ import (
 // the framework has no lifecycle for one.
 const roleKind = "Role"
 
-// PodRBACOption configures EnsurePodRBAC.
-type PodRBACOption func(*podRBACOptions)
+// WorkloadRBACOption configures EnsureWorkloadRBAC.
+type WorkloadRBACOption func(*workloadRBACOptions)
 
-type podRBACOptions struct {
+type workloadRBACOptions struct {
 	productName string
 	labels      map[string]string
 	annotations map[string]string
 }
 
-// WithPodRBACProductName sets app.kubernetes.io/name on the Role and RoleBinding.
-func WithPodRBACProductName(name string) PodRBACOption {
-	return func(o *podRBACOptions) { o.productName = name }
+// WithWorkloadRBACProductName sets app.kubernetes.io/name on the Role and RoleBinding.
+func WithWorkloadRBACProductName(name string) WorkloadRBACOption {
+	return func(o *workloadRBACOptions) { o.productName = name }
 }
 
-// WithPodRBACExtraLabels merges extra labels onto the Role and RoleBinding. The canonical labels
+// WithWorkloadRBACExtraLabels merges extra labels onto the Role and RoleBinding. The canonical labels
 // always win.
-func WithPodRBACExtraLabels(labels map[string]string) PodRBACOption {
-	return func(o *podRBACOptions) { o.labels = labels }
+func WithWorkloadRBACExtraLabels(labels map[string]string) WorkloadRBACOption {
+	return func(o *workloadRBACOptions) { o.labels = labels }
 }
 
-// WithPodRBACExtraAnnotations merges extra annotations onto the Role and RoleBinding.
-func WithPodRBACExtraAnnotations(annotations map[string]string) PodRBACOption {
-	return func(o *podRBACOptions) { o.annotations = annotations }
+// WithWorkloadRBACExtraAnnotations merges extra annotations onto the Role and RoleBinding.
+func WithWorkloadRBACExtraAnnotations(annotations map[string]string) WorkloadRBACOption {
+	return func(o *workloadRBACOptions) { o.annotations = annotations }
 }
 
-// EnsurePodRBAC maintains the namespaced Role and RoleBinding that give a cluster's WORKLOAD pods
+// EnsureWorkloadRBAC maintains the namespaced Role and RoleBinding that give a cluster's WORKLOAD pods
 // the API permissions they need — not the operator's own permissions, which come from the
 // operator's ClusterRole and are a separate axis entirely.
 //
-// Most products should NOT call this directly: set GenericReconcilerConfig.PodRBACRules instead and
+// Most products should NOT call this directly: set GenericReconcilerConfig.WorkloadRBACRules instead and
 // the framework calls it at cluster level, with the ServiceAccount name it resolved itself, right
 // after ensuring the ServiceAccount. That is what keeps the workload's identity and its permissions
 // from drifting apart — the failure this signature cannot prevent is a product that changes
@@ -84,11 +84,11 @@ func WithPodRBACExtraAnnotations(annotations map[string]string) PodRBACOption {
 // owner reference, idempotent create-or-update, revocation — and the product owns the rules,
 // because only the product knows what its pods call.
 //
-//	err := reconciler.EnsurePodRBAC(ctx, c, scheme, cr, saName, []rbacv1.PolicyRule{{
+//	err := reconciler.EnsureWorkloadRBAC(ctx, c, scheme, cr, saName, []rbacv1.PolicyRule{{
 //	    APIGroups: []string{"coordination.k8s.io"},
 //	    Resources: []string{"leases"},
 //	    Verbs:     []string{"get", "list", "watch", "create", "update"},
-//	}}, reconciler.WithPodRBACProductName("nifi"))
+//	}}, reconciler.WithWorkloadRBACProductName("nifi"))
 //
 // Both objects are named after the ServiceAccount they serve and live in the CR's namespace, so a
 // reader who sees the SA on a pod can find its permissions without knowing this API. Both carry a
@@ -115,7 +115,7 @@ func WithPodRBACExtraAnnotations(annotations map[string]string) PodRBACOption {
 // Kubernetes refuses to let a subject grant permissions it does not itself hold, so the OPERATOR's
 // own ClusterRole must be a superset of every rule passed here. The failure is a 403 at Role
 // create/update time, it is invisible at compile time, and it is invisible in any test that runs as
-// cluster-admin (which envtest does). EnsurePodRBAC re-explains that error rather than pre-checking
+// cluster-admin (which envtest does). EnsureWorkloadRBAC re-explains that error rather than pre-checking
 // it: the API server's own message already names the exact rule that is missing, and a pre-check
 // would have to reimplement RBAC rule covering — wildcards, resourceNames, aggregated ClusterRoles,
 // non-resource URLs — and would then be wrong in both directions.
@@ -126,19 +126,19 @@ func WithPodRBACExtraAnnotations(annotations map[string]string) PodRBACOption {
 //	// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update
 //	// write access to the RBAC API itself, without which nothing here can be created at all
 //	// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
-func EnsurePodRBAC(
+func EnsureWorkloadRBAC(
 	ctx context.Context,
 	c client.Client,
 	scheme *runtime.Scheme,
 	owner client.Object,
 	serviceAccountName string,
 	rules []rbacv1.PolicyRule,
-	opts ...PodRBACOption,
+	opts ...WorkloadRBACOption,
 ) error {
 	if serviceAccountName == "" {
 		return fmt.Errorf("pod RBAC needs the name of the ServiceAccount it grants to: got an empty string")
 	}
-	options := &podRBACOptions{}
+	options := &workloadRBACOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
@@ -150,13 +150,13 @@ func EnsurePodRBAC(
 	// returning early here made it the one case that silently did nothing while the pods kept the
 	// permissions the product had stopped granting.
 	if len(rules) == 0 {
-		return reclaimPodRBAC(ctx, c, owner, serviceAccountName)
+		return reclaimWorkloadRBAC(ctx, c, owner, serviceAccountName)
 	}
 
 	meta := metav1.ObjectMeta{
 		Name:        serviceAccountName,
 		Namespace:   owner.GetNamespace(),
-		Labels:      podRBACLabels(owner, options),
+		Labels:      workloadRBACLabels(owner, options),
 		Annotations: maps.Clone(options.annotations),
 	}
 
@@ -165,7 +165,7 @@ func EnsurePodRBAC(
 		if err := controllerutil.SetControllerReference(owner, role, scheme); err != nil {
 			return err
 		}
-		role.Labels = podRBACLabels(owner, options)
+		role.Labels = workloadRBACLabels(owner, options)
 		role.Annotations = mergeAnnotations(role.Annotations, options.annotations)
 		role.Rules = rules
 		return nil
@@ -178,7 +178,7 @@ func EnsurePodRBAC(
 		if err := controllerutil.SetControllerReference(owner, binding, scheme); err != nil {
 			return err
 		}
-		binding.Labels = podRBACLabels(owner, options)
+		binding.Labels = workloadRBACLabels(owner, options)
 		binding.Annotations = mergeAnnotations(binding.Annotations, options.annotations)
 		binding.Subjects = []rbacv1.Subject{{
 			Kind:      rbacv1.ServiceAccountKind,
@@ -202,7 +202,7 @@ func EnsurePodRBAC(
 			return nil
 		}
 		if binding.RoleRef != want {
-			return NewValidationError("PodRBAC", "", "", fmt.Errorf(
+			return NewValidationError("WorkloadRBAC", "", "", fmt.Errorf(
 				"the RoleBinding %s/%s already exists and points at %s/%s, but this cluster's workload RBAC "+
 					"requires %s/%s. roleRef is immutable, so the framework cannot converge it and will not "+
 					"rebind the existing one — that would grant this cluster's pods whatever the old ref "+
@@ -218,13 +218,13 @@ func EnsurePodRBAC(
 	return nil
 }
 
-// reclaimPodRBAC deletes the Role and RoleBinding this cluster's workload RBAC consists of, but
+// reclaimWorkloadRBAC deletes the Role and RoleBinding this cluster's workload RBAC consists of, but
 // only when they are controller-owned by this CR — the same ownership gate every other reclaim in
 // this package applies, so a same-named object belonging to something else is never touched.
 //
 // Order mirrors the grant: the binding first, so the permission stops applying before the Role that
 // spells it out disappears. A NotFound at either step is success.
-func reclaimPodRBAC(ctx context.Context, c client.Client, owner client.Object, name string) error {
+func reclaimWorkloadRBAC(ctx context.Context, c client.Client, owner client.Object, name string) error {
 	key := types.NamespacedName{Namespace: owner.GetNamespace(), Name: name}
 
 	binding := &rbacv1.RoleBinding{}
@@ -257,9 +257,9 @@ func deleteIfOwned(ctx context.Context, c client.Client, key types.NamespacedNam
 	return nil
 }
 
-// podRBACLabels builds the canonical label set. Extra labels are merged underneath, so the
+// workloadRBACLabels builds the canonical label set. Extra labels are merged underneath, so the
 // canonical ones always win — the same rule EnsureDiscoveryConfigMap follows.
-func podRBACLabels(owner client.Object, options *podRBACOptions) map[string]string {
+func workloadRBACLabels(owner client.Object, options *workloadRBACOptions) map[string]string {
 	labels := maps.Clone(options.labels)
 	if labels == nil {
 		labels = map[string]string{}
