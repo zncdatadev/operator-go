@@ -150,8 +150,10 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// slot"): the framework creates the object, controller-owns it, garbage-collects it with the
 	// CR and binds WorkloadRBACRules to it, so nothing needs to address it by a name the product
 	// chose. Letting the product choose is what produced the whole class of problems this
-	// replaced: two CRs able to select the same name (permanent AlreadyOwnedError for the second,
-	// and GC pulling the SA out from under the first's running pods), the identity and its
+	// replaced: two DIFFERENT clusters resolving to ONE ServiceAccount name — the static field was
+	// a constant, so every CR of the product in a namespace got the same one, and whichever
+	// reconciled second failed with AlreadyOwnedError forever while deleting the first GC'd the SA
+	// out from under its running pods — the identity and its
 	// permissions drifting apart when only one call site was updated, and a rename leaving an SA
 	// nothing could find. A derived name makes all of them unrepresentable, and it is also
 	// PREDICTABLE — an IAM trust policy naming system:serviceaccount:<ns>:hdfscluster-prod can be
@@ -163,7 +165,7 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// need — the product's own processes calling the API, not the operator's permissions, which
 	// come from its ClusterRole and are a separate axis.
 	//
-	// It is the other half of ServiceAccountNameFunc above. That field gives the workload an
+	// It is the other half of the workload's ServiceAccount. That gives the workload an
 	// IDENTITY; this one gives that identity its PERMISSIONS, and the framework maintains both at
 	// the same point in the same way: once per CR, at cluster level, before any role is built. The
 	// role group then merely consumes the result — the ServiceAccount name reaches the pod template
@@ -184,12 +186,10 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	//
 	// The framework passes the ServiceAccount name it resolved itself, so the identity and the
 	// permissions cannot drift apart. That is the reason this is a config field and not only the
-	// exported EnsureWorkloadRBAC helper: with the helper the product supplies the name a second time,
-	// and a product that changes ServiceAccountNameFunc without changing its extension gets a Role
-	// granting permissions to a ServiceAccount no pod uses — two objects that both exist, pods that
-	// start fine, and a 403 on the first API call. EnsureWorkloadRBAC stays exported for the case this
-	// field structurally cannot serve: a product that manages its own ServiceAccount (a
-	// platform-provisioned or externally managed one) and therefore has no name for the framework
+	// exported EnsureWorkloadRBAC helper: the helper takes the name as a parameter, so a caller can
+	// pass one that is not the workload's, producing a Role that grants to a ServiceAccount no pod
+	// uses — two objects that both exist, pods that start fine, and a 403 on the first API call.
+	// EnsureWorkloadRBAC stays exported for a product driving the reconciler's pieces itself
 	// to resolve.
 	//
 	// Setting this REQUIRES the operator to hold these permissions itself — Kubernetes forbids
@@ -1077,8 +1077,8 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 		MergedConfig:     mergedConfig,
 		ResourceName:     resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
-		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
-		// empty when no SA is configured (backward compatible).
+		// the SA the reconciler creates. Derived from the CR (kind + name), never configured and
+		// never empty — this is the consumption half of the identity settled at step 0.
 		ServiceAccountName: r.resolveServiceAccountName(cr),
 	}, nil
 }
@@ -1819,9 +1819,10 @@ func (r *GenericReconciler[CR]) ensureWorkloadRBAC(ctx context.Context, cr CR, s
 // the CR as its controller owner.
 //
 // Guard rail: if an SA with this name already exists but is controlled by a DIFFERENT owner,
-// SetControllerReference refuses to steal it; that raw AlreadyOwnedError is wrapped in an
-// explicit error naming both owners, because it almost always means two CRs were configured to
-// share one static ServiceAccountName — the fix is per-CR naming via ServiceAccountNameFunc.
+// SetControllerReference refuses to steal it; that raw AlreadyOwnedError is wrapped in an explicit
+// error naming both owners. Deriving the name removed the configuration that used to cause this —
+// two clusters resolving to one name — so what remains is an unrelated object squatting on the
+// derived name, which the framework must not adopt.
 func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR, name string) error {
 	sa := &corev1.ServiceAccount{}
 	sa.Name = name

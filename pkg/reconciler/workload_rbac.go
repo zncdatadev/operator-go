@@ -68,16 +68,15 @@ func WithWorkloadRBACExtraAnnotations(annotations map[string]string) WorkloadRBA
 // the API permissions they need — not the operator's own permissions, which come from the
 // operator's ClusterRole and are a separate axis entirely.
 //
-// Most products should NOT call this directly: set GenericReconcilerConfig.WorkloadRBACRules instead and
-// the framework calls it at cluster level, with the ServiceAccount name it resolved itself, right
-// after ensuring the ServiceAccount. That is what keeps the workload's identity and its permissions
-// from drifting apart — the failure this signature cannot prevent is a product that changes
-// ServiceAccountNameFunc and forgets its extension, leaving a Role that grants to a ServiceAccount
-// no pod uses: both objects exist, the pods start, and the first API call 403s.
+// Most products should NOT call this directly: set GenericReconcilerConfig.WorkloadRBACRules instead
+// and the framework calls it at cluster level, with the ServiceAccount name it DERIVED, right after
+// creating that ServiceAccount. That is what keeps the workload's identity and its permissions from
+// drifting apart — the failure this signature cannot prevent is a caller passing a name that is not
+// the workload's, leaving a Role that grants to a ServiceAccount no pod uses: both objects exist,
+// the pods start, and the first API call 403s.
 //
-// It stays exported for the one case the config field structurally cannot serve: a product that
-// manages its OWN ServiceAccount — platform-provisioned, or externally managed for IRSA / Workload
-// Identity — so the framework has no name to resolve. Call it from a common.ClusterExtension
+// It stays exported for a product driving the reconciler's pieces itself rather than through
+// GenericReconciler. Call it from a common.ClusterExtension
 // PreReconcile hook, where a ctx and client exist and the workload has not been built yet.
 //
 // Either way the framework owns the ensure semantics — naming, canonical labels, the controller
@@ -170,7 +169,7 @@ func EnsureWorkloadRBAC(
 		role.Rules = rules
 		return nil
 	}); err != nil {
-		return explainPodRBACError(ctx, err, rules)
+		return explainWorkloadRBACError(ctx, err, rules)
 	}
 
 	binding := &rbacv1.RoleBinding{ObjectMeta: meta}
@@ -212,7 +211,7 @@ func EnsureWorkloadRBAC(
 		}
 		return nil
 	}); err != nil {
-		return explainPodRBACError(ctx, err, rules)
+		return explainWorkloadRBACError(ctx, err, rules)
 	}
 
 	return nil
@@ -272,7 +271,7 @@ func workloadRBACLabels(owner client.Object, options *workloadRBACOptions) map[s
 	return labels
 }
 
-// explainPodRBACError re-explains the two failures a product author cannot diagnose from the raw
+// explainWorkloadRBACError re-explains the two failures a product author cannot diagnose from the raw
 // message, and passes everything else through untouched.
 //
 // A 403 here has TWO possible causes and they need opposite fixes, which is why the attribution has
@@ -290,16 +289,17 @@ func workloadRBACLabels(owner client.Object, options *workloadRBACOptions) map[s
 // operator's real effective permissions including aggregated ClusterRoles, and names the missing
 // rule — which is why this re-explains rather than pre-checks. A framework pre-check would have to
 // reimplement wildcards, resourceNames and non-resource URLs, and be wrong in both directions.
-func explainPodRBACError(ctx context.Context, err error, rules []rbacv1.PolicyRule) error {
+func explainWorkloadRBACError(ctx context.Context, err error, rules []rbacv1.PolicyRule) error {
 	var alreadyOwned *controllerutil.AlreadyOwnedError
 	if stderrors.As(err, &alreadyOwned) {
-		// Same root cause the ServiceAccount path already explains: a static ServiceAccountName
-		// shared by two CRs in one namespace makes both want the same Role.
+		// The ServiceAccount name is derived from the CR, so two clusters can no longer be
+		// configured onto one Role. What remains is an unrelated object squatting on the derived
+		// name — which the framework must not adopt, since rebinding it would grant this cluster's
+		// pods whatever it already allows.
 		return fmt.Errorf(
 			"the workload RBAC object %q is already controlled by %s %q, so this cluster cannot own it. "+
-				"Workload RBAC is named after the ServiceAccount, so two clusters sharing a static "+
-				"ServiceAccountName collide here. Give each CR its own name with "+
-				"GenericReconcilerConfig.ServiceAccountNameFunc (e.g. \"<product>-<cluster>\"): %w",
+				"Workload RBAC is named after this cluster's ServiceAccount, whose name is derived from "+
+				"the CR, so something else is occupying that name: delete it, or rename the cluster: %w",
 			alreadyOwned.Object.GetName(), alreadyOwned.Owner.Kind, alreadyOwned.Owner.Name, err)
 	}
 

@@ -761,8 +761,7 @@ WorkloadRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
 name the same way it owns every other fixed slot's (§3), because it creates the object,
 controller-owns it, GCs it with the CR and binds these rules to it — nothing needs to address it by
 a product-chosen string. Letting the product choose is what produced the whole class of problems
-this replaced: two CRs able to select the same name (permanent `AlreadyOwnedError` for the second,
-GC pulling the SA out from under the first's running pods), identity and permissions drifting apart
+this replaced: two DIFFERENT clusters resolving to ONE ServiceAccount name — a static `ServiceAccountName` is a constant, so every CR of the product in a namespace got the same one (permanent `AlreadyOwnedError` for whichever reconciled second, and GC pulling the SA out from under the first's running pods), identity and permissions drifting apart
 when only one call site was updated, and a rename leaving an SA nothing could find. A derived name
 makes all of them unrepresentable.
 

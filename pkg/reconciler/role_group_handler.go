@@ -184,12 +184,15 @@ type RoleGroupBuildContext struct {
 	// role segment prevents collisions between same-named groups of different roles.
 	ResourceName string
 
-	// ServiceAccountName is the name of the ServiceAccount the workload pods should run as.
-	// It is populated by GenericReconciler with the resolved SA name — the per-CR
-	// ServiceAccountNameFunc result when set, else the static ServiceAccountName (the SA the
-	// reconciler auto-creates). When non-empty, the base StatefulSet builder binds it to the
-	// pod template via WithServiceAccount, so the created SA is actually used. Empty means no
-	// binding — pods fall back to the namespace default SA (backward compatible).
+	// ServiceAccountName is the name of the ServiceAccount the workload pods run as. The
+	// GenericReconciler populates it with the name it DERIVED from the CR
+	// (ServiceAccountResourceName: "<lowercased kind>-<cluster>") and already created at step 0,
+	// bound to whatever WorkloadRBACRules declared. The base StatefulSet builder binds it to the
+	// pod template via WithServiceAccount.
+	//
+	// It is never empty: every cluster has an identity, and there is no field to configure or
+	// disable it. A podOverrides that replaces it on the pod template is a build failure, because
+	// the permissions are bound to this name.
 	ServiceAccountName string
 
 	// SidecarManager is the sidecar manager for this role group, always set (non-nil) by

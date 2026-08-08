@@ -51,9 +51,7 @@ changes are listed below.**
 
   The framework owns the name of what it creates, controller-owns, garbage-collects and binds RBAC
   to — the same rule the fixed `RoleGroupResources` slots already follow. Offering the choice is
-  what produced a whole class of failures: two CRs able to select one name (permanent
-  `AlreadyOwnedError` for the second, and GC pulling the SA out from under the first's running
-  pods), identity and permissions drifting apart when only one call site was updated, and a rename
+  what produced a whole class of failures: two DIFFERENT clusters resolving to ONE ServiceAccount name — a static `ServiceAccountName` is a constant, so every CR of the product in a namespace got the same one (permanent `AlreadyOwnedError` for whichever reconciled second, and GC pulling the SA out from under the first's running pods), identity and permissions drifting apart when only one call site was updated, and a rename
   leaving behind an SA nothing could find. Deriving makes them unrepresentable. The Kind is in the
   formula because a CR name alone is not unique in a namespace, and the result is predictable — an
   IAM trust policy naming `system:serviceaccount:<ns>:hdfscluster-prod` follows from the formula.
