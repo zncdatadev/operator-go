@@ -775,7 +775,87 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		// file appender emitted without it points the product at a path no volume backs.
 		Expect(cm.Data["logback.xml"]).NotTo(ContainSubstring(constant.KubedoopLogDir))
 	})
+
+	It("collects from a producer whose config file the product owns", func() {
+		crName := uniqueCRName("vector-own-config")
+		cr, resourceName := newVectorCR(crName)
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: testNamespace}})
+		})
+
+		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme)
+		base.MainContainerName = "app"
+		// Deliberately empty: this product builds its own logging config file (Airflow's
+		// log_config.py has to extend Airflow's DEFAULT_LOGGING_CONFIG, so it can never be a
+		// rendered template) and only wants the container joined to the Vector pipeline.
+		base.LoggingContainers = nil
+		r := newReconciler(&productLogConfigHandler{BaseRoleGroupHandler: base}, record.NewFakeRecorder(100))
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
+
+		// Gate 2 reads the OUTER handler, so the override counts even though the embedded base
+		// handler's LoggingContainers is empty. Rewiring it to the rendered list would silently
+		// drop the sidecar from every product that owns its logging config.
+		Expect(hasVectorSidecar(sts)).To(BeTrue())
+
+		app := sidecar.FindContainer(&sts.Spec.Template.Spec, "app")
+		Expect(app).NotTo(BeNil(), "the producer container must survive injection")
+		mounts := make([]string, 0, len(app.VolumeMounts))
+		for _, m := range app.VolumeMounts {
+			mounts = append(mounts, m.Name)
+		}
+		// The whole point of joining the pipeline: the shared log volume is RW-mounted on the
+		// producer, so the product's own appender writes somewhere Vector reads.
+		Expect(mounts).To(ContainElement(vector.VectorLogVolumeName))
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, cm)).To(Succeed())
+		Expect(cm.Data).To(HaveKey(vector.VectorConfigFileName))
+		// ...and the other half of the seam: the framework renders NO config file for that
+		// producer, so there is no key to collide with the one the product writes itself.
+		Expect(cm.Data).NotTo(HaveKey("logback.xml"))
+	})
 })
+
+// productLogConfigHandler is the shape a product uses when it owns its own logging config file: it
+// embeds BaseRoleGroupHandler, leaves LoggingContainers empty so the framework renders nothing, and
+// overrides LoggingProducers so the container still joins the Vector pipeline. Go has no virtual
+// dispatch, so the embedded base cannot see this override — which is exactly why the reconciler
+// reads producers off the outer handler and rendering reads the field.
+type productLogConfigHandler struct {
+	*reconciler.BaseRoleGroupHandler[*testutil.MockCluster]
+}
+
+func (h *productLogConfigHandler) LoggingProducers(string) []productlogging.ContainerLogging {
+	// Framework is set on purpose: if rendering were ever rewired to this list, a logback.xml
+	// would appear in the ConfigMap and the spec above would catch it.
+	return []productlogging.ContainerLogging{{Container: "app", Framework: productlogging.LoggingFrameworkLogback}}
+}
+
+// ProvidesVectorConfig satisfies gate 3: the product writes vector.yaml itself.
+func (h *productLogConfigHandler) ProvidesVectorConfig(string) bool { return true }
+
+func (h *productLogConfigHandler) BuildResources(
+	ctx context.Context,
+	c client.Client,
+	cr *testutil.MockCluster,
+	buildCtx *reconciler.RoleGroupBuildContext,
+) (*reconciler.RoleGroupResources, error) {
+	res, err := h.BaseRoleGroupHandler.BuildResources(ctx, c, cr, buildCtx)
+	if err != nil {
+		return nil, err
+	}
+	if res.ConfigMap.Data == nil {
+		res.ConfigMap.Data = map[string]string{}
+	}
+	res.ConfigMap.Data[vector.VectorConfigFileName] = "# product-owned vector config"
+	return res, nil
+}
 
 var _ = Describe("GenericReconciler status stability", func() {
 	var ctx context.Context
