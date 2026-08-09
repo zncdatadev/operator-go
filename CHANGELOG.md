@@ -8,6 +8,42 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### fix (data PVC transitions)
+
+- **Adding `config.resources.storage` to a live role group no longer wedges it, and removing it no
+  longer unmounts the data silently.** `volumeClaimTemplates` is immutable and the apply path
+  preserves it — correctly — but the pod template it belongs to came from the handler, so the two
+  disagreed on every transition:
+  - **Add**: the template mounted a claim the framework had just declined to create —
+    `volumeMounts[0].name: Not found: "data"`, a field the user never wrote. On Kubernetes 1.34+ the
+    API server rejects that Update outright and the role group stays `Degraded` on every subsequent
+    pass, recoverable only by deleting the StatefulSet by hand; on older servers the Update is
+    accepted and every **pod** the StatefulSet controller creates is rejected instead, so the
+    workload never progresses and the error never reaches the cluster's status.
+  - **Remove**: this one was *accepted*. The claim template stayed (immutable), the mount did not,
+    and the pods rolled into a product writing to the container's writable layer while its bound PVCs
+    sat there mounted nowhere — with no event, no condition and no log line.
+
+  `copyStatefulSetState` now reconciles the mounts against the claim templates that actually
+  survived: a mount whose claim was not created is dropped (unless an ordinary volume of that name
+  backs it), and **every** mount a preserved claim had is restored **from the live template**, so the
+  mount path is read rather than invented. The restore is keyed on the mount *path* — Kubernetes lets
+  one volume be mounted several times, so keying on the volume name would stop after the first and
+  drop the rest, and a path the desired template already uses wins because two mounts at one path is
+  a pod spec the API server rejects. A rename (`data` → `data2`) hits both branches and lands on the
+  preserved claim. This makes the transition converge and stay coherent; it does not make the
+  immutable change happen, and `spec.volumeClaimTemplates` is still reported as ignored.
+- **Removing storage is now reported at all.** The `ImmutableFieldIgnored` check carried a
+  `len(desired) > 0` guard, so the direction that *emptied* `volumeClaimTemplates` was the one
+  direction nobody was told about. That guard is right for every other preserved field — an unset
+  field is the handler declining to have an opinion — and wrong for this one, where an empty list is
+  the handler stating that this role group has no storage.
+- **`ImmutableFieldIgnored` is emitted before the write's error is returned.** The mutate func has
+  already run by then, so what the framework refused to change is known even when the Update failed —
+  and a rejected Update is exactly when the user most needs to be told which of their changes had
+  already been dropped. Emitting after the return meant the one event that explains the situation was
+  the one event that never fired.
+
 ### docs (sidecar and logging seams)
 
 - **The seam that lets a product own its logging config file is now documented and pinned by a

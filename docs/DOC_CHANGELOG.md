@@ -34,6 +34,24 @@ This document tracks all changes made to the SDK documentation.
   `sidecar.NewStaticContainerProvider` / `sidecar.SidecarRestartPolicy`, neither of which appeared in
   any `.md` before — which is why products kept asking for a framework provider per helper container.
 
+## [2026-08-09] (a preserved field's contract, not just its value)
+
+### Core architecture
+
+- `docs/architecture.md` §5.3.3 gains the rule the data-PVC defect generalises to: *preserve the
+  field's whole contract, or the object converges into a state neither the user nor the handler
+  described.* `volumeClaimTemplates` is the only preserved field another part of the same object
+  refers to, and preserving it alone produced a rejected Update in one direction and a silently
+  unmounted PVC in the other.
+
+### Package guides
+
+- Root `AGENTS.md` §2 documents both transitions, what the apply path now does about them (drop a
+  mount for a claim that was not created, restore a preserved claim's mount from the live template),
+  and why an **empty** desired `volumeClaimTemplates` counts as a change request when an empty value
+  for every other preserved field does not.
+- `pkg/reconciler/AGENTS.md` records `reconcileClaimVolumeMounts` in the `apply.go` row.
+
 ## [2026-08-08] (workload identity and workload RBAC become framework concerns)
 
 ### Package guides

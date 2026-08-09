@@ -140,11 +140,45 @@ func desiredAs[T client.Object](desired, live client.Object) (T, error) {
 // tell the user their change was dropped. Preserving these fields silently is what made a
 // storage resize look successful: the CR reported ReconcileComplete while the PVC never moved,
 // and nothing in the API said why.
+//
+// # The pod template follows the claim templates that were actually preserved
+//
+// volumeClaimTemplates is the one preserved field the pod template DEPENDS on, and preserving it
+// alone leaves an incoherent StatefulSet in both directions:
+//
+//   - Adding storage to a live role group produces a template mounting a claim the framework just
+//     declined to create, which nothing can run: `volumeMounts[0].name: Not found: "data"`, a field
+//     the user never wrote. Kubernetes 1.34+ rejects the StatefulSet Update itself, so the role
+//     group stays Degraded on every subsequent pass and only a manual delete recovers it; older
+//     servers accept the Update and reject every POD the controller then tries to create, so the
+//     workload silently never progresses and the error is in the StatefulSet controller's events
+//     rather than the cluster's status.
+//   - Removing it is worse, because it is ACCEPTED: the claim template is kept, the mount is not,
+//     and the pods roll into a product writing to the container's writable layer while its bound
+//     PVCs sit there mounted nowhere. No event, no condition, no log line.
+//
+// So the mounts are reconciled against the claim templates that survived: a mount for a claim that
+// was not created is dropped, and a mount for a claim that was preserved is restored from the live
+// template. The change is still reported through `ignored` — this makes the transition converge and
+// stay coherent, it does not make it happen.
 func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	selector := live.Spec.Selector
 	serviceName := live.Spec.ServiceName
 	volumeClaimTemplates := live.Spec.VolumeClaimTemplates
 	podManagementPolicy := live.Spec.PodManagementPolicy
+
+	// Unlike the other preserved fields, an EMPTY desired value counts here. Everywhere else an
+	// unset field is the handler declining to have an opinion; an empty volumeClaimTemplates is the
+	// handler stating that this role group has no storage, which is exactly the direction that was
+	// being applied silently.
+	claimTemplatesDiffer := !apiequality.Semantic.DeepEqual(desired.Spec.VolumeClaimTemplates, volumeClaimTemplates)
+
+	// Captured before the spec is overwritten, and only when it is needed: it is the only record of
+	// where a preserved claim was mounted.
+	var liveTemplate *corev1.PodTemplateSpec
+	if claimTemplatesDiffer {
+		liveTemplate = live.Spec.Template.DeepCopy()
+	}
 
 	// Compared BEFORE the spec is overwritten. Only a desired value the handler actually set
 	// counts: an unset field is the handler declining to have an opinion, not a change request.
@@ -155,8 +189,7 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	if desired.Spec.ServiceName != "" && desired.Spec.ServiceName != serviceName {
 		ignored = append(ignored, "spec.serviceName")
 	}
-	if len(desired.Spec.VolumeClaimTemplates) > 0 &&
-		!apiequality.Semantic.DeepEqual(desired.Spec.VolumeClaimTemplates, volumeClaimTemplates) {
+	if claimTemplatesDiffer {
 		ignored = append(ignored, "spec.volumeClaimTemplates")
 	}
 	if desired.Spec.PodManagementPolicy != "" && desired.Spec.PodManagementPolicy != podManagementPolicy {
@@ -188,9 +221,160 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	live.Spec.ServiceName = serviceName
 	live.Spec.VolumeClaimTemplates = volumeClaimTemplates
 	live.Spec.PodManagementPolicy = podManagementPolicy
+
+	if claimTemplatesDiffer {
+		// live.Spec was assigned wholesale, so its Containers slice still shares a backing array
+		// with desired's. Deep-copy before mutating, or the fix writes through into the object the
+		// caller built.
+		live.Spec.Template = *desired.Spec.Template.DeepCopy()
+		reconcileClaimVolumeMounts(&live.Spec.Template, desired.Spec.VolumeClaimTemplates, volumeClaimTemplates, liveTemplate)
+	}
+
 	live.Spec.Template.Annotations = mergeAnnotations(templateAnnotations, desired.Spec.Template.Annotations)
 
 	return ignored
+}
+
+// reconcileClaimVolumeMounts makes the pod template consistent with the volumeClaimTemplates that
+// actually exist on the live StatefulSet, after copyStatefulSetState has preserved them.
+//
+// Two directions, and neither is a policy choice — each is the only shape the API server will accept
+// or the only one that keeps the pods attached to their data:
+//
+//   - A mount naming a claim in `desiredClaims` but not in `liveClaims` refers to a volume that will
+//     not exist, and the API server rejects the whole StatefulSet for it. It is dropped, unless the
+//     template also declares an ordinary volume of that name — then the mount is backed and the
+//     claim template was never what satisfied it.
+//   - A claim in `liveClaims` but not in `desiredClaims` has been preserved and must stay mounted
+//     where it already is, so its mounts are copied back from the live template. Restoring only
+//     what the live template had is what keeps this from inventing a mount path: the framework does
+//     not know where the product wants the volume, it knows where the volume already is.
+//
+// A rename (live "data", desired "data2") hits both branches and lands on the preserved claim.
+func reconcileClaimVolumeMounts(tpl *corev1.PodTemplateSpec, desiredClaims, liveClaims []corev1.PersistentVolumeClaim, liveTemplate *corev1.PodTemplateSpec) {
+	liveNames := claimTemplateNames(liveClaims)
+	desiredNames := claimTemplateNames(desiredClaims)
+
+	for name := range desiredNames {
+		if _, created := liveNames[name]; created {
+			continue
+		}
+		if hasVolume(tpl.Spec.Volumes, name) {
+			continue
+		}
+		dropVolumeMount(tpl, name)
+	}
+
+	if liveTemplate == nil {
+		return
+	}
+	for name := range liveNames {
+		if _, stillDesired := desiredNames[name]; stillDesired {
+			continue
+		}
+		restoreVolumeMount(tpl, liveTemplate, name)
+	}
+}
+
+// claimTemplateNames indexes a volumeClaimTemplates list by claim name.
+func claimTemplateNames(claims []corev1.PersistentVolumeClaim) map[string]struct{} {
+	names := make(map[string]struct{}, len(claims))
+	for i := range claims {
+		names[claims[i].Name] = struct{}{}
+	}
+	return names
+}
+
+// hasVolume reports whether the pod spec declares an ordinary volume of this name.
+func hasVolume(volumes []corev1.Volume, name string) bool {
+	for i := range volumes {
+		if volumes[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// dropVolumeMount removes every mount of the named volume from every container in the template.
+func dropVolumeMount(tpl *corev1.PodTemplateSpec, name string) {
+	forEachContainer(tpl, func(c *corev1.Container) {
+		kept := make([]corev1.VolumeMount, 0, len(c.VolumeMounts))
+		for _, m := range c.VolumeMounts {
+			if m.Name != name {
+				kept = append(kept, m)
+			}
+		}
+		if len(kept) == 0 {
+			c.VolumeMounts = nil
+			return
+		}
+		c.VolumeMounts = kept
+	})
+}
+
+// restoreVolumeMount copies EVERY live mount of the named volume back onto the same-named
+// containers. Kubernetes allows one volume to be mounted several times — different paths, different
+// subPaths — and a product that does so has as much claim to each of those paths as to the first, so
+// the restore is keyed on the mount PATH rather than the volume name. Keying on the name would stop
+// after the first restored mount and drop the rest, and it is also the wrong question in the one
+// situation this branch runs in: the claim is gone from the desired state, so a desired mount of
+// that volume names something only the preserved claim backs — it is a reason to keep the live
+// mounts, not to skip them.
+//
+// A path the desired template already uses is left alone: the desired template's opinion about a
+// path wins, and two mounts at one path is a spec the API server rejects.
+func restoreVolumeMount(tpl *corev1.PodTemplateSpec, liveTemplate *corev1.PodTemplateSpec, name string) {
+	forEachContainer(liveTemplate, func(liveContainer *corev1.Container) {
+		target := findTemplateContainer(tpl, liveContainer.Name)
+		if target == nil {
+			return // the container is gone from the desired template; nothing to mount onto
+		}
+		for _, m := range liveContainer.VolumeMounts {
+			if m.Name != name {
+				continue
+			}
+			// Re-checked per mount, against the list as it grows, so two live mounts at the same
+			// path (or one colliding with a desired mount) cannot produce a duplicate.
+			if mountsPath(target.VolumeMounts, m.MountPath) {
+				continue
+			}
+			target.VolumeMounts = append(target.VolumeMounts, *m.DeepCopy())
+		}
+	})
+}
+
+// forEachContainer applies fn to every container in the template, init containers included.
+func forEachContainer(tpl *corev1.PodTemplateSpec, fn func(*corev1.Container)) {
+	for i := range tpl.Spec.InitContainers {
+		fn(&tpl.Spec.InitContainers[i])
+	}
+	for i := range tpl.Spec.Containers {
+		fn(&tpl.Spec.Containers[i])
+	}
+}
+
+// findTemplateContainer returns the named container in the template, init containers included.
+func findTemplateContainer(tpl *corev1.PodTemplateSpec, name string) *corev1.Container {
+	for i := range tpl.Spec.InitContainers {
+		if tpl.Spec.InitContainers[i].Name == name {
+			return &tpl.Spec.InitContainers[i]
+		}
+	}
+	for i := range tpl.Spec.Containers {
+		if tpl.Spec.Containers[i].Name == name {
+			return &tpl.Spec.Containers[i]
+		}
+	}
+	return nil
+}
+
+func mountsPath(mounts []corev1.VolumeMount, path string) bool {
+	for i := range mounts {
+		if mounts[i].MountPath == path {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeAnnotations returns live's annotations with desired's merged over them, desired winning per

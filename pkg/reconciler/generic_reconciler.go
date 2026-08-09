@@ -1604,20 +1604,26 @@ func (r *GenericReconciler[CR]) applyResource(ctx context.Context, owner client.
 		ignoredImmutable, copyErr = copyDesiredState(desired, obj)
 		return copyErr
 	})
-	if err != nil {
-		return r.apiError(err)
-	}
-
 	// Tell the user their change was dropped. The framework preserving an immutable field is
 	// correct — the alternative is an Update the API server rejects on every reconcile — but
 	// doing it silently is what let a storage resize be accepted, reported as
 	// ReconcileComplete=True, and never applied. Kubernetes aggregates repeated identical events
 	// into one entry with a count, so this stays visible in `kubectl describe` for as long as the
 	// spec and the live object disagree, without flooding.
+	//
+	// Emitted BEFORE the error is returned, and deliberately: the mutate func has already run, so
+	// what the framework refused to change is known even when the write then failed — and a
+	// rejected Update is precisely when the user most needs to be told which of their changes the
+	// framework had dropped. Returning first meant the one event that explains the situation was
+	// the one event that never fired.
 	if len(ignoredImmutable) > 0 {
 		r.eventManager.EmitWarningEvent(owner, "ImmutableFieldIgnored", fmt.Sprintf(
 			"%s %q: %s cannot be changed after creation, so the live value is kept and the spec has no effect. Recreate the resource to apply it.",
 			r.resourceKind(obj), obj.GetName(), strings.Join(ignoredImmutable, ", ")))
+	}
+
+	if err != nil {
+		return r.apiError(err)
 	}
 
 	switch result {
