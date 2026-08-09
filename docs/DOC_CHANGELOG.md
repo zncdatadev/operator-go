@@ -4,6 +4,36 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-09] (sidecar and logging seams that existed but were never written down)
+
+### Core architecture
+
+- `docs/architecture.md` §4.6.2 **Standard Implementations** listed two of the four shipped
+  providers. `OAuth2ProxySidecarProvider` and `StaticContainerProvider` added;
+  `JmxExporterSidecarProvider` corrected to `JMXExporterSidecarProvider` and its description
+  corrected from "injects Prometheus JMX Exporter agent" to what it is — a separate container running
+  `jmx_prometheus_httpserver.jar`. The java-agent mechanism is `constant.JMXJavaAgentOpt` (§4.1.5),
+  and conflating the two is how a product ends up wiring neither.
+- §4.6.2 said the manager "injects Containers". It injects **`InitContainers`** with
+  `RestartPolicy: Always` — native sidecars (KEP-753; on by default since Kubernetes v1.29, GA in v1.33) — and the ordering that buys
+  (started before, terminated after the main container) is the whole reason the pre-#441 shutdown-file
+  handshake could be deleted. Both facts added, with the migration note that a product carrying
+  shutdown-file commands should now delete them.
+- §4.6.2 gate 2 now states that the producer list is read from the **outer** handler while config
+  files are rendered from `BaseRoleGroupHandler.LoggingContainers`, and that this is the supported
+  seam for a product-owned logging config file rather than an accident.
+- §4.6.2 "Workflow" described producers as "container names"; they have been
+  `[]productlogging.ContainerLogging` since the log-tag decoupling.
+
+### Package guides
+
+- Root `AGENTS.md` §9 gains the product-owned-config-file seam (override `LoggingProducers`, leave
+  `LoggingContainers` empty) and the two obligations it transfers to the product.
+- Root `AGENTS.md` §14 gains the native-sidecar paragraph (why init containers, and that the
+  shutdown-file contract and its `pkg/util/bash.go` half were both removed in #441) and
+  `sidecar.NewStaticContainerProvider` / `sidecar.SidecarRestartPolicy`, neither of which appeared in
+  any `.md` before — which is why products kept asking for a framework provider per helper container.
+
 ## [2026-08-08] (workload identity and workload RBAC become framework concerns)
 
 ### Package guides

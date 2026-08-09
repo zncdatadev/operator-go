@@ -461,7 +461,8 @@ func FindInitContainerIndex(podSpec *corev1.PodSpec, name string) int {
 // All managed containers go into podSpec.InitContainers: a long-running sidecar is simply
 // an init container whose RestartPolicy is Always (see SidecarRestartPolicy); a one-shot
 // init (e.g. node-id generation) has a nil RestartPolicy. This relies on the kubelet's
-// native sidecar semantics (Kubernetes 1.28+) for startup and shutdown ordering.
+// native sidecar semantics (KEP-753: added in Kubernetes v1.28 behind the SidecarContainers
+// gate, on by default since v1.29, GA in v1.33) for startup and shutdown ordering.
 func AddOrReplaceInitContainer(podSpec *corev1.PodSpec, container *corev1.Container) {
 	if idx := FindInitContainerIndex(podSpec, container.Name); idx >= 0 {
 		podSpec.InitContainers[idx] = *container
@@ -471,7 +472,8 @@ func AddOrReplaceInitContainer(podSpec *corev1.PodSpec, container *corev1.Contai
 }
 
 // SidecarRestartPolicy returns the RestartPolicy that turns an init container into a native
-// sidecar (Kubernetes 1.28+): the kubelet starts it before the main container, keeps it
+// sidecar (KEP-753; on by default since Kubernetes v1.29, GA in v1.33): the kubelet starts it
+// before the main container, keeps it
 // running alongside, and terminates it only after the main container exits. Set this on a
 // container's RestartPolicy before registering it (e.g. via StaticContainerProvider) to
 // make it a long-running sidecar instead of a one-shot init container.

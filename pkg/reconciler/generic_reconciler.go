@@ -1114,6 +1114,13 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 	// Vector provider is the single owner of the shared log pipeline: it creates the volume,
 	// RW-mounts it on the producer containers, mounts it on itself (pre-creating the per-container
 	// log dirs, as it starts first), and adds the sidecar.
+	//
+	// This asserts on r.roleGroupHandler — the OUTER handler — so a product overriding
+	// LoggingProducers is honored here, while BaseRoleGroupHandler renders config files from its own
+	// LoggingContainers field and cannot see that override (Go has no virtual dispatch). Do not
+	// "simplify" this to read the rendered list: the two being separately addressable is the
+	// documented way to join the Vector pipeline without a framework-rendered config file, which is
+	// what a product owning its own logging config (Airflow's log_config.py) needs.
 	var producers []productlogging.ContainerLogging
 	var logVolumeSize string
 	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
@@ -1187,7 +1194,6 @@ func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, roleName string) b
 	return false
 }
 
-// producerContainerNames extracts the container names from a log-producer declaration list.
 // loggingProducers returns the handler's declared log-producer containers when it implements
 // LoggingProducerProvider (nil otherwise). Both Vector sidecar registration and aggregator-address
 // resolution gate on "≥1 producer" so they stay consistent: the framework only wires Vector — and

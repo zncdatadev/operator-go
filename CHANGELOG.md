@@ -8,6 +8,53 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### docs (sidecar and logging seams)
+
+- **The seam that lets a product own its logging config file is now documented and pinned by a
+  spec.** The reconciler reads the Vector producer list off the **outer** handler
+  (`r.roleGroupHandler`, through the `LoggingProducerProvider` assertion) while
+  `BaseRoleGroupHandler` renders config files from its own `LoggingContainers` field. Go has no
+  virtual dispatch, so a base handler can never see an override — which means **overriding
+  `LoggingProducers` and leaving `LoggingContainers` empty** joins a container to the Vector pipeline
+  with no framework-rendered file and no ConfigMap key to collide with the product's own. That is
+  what Airflow's `log_config.py` needs (it has to extend Airflow's `DEFAULT_LOGGING_CONFIG`, so it can
+  never be a rendered template), and it already worked — it was just undocumented and unpinned, so
+  the obvious "read one list" cleanup would have removed it silently. No new API: overriding the
+  method *is* the API. Documented on the `LoggingContainers` field, `LoggingProducers`,
+  `buildSidecarManager`, `AGENTS.md` §9/§14 and `docs/architecture.md` §4.6.2, with a regression spec
+  in `pkg/reconciler` that fails if either half is rewired.
+- **`sidecar.NewStaticContainerProvider` and `sidecar.SidecarRestartPolicy` are documented for the
+  first time.** Both have existed since the architecture redesign with zero mentions in any `.md`,
+  which is why products kept asking for a framework provider per helper container. The static
+  provider deliberately ignores `SidecarConfig` — no `SetProductImage`, no `DefaultSecurityContext()`,
+  no `ApplyProbes` — so the product must set the image, the security context and
+  `RestartPolicy: sidecar.SidecarRestartPolicy()` on the container it passes.
+- `docs/architecture.md` §4.6.2 listed **two** of the four shipped providers, said the manager injects
+  "Containers" (it injects `InitContainers` with `RestartPolicy: Always` — native sidecars, KEP-753),
+  misspelled `JMXExporterSidecarProvider` and called it a java *agent* (it is a separate container
+  running `jmx_prometheus_httpserver.jar`; the agent is `constant.JMXJavaAgentOpt`, a different
+  mechanism), and described producers as "container names" though they have been
+  `[]productlogging.ContainerLogging` since the log-tag decoupling. All corrected.
+
+### docs (removals recorded late)
+
+- **The Vector shutdown-file handshake was retired in #441 and is recorded only now.** Before it, the
+  Vector container ran a shell that backgrounded the agent and blocked on `inotifywait` for a
+  shutdown file, and the product's main container was expected to `touch` that file on exit. Both
+  halves went in the same commit — the watcher (`pkg/builder/vector.go`) and the writer helpers
+  (`pkg/util/bash.go`: `CommonBashTrapFunctions`, `CreateVectorShutdownFileCommand`,
+  `RemoveVectorShutdownFileCommand`) — because native sidecars supersede the mechanism: the kubelet
+  terminates a `RestartPolicy: Always` init container **after** the main container, which is the
+  ordering the handshake approximated. **Migration**: delete the shutdown-file commands from your
+  operator; there is no framework helper to replace them and nothing reads the file. The old design
+  was also strictly worse in one case, firing whenever the main process exited — including a crash
+  the kubelet was about to restart, which told the agent to shut down.
+- The same commit removed two things that are **not** part of that handshake and have no replacement:
+  `util.ExportPodAddress` (also in `pkg/util/bash.go`) and all of `pkg/util/code.go`
+  (`IndentTab4Spaces` and its siblings). They are recorded here as removals; whether the framework
+  should carry generic shell/indent helpers at all is a separate question, not something the
+  native-sidecar change decided.
+
 ### BREAKING (workload ServiceAccount)
 
 - **The workload ServiceAccount's name is now DERIVED from the CR, and the two config fields that

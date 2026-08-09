@@ -201,6 +201,20 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	//
 	// Products whose primary container name (and therefore its logging key) differs per role set
 	// this per role via SetRoleLoggingContainers; the per-role value wins over this global list.
+	//
+	// The two jobs are separable, and that is the supported seam for a product that owns its own
+	// logging config file. The reconciler reads the producer list off the OUTER handler (the object
+	// passed as GenericReconcilerConfig.RoleGroupHandler, through the LoggingProducerProvider
+	// assertion), while the config file is rendered from this field on the embedded
+	// BaseRoleGroupHandler. Go has no virtual dispatch, so an override of LoggingProducers is
+	// invisible here: a product that overrides it and leaves LoggingContainers empty gets the
+	// producer wired into the Vector pipeline (shared volume, mount, log dir, source) with NO
+	// framework-rendered config file and no ConfigMap key to collide with its own. Airflow's
+	// log_config.py, which must be built on Airflow's own DEFAULT_LOGGING_CONFIG, is the case this
+	// exists for. The product then owns two obligations the framework can no longer meet for it:
+	// the declaration's Container must name a real container in the assembled pod (enforced — see
+	// productlogging.ValidateProducers), and its log file must land at productlogging.LogDirFor(decl)
+	// with the framework's LogFileSuffix, or the pipeline comes up and collects nothing.
 	LoggingContainers []productlogging.ContainerLogging
 
 	// RoleLoggingContainers maps role names to a role-specific logging-producer list, overriding
@@ -414,6 +428,12 @@ func vectorLogPipelineActive(buildCtx *RoleGroupBuildContext) bool {
 // log-producer containers so the GenericReconciler can configure the Vector sidecar (the single
 // owner of the shared log volume) without reaching into handler internals. The per-role list set
 // via SetRoleLoggingContainers wins over the global LoggingContainers.
+//
+// A product may OVERRIDE this on its own handler to add a producer the framework must not render a
+// config file for; see the LoggingContainers field doc for the obligations that come with it. The
+// reconciler calls the override (it asserts LoggingProducerProvider on the outer handler), while
+// config-file rendering keeps reading LoggingContainers directly — the two are independent by
+// construction, not by accident.
 func (h *BaseRoleGroupHandler[CR]) LoggingProducers(roleName string) []productlogging.ContainerLogging {
 	return h.loggingContainersFor(roleName)
 }

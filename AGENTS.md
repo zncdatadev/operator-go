@@ -594,6 +594,20 @@ The check runs against the API server through the injected `client.Client`; the 
 ### 9. Logging Configuration
 `LoggingFramework`-aware logging config generation (Log4j, Log4j2, Logback, Python) lives in `pkg/productlogging`. `BaseRoleGroupHandler.LoggingContainers` (or the per-role `SetRoleLoggingContainers`) declares which containers get a generated config file; the framework merges the CRD logging spec, renders the file and injects it into the role group ConfigMap. The same declaration names the producers of the Vector log pipeline.
 
+**Those two jobs are separately addressable, and that is the seam for a product-owned config file.**
+The reconciler reads the producer list off the **outer** handler — `r.roleGroupHandler`, through the
+`LoggingProducerProvider` assertion — while the config file is rendered from the embedded
+`BaseRoleGroupHandler`'s own `LoggingContainers`. Go has no virtual dispatch, so a base handler can
+never observe an override; a product that **overrides `LoggingProducers` and leaves
+`LoggingContainers` empty** therefore joins the Vector pipeline (shared volume, RW mount, log
+directory, source) with no framework-rendered file and no ConfigMap key to collide with its own.
+Airflow's `log_config.py` — which must be built on Airflow's own `DEFAULT_LOGGING_CONFIG` and so can
+never be a rendered template — is the case this exists for. The product picks up the two obligations
+the framework can then no longer meet: the declaration's `Container` must name a real container in
+the assembled pod (enforced; see §9's producer validation), and its log file must land at
+`productlogging.LogDirFor(decl)` carrying the framework's `LogFileSuffix`, or the pipeline comes up
+and collects nothing. No new API is involved — overriding the method **is** the API.
+
 **A level a role group does not state is inherited, never cleared.** `LogLevelSpec.Level` carries no
 `+kubebuilder:default` — it sits inside the folded `config` block, where structural defaulting would fill
 it as soon as its enclosing object existed, so `console: {}` in a role group would arrive as
@@ -891,8 +905,9 @@ crash-loops.
 of them skips the sidecar rather than failing the role group:
 
 1. the agent is enabled (`logging.enableVectorAgent`, after the role/role-group logging merge);
-2. the handler's `LoggingProducers(roleName)` returns at least one producer — an agent with nothing
-   to collect would mount an empty pipeline;
+2. the **outer** handler's `LoggingProducers(roleName)` returns at least one producer — an agent with
+   nothing to collect would mount an empty pipeline. Read from `r.roleGroupHandler`, so a product's
+   override counts even when `BaseRoleGroupHandler.LoggingContainers` is empty (§9);
 3. **something supplies `vector.yaml`**: the CR implements `reconciler.VectorAggregatorProvider` (the
    framework renders the file) *or* the handler implements `reconciler.VectorConfigProvider` and
    answers `ProvidesVectorConfig(roleName) == true` (the product writes it).
@@ -910,6 +925,27 @@ field and no `FindMainContainer` helper — a provider that must address the pri
 `sidecar.FindContainer(podSpec, name)`, and the primary container's name is controlled by
 `BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName`.
 
+**Every sidecar is injected as a native sidecar — a `RestartPolicy: Always` init container**
+(`sidecar.SidecarRestartPolicy()`; KEP-753 — on by default since Kubernetes v1.29, GA in v1.33). The kubelet starts those
+before the main container and terminates them **after** it, which is what guarantees a log agent
+outlives the process it collects from. That ordering used to be hand-rolled: before #441 the Vector
+container blocked on `inotifywait` for a shutdown file the product's main container was expected to
+`touch` on exit, and both halves of that contract — the watcher in `pkg/builder/vector.go` and the
+writer helpers in `pkg/util/bash.go` — were **deleted in the same commit**. A product migrating from
+a pre-#441 operator should therefore *remove* its shutdown-file commands rather than look for a
+framework helper to emit them: nothing reads that file, and the old mechanism was strictly worse in
+one case, firing whenever the main process exited — including a crash the kubelet was about to
+restart, which told the agent to shut down.
+
+**`sidecar.NewStaticContainerProvider(container)` injects a container the product built itself**,
+unchanged — the escape hatch for a sidecar the framework has no opinion about (a statsd-exporter, a
+product-specific helper), and the reason the framework does not grow a provider per such container.
+Its `Inject` ignores `SidecarConfig` entirely, so **the product owns everything a normal provider
+would get for free**: `SetProductImage` does not fill in its image (an image-less container fails the
+build), `DefaultSecurityContext()` is not applied, and `ApplyProbes` does not run. Set
+`RestartPolicy: sidecar.SidecarRestartPolicy()` on the container so it is a native sidecar like the
+rest — the provider does not add it.
+
 **Every framework-injected sidecar is hardened by default.** Each provider sets
 `sidecar.DefaultSecurityContext()` — `runAsNonRoot`, `allowPrivilegeEscalation: false`,
 `capabilities: drop ALL`, `seccompProfile: RuntimeDefault`, i.e. exactly the container-level
@@ -922,7 +958,7 @@ it only writes into its own volumes.
 
 **Each sidecar carries the probe that fits its role, and the axis is whether it is in the data
 path — not "probes are dangerous".** All three providers inject into `InitContainers` with
-`RestartPolicy: Always` (native sidecars, stable since Kubernetes v1.33), and on such a container
+`RestartPolicy: Always` (native sidecars — on by default since Kubernetes v1.29, GA in v1.33), and on such a container
 the *type* of probe is a correctness question, because the three have three different blast radii:
 
 | probe | effect on a native sidecar | reversible? |
