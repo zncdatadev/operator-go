@@ -926,7 +926,7 @@ field and no `FindMainContainer` helper — a provider that must address the pri
 `BaseRoleGroupHandler.MainContainerName` / `SetRoleMainContainerName`.
 
 **Every sidecar is injected as a native sidecar — a `RestartPolicy: Always` init container**
-(`sidecar.SidecarRestartPolicy()`; KEP-753, stable since Kubernetes v1.33). The kubelet starts those
+(`sidecar.SidecarRestartPolicy()`; KEP-753 — on by default since Kubernetes v1.29, GA in v1.33). The kubelet starts those
 before the main container and terminates them **after** it, which is what guarantees a log agent
 outlives the process it collects from. That ordering used to be hand-rolled: before #441 the Vector
 container blocked on `inotifywait` for a shutdown file the product's main container was expected to
@@ -958,7 +958,7 @@ it only writes into its own volumes.
 
 **Each sidecar carries the probe that fits its role, and the axis is whether it is in the data
 path — not "probes are dangerous".** All three providers inject into `InitContainers` with
-`RestartPolicy: Always` (native sidecars, stable since Kubernetes v1.33), and on such a container
+`RestartPolicy: Always` (native sidecars — on by default since Kubernetes v1.29, GA in v1.33), and on such a container
 the *type* of probe is a correctness question, because the three have three different blast radii:
 
 | probe | effect on a native sidecar | reversible? |

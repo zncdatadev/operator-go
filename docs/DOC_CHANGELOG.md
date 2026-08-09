@@ -15,7 +15,7 @@ This document tracks all changes made to the SDK documentation.
   `jmx_prometheus_httpserver.jar`. The java-agent mechanism is `constant.JMXJavaAgentOpt` (§4.1.5),
   and conflating the two is how a product ends up wiring neither.
 - §4.6.2 said the manager "injects Containers". It injects **`InitContainers`** with
-  `RestartPolicy: Always` — native sidecars (KEP-753, stable in v1.33) — and the ordering that buys
+  `RestartPolicy: Always` — native sidecars (KEP-753; on by default since Kubernetes v1.29, GA in v1.33) — and the ordering that buys
   (started before, terminated after the main container) is the whole reason the pre-#441 shutdown-file
   handshake could be deleted. Both facts added, with the migration note that a product carrying
   shutdown-file commands should now delete them.
