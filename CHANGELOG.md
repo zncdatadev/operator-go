@@ -8,6 +8,35 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### tests (the Service apply rules were entirely unguarded)
+
+- **Two regression specs for `copyServiceState`, whose preserved-field block could be deleted whole
+  with the suite staying green.** Probing envtest 1.35 shows only two of its six carry-overs are
+  load-bearing, and neither had a spec:
+  - a port **RENAME** (same number) makes the API server **reallocate** the node port
+    (31965 → 32604), because its own `patchAllocatedValues` matches ports by name. `findServicePort`'s
+    port-number fallback is what keeps a pinned node port across a cosmetic rename;
+  - `loadBalancerClass` is not merely unrestored but **rejected** — `may not change once set` — so
+    dropping the carry-over wedges a role group's reconcile permanently the first time a user removes
+    the class from their CR.
+
+  The other four (`clusterIP`, `clusterIPs`, `ipFamilies`/`ipFamilyPolicy`, `healthCheckNodePort`,
+  and node ports across a port-NUMBER change) are restored by the API server anyway; they stay as
+  defence in depth, and the distinction is now recorded in the source so nobody deletes the two that
+  matter. Closes the outstanding half of #598.
+
+### docs (label-key scope)
+
+- `RoleGroupMarkerLabelKey`'s doc claimed the key "marks a resource as belonging to one specific role
+  group". It does not: the natural form is `<cluster>-<group>` with **no role in it**, so a product
+  whose roles all use the conventional group name `default` stamps the same key on all of them. The
+  role cannot be added — the key lands in the immutable `.spec.selector` — so the doc now states that
+  it is a *fingerprint*, never a selector on its own, and that the over-long substitute
+  (`RoleGroupResourceName`) IS role-scoped, i.e. the two forms deliberately identify different things.
+  No code change; the one consumer is reached only after a Get by the role group's derived name,
+  which already pins the role. A spec pins the collision so a later "fix" cannot silently change a
+  selector. Closes #605.
+
 ### features (ExtraResources are validated before anything is applied)
 
 - **A product's `RoleGroupResources.ExtraResources` entries are now checked in the same pre-apply

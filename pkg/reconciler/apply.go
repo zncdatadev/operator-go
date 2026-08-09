@@ -408,6 +408,28 @@ func mergeAnnotations(live, desired map[string]string) map[string]string {
 // AllocateLoadBalancerNodePorts, TrafficDistribution, and any field a future Kubernetes version
 // adds — comes from desired. Assigning the spec wholesale (as copyStatefulSetState does) is what
 // makes new mutable fields converge by default instead of silently sticking at their live value.
+// Not all of the preserved set is load-bearing, and the difference is invisible from the code —
+// it took an experiment against a real API server (envtest 1.35) to establish. Recorded here
+// because the six carry-over lines below read as interchangeable and two of them are not:
+//
+//	field                    naive Update (no carry-over)          verdict
+//	clusterIP / clusterIPs   restored by the API server            defensive only
+//	ipFamilies / policy      restored by the API server            defensive only
+//	healthCheckNodePort      restored by the API server            defensive only
+//	nodePort, port UNCHANGED restored by the API server            defensive only
+//	nodePort, port RENAMED   REALLOCATED (31965 -> 32604)          LOAD-BEARING
+//	loadBalancerClass        update REJECTED with a 422            LOAD-BEARING
+//
+// The API server's own patchAllocatedValues matches ports by name, so renaming a port — a
+// cosmetic change — loses its allocated node port and breaks every client that had it pinned.
+// findServicePort's port-number fallback is what makes the framework strictly more preserving
+// than Kubernetes here.
+//
+// loadBalancerClass is worse than "not restored": it is immutable in the sense that the API
+// server rejects the whole update ("may not change once set"), so dropping the carry-over wedges
+// the role group's reconcile permanently the moment a user removes the class from their CR.
+//
+// Both are pinned by specs in generic_reconciler_test.go; deleting either line fails them.
 func copyServiceState(desired, live *corev1.Service) []string {
 	livePorts := live.Spec.Ports
 	clusterIP := live.Spec.ClusterIP

@@ -2259,6 +2259,79 @@ var _ = Describe("GenericReconciler update propagation (issue #526)", func() {
 		Expect(svc.Spec.ClusterIP).To(Equal(clusterIP), "allocated ClusterIP must never be touched")
 	})
 
+	It("keeps the allocated NodePort when the handler RENAMES a port", func() {
+		// The spec above changes the port NUMBER and keeps the name, which the API server's own
+		// patchAllocatedValues already handles — it survives with the framework's carry-over
+		// deleted. A RENAME is the case that does not: probed against envtest 1.35, a naive
+		// Update that renames a port (same number, nodePort left 0) makes the API server
+		// REALLOCATE the node port (31965 -> 32604). Every client that had the old port hard-coded
+		// — a firewall rule, an external load balancer's target, a documented connection string —
+		// breaks, silently, because a role's port was given a better name.
+		//
+		// findServicePort's port-NUMBER fallback is what prevents that, making the framework
+		// strictly more preserving than Kubernetes. Nothing pinned it before this spec.
+		portName := "client"
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			svc := testutil.NewTestService(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			svc.Spec.Type = corev1.ServiceTypeNodePort
+			svc.Spec.Ports = []corev1.ServicePort{{
+				Name:       portName,
+				Port:       9092,
+				TargetPort: intstr.FromInt(9092),
+				Protocol:   corev1.ProtocolTCP,
+			}}
+			return &reconciler.RoleGroupResources{Service: svc}
+		})
+
+		reconcile(r)
+		svc := &corev1.Service{}
+		key := types.NamespacedName{Namespace: namespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		allocated := svc.Spec.Ports[0].NodePort
+		Expect(allocated).NotTo(BeZero())
+
+		portName = "kafka-client"
+		reconcile(r)
+
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		Expect(svc.Spec.Ports).To(HaveLen(1))
+		Expect(svc.Spec.Ports[0].Name).To(Equal("kafka-client"), "the rename must reach the live Service")
+		Expect(svc.Spec.Ports[0].NodePort).To(Equal(allocated),
+			"a rename must not cost the allocated NodePort — the API server would reallocate it")
+	})
+
+	It("keeps a loadBalancerClass the handler no longer states", func() {
+		// loadBalancerClass is immutable in a stronger sense than the rest of the preserved set:
+		// the API server does not silently restore it, it REJECTS the whole update
+		// ("spec.loadBalancerClass: Invalid value: null: may not change once set", probed against
+		// envtest 1.35). Without the carry-over, a user who set the class once and later removed
+		// it from their CR would wedge that role group's reconcile permanently — a 422 on every
+		// pass, and no path back except deleting the Service by hand.
+		//
+		// No ImmutableFieldIgnored warning is expected here: the handler UNSET the field, which is
+		// declining to have an opinion rather than asking for a change.
+		class := ptr.To("example.com/internal-lb")
+		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
+			svc := testutil.NewTestService(buildCtx.ResourceName, buildCtx.ClusterNamespace)
+			svc.Spec.Type = corev1.ServiceTypeLoadBalancer
+			svc.Spec.LoadBalancerClass = class
+			return &reconciler.RoleGroupResources{Service: svc}
+		})
+
+		reconcile(r)
+		svc := &corev1.Service{}
+		key := types.NamespacedName{Namespace: namespace, Name: resourceName}
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		Expect(svc.Spec.LoadBalancerClass).To(HaveValue(Equal("example.com/internal-lb")))
+
+		class = nil
+		reconcile(r) // must not return the API server's 422
+
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		Expect(svc.Spec.LoadBalancerClass).To(HaveValue(Equal("example.com/internal-lb")),
+			"the live class must survive an update that does not state it")
+	})
+
 	It("propagates Service fields outside the historical copy list", func() {
 		distribution := ""
 		r := newReconciler(func(buildCtx *reconciler.RoleGroupBuildContext) *reconciler.RoleGroupResources {
