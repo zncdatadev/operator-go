@@ -1141,6 +1141,22 @@ All AI agents and developers working on this project **must** follow these rules
 - Always run `make lint` to ensure code quality
 - If adding new public interfaces, update AGENTS.md accordingly
 
+### CHANGELOG.md
+**Do NOT edit `CHANGELOG.md` in a pull request.** The entries under a version heading are generated
+**at release time from the commit history**, not written by hand per PR. The unreleased section
+therefore stays empty between releases, and the release process fills it in.
+
+What this means in practice:
+- A PR carries its user-visible description in its **commit message**, which is the input the
+  generator reads — so write the commit message as the changelog entry you would have written
+  (Conventional Commits `type(scope): summary`, with `!` or a `BREAKING CHANGE:` footer for a
+  breaking change, and the body explaining the *why* a reader needs).
+- Behavioral and API documentation belongs in `AGENTS.md` (what exists today) and
+  `docs/architecture.md` (design intent) — those **are** part of the PR. Hand-maintaining the same
+  prose in three places is what made the changelog drift.
+- Only the release itself touches `CHANGELOG.md`: see the release procedure for tagging and version
+  bumps.
+
 ### Code Style & Conventions
 - **Formatting**: Must pass `go fmt`
 - **Linting**: Must pass `golangci-lint`
