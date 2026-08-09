@@ -1243,7 +1243,7 @@ func (r *GenericReconciler[CR]) applyResources(ctx context.Context, cr CR, resou
 
 	// 0. Reject a declaration the lifecycle cannot honour, BEFORE anything is applied — a role
 	// group that half-converged and then failed is worse than one that did not start.
-	if err := validateRoleGroupResources(resources, buildCtx); err != nil {
+	if err := validateRoleGroupResources(r.scheme, resources, buildCtx); err != nil {
 		return err
 	}
 
@@ -1370,7 +1370,14 @@ func (r *GenericReconciler[CR]) apiError(err error) error {
 //
 // The namespace is checked for the same reason and one more: a cross-namespace owner reference is
 // not honoured by Kubernetes garbage collection, so the object would outlive even the CR.
-func validateRoleGroupResources(resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
+//
+// ExtraResources take the other branch of that trade — the product owns those names, so there is no
+// derived name to check them against — but they are checked for the three things the apply path
+// cannot survive whatever the name is: a missing name, a namespace that is not the cluster's, and an
+// identity (GVK + name) some other entry of the same declaration already claims. The first two would
+// otherwise fail inside applyResource at step 4, with the ConfigMap and Services of the same role
+// group already applied; the third fails nowhere at all, which is worse (see validateExtraResources).
+func validateRoleGroupResources(scheme *runtime.Scheme, resources *RoleGroupResources, buildCtx *RoleGroupBuildContext) error {
 	slots := []struct {
 		field string
 		want  string
@@ -1410,7 +1417,108 @@ func validateRoleGroupResources(resources *RoleGroupResources, buildCtx *RoleGro
 		}
 	}
 
+	// The fixed slots are the first claimants of an identity, because they are applied around the
+	// extras and their names are the framework's. Their own identities cannot collide with each
+	// other: the three Services are told apart by the -headless and -metrics suffixes, and the rest
+	// are distinct kinds.
+	claimed := make(map[string]string, len(slots)+len(resources.ExtraResources))
+	for _, slot := range slots {
+		if slot.obj == nil {
+			continue
+		}
+		claimed[objectIdentity(scheme, slot.obj)] = "RoleGroupResources." + slot.field
+	}
+
+	return validateExtraResources(scheme, resources.ExtraResources, buildCtx, claimed)
+}
+
+// validateExtraResources rejects the ExtraResources entries the apply path cannot honour.
+//
+// The name is the product's here, so there is nothing to compare it against — but three properties
+// are still the framework's business, because it is the framework that writes these objects.
+//
+// A missing name and a namespace that is not the cluster's both fail inside applyResource:
+// CreateOrUpdate Gets by key and the API server rejects an empty name, and SetControllerReference
+// refuses a namespace that is not the owner's — including the empty one a cluster-scoped object
+// carries, which Kubernetes would not honour as a dependent of a namespaced CR anyway. Left to
+// apply, they fail at step 4, after the ConfigMap and both Services of the same role group have
+// landed: the half-converged role group validateRoleGroupResources exists to prevent.
+//
+// A DUPLICATE identity is the one that fails nowhere. Two entries with the same GVK and name — two
+// extras, or an extra that lands on a fixed slot's name — are two writers for one object in a single
+// pass. The last write wins, so the other entry is silently discarded, and if the two desired states
+// differ the object is rewritten twice per reconcile: each write bumps its resourceVersion, the
+// framework's own Owns() watch fires, and the reconcile that follows does it again. Nothing errors
+// and nothing backs off — the same self-sustaining loop two writers produced for the restarter's
+// pod-template annotation. A product cannot mean this, so it is rejected rather than resolved.
+func validateExtraResources(
+	scheme *runtime.Scheme,
+	extras []client.Object,
+	buildCtx *RoleGroupBuildContext,
+	claimed map[string]string,
+) error {
+	for i, extra := range extras {
+		// Skipped by the apply path too, so an optional extra may be left nil without the product
+		// having to filter the slice it builds.
+		if extra == nil {
+			continue
+		}
+		field := fmt.Sprintf("RoleGroupResources.ExtraResources[%d]", i)
+
+		if extra.GetName() == "" {
+			return NewValidationError(field, buildCtx.RoleName, buildCtx.RoleGroupName,
+				fmt.Errorf("an extra %s carries no name. The framework applies extras with "+
+					"CreateOrUpdate, which addresses the object by name every reconcile, so "+
+					"metadata.generateName cannot serve here: a generated name would produce a new "+
+					"object on every pass instead of converging one", resolveKind(scheme, extra)))
+		}
+
+		if ns := extra.GetNamespace(); ns != buildCtx.ClusterNamespace {
+			return NewValidationError(field, buildCtx.RoleName, buildCtx.RoleGroupName,
+				fmt.Errorf("extra %s %q must live in the cluster's namespace: got %q, want %q. The "+
+					"framework sets a controller owner reference on every extra, and Kubernetes "+
+					"honours neither a cross-namespace one nor a namespaced owner for a "+
+					"cluster-scoped object. A cluster-scoped resource has no owner the framework can "+
+					"give it, so the product owns its lifecycle, cleanup included",
+					resolveKind(scheme, extra), extra.GetName(), ns, buildCtx.ClusterNamespace))
+		}
+
+		identity := objectIdentity(scheme, extra)
+		if owner, taken := claimed[identity]; taken {
+			return NewValidationError(field, buildCtx.RoleName, buildCtx.RoleGroupName,
+				fmt.Errorf("extra %s %q is already declared by %s. One object cannot have two "+
+					"writers in one pass: the later apply wins, discarding the other silently, and "+
+					"if the two differ the object is rewritten on every reconcile — each write wakes "+
+					"the framework's own watch, which reconciles again, with nothing failing to back "+
+					"the loop off",
+					resolveKind(scheme, extra), extra.GetName(), owner))
+		}
+		claimed[identity] = field
+	}
+
 	return nil
+}
+
+// objectIdentity renders the object the apply path will write to: its GVK and name, within the one
+// namespace validation already pins. It is a comparison key, never shown to a user.
+//
+// TypeMeta is preferred when it is populated (an unstructured object carries nothing else), and the
+// scheme answers for the typed objects that leave it empty — the same ladder resolveKind climbs. A
+// type that is in neither falls back to its Go type name, which is a coarser key: it cannot tell two
+// GVKs backed by one Go type apart. That direction is safe here, because such an object cannot be
+// applied at all — the client has no way to resolve its GVK either — and no false duplicate follows
+// from it, since one Go type is one type.
+func objectIdentity(scheme *runtime.Scheme, obj client.Object) string {
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	if (gvk.Kind == "" || gvk.Version == "") && scheme != nil {
+		if gvks, _, err := scheme.ObjectKinds(obj); err == nil && len(gvks) > 0 {
+			gvk = gvks[0]
+		}
+	}
+	if gvk.Kind == "" {
+		return goTypeName(obj) + "/" + obj.GetName()
+	}
+	return gvk.GroupVersion().String() + ", Kind=" + gvk.Kind + "/" + obj.GetName()
 }
 
 // objectOrNil converts a typed slot pointer to client.Object without the typed-nil trap: a nil
