@@ -8,6 +8,39 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### features (ExtraResources are validated before anything is applied)
+
+- **A product's `RoleGroupResources.ExtraResources` entries are now checked in the same pre-apply
+  gate the fixed slots use** (issue #516's third open question). The slice type stays
+  `[]client.Object` — arbitrary GVKs are the feature, and no narrower Go type says "a kind the
+  framework has no opinion about" better than the interface already does — so what is constrained is
+  not the type but whether the apply path can write each entry at all. Each failure is a
+  `*ValidationError` naming the offending index, raised before a single resource of the role group is
+  applied.
+- **An entry with no name is rejected.** `CreateOrUpdate` addresses the object by name on every
+  reconcile, so `metadata.generateName` cannot converge one object here — it would create another
+  every pass. Today it fails inside the apply step instead, after the ConfigMap and both Services of
+  the same role group have landed.
+- **An entry outside the cluster's namespace is rejected, cluster-scoped objects included.** Both
+  already failed in `SetControllerReference`, at the same half-converged point; the second is worth
+  saying out loud, because Kubernetes honours no owner reference from a namespaced CR to a
+  cluster-scoped object. A product needing one owns its lifecycle outright, cleanup included.
+- **Two entries that address the same object — or an entry that lands on a fixed slot's name — are
+  rejected.** This is the one that failed *nowhere*. Two writers in one pass mean the later apply
+  wins and the earlier is silently discarded; when their desired states differ the object is
+  rewritten on every reconcile, each write bumping its `resourceVersion`, waking the framework's own
+  `Owns()` watch and scheduling the reconcile that does it again. Nothing errors, so the workqueue
+  `Forget`s each pass and nothing backs off — the same self-sustaining loop the restarter's
+  pod-template annotation produced in #614, reached from the other direction. The likeliest way in is
+  an extra ConfigMap built at `buildCtx.ResourceName`, a name the framework owns.
+- **Ordering and cleanup, the other two questions in #516, are settled as they stand.** Extras keep
+  their single fixed position (after the Services, before the StatefulSet): the only ordering an
+  extra has needed is "before the thing that fails without it", and a second phase would double the
+  states the teardown must mirror for a case with no user. Cleanup was closed earlier in this release
+  by the label-plus-ownership reclaim over `SetupWithManagerOptions.ExtraOwns`; the status-inventory
+  alternative the issue floated is the design #556 had to *supplement* with live discovery for the
+  framework's own kinds, a ledger being only as good as the write that recorded it.
+
 ### fix (data PVC transitions)
 
 - **Adding `config.resources.storage` to a live role group no longer wedges it, and removing it no

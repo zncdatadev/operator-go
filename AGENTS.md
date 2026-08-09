@@ -365,6 +365,19 @@ supported route for an object whose name the product chooses.
 
 Besides the fixed fields (ConfigMap, Services, StatefulSet, PDB, MetricsService), `RoleGroupResources.ExtraResources []client.Object` lets products ship arbitrary per-role-group resources (e.g. a `listeners.kubedoop.dev` Listener CR) through the framework's apply path: same controller owner reference, applied BEFORE the StatefulSet because extras are typically pod-scheduling prerequisites. **Extras of a removed role group are reclaimed too**, provided the product registers their kinds through `SetupWithManagerOptions.ExtraOwns` and labels them with the role group's labels; the teardown deletes them right after the StatefulSet, mirroring the apply order. Unregistered or unlabelled extras keep the old behaviour and wait for owner-reference GC on cluster deletion (see §13 and the field's doc comment).
 
+**The slice type stays open; the entries are validated.** Arbitrary GVKs are the point, so nothing
+narrower than `client.Object` can be the type — but three properties are checked in the same
+pre-apply gate the fixed slots use, each failing the role group with a `*ValidationError` naming the
+index: every entry has a **name** (`CreateOrUpdate` addresses the object by name every reconcile, so
+`generateName` would create a new object per pass instead of converging one), every entry sits in the
+**cluster's namespace** (which also rejects a cluster-scoped object — Kubernetes honours no owner
+reference from a namespaced CR to one, so the framework has no lifecycle to give it), and no two
+entries — nor an entry and a fixed slot — address the **same object**. The first two only move a
+failure that already existed inside `applyResource` earlier, to where nothing is half-applied yet.
+The third catches what failed nowhere at all: two writers for one object in one pass mean the later
+apply silently discards the earlier, and if their desired states differ the object is rewritten every
+reconcile, each write waking the framework's own watch with nothing to back the loop off.
+
 ### 4. RoleGroupBuildContext
 Role and role group configuration reaches a handler through one struct, built per role group by the
 reconciler and passed to `BuildResources`. There is **no role-level interface a product implements**:

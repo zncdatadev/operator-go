@@ -100,6 +100,21 @@ type RoleGroupResources struct {
 	// cluster CR is deleted and owner-reference GC collects them. The cleaner has no other handle
 	// on them, so it fails closed rather than guessing.
 	//
+	// Constraints. The type is deliberately open — arbitrary GVKs are the point — but three
+	// properties are checked before ANY resource of the role group is applied, and each failure is a
+	// *ValidationError naming the offending index (see validateExtraResources):
+	//
+	//   - every entry has a name. CreateOrUpdate addresses the object by name each reconcile, so
+	//     metadata.generateName cannot converge one object here — it would create another.
+	//   - every entry lives in the cluster's namespace. The framework sets a controller owner
+	//     reference, and Kubernetes honours neither a cross-namespace one nor a namespaced owner
+	//     for a cluster-scoped object; a cluster-scoped resource therefore has no lifecycle the
+	//     framework can give it, and the product owns it outright, cleanup included.
+	//   - no two entries — nor an entry and a fixed slot above — address the same object (same GVK
+	//     and name). Two writers in one pass mean the later apply wins and the other is silently
+	//     discarded, and when the two desired states differ the object is rewritten every reconcile,
+	//     each write waking the framework's own watch with nothing to back the loop off.
+	//
 	// A nil/empty slice behaves exactly as before this field existed; nil entries are skipped.
 	ExtraResources []client.Object
 }

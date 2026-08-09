@@ -4,6 +4,28 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-09] (the ExtraResources contract stops being documentation-only)
+
+### Core architecture
+
+- `docs/architecture.md` §"What comes back, and what a nil field means" gains the reasoning for
+  keeping `ExtraResources` as `[]client.Object` and validating the entries instead: a narrower type
+  cannot express "a kind the framework has no opinion about", but a name, the cluster's namespace and
+  a distinct GVK+name identity all are expressible. The duplicate-identity rule is written down with
+  its failure mode — two writers in one pass, the later winning silently, and an endless
+  write/watch/reconcile cycle when their desired states differ — because that is the one the old
+  contract could not catch anywhere.
+- §5.3.3 (resource application order) now records why the extras position is **fixed** and carries no
+  per-resource ordering control: the safety property that an orphan's extras are deleted immediately
+  after its StatefulSet holds because there is exactly one position to invert.
+
+### Package guides
+
+- Root `AGENTS.md` §3 states the three checks, which failure each one moves earlier and which one it
+  creates outright.
+
+---
+
 ## [2026-08-09] (sidecar and logging seams that existed but were never written down)
 
 ### Core architecture

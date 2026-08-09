@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -226,6 +227,141 @@ var _ = Describe("Fixed role group slot names", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: n}, &corev1.Service{})).
 				To(Succeed(), "Service %q should have been applied", n)
 		}
+	})
+})
+
+// ExtraResources are the one slot whose names belong to the product, so the framework checks them
+// for what it can still be sure of: that the apply path can write each entry at all, and that no two
+// entries of one declaration address the same object.
+var _ = Describe("Role group ExtraResources", func() {
+	var ctx context.Context
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	// extraSecret is the shape a product ships: a kind the framework does not build, under a name
+	// the product chose. Secrets are used rather than ConfigMaps so nothing here can be mistaken for
+	// the role group's own ConfigMap slot.
+	extraSecret := func(name string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			StringData: map[string]string{"k": "v"},
+		}
+	}
+
+	// rejects runs one reconcile whose handler ships the given extras and asserts the declaration
+	// was refused before a single resource was applied.
+	rejects := func(prefix string, extras func(*reconciler.RoleGroupBuildContext) []client.Object) error {
+		name := slotCRName(prefix)
+		createSlotCR(ctx, name, nil, map[string]v1alpha1.RoleSpec{"worker": defaultGroupRole()})
+
+		r := slotReconciler(k8sClient, nil, func(buildCtx *reconciler.RoleGroupBuildContext, res *reconciler.RoleGroupResources) {
+			res.ExtraResources = extras(buildCtx)
+		})
+
+		err := reconcileSlotCR(ctx, r, name)
+		Expect(err).To(HaveOccurred())
+		Expect(reconciler.IsValidationError(err)).To(BeTrue(), "want a *ValidationError, got %T: %v", err, err)
+
+		// The whole point of validating before step 1: a rejected declaration leaves nothing behind.
+		cm := &corev1.ConfigMap{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{
+			Namespace: testNamespace, Name: reconciler.RoleGroupResourceName(name, "worker", "default")}, cm)
+		Expect(k8serrors.IsNotFound(getErr)).To(BeTrue(), "no resource may be applied when the declaration is rejected")
+		return err
+	}
+
+	It("fails the role group when an extra addresses a fixed slot's object", func() {
+		// The extra and the ConfigMap slot are the same object. Both are applied every pass, the
+		// later one wins, and because the two desired states differ the object is rewritten twice
+		// per reconcile — each write waking the framework's own ConfigMap watch, with nothing
+		// failing to back the loop off.
+		err := rejects("extra-slot", func(buildCtx *reconciler.RoleGroupBuildContext) []client.Object {
+			return []client.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ResourceName, Namespace: buildCtx.ClusterNamespace},
+				Data:       map[string]string{"extra.properties": "a=b"},
+			}}
+		})
+		// Naming the colliding slot is the whole message: "duplicate" alone leaves the product
+		// author hunting for the other writer, which is framework code they never wrote.
+		Expect(err.Error()).To(ContainSubstring("RoleGroupResources.ConfigMap"))
+		Expect(err.Error()).To(ContainSubstring("ExtraResources[0]"))
+	})
+
+	It("fails the role group when two extras address the same object", func() {
+		err := rejects("extra-dup", func(buildCtx *reconciler.RoleGroupBuildContext) []client.Object {
+			return []client.Object{
+				extraSecret(buildCtx.ResourceName + "-token"),
+				extraSecret(buildCtx.ResourceName + "-token"),
+			}
+		})
+		Expect(err.Error()).To(ContainSubstring("ExtraResources[0]"))
+		Expect(err.Error()).To(ContainSubstring("ExtraResources[1]"))
+	})
+
+	It("fails the role group when an extra is built outside the cluster's namespace", func() {
+		// Left to apply this fails inside SetControllerReference at step 4 — with the ConfigMap and
+		// both Services of the same role group already applied.
+		err := rejects("extra-ns", func(buildCtx *reconciler.RoleGroupBuildContext) []client.Object {
+			secret := extraSecret(buildCtx.ResourceName + "-token")
+			secret.Namespace = "kube-system"
+			return []client.Object{secret}
+		})
+		Expect(err.Error()).To(ContainSubstring("kube-system"))
+	})
+
+	It("fails the role group when an extra is cluster-scoped", func() {
+		// A cluster-scoped object carries no namespace, so it is caught by the same check — and for
+		// the same underlying reason: Kubernetes honours no owner reference from a namespaced CR to
+		// it, so the framework has no lifecycle to offer.
+		err := rejects("extra-cluster", func(buildCtx *reconciler.RoleGroupBuildContext) []client.Object {
+			return []client.Object{&rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ResourceName},
+				Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+			}}
+		})
+		Expect(err.Error()).To(ContainSubstring("cluster-scoped"))
+	})
+
+	It("fails the role group when an extra carries no name", func() {
+		err := rejects("extra-noname", func(buildCtx *reconciler.RoleGroupBuildContext) []client.Object {
+			secret := extraSecret("")
+			secret.GenerateName = buildCtx.ResourceName + "-"
+			return []client.Object{secret}
+		})
+		Expect(err.Error()).To(ContainSubstring("generateName"))
+	})
+
+	It("applies extras that address distinct objects, and skips nil entries", func() {
+		name := slotCRName("extra-ok")
+		createSlotCR(ctx, name, nil, map[string]v1alpha1.RoleSpec{"worker": defaultGroupRole()})
+		resourceName := reconciler.RoleGroupResourceName(name, "worker", "default")
+
+		r := slotReconciler(k8sClient, nil, func(buildCtx *reconciler.RoleGroupBuildContext, res *reconciler.RoleGroupResources) {
+			// Two kinds under two product-chosen names, plus a nil the apply path skips: the whole
+			// point of the slot is that none of this is checkable against a name the framework owns.
+			res.ExtraResources = []client.Object{
+				extraSecret(buildCtx.ResourceName + "-token"),
+				nil,
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ResourceName + "-extra", Namespace: buildCtx.ClusterNamespace},
+					Data:       map[string]string{"extra.properties": "a=b"},
+				},
+			}
+		})
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, extraSecret(resourceName+"-token"))
+			_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-extra", Namespace: testNamespace}})
+		})
+
+		Expect(reconcileSlotCR(ctx, r, name)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName + "-token"},
+			&corev1.Secret{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName + "-extra"},
+			&corev1.ConfigMap{})).To(Succeed())
+		// The framework's own ConfigMap is untouched by the same-kind extra beside it.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName},
+			&corev1.ConfigMap{})).To(Succeed())
 	})
 })
 
