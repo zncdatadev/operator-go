@@ -4,6 +4,20 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-09c] (two claims corrected: what the apply path preserves, what a marker key identifies)
+
+### Package guides
+
+- `copyServiceState` gains a table recording which of its six carry-overs are load-bearing and which
+  are defensive. The code reads as six interchangeable lines and only an experiment against a real
+  API server tells them apart: four are restored by the API server anyway, while a port RENAME costs
+  the allocated node port and `loadBalancerClass` makes the API server reject the whole update.
+- `RoleGroupMarkerLabelKey`'s doc corrected. It said the key "marks a resource as belonging to one
+  specific role group"; the natural form omits the ROLE, so it is not unique across roles sharing a
+  group name. Now stated as a fingerprint that nothing may select on alone, with why the role cannot
+  be added (the key lands in the immutable `.spec.selector`) and why the over-long substitute is
+  role-scoped where the natural form is not.
+
 ## [2026-08-09] (the ExtraResources contract stops being documentation-only)
 
 ### Core architecture

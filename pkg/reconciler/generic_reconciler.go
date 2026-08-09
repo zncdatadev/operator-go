@@ -1010,8 +1010,23 @@ func ServiceAccountResourceName(kind, clusterName string) string {
 	return head + "-" + suffix
 }
 
-// RoleGroupMarkerLabelKey returns the label key that marks a resource as belonging to one specific
-// role group: "<cluster>-<group>", or a bounded substitute when that is not a legal label key.
+// RoleGroupMarkerLabelKey returns the label key that fingerprints a resource as one this framework
+// built for a role group: "<cluster>-<group>", or a bounded substitute when that is not a legal
+// label key.
+//
+// It is NOT unique per role group, and nothing may select on it alone. The natural form omits the
+// ROLE, so a product whose roles all use the conventional group name "default" — four roles in
+// DolphinScheduler, three in HDFS — stamps the identical key "<cluster>-default" on all of them.
+// The one consumer, isFrameworkRoleGroupPDB, is safe because it is reached only after a Get by the
+// role group's derived name, which already pins the role; the key merely answers "did we build
+// this?". Anything that starts from a List instead must key on the descriptive labels
+// (app.kubernetes.io/component + the role-group label), as orphan discovery does.
+//
+// The role is missing for a reason that cannot be undone: the key lands in the StatefulSet's
+// .spec.selector when LabelDomain is unset, and a selector is IMMUTABLE — adding the role would
+// break every running cluster on upgrade. The substitute below IS role-scoped, so the two forms
+// deliberately differ in what they identify. That asymmetry is safe for the same reason (see the
+// paragraph on legality), and is another reason not to treat the key as an identifier.
 //
 // A label key's name part is limited to 63 bytes and to a restricted character set, and this key is
 // derived from two free-form user strings. Entirely ordinary big-data names blow through it — a

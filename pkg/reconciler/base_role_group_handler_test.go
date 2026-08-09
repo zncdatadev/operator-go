@@ -2730,6 +2730,22 @@ var _ = Describe("Role group marker label key", func() {
 		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(HaveKeyWithValue("trino-default", "true"))
 	})
 
+	It("stamps the SAME marker on two roles sharing a role group name", func() {
+		// Documented property, not an oversight (issue #605): the natural key is "<cluster>-<group>"
+		// with no role in it, so every role using the conventional group name "default" carries the
+		// same marker. The role cannot be added — the key lands in the immutable .spec.selector, so
+		// changing it would break every running cluster on upgrade — which is exactly why nothing
+		// may select on this key alone. Its one consumer reaches it only after a Get by the role
+		// group's derived name, which does carry the role.
+		Expect(reconciler.RoleGroupMarkerLabelKey("trino", "worker", "default")).
+			To(Equal(reconciler.RoleGroupMarkerLabelKey("trino", "coordinator", "default")))
+
+		// The over-long substitute is RoleGroupResourceName, which IS role-scoped. The two forms
+		// deliberately identify different things; a caller may rely on neither.
+		Expect(reconciler.RoleGroupMarkerLabelKey(longCluster, "worker", longGroup)).
+			NotTo(Equal(reconciler.RoleGroupMarkerLabelKey(longCluster, "coordinator", longGroup)))
+	})
+
 	It("keeps two overrunning role groups of one role distinguishable", func() {
 		// The substitute must stay unique per role group: two groups sharing a marker would make
 		// each role group's Services select the other's pods as well.
