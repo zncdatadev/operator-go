@@ -181,7 +181,28 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
 10. PostReconcile Extensions
 11. Final Status Update, then requeue
 
-Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive, at both the object level and inside the StatefulSet's pod template), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile.
+Each "Apply" is create-OR-UPDATE (issue #526): when the resource already exists, the live object is updated to the handler-built desired state every reconcile — labels are replaced wholesale, annotations are merged (foreign annotations survive, at both the object level and inside the StatefulSet's pod template), and spec/data is copied per kind while preserving Kubernetes immutable/allocated fields (StatefulSet `selector`/`serviceName`/`volumeClaimTemplates`/`podManagementPolicy`; Service `clusterIP(s)`/`ipFamilies` and allocated NodePorts). Arbitrary-GVK extras get a generic top-level field copy. See `copyDesiredState` in `pkg/reconciler/apply.go`. Changing an immutable field for an existing cluster requires a manual delete/recreate migration — and the framework now **says so**: when a handler's desired value for a preserved field differs from the live one, `applyResource` emits an `ImmutableFieldIgnored` Warning event on the CR naming the resource and the field paths. Preserving those fields silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never applied. Only a field the handler actually set is reported (an unset field is declining to have an opinion, not a change request), and among the Service's preserved fields only `clusterIP` is — the others are API-server allocations, so a difference there would be noise on every reconcile. The event is emitted **before** the write's own error is returned, so a rejected Update still says which of the user's changes the framework had already dropped.
+
+**`volumeClaimTemplates` is the one preserved field the pod template depends on, so the mounts follow
+what was actually preserved.** Preserving the claim templates alone left an incoherent StatefulSet in
+both directions. Adding `config.resources.storage` to a **live** role group produced a template
+mounting a claim the framework had just declined to create — `volumeMounts[0].name: Not found:
+"data"`, a field the user never wrote. On Kubernetes 1.34+ the API server rejects that Update
+outright, leaving the role group `Degraded` on every pass with no recovery short of deleting the
+StatefulSet by hand; older servers accept it and reject every **pod** the StatefulSet controller then
+creates, so the workload never progresses and the error never reaches the cluster's status at all. **Removing** it was worse, because it was *accepted*: the claim template stayed,
+the mount did not, and the pods rolled into a product writing to the container's writable layer while
+its bound PVCs sat mounted nowhere — no event, no condition, no log line. `copyStatefulSetState`
+therefore drops a mount whose claim was not created (unless an ordinary volume of that name backs it)
+and restores **every** mount a preserved claim had **from the live template**, so the path is read
+rather than invented; the restore is keyed on the mount *path*, since Kubernetes lets one volume be
+mounted several times and a path the desired template already uses wins. A rename hits both branches
+and lands on the preserved claim. This makes the transition
+converge and stay coherent — it does not make it happen, and `spec.volumeClaimTemplates` is still
+reported as ignored. That report is also the one place an **empty** desired value counts: everywhere
+else an unset field is the handler declining to have an opinion, but an empty `volumeClaimTemplates`
+is the handler stating this role group has no storage, which is exactly the direction that used to be
+applied in silence.
 
 **A `configOverrides` change does not roll the pods by itself — the platform restarter does.**
 Editing `configOverrides` makes the framework rewrite the role group ConfigMap, and stop there: the
