@@ -278,8 +278,6 @@ func (i *ImageSpec) GetPullPolicy() corev1.PullPolicy {
 	return i.PullPolicy
 }
 
-// ResolvedPullPolicy is GetPullPolicy with a defaults layer, matching ResolveImage: the user's
-// choice when they made one, the product's otherwise, IfNotPresent if neither.
 // ResolvedPullSecretName folds the spec's pull secret over the defaults', user first — the same
 // per-field rule ResolveImage applies to the rest of the spec.
 //
@@ -294,6 +292,8 @@ func (i *ImageSpec) ResolvedPullSecretName(defaults ImageSpec) string {
 	return defaults.PullSecretName
 }
 
+// ResolvedPullPolicy is GetPullPolicy with a defaults layer, matching ResolveImage: the user's
+// choice when they made one, the product's otherwise, IfNotPresent if neither.
 func (i *ImageSpec) ResolvedPullPolicy(defaults ImageSpec) corev1.PullPolicy {
 	if i != nil && i.PullPolicy != "" {
 		return i.PullPolicy

@@ -332,7 +332,6 @@ func (b *StatefulSetBuilder) WithInitContainers(containers []corev1.Container) *
 	return b
 }
 
-// WithServiceAccount sets the service account name.
 // WithImagePullSecretName sets the docker-registry Secret added to the pod's imagePullSecrets.
 // An empty name is a no-op, leaving the field unset.
 //
@@ -344,6 +343,7 @@ func (b *StatefulSetBuilder) WithImagePullSecretName(name string) *StatefulSetBu
 	return b
 }
 
+// WithServiceAccount sets the service account name.
 func (b *StatefulSetBuilder) WithServiceAccount(name string) *StatefulSetBuilder {
 	b.ServiceAccountName = name
 	return b
