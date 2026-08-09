@@ -4,6 +4,52 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-08] (workload identity and workload RBAC become framework concerns)
+
+### Package guides
+
+- Root `AGENTS.md` gains **§11c Workload Identity and Workload RBAC**, documenting the two halves as
+  one thing: the derived ServiceAccount and the Role/RoleBinding built from
+  `WorkloadRBACRules`, both settled per CR at the top of the reconcile. Previously the SA was two
+  sentences inside the flow list and workload RBAC appeared only as "use the builders and ship them
+  as ExtraResources".
+- `pkg/builder/AGENTS.md`: the RBAC builders are no longer *the* route to workload RBAC; they are
+  for objects the framework does not maintain.
+
+### Security architecture
+
+- `docs/security.md` §3.1 rewritten. It described an **opt-in** ServiceAccount whose name came from
+  one of two config fields, then claimed in the next bullet that pods run under a specific
+  application identity rather than `default` — true only for products that opted in, and the default
+  was the opposite. Now states unconditional provisioning, the derived name
+  (`ServiceAccountResourceName(kind, cluster)`) and why the Kind is in it.
+- `docs/security.md` §3.2 rewritten from "Builders, not automation" to the
+  `WorkloadRBACRules` contract: what the framework owns, why an empty rule set revokes, why a
+  pre-existing `roleRef` is never adopted, the two distinct causes of a 403, and why the RBAC watches
+  are conditional.
+
+### Design rationale recorded
+
+- The name of an object the framework creates, owns, and garbage-collects is not a product decision.
+  §3's "the framework owns the NAME of every fixed slot" applied to ConfigMap/Service/StatefulSet/PDB
+  — enforced to the point of failing a build — and the ServiceAccount was the lone exception, for no
+  reason anyone could point at. Deriving it removes the shared-name failure mode by construction
+  instead of detecting it and printing a paragraph telling the author to use the other field.
+- An identity that can be switched off is an identity that will be off by accident. A ServiceAccount
+  costs nothing, so the switch was removed rather than defaulted.
+- Identity and permissions belong at the same level and in the same step. Workload RBAC as
+  `ExtraResources` put a **cluster-level** concern on a **per-role-group** path, and made every
+  product responsible for matching the RoleBinding's subject to the SA the framework had chosen. The
+  framework now passes the name it derived, so that correspondence is not something a product can get
+  wrong.
+- Cluster-scoped RBAC is out of scope, and that is a lifecycle statement rather than a limitation: a
+  namespaced CR cannot controller-own a cluster-scoped object, so there would be no garbage collection
+  with the cluster and no ownership gate on the reclaim.
+- The framework re-explains the API server's 403 rather than pre-checking it. A pre-check would have
+  to reimplement RBAC rule covering — wildcards, `resourceNames`, aggregated ClusterRoles,
+  non-resource URLs — and would then be wrong in both directions, while the server's own message has
+  already done that computation against the operator's real effective permissions.
+
 ## [2026-08-07] (the log tag stops being the container name)
 
 ### Package guides

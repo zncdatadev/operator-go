@@ -28,6 +28,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -145,6 +146,13 @@ func (e *TestEnv) Start() error {
 	if err := policyv1.AddToScheme(e.Scheme); err != nil {
 		_ = e.Env.Stop()
 		return fmt.Errorf("failed to add policyv1 to scheme: %w", err)
+	}
+
+	// rbacv1 is needed by GenericReconcilerConfig.WorkloadRBACRules, which makes the reconciler
+	// write a Role and RoleBinding.
+	if err := rbacv1.AddToScheme(e.Scheme); err != nil {
+		_ = e.Env.Stop()
+		return fmt.Errorf("failed to add rbacv1 to scheme: %w", err)
 	}
 
 	// Add project-specific types to scheme

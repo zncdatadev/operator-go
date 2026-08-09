@@ -124,7 +124,8 @@ make test-e2e
 ├─────────────────────────────────────────────────────────────────┤
 │ 1. Fetch CR, record observedGeneration                          │
 │ 2. ClusterOperation gate (reconciliationPaused returns here)    │
-│ 3. Ensure ServiceAccount (when SA management is enabled)        │
+│ 3. Ensure workload ServiceAccount (always; name derived from CR)│
+│ 3b. Ensure workload RBAC (only when WorkloadRBACRules is set)   │
 │ 4. Execute Cluster PreReconcile extensions                      │
 │ 5. Validate dependencies                                        │
 │ 6. For each Role (sorted by name):                              │

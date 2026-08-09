@@ -159,7 +159,9 @@ customizable extension points. It is built from a `GenericReconcilerConfig[CR]` 
    event; the status is left untouched
 3. ClusterOperation gate: `reconciliationPaused` returns immediately; `stopped` falls through so
    every resource is still reconciled with replicas forced to 0
-4. Ensure the ServiceAccount (when configured); warn about handler-configured role names the CR
+4. Ensure the workload ServiceAccount (always; name derived from the CR by
+   `ServiceAccountResourceName`) and, when `WorkloadRBACRules` is set, its Role/RoleBinding (§11c);
+   warn about handler-configured role names the CR
    does not declare
 5. PreReconcile Extensions (Hook)
 6. Validate declared dependencies (`GenericReconcilerConfig.Dependencies`)
@@ -351,9 +353,9 @@ reconciler iterates `spec.Roles` directly.
 `RoleGroupBuildContext` carries `ClusterName`, `ClusterNamespace`, `ClusterLabels`, `ClusterSpec`,
 `RoleName`, `RoleSpec`, `RoleGroupName`, `RoleGroupSpec`, `MergedConfig` (the folded
 product-config/role/role-group overrides), `ResourceName` (`{cluster}-{role}-{group}`, truncated
-with a hash suffix by `RoleGroupResourceName`), `ServiceAccountName` (the SA the reconciler
-resolved and ensured), `SidecarManager`, `VolumeProviders` (see §16) and
-`VectorAggregatorAddress`.
+with a hash suffix by `RoleGroupResourceName`), `ServiceAccountName` (the SA the reconciler derived
+and ensured — `ServiceAccountResourceName(kind, cluster)`, never configured and never empty),
+`SidecarManager`, `VolumeProviders` (see §16) and `VectorAggregatorAddress`.
 
 **It is also where a product puts its per-CR inputs.** `Image`, `ImagePullPolicy`, `ContainerPorts`
 and `ServicePorts` on the context outrank the handler's own, and the context is rebuilt per role
@@ -736,6 +738,81 @@ every *other* key too. Generators run only for absent keys, so the steady-state 
 them. Call it from a `common.ClusterExtension` `PreReconcile` hook, where a ctx and client exist and
 the workload has not been built yet; it is deliberately **not** created from the sidecar provider's
 `Validate`, a step whose job is to have no side effects.
+
+### 11c. Workload Identity and Workload RBAC
+
+Two halves of one thing, both settled per CR at the top of the reconcile (steps 0 and 0b), before
+any extension hook or role runs. **Neither is the operator's own RBAC** — that comes from the
+operator's ClusterRole and is a separate axis entirely.
+
+**The identity is derived and unconditional.** Every cluster gets a ServiceAccount named
+`ServiceAccountResourceName(kind, cluster)` — `"<lowercased kind>-<cluster>"`, e.g.
+`hdfscluster-prod` — in the CR's namespace, with the CR as controller owner. There is no config
+field for the name and no way to skip it. The reconciler propagates it through
+`RoleGroupBuildContext.ServiceAccountName`, which is therefore **never empty**, and
+`BaseRoleGroupHandler` binds it to the pod template.
+
+The Kind is in the name because a CR name alone is not unique in a namespace: an `HdfsCluster` and a
+`TrinoCluster` both called `prod` would otherwise select one ServiceAccount and the second
+controller could never own it. The name is derived rather than configured for the same reason every
+other framework-owned name is (§3): the framework creates the object, controller-owns it,
+garbage-collects it with the CR and binds the workload's Role to it, so nothing needs to address it
+by a product-chosen name. Configuring it is what produced the failure class this replaced — a static
+name was a *constant*, so every CR of a product in one namespace resolved to the SAME
+ServiceAccount: whichever cluster reconciled second failed with `AlreadyOwnedError` forever, and
+deleting the first garbage-collected the SA out from under the second's running pods.
+`ServiceAccountResourceName` is **exported** because anything outside the operator that must name the
+SA — a hand-written RoleBinding, an admission policy, an audit query — should derive it from the
+formula. An object squatting on the derived name is never adopted; the reconcile fails naming both
+owners.
+
+**The permissions are declared by the product.** `GenericReconcilerConfig.WorkloadRBACRules func(cr
+CR) []rbacv1.PolicyRule` says what this cluster's *pods* call; the framework maintains a namespaced
+`Role` + `RoleBinding` named after that same derived ServiceAccount, controller-owned by the CR:
+
+```go
+WorkloadRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
+    return []rbacv1.PolicyRule{{
+        APIGroups: []string{"coordination.k8s.io"},
+        Resources: []string{"leases"},
+        Verbs:     []string{"get", "list", "watch", "create", "update"},
+    }}
+},
+```
+
+The framework passes the name it derived itself, so identity and permissions cannot drift apart —
+that is why this is a config field and not only the exported `reconciler.EnsureWorkloadRBAC` helper
+(which takes the name as a parameter, so a caller *can* pass one no pod uses: both objects exist, the
+pods start, and the first API call 403s). The helper stays exported for a product driving the
+reconciler's pieces itself; `WithWorkloadRBACProductName` and `WithWorkloadRBACExtraLabels` are its
+options, and canonical labels always win over extras.
+
+**There is no `ClusterRole` path.** A namespaced CR cannot controller-own a cluster-scoped object, so
+the framework would have no lifecycle for one — no GC with the cluster, no ownership gate on the
+reclaim. A product needing cluster-scoped permissions maintains those objects itself, cleanup
+included.
+
+**An empty rule set REVOKES**, deleting both objects when this CR controller-owns them — the same
+reading every optional slot gets (a nil `MetricsService` reclaims the Service), and the only one that
+makes a rule set shrinking to nothing actually stop granting. A **nil hook** is the different
+statement "this product never opted in", and touches no RBAC object at all: running a revoke every
+pass would cost two Gets per cluster and demand RBAC read permission from operators that never asked
+for the feature.
+
+**A pre-existing RoleBinding is never adopted.** `roleRef` is immutable, so one already at this name
+pointing elsewhere cannot be converged; the framework fails with a `*ValidationError` naming both
+refs and the fixing command, rather than rewriting only the subject — which would hand these pods
+whatever the old ref allows and report success.
+
+**Setting the hook obliges the operator twice over.** Kubernetes forbids granting permissions the
+granter lacks, so the operator's ClusterRole must be a superset of every rule passed — *and* it needs
+write access to the RBAC API itself. Both are kubebuilder markers, and a 403 has those two distinct
+causes needing opposite fixes, so the SDK re-explains the API server's message rather than
+pre-checking (that message already computed rule covering against the operator's real effective
+permissions and names the missing rule). The `Owns(&rbacv1.Role{})`/`Owns(&rbacv1.RoleBinding{})`
+watches are registered **only** when the hook is set: an unconditional one would force every operator
+on this SDK to grant itself cluster-wide `list;watch` on RBAC, and a forbidden informer fails
+`WaitForCacheSync` for *all* sources, so `manager.Start` returns and the process exits.
 
 ### 12. External Dependencies
 

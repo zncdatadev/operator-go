@@ -753,8 +753,8 @@ Both design points are about not lying:
 The SDK adopts a layered security strategy, addressing both **Infrastructure Security** (K8s access control, Pod context) and **Application Security** (identity, encryption). The core philosophy relies on "Privilege Separation" and "Automated Provisioning."
 
 ### 4.9.2 Infrastructure Security (Operator & K8s Layer)
-- **ServiceAccount Provisioning**: The SDK can automatically manage ServiceAccounts for workloads, ensuring Pods run with appropriate identities distinct from the Operator's own identity.
-- **RBAC Integration**: Supports binding minimum required permissions (RoleBindings) to workload ServiceAccounts, adhering to the Principle of Least Privilege.
+- **ServiceAccount Provisioning**: The SDK gives every cluster a workload ServiceAccount, so Pods run with an identity distinct from the Operator's own. Its name is derived from the CR (`ServiceAccountResourceName(kind, cluster)`), not configured — see `docs/security.md` §3.1.
+- **RBAC Integration**: `GenericReconcilerConfig.WorkloadRBACRules` lets a product declare the API permissions its **pods** need; the SDK maintains the namespaced Role and RoleBinding against the derived workload ServiceAccount, adhering to the Principle of Least Privilege. Cluster-scoped RBAC is out of scope — a namespaced CR cannot controller-own it. See `docs/security.md` §3.2.
 - **Pod Security Context**: Enforces secure defaults for Pod execution (e.g., non-root users, fsGroup controls) to prevent container breakouts.
 
 ### 4.9.3 Application Security (Workload Layer)

@@ -10,7 +10,7 @@ Every non-test file in this package:
 
 | File | Purpose |
 |------|---------|
-| `generic_reconciler.go` | `GenericReconcilerConfig` / `GenericReconciler` — the reconcile loop, panic recovery, ServiceAccount provisioning, dependency checks, role/role-group iteration, sidecar validation, status write, `SetupWithManager*` |
+| `generic_reconciler.go` | `GenericReconcilerConfig` / `GenericReconciler` — the reconcile loop, panic recovery, workload identity + RBAC provisioning, dependency checks, role/role-group iteration, sidecar validation, status write, `SetupWithManager*` |
 | `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
 | `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters |
 | `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras |
@@ -21,6 +21,7 @@ Every non-test file in this package:
 | `event.go` | `EventManager` — Normal/Warning event emission on the CR. `NewEventManager(recorder, scheme)`: the scheme resolves the Kind named in resource events, which the typed objects `pkg/builder` produces do not carry. The framework emits exactly `Created`/`Updated`/`Deleted` (Normal) and `ReconcileError`/`ReconcilePanic`/`PodOverrideIgnored`/`UnknownConfiguredRole`/`ImmutableFieldIgnored`/`VectorSidecarSkipped` (Warning) — **there are no reconcile start/completion events**. `LogAndEmitError`/`LogAndEmitInfo` exist for product code and the framework never calls them |
 | `discovery.go` | `EnsureDiscoveryConfigMap` — shared ensure-helper for product discovery ConfigMaps (CreateOrUpdate + controller owner ref + canonical labels; the product computes the data map) |
 | `generated_secret.go` | `EnsureGeneratedSecret` — the ensure-helper for an object whose content must NOT converge: values are generated once, a missing key is filled, an existing value is never rewritten. Controller owner ref + canonical labels, `IsAlreadyExists` tolerated |
+| `workload_rbac.go` | `EnsureWorkloadRBAC` — the namespaced `Role` + `RoleBinding` giving the cluster's PODS their API permissions, named after the derived ServiceAccount. Empty rules revoke; a foreign `roleRef` is never adopted; 403s are re-explained by cause (missing RBAC API access vs. escalation refusal) |
 | `metrics.go` | `OrphanCleanupPending` (GaugeVec) and `OrphanDrainTimeouts` (CounterVec), registered on controller-runtime's `metrics.Registry` at init, plus `forgetClusterMetrics`. The framework exports **only** the cleanup state machine — see below |
 
 There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — status is written by
@@ -75,15 +76,24 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
      `deletionTimestamp` from its own controller. The SDK's guard makes that safe — the framework
      stops re-creating resources as soon as the timestamp is set, instead of fighting the product's
      teardown for as long as the finalizer is held.
-4. **ServiceAccounts:** Prefer per-CR naming via `GenericReconcilerConfig.ServiceAccountNameFunc`
-   (e.g. `"<product>-" + cr.GetName()`). The reconciler resolves the SA name per CR (func result >
-   static `ServiceAccountName` > "" = skip), ensures the SA with the CR as controller owner
-   (`ensureServiceAccount`), and propagates the resolved name through
-   `RoleGroupBuildContext.ServiceAccountName` to the STS pod template. A static name shared by two
-   clusters in one namespace permanently fails the second cluster's reconcile (AlreadyOwnedError,
-   surfaced as a clear both-owners error) and GC-deletes the SA under the survivor when the owner
-   cluster is deleted. The SDK creates no Role/RoleBinding — see `pkg/builder` for the builders a
-   product uses to emit its own RBAC as `RoleGroupResources.ExtraResources`.
+4. **Workload identity:** nothing to configure. Every cluster gets a ServiceAccount named
+   `ServiceAccountResourceName(kind, cluster)` = `"<lowercased kind>-<cluster>"`
+   (`hdfscluster-prod`). The reconciler ensures it with the CR as controller owner
+   (`ensureServiceAccount`) at step 0 and propagates the same derived name through
+   `RoleGroupBuildContext.ServiceAccountName` — never empty — to the STS pod template. The Kind is
+   in the name because a CR name alone is not unique in a namespace; the name is derived rather
+   than configured because the framework owns the object's whole lifecycle. Exported because things
+   outside the operator have to name the SA.
+4b. **Workload RBAC:** `GenericReconcilerConfig.WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule`
+   declares what the cluster's PODS call; the framework maintains a namespaced `Role` +
+   `RoleBinding` at the derived SA's name, controller-owned by the CR (`workload_rbac.go`,
+   `EnsureWorkloadRBAC`). Namespaced only — a namespaced CR cannot own a `ClusterRole`. An empty
+   rule set REVOKES (ownership-gated); a **nil hook** touches nothing. A pre-existing RoleBinding
+   with a different `roleRef` is never adopted (immutable field) and fails with a
+   `*ValidationError`. Setting the hook requires the operator to hold those permissions itself plus
+   write access to the RBAC API; the RBAC watches are registered only when the hook is set, because
+   a forbidden informer kills the whole manager. `pkg/builder`'s RBAC builders remain for objects
+   the framework does not maintain.
 5. **External dependencies:** Declare referenced ConfigMaps/Secrets with
    `GenericReconcilerConfig.Dependencies func(cr CR) []Dependency`. They are checked before any
    role is reconciled; a missing one aborts the cycle with a Degraded condition. Nil = no checks.
@@ -306,7 +316,8 @@ recovery that turns a recovered panic into a returned error plus a `ReconcilePan
 
 0. `ClusterOperation` gate — `reconciliationPaused` returns immediately; `stopped` falls through
    (replicas are forced to 0 downstream so every resource is still reconciled).
-1. ServiceAccount ensure (when configured), unknown-configured-role warning.
+1. ServiceAccount ensure (always; name derived from the CR), workload RBAC ensure (only when
+   `WorkloadRBACRules` is set), unknown-configured-role warning.
 2. Cluster `PreReconcile` extensions.
 3. Declared dependency validation.
 4. Per role: role `PreReconcile` → per role group (`PreReconcile` → build context →
