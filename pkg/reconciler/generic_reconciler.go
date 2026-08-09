@@ -156,9 +156,25 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// ClusterRole path: a namespaced CR cannot controller-own a cluster-scoped object, so the
 	// framework would have no lifecycle for one.
 	//
-	// Returning an empty slice REVOKES them. Like every other optional slot in this framework, nil
-	// is an instruction rather than "leave it alone" — a nil MetricsService reclaims the Service —
-	// and it is the only reading that makes a rule set shrinking to nothing actually stop granting.
+	// There are two distinct "nothing" cases, and they mean OPPOSITE things:
+	//
+	//	WorkloadRBACRules == nil            this product does not use workload RBAC. No Role or
+	//	                                    RoleBinding is read, written or deleted, and the
+	//	                                    operator needs no RBAC permissions at all.
+	//
+	//	WorkloadRBACRules returns nil       this cluster is granted nothing. The Role and
+	//	  (or an empty slice)               RoleBinding are DELETED if this CR controller-owns
+	//	                                    them, so the pods stop holding the permissions.
+	//
+	// The second is the same reading every other optional slot in this framework gets — a nil
+	// MetricsService reclaims the Service — and it is the only one under which a rule set that
+	// shrinks to nothing actually stops granting. The first exists so that operators which never
+	// opted in pay nothing: running a revoke every reconcile would cost two API reads per cluster
+	// and demand RBAC read permission from every operator built on this SDK.
+	//
+	// A hook that returns rules conditionally therefore revokes on the passes where its condition
+	// is false, which is usually what a product wants; leaving the hook unset is how a product says
+	// "not my concern" rather than "not right now".
 	//
 	// The framework passes the ServiceAccount name it derived itself, so the identity and the
 	// permissions cannot drift apart. That is why this is a config field and not only the exported
