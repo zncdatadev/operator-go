@@ -531,6 +531,16 @@ func (h *BaseRoleGroupHandler[CR]) containerImage(
 	return h.Image, h.pullPolicy(buildCtx), nil
 }
 
+// pullSecretName resolves the cluster's image pull secret from spec.image folded over
+// ImageDefaults. Empty means the deployment needs no registry credential, which is the common case.
+func (h *BaseRoleGroupHandler[CR]) pullSecretName(buildCtx *RoleGroupBuildContext) string {
+	var spec *v1alpha1.ImageSpec
+	if buildCtx != nil && buildCtx.ClusterSpec != nil {
+		spec = buildCtx.ClusterSpec.Image
+	}
+	return spec.ResolvedPullSecretName(h.ImageDefaults)
+}
+
 // pullPolicy resolves the pull policy for a handler-supplied image: the per-call value when the
 // product set one, the handler's otherwise.
 func (h *BaseRoleGroupHandler[CR]) pullPolicy(buildCtx *RoleGroupBuildContext) corev1.PullPolicy {
@@ -909,6 +919,17 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// default SA), preserving backward compatibility.
 	if buildCtx.ServiceAccountName != "" {
 		stsBuilder.WithServiceAccount(buildCtx.ServiceAccountName)
+	}
+
+	// The pull secret is resolved from spec.image over ImageDefaults, independently of the image
+	// itself: it is needed on every path the image can come from — `custom`, the assembled
+	// reference, and a product that resolves its own images and leaves ProductName empty. Ten
+	// product CRDs already declare this field, and before it existed here every one of them
+	// silently dropped it on migration: the CRD still accepted `pullSecretName` and no pod ever
+	// carried an imagePullSecrets entry, so a private-registry install failed with ImagePullBackOff
+	// and no indication of why.
+	if secretName := h.pullSecretName(buildCtx); secretName != "" {
+		stsBuilder.WithImagePullSecretName(secretName)
 	}
 
 	// Wire the role group's declared runtime config (commons RoleGroupConfigSpec) into the

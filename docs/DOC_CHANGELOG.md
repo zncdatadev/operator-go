@@ -4,6 +4,23 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-09d] (the image spec gains a validated tag and a pull secret)
+
+### Core architecture
+
+- `docs/architecture.md` §2.6 gains two paragraphs: why the assembled TAG is validated (the API
+  server does not validate `container.image` at all, so an unparsable reference surfaces only as a
+  kubelet `InvalidImageName` on a pod while the reconcile reports success), and why a registry
+  credential is deliberately NOT part of image resolution — where an image lives is independent of
+  how its reference was built, so the credential has to survive the two paths that assemble no
+  reference at all.
+
+### Package guides
+
+- Root `AGENTS.md` §3 documents `spec.image.pullSecretName` and the tag validation, including what is
+  exempt (`custom`, the user's verbatim reference) and how an override interacts with it (strategic
+  merge patch keys `imagePullSecrets` by `name`, so a `podOverrides` entry adds rather than replaces).
+
 ## [2026-08-09c] (two claims corrected: what the apply path preserves, what a marker key identifies)
 
 ### Package guides

@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -57,6 +58,20 @@ type ImageSpec struct {
 	// +kubebuilder:default=IfNotPresent
 	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
 	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
+
+	// PullSecretName names a docker-registry Secret in the cluster CR's namespace, added to
+	// .spec.imagePullSecrets of every pod the framework builds for this cluster.
+	//
+	// It applies to whichever image path is taken, Custom included: a private registry is a
+	// property of where the image lives, not of how its reference was assembled. It is also
+	// deliberately NOT part of image resolution — a pull secret is still needed when the product
+	// resolves its own images and the framework never builds a reference at all.
+	//
+	// One name rather than a list, matching the field the ten product CRDs already declare. A
+	// deployment needing several credentials merges them into one Secret, or adds the rest through
+	// podOverrides, which is applied after this and therefore wins.
+	// +kubebuilder:validation:Optional
+	PullSecretName string `json:"pullSecretName,omitempty"`
 }
 
 // ResolveImage builds the container image reference from this spec, filling every field the user
@@ -132,11 +147,63 @@ func (i *ImageSpec) ResolveImage(productName string, defaults ImageSpec) (string
 			productName, missingImageFields(repo, productVersion))
 	}
 
-	image := repo + "/" + productName + ":" + productVersion
+	tag := productVersion
 	if kubedoopVersion != "" {
-		image += "-kubedoop" + kubedoopVersion
+		tag += "-kubedoop" + kubedoopVersion
 	}
-	return image, nil
+	if err := validateImageTag(tag, productVersion, kubedoopVersion); err != nil {
+		return "", fmt.Errorf("cannot resolve spec.image for product %q: %w", productName, err)
+	}
+
+	return repo + "/" + productName + ":" + tag, nil
+}
+
+// Tag grammar, from the OCI/docker reference spec: a tag is `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`.
+// Split in two here so the error can name the field that broke it — productVersion opens the tag
+// and so must also satisfy the first-character rule, while kubedoopVersion only lands inside it.
+var (
+	imageTagHeadRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+	imageTagRestRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+// maxImageTagLen is the tag length the reference grammar allows: one leading character plus 127.
+const maxImageTagLen = 128
+
+// validateImageTag rejects a productVersion/kubedoopVersion pair that cannot appear in an image
+// tag, BEFORE the reference is handed to a pod.
+//
+// Nothing downstream catches this. The API server does not validate `container.image` at all, so an
+// unparsable reference is accepted, stored, and reported by the kubelet as `InvalidImageName` on a
+// pod nobody was looking at — while the reconcile reports success and the cluster's conditions stay
+// green. The failure is not hypothetical: the documented wiring for KubedoopVersion is the
+// operator's own `version.BuildVersion`, and the scaffold's dev default for that variable is "N/A",
+// which assembles into `…:3.2.2-kubedoopN/A` — the "/" makes the tag unparsable, so a development
+// build of any operator on the structured image path silently produced pods that could never start.
+//
+// The message is worded for a `kubectl apply` reader, like its sibling above: a product's
+// validating webhook forwards it verbatim, and the value may equally have come from the operator's
+// own defaults, which is worth saying out loud because the CR may not contain it anywhere.
+func validateImageTag(tag, productVersion, kubedoopVersion string) error {
+	if !imageTagHeadRE.MatchString(productVersion) {
+		return fmt.Errorf(
+			"spec.image.productVersion %q cannot appear in an image tag (allowed: letters, digits, "+
+				"'.', '_' and '-', starting with a letter, digit or '_'). The value may come from "+
+				"the operator's own defaults rather than from this resource",
+			productVersion)
+	}
+	if kubedoopVersion != "" && !imageTagRestRE.MatchString(kubedoopVersion) {
+		return fmt.Errorf(
+			"spec.image.kubedoopVersion %q cannot appear in an image tag (allowed: letters, digits, "+
+				"'.', '_' and '-'). It usually comes from the operator's own build version rather "+
+				"than from this resource — an unset or placeholder build version is the usual cause",
+			kubedoopVersion)
+	}
+	if len(tag) > maxImageTagLen {
+		return fmt.Errorf(
+			"the resulting image tag %q is %d characters, over the %d an image tag allows",
+			tag, len(tag), maxImageTagLen)
+	}
+	return nil
 }
 
 // ResolvedProductVersion returns the product version to publish as app.kubernetes.io/version for
@@ -213,6 +280,20 @@ func (i *ImageSpec) GetPullPolicy() corev1.PullPolicy {
 
 // ResolvedPullPolicy is GetPullPolicy with a defaults layer, matching ResolveImage: the user's
 // choice when they made one, the product's otherwise, IfNotPresent if neither.
+// ResolvedPullSecretName folds the spec's pull secret over the defaults', user first — the same
+// per-field rule ResolveImage applies to the rest of the spec.
+//
+// It is a separate accessor rather than part of ResolveImage on purpose. A pull secret is needed
+// wherever the image lives, including the two paths where the framework assembles no reference at
+// all: `custom`, and a product that resolves its own images and leaves ProductName empty. Folding it
+// into resolution would silently drop it for exactly the private-registry cases it exists for.
+func (i *ImageSpec) ResolvedPullSecretName(defaults ImageSpec) string {
+	if i != nil && i.PullSecretName != "" {
+		return i.PullSecretName
+	}
+	return defaults.PullSecretName
+}
+
 func (i *ImageSpec) ResolvedPullPolicy(defaults ImageSpec) corev1.PullPolicy {
 	if i != nil && i.PullPolicy != "" {
 		return i.PullPolicy

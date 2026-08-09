@@ -313,6 +313,28 @@ is read **every reconcile**, which is what a webhook cannot do: webhook defaults
 admission and never recomputed, freezing `kubedoopVersion` at whatever operator version first
 admitted the CR (§10 and `docs/architecture.md` §2.6).
 
+**The assembled tag is validated, and an unusable one fails the role group.** `productVersion` and
+`kubedoopVersion` both land in the image tag, whose grammar is `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`,
+and nothing downstream would have caught a value that breaks it: the API server does not validate
+`container.image` at all, so an unparsable reference is accepted, stored, and surfaces only as
+`InvalidImageName` on a pod, while the reconcile reports success. The case this exists for is
+`KubedoopVersion: version.BuildVersion` with the scaffold's dev default of `"N/A"` — the `/` makes
+`…:476-kubedoopN/A` unparsable, so **every development build on the structured image path produced
+pods that could never start**. The error names the offending field, and says the value may have come
+from the operator's own defaults rather than from the CR. `spec.image.custom` is deliberately **not**
+validated: it is the user's verbatim reference, so a wrong one is their own visible mistake.
+
+**`spec.image.pullSecretName` names a docker-registry Secret added to every pod's
+`imagePullSecrets`.** It folds over `ImageDefaults.PullSecretName` per field like the rest, and is
+resolved **independently of the image**: a pull secret is a property of where the image lives, so it
+applies on all three paths — the assembled reference, `custom`, and a product that resolves its own
+images with `ProductName` empty. Ten product CRDs already declared this field, and migrating to the
+commons `ImageSpec` used to delete the behaviour silently — the CRD still accepted the value and no
+pod ever carried the entry, so a private-registry install failed with `ImagePullBackOff` and nothing
+naming the cause. One name rather than a list, matching those CRDs; it is applied before
+`podOverrides`, and strategic merge patch keys `imagePullSecrets` by `name`, so an override **adds**
+a credential rather than replacing this one.
+
 An unresolvable `spec.image` **fails the role group**, naming the missing field, instead of silently
 falling back to the handler's static image and running a version nobody asked for. With
 `ProductName` empty the handler resolves nothing from the CR beyond `spec.image.custom` — the shape
