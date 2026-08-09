@@ -39,6 +39,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -132,32 +133,60 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// +optional
 	DrainTimeout time.Duration
 
-	// ServiceAccountName is the static name of the ServiceAccount to create for the workload.
-	// When set (and ServiceAccountNameFunc is nil or returns ""), the GenericReconciler
-	// automatically creates (or updates) a ServiceAccount with this name in the CR's namespace
-	// at the start of each reconciliation and propagates it to the workload pod template via
-	// RoleGroupBuildContext.ServiceAccountName.
+	// WorkloadRBACRules, when set, declares the Kubernetes API permissions this cluster's WORKLOAD
+	// pods need — the product's own processes calling the API, not the operator's permissions,
+	// which come from its ClusterRole and are a separate axis entirely.
 	//
-	// WARNING: a static name is shared by every CR of the product in a namespace. With two
-	// clusters in one namespace, the second cluster can never take controller ownership of the
-	// shared SA (its reconcile fails permanently), and deleting the first cluster garbage-collects
-	// the SA out from under the second cluster's running pods. Prefer ServiceAccountNameFunc for
-	// per-CR naming; keep this field only as a fallback or for single-cluster-per-namespace use.
-	// +optional
-	ServiceAccountName string
-
-	// ServiceAccountNameFunc computes the ServiceAccount name per CR at reconcile time.
-	// When set and returning a non-empty string, its result takes precedence over the static
-	// ServiceAccountName. When it returns "", the static ServiceAccountName is used as fallback;
-	// if that is also empty, ServiceAccount management is skipped entirely.
+	// It is the other half of the workload's ServiceAccount. That gives the workload an IDENTITY;
+	// this gives that identity its PERMISSIONS, and the framework maintains both at the same point
+	// in the same way: once per CR, at cluster level, before any role is built. A role group merely
+	// consumes the result — the ServiceAccount name reaches the pod template through
+	// RoleGroupBuildContext.ServiceAccountName, and the Role is already bound to it.
 	//
-	// RECOMMENDED for multi-cluster namespaces: derive the name from the CR, e.g.
-	// "<product>-<cr name>" ("kafka-" + cr.GetName()), so each cluster owns its own SA. This
-	// avoids the shared-SA failure mode described on ServiceAccountName (permanent ownership
-	// conflict for the second cluster, and SA garbage collection when the first cluster is
-	// deleted).
+	//	WorkloadRBACRules: func(cr *v1alpha1.NifiCluster) []rbacv1.PolicyRule {
+	//	    return []rbacv1.PolicyRule{{
+	//	        APIGroups: []string{"coordination.k8s.io"},
+	//	        Resources: []string{"leases"},
+	//	        Verbs:     []string{"get", "list", "watch", "create", "update"},
+	//	    }}
+	//	},
+	//
+	// The Role and RoleBinding are namespaced, named after the derived ServiceAccount and
+	// controller-owned by the CR, so they are garbage-collected with it. There is deliberately no
+	// ClusterRole path: a namespaced CR cannot controller-own a cluster-scoped object, so the
+	// framework would have no lifecycle for one.
+	//
+	// There are two distinct "nothing" cases, and they mean OPPOSITE things:
+	//
+	//	WorkloadRBACRules == nil            this product does not use workload RBAC. No Role or
+	//	                                    RoleBinding is read, written or deleted, and the
+	//	                                    operator needs no RBAC permissions at all.
+	//
+	//	WorkloadRBACRules returns nil       this cluster is granted nothing. The Role and
+	//	  (or an empty slice)               RoleBinding are DELETED if this CR controller-owns
+	//	                                    them, so the pods stop holding the permissions.
+	//
+	// The second is the same reading every other optional slot in this framework gets — a nil
+	// MetricsService reclaims the Service — and it is the only one under which a rule set that
+	// shrinks to nothing actually stops granting. The first exists so that operators which never
+	// opted in pay nothing: running a revoke every reconcile would cost two API reads per cluster
+	// and demand RBAC read permission from every operator built on this SDK.
+	//
+	// A hook that returns rules conditionally therefore revokes on the passes where its condition
+	// is false, which is usually what a product wants; leaving the hook unset is how a product says
+	// "not my concern" rather than "not right now".
+	//
+	// The framework passes the ServiceAccount name it derived itself, so the identity and the
+	// permissions cannot drift apart. That is why this is a config field and not only the exported
+	// EnsureWorkloadRBAC helper: the helper takes the name as a parameter, so a caller can pass one
+	// that is not the workload's, producing a Role that grants to a ServiceAccount no pod uses —
+	// two objects that both exist, pods that start fine, and a 403 on the first API call.
+	//
+	// Setting this REQUIRES the operator to hold these permissions itself — Kubernetes forbids
+	// granting what the granter lacks — plus write access to the RBAC API. Both are kubebuilder
+	// markers on the operator; see EnsureWorkloadRBAC for the exact failure messages.
 	// +optional
-	ServiceAccountNameFunc func(cr CR) string
+	WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule
 
 	// ProductConfig, when set, computes the product's configuration contribution for a role
 	// group at reconcile time, returned as an *v1alpha1.OverridesSpec (the same shape users
@@ -261,12 +290,10 @@ type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	// healthCheckInterval is the cadence at which a successful reconcile requeues itself; <= 0
 	// disables periodic requeue (see reconcile's wakeup aggregation).
 	healthCheckInterval time.Duration
-	serviceAccountName  string
-	// serviceAccountNameFunc, when set, resolves a per-CR SA name that takes precedence over
-	// the static serviceAccountName (see resolveServiceAccountName).
-	serviceAccountNameFunc func(cr CR) string
-	productConfig          func(ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
-	dependencies           func(cr CR) []Dependency
+	// workloadRBACRules, when set, declares the workload's API permissions (see the config field).
+	workloadRBACRules func(cr CR) []rbacv1.PolicyRule
+	productConfig     func(ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
+	dependencies      func(cr CR) []Dependency
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -331,24 +358,23 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 	}
 
 	return &GenericReconciler[CR]{
-		client:                 cfg.Client,
-		apiReader:              cfg.APIReader,
-		scheme:                 cfg.Scheme,
-		k8sUtil:                util.NewK8sUtil(cfg.Client, cfg.Scheme),
-		healthManager:          healthManager,
-		dependencyResolver:     NewDependencyResolver(cfg.Client),
-		cleaner:                cleaner,
-		eventManager:           eventManager,
-		configMerger:           config.NewConfigMerger(),
-		roleGroupHandler:       cfg.RoleGroupHandler,
-		extensionRegistry:      extensionRegistry,
-		prototype:              cfg.Prototype,
-		rateLimitRetryAfter:    rateLimitRetryAfter,
-		healthCheckInterval:    healthCheckInterval,
-		serviceAccountName:     cfg.ServiceAccountName,
-		serviceAccountNameFunc: cfg.ServiceAccountNameFunc,
-		productConfig:          cfg.ProductConfig,
-		dependencies:           cfg.Dependencies,
+		client:              cfg.Client,
+		apiReader:           cfg.APIReader,
+		scheme:              cfg.Scheme,
+		k8sUtil:             util.NewK8sUtil(cfg.Client, cfg.Scheme),
+		healthManager:       healthManager,
+		dependencyResolver:  NewDependencyResolver(cfg.Client),
+		cleaner:             cleaner,
+		eventManager:        eventManager,
+		configMerger:        config.NewConfigMerger(),
+		roleGroupHandler:    cfg.RoleGroupHandler,
+		extensionRegistry:   extensionRegistry,
+		prototype:           cfg.Prototype,
+		rateLimitRetryAfter: rateLimitRetryAfter,
+		healthCheckInterval: healthCheckInterval,
+		workloadRBACRules:   cfg.WorkloadRBACRules,
+		productConfig:       cfg.ProductConfig,
+		dependencies:        cfg.Dependencies,
 	}, nil
 }
 
@@ -520,13 +546,25 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 		}
 	}
 
-	// 0. Auto-create ServiceAccount if configured. The name is resolved per CR (per-CR func
-	// wins over the static name; empty means SA management is disabled) so that two clusters
-	// of the same product in one namespace each own their own SA.
-	if saName := r.resolveServiceAccountName(cr); saName != "" {
-		if err := r.ensureServiceAccount(ctx, cr, saName); err != nil {
-			return ctrl.Result{}, NewReconcileError("ServiceAccount", "failed to ensure service account", err)
-		}
+	// 0. The workload's identity. EVERY cluster gets one, with no way to turn it off, which is
+	// what makes docs/security.md's claim true for every product rather than only the ones that
+	// opted in: "audit logs reflect the specific application identity rather than a generic
+	// default account". A ServiceAccount is pure metadata, so the cost of always having one does
+	// not buy a switch whose main effect was clusters running as `default` by accident.
+	//
+	// The name is derived from the CR (kind + name), so there is nothing to configure here and
+	// nothing for two clusters in one namespace to collide over.
+	saName := r.resolveServiceAccountName(cr)
+	if err := r.ensureServiceAccount(ctx, cr, saName); err != nil {
+		return ctrl.Result{}, NewReconcileError("ServiceAccount", "failed to ensure service account", err)
+	}
+
+	// 0b. The workload's PERMISSIONS, immediately after its IDENTITY and from the same derived
+	// name, so the two cannot drift apart. Both are per-CR, both are settled before any role is
+	// built, and the role group only consumes the result (the SA name reaches the pod template
+	// through RoleGroupBuildContext.ServiceAccountName, already bound to the Role).
+	if err := r.ensureWorkloadRBAC(ctx, cr, saName); err != nil {
+		return ctrl.Result{}, NewReconcileError("WorkloadRBAC", "failed to ensure workload RBAC", err)
 	}
 
 	// 1. Execute PreReconcile extensions
@@ -931,6 +969,47 @@ func RoleResourceName(clusterName, roleName string) string {
 	return fmt.Sprintf("%s-%s", clusterName, roleName)
 }
 
+// maxServiceAccountNameLen bounds ServiceAccountResourceName. A ServiceAccount name is validated
+// as a DNS subdomain, so 253 is the real limit; the CR name feeding it is itself capped at 253,
+// which is why truncation here only ever guards the pathological case.
+const maxServiceAccountNameLen = 253
+
+// ServiceAccountResourceName returns the canonical name of the ServiceAccount a cluster's workload
+// pods run as: "<lowercased kind>-<cluster>", e.g. "hdfscluster-prod".
+//
+// There is deliberately no config field for this name, for the same reason every other
+// framework-owned name is derived (AGENTS.md §3, "the framework owns the NAME of every fixed
+// slot"): the framework creates the object, controller-owns it, garbage-collects it with the CR
+// and binds WorkloadRBACRules to it, so nothing needs to address it by a name the product chose.
+// Letting the product choose is what produced the failure class this replaced — a static name is a
+// constant, so every CR of a product in one namespace resolved to the SAME ServiceAccount:
+// whichever cluster reconciled second failed with AlreadyOwnedError forever, and deleting the
+// first garbage-collected the SA out from under the second's running pods.
+//
+// The Kind is part of it because the CR name alone is not unique within a namespace: an
+// HdfsCluster and a TrinoCluster both named "prod" would otherwise derive the same ServiceAccount,
+// and whichever controller reconciled second could never take ownership of it — reintroducing that
+// same collision one level down.
+//
+// It is exported because it is a CONTRACT, not an implementation detail: anything outside the
+// operator that has to name this ServiceAccount — a hand-written RoleBinding, an admission policy,
+// an audit query — should derive it from the formula rather than read it out of the operator's
+// source.
+//
+// Like RoleGroupResourceName it is bounded with a deterministic hash suffix, but against a much
+// looser limit: a ServiceAccount name is a DNS subdomain (253), not the 63-byte DNS label that
+// constrains a Service name.
+func ServiceAccountResourceName(kind, clusterName string) string {
+	name := strings.ToLower(kind) + "-" + clusterName
+	if len(name) <= maxServiceAccountNameLen {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	head := strings.TrimRight(name[:maxServiceAccountNameLen-len(suffix)-1], "-")
+	return head + "-" + suffix
+}
+
 // RoleGroupMarkerLabelKey returns the label key that marks a resource as belonging to one specific
 // role group: "<cluster>-<group>", or a bounded substitute when that is not a legal label key.
 //
@@ -1001,8 +1080,8 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 		MergedConfig:     mergedConfig,
 		ResourceName:     resourceName,
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
-		// the SA the reconciler creates. Resolved per CR (per-CR func over static name), and
-		// empty when no SA is configured (backward compatible).
+		// the SA the reconciler creates. Derived from the CR (kind + name), never configured and
+		// never empty — this is the consumption half of the identity settled at step 0.
 		ServiceAccountName: r.resolveServiceAccountName(cr),
 	}, nil
 }
@@ -1690,6 +1769,15 @@ func (r *GenericReconciler[CR]) ControllerBuilder(mgr ctrl.Manager, opts SetupWi
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&corev1.ServiceAccount{})
 
+	// The RBAC watches are registered ONLY when the product declares workload rules. An
+	// unconditional Owns() would force every operator built on this SDK to grant itself cluster-wide
+	// list;watch on roles and rolebindings — and a forbidden informer fails WaitForCacheSync for ALL
+	// sources, so manager.Start returns and the process exits. Charging that to operators that never
+	// use the feature is a cost that has to stay at zero.
+	if r.workloadRBACRules != nil {
+		b = b.Owns(&rbacv1.Role{}).Owns(&rbacv1.RoleBinding{})
+	}
+
 	for _, obj := range opts.ExtraOwns {
 		if obj == nil {
 			continue
@@ -1705,26 +1793,26 @@ func (r *GenericReconciler[CR]) ControllerBuilder(mgr ctrl.Manager, opts SetupWi
 	return b
 }
 
-// resolveServiceAccountName resolves the ServiceAccount name for a CR.
-// Precedence: ServiceAccountNameFunc (when set and returning non-empty) > static
-// ServiceAccountName > "" (SA management skipped). Per-CR naming is what keeps two clusters
-// of the same product in one namespace from fighting over a single shared SA.
+// resolveServiceAccountName returns the name of the ServiceAccount this cluster's workload runs
+// as. It is DERIVED from the CR — never configured, never empty — so the identity a role group
+// consumes and the object step 0 ensured are the same string by construction rather than by two
+// call sites agreeing.
+//
+// The Kind comes from the scheme (resolveKind), which resolves it from the Go type, so it is
+// stable across a fetched CR and a prototype even though the typed client strips TypeMeta.
 func (r *GenericReconciler[CR]) resolveServiceAccountName(cr CR) string {
-	if r.serviceAccountNameFunc != nil {
-		if name := r.serviceAccountNameFunc(cr); name != "" {
-			return name
-		}
-	}
-	return r.serviceAccountName
+	return ServiceAccountResourceName(r.resourceKind(cr), cr.GetName())
 }
 
 // ensureServiceAccount creates or updates the ServiceAccount for the cluster workload and sets
 // the CR as its controller owner.
 //
 // Guard rail: if an SA with this name already exists but is controlled by a DIFFERENT owner,
-// SetControllerReference refuses to steal it; that raw AlreadyOwnedError is wrapped in an
-// explicit error naming both owners, because it almost always means two CRs were configured to
-// share one static ServiceAccountName — the fix is per-CR naming via ServiceAccountNameFunc.
+// SetControllerReference refuses to steal it and the raw AlreadyOwnedError is wrapped in an error
+// naming both owners. With a derived name this no longer means "two clusters were configured onto
+// one SA" — that is now unrepresentable — so it means something ELSE occupies the derived name,
+// which the framework must not adopt: adopting it would hand these pods whatever identity that
+// object already carries.
 func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR, name string) error {
 	sa := &corev1.ServiceAccount{}
 	sa.Name = name
@@ -1747,13 +1835,15 @@ func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR,
 		labels[constant.LabelKubernetesInstance] = cr.GetName()
 		labels[constant.LabelKubernetesManagedBy] = managedByValue
 		sa.Labels = labels
+
 		if err := controllerutil.SetControllerReference(cr, sa, r.scheme); err != nil {
 			var alreadyOwned *controllerutil.AlreadyOwnedError
 			if stderrors.As(err, &alreadyOwned) {
 				return fmt.Errorf(
-					"ServiceAccount %s/%s is already controlled by %s %q and cannot be adopted by %s %q: "+
-						"multiple clusters appear to share one ServiceAccount name; "+
-						"use per-CR naming (GenericReconcilerConfig.ServiceAccountNameFunc, e.g. \"<product>-<cluster>\"): %w",
+					"ServiceAccount %s/%s is already controlled by %s %q and cannot be adopted by %s %q. "+
+						"This name is derived from the CR (kind + name), so it is not a naming collision "+
+						"between two clusters: something else occupies it. Delete that object, or rename "+
+						"the cluster: %w",
 					sa.Namespace, sa.Name,
 					alreadyOwned.Owner.Kind, alreadyOwned.Owner.Name,
 					r.resourceKind(cr), cr.GetName(),
@@ -1764,5 +1854,30 @@ func (r *GenericReconciler[CR]) ensureServiceAccount(ctx context.Context, cr CR,
 		}
 		return nil
 	})
-	return err
+	// Route the API error through the same translation applyResource uses. A 429 here is the API
+	// server asking for a pause, not a broken cluster, and this step is now on EVERY cluster's
+	// critical path — returning the raw error would run the product's error hooks and flip Degraded
+	// on a cluster nobody was able to read yet. While the SA was opt-in this branch was reachable
+	// only by the products that configured one, which is why the gap survived.
+	return r.apiError(err)
+}
+
+// ensureWorkloadRBAC maintains the workload's namespaced Role and RoleBinding from the rules the
+// product declared, bound to the ServiceAccount name this cycle already derived and ensured.
+//
+// A nil WorkloadRBACRules hook means the product never opted in, and does NOT reach
+// EnsureWorkloadRBAC: an empty rule set there means REVOKE, and running a revoke every reconcile
+// for every operator that has no workload RBAC would issue two pointless Gets per cluster per pass
+// and, worse, require the RBAC read permission from operators that never asked for the feature.
+// A hook that is set and RETURNS empty is a different statement — that is the product revoking —
+// and does go through.
+func (r *GenericReconciler[CR]) ensureWorkloadRBAC(ctx context.Context, cr CR, serviceAccountName string) error {
+	if r.workloadRBACRules == nil {
+		return nil
+	}
+	if err := EnsureWorkloadRBAC(ctx, r.client, r.scheme, cr, serviceAccountName, r.workloadRBACRules(cr)); err != nil {
+		// Same reasoning as ensureServiceAccount: a 429 is a request to back off, not a fault.
+		return r.apiError(err)
+	}
+	return nil
 }

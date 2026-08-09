@@ -20,10 +20,11 @@ Every non-test file in this package:
 | `pod_override_merge.go` | The pod template strategic merge patch and `clearSupersededUnions`, which resolves the collisions the patch format cannot express |
 | `copy.go` | `cloneSlice` / `clonePtr` — the internal deep-copy helpers the builders use so `Build()` never hands out builder-owned slices or pointers |
 
-Nothing in this package writes to the API server. The RBAC builders in particular are helpers only:
-`GenericReconciler` creates no Role/RoleBinding, so a product that needs workload RBAC builds the
-objects here and ships them through `reconciler.RoleGroupResources.ExtraResources` (or its own
-extension).
+Nothing in this package writes to the API server. The RBAC builders are helpers for objects the
+framework does **not** maintain: a cluster's workload Role and RoleBinding are now owned by
+`GenericReconcilerConfig.WorkloadRBACRules` / `reconciler.EnsureWorkloadRBAC` (root `AGENTS.md`
+§11c), so reach for these builders only for RBAC outside that contract — and ship those objects
+through `reconciler.RoleGroupResources.ExtraResources` or a cluster extension.
 
 ## Builder Semantics
 

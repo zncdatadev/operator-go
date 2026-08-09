@@ -8,6 +8,75 @@ builders, config/logging rendering and the CSI wiring, followed by three API red
 the contracts a product operator implements. **Downstream operators must migrate — the breaking
 changes are listed below.**
 
+### BREAKING (workload ServiceAccount)
+
+- **The workload ServiceAccount's name is now DERIVED from the CR, and the two config fields that
+  chose it are removed.** `GenericReconcilerConfig.ServiceAccountName` and
+  `ServiceAccountNameFunc` are gone; the name is
+  `reconciler.ServiceAccountResourceName(kind, cluster)` = `"<lowercased kind>-<cluster>"`
+  (`hdfscluster-prod`), exported because IAM trust policies and hand-written RoleBindings have to
+  name it. **Migration**: delete both fields from your `GenericReconcilerConfig`. If your operator
+  set them, its pods move to the derived ServiceAccount on the next reconcile — a rolling restart —
+  and the old SA is left behind for you to delete (it is controller-owned by the CR, so it also goes
+  on cluster deletion).
+
+  This follows the framework's own rule that it owns the name of every slot it owns the lifecycle of
+  (§3): it creates the SA, controller-owns it and GCs it with the CR, so nothing needed to address
+  it by a product-chosen name. Making it derived also makes a whole failure class unrepresentable
+  rather than merely diagnosed — a static name was a *constant*, so every CR of a product in one
+  namespace resolved to the SAME ServiceAccount: whichever cluster reconciled second failed with
+  `AlreadyOwnedError` forever, and deleting the first garbage-collected the SA out from under the
+  second's running pods. The Kind is in the derived name because a CR name alone is not unique in a
+  namespace — an `HdfsCluster` and a `TrinoCluster` both named `prod` would otherwise reintroduce the
+  same collision one level down.
+- **Every cluster now gets a ServiceAccount; there is no way to skip it.** Previously, leaving both
+  fields unset skipped SA management entirely and the pods ran as the namespace `default` — the
+  opposite of what `docs/security.md` §3.1 claims the framework guarantees ("audit logs reflect the
+  specific application identity rather than a generic default account"). A ServiceAccount is pure
+  metadata, so the switch bought nothing and mostly fired by accident.
+- **A 429 from the ServiceAccount step now backs off instead of degrading the cluster.**
+  `ensureServiceAccount` returned the raw API error rather than routing it through the same
+  translation `applyResource` uses, so throttling ran the product's error hooks, emitted a Warning
+  and flipped `Degraded` on a cluster nobody had managed to read yet. While the SA was opt-in this
+  branch was reachable only by the products that configured one; it is now on every cluster's
+  critical path.
+
+### features (workload RBAC)
+
+- **`GenericReconcilerConfig.WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule`** declares the
+  Kubernetes API permissions a cluster's **pods** need — a separate axis from the operator's own
+  ClusterRole. The framework maintains a namespaced `Role` and `RoleBinding` named after the derived
+  workload ServiceAccount, in the CR's namespace, controller-owned by the CR (so both are
+  garbage-collected with the cluster). It is the other half of the identity above, settled at the
+  same point in the same way, from the same derived name — which is what keeps a workload's identity
+  and its permissions from drifting apart. Products previously hand-built these objects and shipped
+  them through `RoleGroupResources.ExtraResources`, which put a cluster-level concern on a
+  per-role-group path and left the SA-name/subject correspondence to the product to get right.
+- **`reconciler.EnsureWorkloadRBAC`** is the exported helper behind it (options:
+  `WithWorkloadRBACProductName`, `WithWorkloadRBACExtraLabels`), for a product driving the
+  reconciler's pieces itself. Prefer the config field: the helper takes the ServiceAccount name as a
+  parameter, so a caller can pass one that is not the workload's — producing a Role that grants to a
+  ServiceAccount no pod uses, with both objects present, the pods starting fine, and a 403 on the
+  first API call.
+- **An empty rule set revokes**, deleting both objects when this CR controller-owns them — the same
+  reading every optional slot gets, and the only one under which a rule set shrinking to nothing
+  actually stops granting. A **nil hook** is the distinct statement "this product never opted in" and
+  touches no RBAC object at all.
+- **A pre-existing `RoleBinding` with a different `roleRef` is never adopted.** `roleRef` is
+  immutable, so it cannot be converged; the framework fails with a `*ValidationError` naming both
+  refs and the fixing command, rather than rewriting only the subject — which would hand this
+  cluster's pods whatever the old ref allows, and return success.
+- **No `ClusterRole` path, deliberately**: a namespaced CR cannot controller-own a cluster-scoped
+  object, so the framework would have no lifecycle for one.
+- **The RBAC watches are registered only when the hook is set.** An unconditional
+  `Owns(&rbacv1.Role{})` would force every operator built on this SDK to grant itself cluster-wide
+  `list;watch` on roles and rolebindings, and a forbidden informer fails `WaitForCacheSync` for *all*
+  sources — `manager.Start` returns and the process exits.
+- Setting the hook requires the operator to hold those permissions itself (Kubernetes forbids
+  granting what the granter lacks) **plus** write access to the RBAC API. A 403 from either cause is
+  re-explained rather than pre-checked: the API server's message has already computed rule covering
+  against the operator's real effective permissions and names the missing rule.
+
 ### fixes (role group slot identity)
 
 - **A `RoleGroupResources` slot under a name the framework does not own is now a build failure**
