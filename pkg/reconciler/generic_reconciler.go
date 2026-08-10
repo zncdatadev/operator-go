@@ -43,6 +43,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -567,14 +568,26 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 		return ctrl.Result{}, NewReconcileError("WorkloadRBAC", "failed to ensure workload RBAC", err)
 	}
 
-	// 1. Execute PreReconcile extensions
+	// 1. Execute PreReconcile extensions.
+	//
+	// A wait does NOT return here. The pass continues so cleanup and health still run, which is what
+	// keeps Degraded and Available current; the wait itself is reported at step 8.
+	var waitFor *waitState
 	if err := r.extensionRegistry.ExecuteClusterPreReconcile(ctx, r.client, cr); err != nil {
-		return ctrl.Result{}, NewReconcileError("PreReconcile", "extension hook failed", err)
+		waiting, after := common.WaitingErrors(err)
+		if !waiting {
+			return ctrl.Result{}, NewReconcileError("PreReconcile", "extension hook failed", err)
+		}
+		waitFor = mergeWait(waitFor, newWaitState(after, err))
 	}
 
 	// 2. Validate dependencies declared by the product (no-op when the hook is unset)
 	if err := r.validateDependencies(ctx, cr); err != nil {
-		return ctrl.Result{}, NewReconcileError("DependencyValidation", "dependency validation failed", err)
+		waiting, after := common.WaitingErrors(err)
+		if !waiting {
+			return ctrl.Result{}, NewReconcileError("DependencyValidation", "dependency validation failed", err)
+		}
+		waitFor = mergeWait(waitFor, newWaitState(after, err))
 	}
 
 	// 3. Process each role, BEST EFFORT: a role that fails does not stop the others, and does not
@@ -640,11 +653,50 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// caller sets Degraded and writes the status once, and the workqueue backs off. The status
 	// write is left to that path so a failing cycle does not write twice.
 	if len(roleErrs) > 0 {
-		return ctrl.Result{}, stderrors.Join(roleErrs...)
+		joined := stderrors.Join(roleErrs...)
+		// A genuine failure anywhere outranks a wait: Degraded has to be set and the workqueue has
+		// to back off, and the joined message carries the waiting role's own text alongside the
+		// failure so nothing is hidden. Only an aggregate that is waits ALL THE WAY DOWN is a wait.
+		waiting, after := common.WaitingErrors(joined)
+		if !waiting {
+			return ctrl.Result{}, joined
+		}
+		waitFor = mergeWait(waitFor, newWaitState(after, joined))
 	}
 
-	// 8. Final status update
-	status.SetReconcileComplete(true, v1alpha1.ReasonReconcileComplete, "Reconciliation completed successfully")
+	// 8. Final status update.
+	//
+	// A wait is reported HERE, after cleanup, health and PostReconcile have all run, rather than by
+	// returning early where it was raised. That position is the whole design: SetDegraded(false) has
+	// exactly one writer, HealthManager.Check, so an early return leaves Degraded LATCHED at whatever
+	// the last completed pass wrote — a cluster whose pods recovered while an extension waits would
+	// keep paging with a message naming a pod that no longer exists, and observedGeneration would
+	// match, so no staleness heuristic catches it. The framework already diagnosed exactly this on
+	// the reconciliationPaused gate and fixed it the same way: observe, then return.
+	if waitFor != nil {
+		status.SetCondition(metav1.Condition{
+			Type:    string(ConditionWaiting),
+			Status:  metav1.ConditionTrue,
+			Reason:  waitFor.Reason,
+			Message: waitFor.Message,
+		})
+		// ReconcileComplete is falsified because it is the documented generation gate: leaving it
+		// True next to the bumped observedGeneration reports a user's edit as applied while the
+		// framework is still waiting to apply it.
+		status.SetReconcileComplete(false, ReasonWaiting, waitFor.Message)
+	} else {
+		// Cleared only when this framework raised it, so a product that never waits gets no noise —
+		// the rule ConditionOrphanCleanupPending already follows.
+		if status.GetCondition(ConditionWaiting) != nil {
+			status.SetCondition(metav1.Condition{
+				Type:    string(ConditionWaiting),
+				Status:  metav1.ConditionFalse,
+				Reason:  ReasonWaitSatisfied,
+				Message: "Nothing is waiting",
+			})
+		}
+		status.SetReconcileComplete(true, v1alpha1.ReasonReconcileComplete, "Reconciliation completed successfully")
+	}
 
 	if err := r.updateStatus(ctx, cr, stored); err != nil {
 		return ctrl.Result{}, err
@@ -655,6 +707,11 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// gray-delete grace period running out — needs a timed requeue. Both sources collapse into
 	// a single RequeueAfter (the earliest one); zero means "no periodic wakeup".
 	requeueAfter := earliestRequeue(r.healthCheckInterval, cleanupRequeue)
+	if waitFor != nil {
+		requeueAfter = earliestRequeue(requeueAfter, waitFor.After)
+		logger.Info("Reconciliation is waiting", "reason", waitFor.Reason, "requeueAfter", waitFor.After)
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
 
 	logger.Info("Reconciliation completed successfully")
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
