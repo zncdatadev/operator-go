@@ -281,6 +281,25 @@ type RoleGroupBuildContext struct {
 	// StatefulSet is built, so set Image above instead.
 	MainContainerCustomizer func(*corev1.Container) error
 
+	// ConfigDefaults supplies the product's defaults for THIS role group's config block, folded
+	// beneath the CR's role and role group levels. It outranks the handler's own
+	// SetRoleConfigDefaults, and exists because some defaults cannot live on the handler at all:
+	// DefaultAntiAffinity's selector names the cluster, and the handler is shared by every cluster
+	// the operator serves (§4).
+	//
+	// Set it in BuildResources before delegating to BaseRoleGroupHandler:
+	//
+	//	aff, err := reconciler.EncodeAffinity(reconciler.DefaultAntiAffinity(
+	//	    buildCtx.ClusterName, buildCtx.RoleName, reconciler.TopologyKeyHostname, 70))
+	//	if err != nil { return nil, err }
+	//	buildCtx.ConfigDefaults = &commonsv1alpha1.RoleGroupConfigSpec{Affinity: aff}
+	//
+	// Logging must be nil here: the framework merges logging at the reconciler level, from the CR's
+	// two levels only, and has already decided Vector enablement and rendered the config file by the
+	// time this is read. A default that set it would apply to neither, so it is rejected rather than
+	// half-honoured.
+	ConfigDefaults *v1alpha1.RoleGroupConfigSpec
+
 	// VectorAggregatorAddress is the resolved Vector aggregator discovery address, populated by
 	// GenericReconciler when the Vector agent is enabled and the CR implements
 	// VectorAggregatorProvider (the reconciler reads its ConfigMap name and resolves the address

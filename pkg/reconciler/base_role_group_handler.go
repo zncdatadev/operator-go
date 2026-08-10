@@ -144,6 +144,19 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// backward compatibility (no data PVC unless a product opts in).
 	StorageMountPath string
 
+	// RoleStorageMountPaths maps role names to a role-specific data PVC mount path, overriding
+	// StorageMountPath for that role. Symmetric with RoleContainerPorts and its siblings, and the
+	// one per-role override the handler was missing: a product either gave a data PVC to every
+	// StatefulSet role or to none.
+	//
+	// An entry set to "" means "no data PVC for this role", which is distinct from having no entry
+	// (inherit StorageMountPath). Set it through SetRoleStorageMountPath.
+	RoleStorageMountPaths map[string]string
+
+	// RoleConfigDefaults maps role names to the product's own defaults for the role group config
+	// block. See SetRoleConfigDefaults.
+	RoleConfigDefaults map[string]*v1alpha1.RoleGroupConfigSpec
+
 	// ConfigMountPath is where the generated config ConfigMap is mounted in the primary
 	// container. Products whose application reads config from a specific directory (e.g.
 	// "/etc/trino") set this. Defaults to the kubedoop-canonical config mount path
@@ -260,6 +273,8 @@ func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *r
 		RoleServicePorts:      make(map[string][]corev1.ServicePort),
 		RoleMainContainerName: make(map[string]string),
 		RoleLoggingContainers: make(map[string][]productlogging.ContainerLogging),
+		RoleStorageMountPaths: make(map[string]string),
+		RoleConfigDefaults:    make(map[string]*v1alpha1.RoleGroupConfigSpec),
 		Scheme:                scheme,
 	}
 }
@@ -456,6 +471,49 @@ func (h *BaseRoleGroupHandler[CR]) mainContainerNameFor(roleName string) string 
 	return h.MainContainerName
 }
 
+// SetRoleStorageMountPath sets the data PVC mount path for a specific role, overriding
+// StorageMountPath for that role. Symmetric with SetRoleContainerPorts.
+//
+// Pass "" to say this role has NO data PVC even though the handler-global default is set — the
+// case this exists for, since a product with a stateful and a stateless role could otherwise only
+// choose between "every role" and "no role".
+func (h *BaseRoleGroupHandler[CR]) SetRoleStorageMountPath(roleName, path string) {
+	if h.RoleStorageMountPaths == nil {
+		h.RoleStorageMountPaths = make(map[string]string)
+	}
+	h.RoleStorageMountPaths[roleName] = path
+}
+
+// SetRoleConfigDefaults declares the product's own defaults for a role's config block — the
+// `resources`, `affinity`, `gracefulShutdownTimeout` and `logging` a role should have when the CR
+// says nothing.
+//
+// The value is folded BENEATH the role and role group config, through the same
+// MergeRoleGroupConfig the CR's own two levels use, so it inherits their rules exactly rather than
+// inventing a second "fill the nil fields" semantic:
+//
+//   - `resources` folds per LEAF, so a product default for cpu.min survives a user who set only
+//     cpu.max — a struct-level nil check would have dropped it;
+//   - `affinity` is REPLACED wholesale, so `affinity: {}` in the CR still clears the default rather
+//     than inheriting it, which is how a single-node development group opts out;
+//   - anything the user states anywhere wins, at every level.
+//
+// Build the affinity with DefaultAntiAffinity and EncodeAffinity rather than a JSON literal:
+//
+//	aff, err := reconciler.EncodeAffinity(
+//	    reconciler.DefaultAntiAffinity(clusterName, "worker", reconciler.TopologyKeyHostname, 70))
+//
+// Note what that example implies: the anti-affinity selector names the CLUSTER, so a default that
+// includes one is per-cluster data and cannot live on the handler, which is shared by every cluster
+// the operator serves (§4). Supply it through RoleGroupBuildContext.ConfigDefaults instead; this
+// setter is for the reconcile-invariant part.
+func (h *BaseRoleGroupHandler[CR]) SetRoleConfigDefaults(roleName string, defaults *v1alpha1.RoleGroupConfigSpec) {
+	if h.RoleConfigDefaults == nil {
+		h.RoleConfigDefaults = make(map[string]*v1alpha1.RoleGroupConfigSpec)
+	}
+	h.RoleConfigDefaults[roleName] = defaults
+}
+
 // SetRoleLoggingContainers sets the logging-producer list for a specific role, overriding the
 // global LoggingContainers for that role. Symmetric with SetRoleContainerPorts.
 func (h *BaseRoleGroupHandler[CR]) SetRoleLoggingContainers(roleName string, containers []productlogging.ContainerLogging) {
@@ -529,6 +587,57 @@ func (h *BaseRoleGroupHandler[CR]) containerImage(
 		return image, h.pullPolicy(buildCtx), nil
 	}
 	return h.Image, h.pullPolicy(buildCtx), nil
+}
+
+// mergedRoleGroupConfig folds the product's own defaults BENEATH the CR's role and role group
+// levels, through the same MergeRoleGroupConfig those two use — so `resources` folds per leaf (a
+// default cpu.min survives a user who set only cpu.max), `affinity` is replaced wholesale
+// (`affinity: {}` still clears the default rather than inheriting it), and anything the user states
+// anywhere still wins. Reusing the merge is the point: a "fill the nil fields" pass would discard a
+// product's sibling leaves and make an empty affinity inherit rather than clear.
+//
+// It runs here rather than in the reconciler because the per-call channel has to outrank the
+// handler's map: an anti-affinity selector names the cluster, and one handler serves them all.
+func (h *BaseRoleGroupHandler[CR]) mergedRoleGroupConfig(
+	buildCtx *RoleGroupBuildContext,
+) (*v1alpha1.RoleGroupConfigSpec, error) {
+	defaults := h.configDefaults(buildCtx)
+	if defaults != nil && defaults.Logging != nil {
+		return nil, NewValidationError("RoleGroupBuildContext.ConfigDefaults", buildCtx.RoleName, buildCtx.RoleGroupName,
+			fmt.Errorf("config defaults may not set logging: the framework merges logging at the "+
+				"reconciler level from the CR's role and role group only, and has already decided Vector "+
+				"enablement and rendered the logging config file by the time defaults are read — a "+
+				"default here would apply to neither. Put product logging defaults in the CR's own "+
+				"defaulting webhook instead"))
+	}
+	return MergeRoleGroupConfig(defaults, buildCtx.RoleGroupSpec.GetConfig()), nil
+}
+
+// configDefaults resolves the product's role-config defaults: the per-call value when the product
+// set one (it depends on WHICH cluster is being built), the handler's per-role map otherwise.
+func (h *BaseRoleGroupHandler[CR]) configDefaults(buildCtx *RoleGroupBuildContext) *v1alpha1.RoleGroupConfigSpec {
+	if buildCtx == nil {
+		return nil
+	}
+	if buildCtx.ConfigDefaults != nil {
+		return buildCtx.ConfigDefaults
+	}
+	return h.RoleConfigDefaults[buildCtx.RoleName]
+}
+
+// storageMountPath resolves the data PVC mount path for a role: the per-role value when the product
+// set one, the handler's global default otherwise. Empty means this role gets no data PVC.
+//
+// A role SET to "" is not the same as a role with no entry: it means "no data PVC for this role even
+// though the global default is set", which is the case that made this per-role at all. DolphinScheduler
+// needs the volume on `worker` and must not have it on `master`, and with only a handler-global field
+// the migration had to choose "none" — deleting the `worker-data` volumeClaimTemplate that Gen 2
+// rendered, since Gen 2 already modelled storage per role.
+func (h *BaseRoleGroupHandler[CR]) storageMountPath(roleName string) string {
+	if path, ok := h.RoleStorageMountPaths[roleName]; ok {
+		return path
+	}
+	return h.StorageMountPath
 }
 
 // pullSecretName resolves the cluster's image pull secret from spec.image folded over
@@ -936,15 +1045,18 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// StatefulSet. All of these land on the builder BEFORE pod overrides take effect: the
 	// builder applies PodOverrides last in Build(), so a user-supplied pod override (e.g. an
 	// affinity in podOverrides) always keeps precedence over the config-declared value.
-	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
+	roleGroupConfig, err := h.mergedRoleGroupConfig(buildCtx)
+	if err != nil {
+		return nil, err
+	}
 	if roleGroupConfig != nil {
 		if roleGroupConfig.Resources != nil {
 			stsBuilder.WithResources(roleGroupConfig.Resources)
 			// Opt-in data PVC: when a product sets StorageMountPath, build a VolumeClaimTemplate
 			// from the configured storage and mount it, so the volume/mount contract is enforced
 			// by the builder instead of being hand-assembled by each product.
-			if h.StorageMountPath != "" && roleGroupConfig.Resources.Storage != nil {
-				stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, h.StorageMountPath)
+			if mountPath := h.storageMountPath(buildCtx.RoleName); mountPath != "" && roleGroupConfig.Resources.Storage != nil {
+				stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, mountPath)
 			}
 		}
 
@@ -1227,6 +1339,12 @@ func (h *BaseRoleGroupHandler[CR]) ConfiguredRoleNames() []string {
 		names[name] = struct{}{}
 	}
 	for name := range h.RoleLoggingContainers {
+		names[name] = struct{}{}
+	}
+	for name := range h.RoleStorageMountPaths {
+		names[name] = struct{}{}
+	}
+	for name := range h.RoleConfigDefaults {
 		names[name] = struct{}{}
 	}
 	return slices.Sorted(maps.Keys(names))

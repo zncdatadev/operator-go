@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -68,4 +70,68 @@ func DecodeAffinity(raw *k8sruntime.RawExtension) (*corev1.Affinity, error) {
 		return nil, err
 	}
 	return affinity, nil
+}
+
+// EncodeAffinity is the inverse of DecodeAffinity: it renders an affinity into the schema-free
+// RawExtension the CRD field holds, so a product can supply one as a role config default
+// (BaseRoleGroupHandler.SetRoleConfigDefaults) using the typed Kubernetes API rather than a JSON
+// literal. A nil affinity encodes to nil, which the merge reads as "no opinion".
+//
+// Three Gen 3 migrations wrote this by hand, each with its own comment explaining that the marshal
+// cannot realistically fail. It can, in exactly one way — a value the Kubernetes API itself cannot
+// serialize — so the error is returned rather than dropped, and the caller decides.
+func EncodeAffinity(affinity *corev1.Affinity) (*k8sruntime.RawExtension, error) {
+	if affinity == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(affinity)
+	if err != nil {
+		return nil, fmt.Errorf("encoding affinity: %w", err)
+	}
+	return &k8sruntime.RawExtension{Raw: raw}, nil
+}
+
+// TopologyKeyHostname spreads across nodes. It is the topology key every one of these products
+// wants by default, and is named here so a product does not re-type the string.
+const TopologyKeyHostname = "kubernetes.io/hostname"
+
+// DefaultAntiAffinity builds the preferred pod anti-affinity that spreads one ROLE's pods across a
+// topology domain — the rule every product in this family wants and each has hand-written.
+//
+// The label selector is the framework's own role identity (`app.kubernetes.io/instance` +
+// `app.kubernetes.io/component`), which is the part worth centralising: those keys are framework-
+// owned and stamped by BaseRoleGroupHandler, and a downstream operator that re-types them as string
+// literals gets a selector matching nothing the moment the framework changes them — a silent
+// scheduling failure, since a preferred term that matches no pod is not an error.
+//
+// It selects on the ROLE, not the role group: two groups of the same role are the same failure
+// domain problem (three of five ZooKeeper servers on one node is an outage whether or not they share
+// a group), and the role group's own marker key is not unique across roles anyway (see
+// RoleGroupMarkerLabelKey).
+//
+// `weight` and `topologyKey` are parameters with no defaults on purpose. The three operators that
+// wrote this already disagree on the weight (20 and 70 both appear), so a helper that fixed it would
+// change their rendered pods; and the topology key is a cluster-topology decision — spreading across
+// zones is a different guarantee from spreading across nodes.
+//
+// PREFERRED rather than required, because required turns a too-small cluster into pods that never
+// schedule at all: with three nodes and five replicas, two stay Pending forever with no way to
+// express "spread as far as you can". A product that genuinely requires the spread builds its own.
+func DefaultAntiAffinity(clusterName, roleName, topologyKey string, weight int32) *corev1.Affinity {
+	return &corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+				Weight: weight,
+				PodAffinityTerm: corev1.PodAffinityTerm{
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							constant.LabelKubernetesInstance:  clusterName,
+							constant.LabelKubernetesComponent: roleName,
+						},
+					},
+					TopologyKey: topologyKey,
+				},
+			}},
+		},
+	}
 }
