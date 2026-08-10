@@ -2386,6 +2386,84 @@ var _ = Describe("Container image resolution", func() {
 			To(Equal("quay.io/zncdatadev/trino:476-kubedoop0.2.0"))
 	})
 
+	It("puts spec.image.pullSecretName on the pod", func() {
+		// Ten product CRDs declare this field. Before it existed here, migrating to the commons
+		// ImageSpec silently deleted the behaviour: the CRD still accepted the value, no pod
+		// carried an imagePullSecrets entry, and a private-registry install failed with
+		// ImagePullBackOff and nothing pointing at the cause.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.ImageDefaults = v1alpha1.ImageSpec{
+			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "0.2.0",
+		}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{PullSecretName: "registry-creds"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
+			[]corev1.LocalObjectReference{{Name: "registry-creds"}}))
+	})
+
+	It("carries the pull secret on the custom-image path too", func() {
+		// A pull secret is a property of WHERE the image lives, not of how its reference was
+		// assembled — so folding it into ResolveImage would have dropped it for `custom`, which is
+		// exactly how a user points at their own registry.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{Custom: "private.example.com/trino:476", PullSecretName: "creds"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
+			To(Equal("private.example.com/trino:476"))
+		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
+			[]corev1.LocalObjectReference{{Name: "creds"}}))
+	})
+
+	It("carries the pull secret when the handler resolves its own images", func() {
+		// ProductName empty is the shape hive and zookeeper use. The framework assembles no
+		// reference at all there, and the deployment still needs its registry credential.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("private.example.com/hive:1", testScheme)
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
+			newBuildCtx(&v1alpha1.ImageSpec{PullSecretName: "creds"}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
+			[]corev1.LocalObjectReference{{Name: "creds"}}))
+	})
+
+	It("falls back to ImageDefaults for the pull secret, and to nothing when neither states one", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ImageDefaults = v1alpha1.ImageSpec{PullSecretName: "operator-wide-creds"}
+
+		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
+			[]corev1.LocalObjectReference{{Name: "operator-wide-creds"}}))
+
+		// The common case: no credential anywhere leaves the field unset rather than writing an
+		// entry naming nothing.
+		plain := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		resources, err = plain.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(BeNil())
+	})
+
+	It("fails the role group when the resolved tag cannot be an image tag", func() {
+		// The dev-build case from #604: ImageDefaults.KubedoopVersion = version.BuildVersion, whose
+		// scaffold default is "N/A". Before this, the handler produced
+		// "quay.io/zncdatadev/trino:476-kubedoopN/A" and reported success.
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
+		handler.ProductName = "trino"
+		handler.ImageDefaults = v1alpha1.ImageSpec{
+			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "N/A",
+		}
+
+		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
+		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring("kubedoopVersion")))
+	})
+
 	It("keeps a ProductName-less handler on its static image, and never errors", func() {
 		// The shape hive and zookeeper use today: they resolve images themselves and leave
 		// ProductName empty. Their CRs DO carry a webhook-filled spec.image, so treating an

@@ -193,6 +193,23 @@ var _ = Describe("StatefulSetBuilder", func() {
 		})
 	})
 
+	Describe("WithImagePullSecretName", func() {
+		It("puts the named Secret on the pod's imagePullSecrets", func() {
+			sts := stsBuilder.WithImagePullSecretName("registry-creds").Build()
+
+			Expect(sts.Spec.Template.Spec.ImagePullSecrets).To(Equal(
+				[]corev1.LocalObjectReference{{Name: "registry-creds"}}))
+		})
+
+		It("leaves the field unset for an empty name", func() {
+			// Writing an entry with an empty reference would make the kubelet look one up and warn
+			// on every pod — and every cluster that needs no registry credential is this case.
+			sts := stsBuilder.WithImagePullSecretName("").Build()
+
+			Expect(sts.Spec.Template.Spec.ImagePullSecrets).To(BeNil())
+		})
+	})
+
 	Describe("WithAffinity", func() {
 		It("should set the affinity", func() {
 			affinity := &corev1.Affinity{

@@ -81,6 +81,10 @@ type StatefulSetBuilder struct {
 	// Service account
 	ServiceAccountName string
 
+	// ImagePullSecretName names a docker-registry Secret added to the pod's imagePullSecrets.
+	// Empty leaves the field unset, so a pod built without one is byte-identical to before.
+	ImagePullSecretName string
+
 	// Storage configuration
 	StorageConfig *StorageConfig
 
@@ -325,6 +329,17 @@ func (b *StatefulSetBuilder) AddInitContainer(container corev1.Container) *State
 // WithPorts.
 func (b *StatefulSetBuilder) WithInitContainers(containers []corev1.Container) *StatefulSetBuilder {
 	b.InitContainers = cloneSlice(containers)
+	return b
+}
+
+// WithImagePullSecretName sets the docker-registry Secret added to the pod's imagePullSecrets.
+// An empty name is a no-op, leaving the field unset.
+//
+// It is applied before podOverrides, so a user override still wins: strategic merge patch keys
+// imagePullSecrets by `name`, which means an override adds a second credential rather than
+// replacing this one.
+func (b *StatefulSetBuilder) WithImagePullSecretName(name string) *StatefulSetBuilder {
+	b.ImagePullSecretName = name
 	return b
 }
 
@@ -687,6 +702,12 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	// call WithEnableServiceLinks are unaffected (k8s applies its own default of true).
 	if b.EnableServiceLinks != nil {
 		spec.EnableServiceLinks = clonePtr(b.EnableServiceLinks)
+	}
+
+	// Same rule: an empty name leaves imagePullSecrets nil rather than writing an entry with an
+	// empty reference, which the kubelet would try to look up and log a warning for on every pod.
+	if b.ImagePullSecretName != "" {
+		spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: b.ImagePullSecretName}}
 	}
 
 	return spec

@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1_test
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -230,6 +232,56 @@ var _ = Describe("ResolveImage", func() {
 		Expect(image).To(BeEmpty())
 
 		Expect((&v1alpha1.ImageSpec{Custom: "pinned:1"}).ResolveImage("", defaults)).To(Equal("pinned:1"))
+	})
+
+	It("rejects a kubedoopVersion that cannot appear in an image tag", func() {
+		// The shipped failure: the documented wiring is ImageDefaults.KubedoopVersion =
+		// version.BuildVersion, and the scaffold's dev default for that variable is "N/A". The "/"
+		// makes the tag unparsable, so every pod of a development build was InvalidImageName while
+		// the reconcile reported success — the API server does not validate container.image at all,
+		// so nothing between here and the kubelet would have caught it.
+		broken := defaults
+		broken.KubedoopVersion = "N/A"
+		image, err := (&v1alpha1.ImageSpec{}).ResolveImage("hive", broken)
+		Expect(err).To(HaveOccurred())
+		Expect(image).To(BeEmpty(), "an unusable reference must never be returned")
+		Expect(err).To(MatchError(ContainSubstring("kubedoopVersion")))
+		Expect(err).To(MatchError(ContainSubstring("N/A")))
+		// The value is the operator's, not the CR's, so the message says where to look.
+		Expect(err).To(MatchError(ContainSubstring("build version")))
+	})
+
+	It("rejects a productVersion that cannot open an image tag", func() {
+		// A tag may not start with '.' or '-', though both are legal inside one. Naming the field
+		// matters: the two halves of the tag come from different places (a CR and the operator's
+		// own defaults), so "bad tag" alone would not say whose value to fix.
+		_, err := (&v1alpha1.ImageSpec{ProductVersion: ".4.1.0"}).ResolveImage("hive", defaults)
+		Expect(err).To(MatchError(ContainSubstring("productVersion")))
+		Expect(err).To(MatchError(ContainSubstring(".4.1.0")))
+	})
+
+	It("rejects an assembled tag longer than a tag may be", func() {
+		long := defaults
+		long.KubedoopVersion = strings.Repeat("v", 200)
+		_, err := (&v1alpha1.ImageSpec{}).ResolveImage("hive", long)
+		Expect(err).To(MatchError(ContainSubstring("128")))
+	})
+
+	It("leaves a custom reference alone", func() {
+		// custom is the user's verbatim reference, whole. The framework assembles nothing there, so
+		// it validates nothing: a wrong value is the user's own visible mistake, while a tag built
+		// from two layers is a mistake the CR may not even contain.
+		image, err := (&v1alpha1.ImageSpec{Custom: "my-registry/hive:N/A"}).ResolveImage("hive", defaults)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(image).To(Equal("my-registry/hive:N/A"))
+	})
+
+	It("accepts the tag characters real product versions use", func() {
+		// Control: '.', '-' and '_' are all legal inside a tag, and pre-release versions use them.
+		ok := defaults
+		ok.KubedoopVersion = "0.0.0-dev_1.2"
+		Expect((&v1alpha1.ImageSpec{ProductVersion: "4.1.0-rc.1"}).ResolveImage("hive", ok)).
+			To(Equal("quay.io/zncdatadev/hive:4.1.0-rc.1-kubedoop0.0.0-dev_1.2"))
 	})
 
 	It("keeps GetImage in step by delegating to it", func() {

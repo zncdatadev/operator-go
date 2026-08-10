@@ -167,6 +167,23 @@ convention, and three migrated operators consequently hand-rolled image resoluti
 silent fall back to the handler's static image: running a version nobody asked for is not a safe
 default for a stateful product (the same call as `config.affinity` above).
 
+The assembled **tag** is validated for the same reason, and it is the only place a check can happen:
+`productVersion` and `kubedoopVersion` both land in it, its grammar is
+`[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`, and the Kubernetes API server does not validate
+`container.image` at all — so a value that breaks the grammar is accepted, stored, and reported only
+by the kubelet, as `InvalidImageName` on a pod, while the reconcile returns success and the cluster's
+conditions stay green. The failure this closes is structural rather than hypothetical: the
+recommended wiring is `KubedoopVersion: version.BuildVersion`, and a build variable's unset value is
+whatever the scaffold chose — `"N/A"` in the current one, whose `/` makes the reference unparsable.
+`spec.image.custom` is exempt, because the framework assembles nothing there.
+
+**A registry credential is not part of image resolution.** `spec.image.pullSecretName` folds over
+`ImageDefaults.PullSecretName` per field like everything else, but is resolved by its own accessor
+and applied to the pod directly. Where the image *lives* is independent of how its reference was
+built, so the credential must survive the two paths that assemble no reference at all — `custom`, and
+a product resolving its own images with `ProductName` empty — which is precisely where a private
+registry is most likely to be in play.
+
 **The `ProductConfig` hook receives a `ctx` and a client, and may fail.** "Recomputed every reconcile, and may reflect the current state of the cluster" is only true if the hook can *read* the cluster; without those parameters it was a pure function of the CR, so the products that most needed a product-config layer — anything resolving an `S3Connection` reference or a ZooKeeper address — could not use it, and a failed lookup had nowhere to go but a swallowed error or a panic. Zero operators used the hook, which was the symptom rather than the disease.
 
 Products that already perform the lookup inside `BuildResources` use the imperative counterpart, `RoleGroupBuildContext.ApplyProductDefaults`, rather than repeating it: it folds an overrides layer **beneath** everything already merged, by the merge's own per-dimension rules. Two operators had hand-written that fold, identically, along with a second rule for environment variables that the framework can express directly because `MergedConfig.EnvVars` is a map rather than an ordered list.

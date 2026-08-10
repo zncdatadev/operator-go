@@ -713,6 +713,20 @@ spec:
                     - Never
                     - IfNotPresent
                     type: string
+                  pullSecretName:
+                    description: |-
+                      PullSecretName names a docker-registry Secret in the cluster CR's namespace, added to
+                      .spec.imagePullSecrets of every pod the framework builds for this cluster.
+
+                      It applies to whichever image path is taken, Custom included: a private registry is a
+                      property of where the image lives, not of how its reference was assembled. It is also
+                      deliberately NOT part of image resolution — a pull secret is still needed when the product
+                      resolves its own images and the framework never builds a reference at all.
+
+                      One name rather than a list, matching the field the ten product CRDs already declare. A
+                      deployment needing several credentials merges them into one Secret, or adds the rest through
+                      podOverrides, which is applied after this and therefore wins.
+                    type: string
                   repo:
                     description: |-
                       Repo is the image repository (e.g. "quay.io/kubedoop").
