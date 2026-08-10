@@ -4,6 +4,15 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-10b] (a Job could not survive the framework's own extras channel)
+
+### Package guides
+
+- Root `AGENTS.md` §3 documents the `batchv1.Job` apply rule and why it is typed rather than generic:
+  the API server generates `spec.selector` and injects UID-derived pod-template labels at creation,
+  so the generic wholesale-`spec` copy made the SECOND reconcile of an unchanged Job fail. Records
+  that create-once is the only semantics a Job has, and that re-running one means changing its name.
+
 ## [2026-08-10] (product config defaults reuse the CR's own merge)
 
 ### Core architecture

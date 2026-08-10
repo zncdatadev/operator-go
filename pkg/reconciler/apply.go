@@ -21,6 +21,7 @@ import (
 	"maps"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -98,6 +99,12 @@ func copyDesiredState(desired, live client.Object) ([]string, error) {
 		// controller owner reference (set by the caller) are the whole desired state. Never
 		// touch Secrets/ImagePullSecrets — the token controller manages them.
 		return nil, nil
+	case *batchv1.Job:
+		desiredObj, err := desiredAs[*batchv1.Job](desired, live)
+		if err != nil {
+			return nil, err
+		}
+		return copyJobState(desiredObj, liveObj), nil
 	case *policyv1.PodDisruptionBudget:
 		desiredObj, err := desiredAs[*policyv1.PodDisruptionBudget](desired, live)
 		if err != nil {
@@ -493,6 +500,62 @@ func findServicePort(livePorts []corev1.ServicePort, desired corev1.ServicePort)
 		}
 	}
 	return nil
+}
+
+// copyJobState copies the desired Job spec onto the live one, preserving the fields the batch API
+// declares immutable after creation:
+//
+//   - Spec.Selector and Spec.Template — the API server GENERATES the selector at creation and
+//     injects four UID-derived labels into the template, so a handler-built desired object never
+//     carries them
+//   - Spec.Completions, Spec.CompletionMode, Spec.ManualSelector
+//
+// Without this rule a Job reached copyGenericState, which assigns `spec` wholesale — so the SECOND
+// reconcile of an UNCHANGED Job was rejected with `spec.selector: Required value` plus
+// `spec.template: field is immutable`, and the role group went permanently Degraded quoting a field
+// the user never wrote. `RoleGroupResources.ExtraResources` is documented as the channel for
+// arbitrary GVKs, and a Job — the object two downstream operators actually put there, for database
+// migration and one-shot registration — could not survive a no-op pass. Verified against envtest
+// before this rule existed.
+//
+// The effect is create-once, which is also the only semantics a Job HAS: its work is a side effect
+// that already happened. A product that needs to re-run it changes the Job's NAME, which the
+// framework leaves entirely to the product — the old object is then reclaimed as an orphaned extra
+// (§13) or left for owner-reference GC.
+//
+// Everything else — Parallelism, Suspend, BackoffLimit, ActiveDeadlineSeconds,
+// TTLSecondsAfterFinished — comes from desired, so the knobs Kubernetes does allow changing still
+// converge. Like copyStatefulSetState it RETURNS the preserved paths whose desired value differs, so
+// a product editing a live Job's template is told the edit was dropped instead of finding out from a
+// pod that never ran.
+func copyJobState(desired, live *batchv1.Job) []string {
+	selector := live.Spec.Selector
+	template := live.Spec.Template
+	completions := live.Spec.Completions
+	completionMode := live.Spec.CompletionMode
+	manualSelector := live.Spec.ManualSelector
+
+	var ignored []string
+	// The template is compared BEFORE the copy and only against what the handler actually built.
+	// The live template carries the API server's injected labels, so an equality test would report a
+	// difference on every reconcile; comparing the pod SPEC alone asks the question the product
+	// meant — "is this still the same work?".
+	if !apiequality.Semantic.DeepEqual(desired.Spec.Template.Spec, template.Spec) {
+		ignored = append(ignored, "spec.template")
+	}
+	if desired.Spec.Completions != nil && !apiequality.Semantic.DeepEqual(desired.Spec.Completions, completions) {
+		ignored = append(ignored, "spec.completions")
+	}
+
+	live.Spec = desired.Spec
+
+	live.Spec.Selector = selector
+	live.Spec.Template = template
+	live.Spec.Completions = completions
+	live.Spec.CompletionMode = completionMode
+	live.Spec.ManualSelector = manualSelector
+
+	return ignored
 }
 
 // copyGenericState is the fallback for kinds without a typed rule (arbitrary-GVK
