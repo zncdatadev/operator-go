@@ -27,6 +27,8 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -65,10 +67,14 @@ var _ = Describe("An extension that is waiting", func() {
 		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 		DeferCleanup(func() {
 			_ = k8sClient.Delete(ctx, cr)
+			// envtest runs no garbage collector, so owner references reclaim nothing: every object
+			// a spec creates has to be deleted by name or it leaks into the next one.
 			base := reconciler.RoleGroupResourceName(name, "worker", "default")
 			for _, n := range []string{base, base + "-headless"} {
-				_ = k8sClient.Delete(ctx, &metav1.PartialObjectMetadata{})
-				_ = n
+				meta := metav1.ObjectMeta{Name: n, Namespace: testNamespace}
+				_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: meta})
+				_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: meta})
+				_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: meta})
 			}
 		})
 		return cr
@@ -159,6 +165,32 @@ var _ = Describe("An extension that is waiting", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: cr.Name}, fetched)).To(Succeed())
 		Expect(fetched.Status.IsDegraded()).To(BeFalse(),
 			"health ran on the waiting pass, so the healed fault was cleared instead of latching")
+	})
+
+	It("blocks the roles while a cluster-level hook waits, but still observes", func() {
+		// #608's case is a schema migration that must finish BEFORE any workload starts; applying
+		// the StatefulSets anyway would run the product against an uninitialised database.
+		crName := uniqueCRName("waiting-blocks")
+		cr := newCR(crName)
+		resourceName := reconciler.RoleGroupResourceName(cr.Name, "worker", "default")
+
+		_, err := reconcileWith(cr.Name, &waitingExtension{
+			name: "db-init",
+			pre: func() error {
+				return common.NewRequeueAfterError(20*time.Second, "WaitingForDBInit", "migration Job has not completed")
+			},
+		}, record.NewFakeRecorder(100))
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)
+		Expect(getErr).To(HaveOccurred(), "no workload may be applied while a cluster-level hook is waiting")
+
+		// But the pass still ran to the end: health observed the cluster rather than freezing it.
+		fetched := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: cr.Name}, fetched)).To(Succeed())
+		Expect(fetched.Status.GetCondition(v1alpha1.ConditionAvailable)).NotTo(BeNil(),
+			"health still ran, so Available reflects this pass rather than a stale one")
 	})
 
 	It("clears the Waiting condition once nothing is waiting", func() {

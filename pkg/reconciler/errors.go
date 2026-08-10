@@ -285,19 +285,19 @@ type waitState struct {
 	Message string
 }
 
-// newWaitState renders a wait from the error that carried it. The reason and message come from the
-// FIRST RequeueAfterError found, which is the one whose delay the tree walk already reported.
-func newWaitState(after time.Duration, err error) *waitState {
-	state := &waitState{After: common.ClampRequeueAfter(after), Reason: ReasonWaiting}
-	var requeueErr *common.RequeueAfterError
-	if stderrors.As(err, &requeueErr) {
-		if requeueErr.Reason != "" {
-			state.Reason = requeueErr.Reason
-		}
-		state.Message = requeueErr.Message
+// newWaitState renders the condition from the wait that WaitingErrors selected — the one with the
+// shortest delay. Reason and Message therefore always describe the wait whose deadline is next,
+// rather than whichever one a depth-first search happened to reach first.
+func newWaitState(waitErr *common.RequeueAfterError) *waitState {
+	if waitErr == nil {
+		return nil
+	}
+	state := &waitState{After: common.ClampRequeueAfter(waitErr.After), Reason: waitErr.Reason, Message: waitErr.Message}
+	if state.Reason == "" {
+		state.Reason = ReasonWaiting
 	}
 	if state.Message == "" {
-		state.Message = err.Error()
+		state.Message = waitErr.Error()
 	}
 	return state
 }

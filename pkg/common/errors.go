@@ -112,8 +112,8 @@ func IsRequeueAfterError(err error) bool {
 	return errors.As(err, &requeueErr)
 }
 
-// WaitingErrors walks an error tree and reports whether EVERY leaf is a RequeueAfterError, together
-// with the shortest delay any of them asked for.
+// WaitingErrors walks an error tree and reports whether EVERY leaf is a RequeueAfterError,
+// returning the one with the SHORTEST delay.
 //
 // Both halves matter. The framework aggregates per-role and per-extension failures with
 // errors.Join, so a tree can hold a wait next to a genuine failure — and `errors.As` would find the
@@ -121,33 +121,37 @@ func IsRequeueAfterError(err error) bool {
 // wait on one branch would hide a 5-second wait on another and the cluster would sit idle for the
 // difference.
 //
+// Returning the winning error rather than only its duration keeps the reported Reason and Message
+// attached to the delay they belong to: with several waits joined, deriving the reason separately
+// (with errors.As, which matches depth-first) would describe one wait while waiting for another.
+//
 // A nil error is not a wait. A wrapper whose Unwrap returns nothing is opaque and counts as a
 // failure, because its cause cannot be inspected.
-func WaitingErrors(err error) (allWaiting bool, after time.Duration) {
+func WaitingErrors(err error) (*RequeueAfterError, bool) {
 	if err == nil {
-		return false, 0
+		return nil, false
 	}
 	// A direct type assertion, NOT errors.As: As searches the whole tree and would report "waiting"
 	// for a wrapper around a join that also holds a genuine failure, laundering it.
 	if requeueErr, ok := err.(*RequeueAfterError); ok {
-		return true, ClampRequeueAfter(requeueErr.After)
+		return requeueErr, true
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		members := joined.Unwrap()
 		if len(members) == 0 {
-			return false, 0
+			return nil, false
 		}
-		shortest := time.Duration(0)
+		var shortest *RequeueAfterError
 		for _, member := range members {
-			waiting, memberAfter := WaitingErrors(member)
+			memberErr, waiting := WaitingErrors(member)
 			if !waiting {
-				return false, 0
+				return nil, false
 			}
-			if shortest == 0 || memberAfter < shortest {
-				shortest = memberAfter
+			if shortest == nil || ClampRequeueAfter(memberErr.After) < ClampRequeueAfter(shortest.After) {
+				shortest = memberErr
 			}
 		}
-		return true, shortest
+		return shortest, true
 	}
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
 		if inner := wrapped.Unwrap(); inner != nil {
@@ -155,5 +159,5 @@ func WaitingErrors(err error) (allWaiting bool, after time.Duration) {
 		}
 	}
 	// Opaque: its cause cannot be inspected, so it counts as a failure rather than a wait.
-	return false, 0
+	return nil, false
 }

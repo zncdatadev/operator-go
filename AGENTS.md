@@ -571,6 +571,12 @@ Four things about it are load-bearing:
   a message that counts ("3/5 brokers registered") rewrites the CR every pass with nothing to back
   the ping-pong off. Put the varying detail in a log line.
 
+**A CLUSTER-level wait blocks the roles**, which is the point of #608's case — a schema migration
+that must finish before any workload starts. The pass still continues to cleanup, health and
+PostReconcile, so blocking the workloads does not also freeze the cluster's own observations. A
+ROLE-level wait does not block: it is raised mid-iteration, so the roles before it have already been
+reconciled and skipping the rest would make the outcome depend on map ordering.
+
 A waiting extension also no longer aborts its lower-priority siblings (the default
 `stopOnError: true` treated it as a precondition failure) and is logged at Info rather than Error —
 `#608`'s complaint is that a normal first install pages, and an ERROR line every pass is the other

@@ -52,9 +52,9 @@ var _ = Describe("WaitingErrors", func() {
 	wait := func(d time.Duration) error { return common.NewRequeueAfterError(d, "R", "m") }
 
 	It("reports a lone wait, with its delay", func() {
-		waiting, after := common.WaitingErrors(wait(30 * time.Second))
+		waitErr, waiting := common.WaitingErrors(wait(30 * time.Second))
 		Expect(waiting).To(BeTrue())
-		Expect(after).To(Equal(30 * time.Second))
+		Expect(waitErr.After).To(Equal(30 * time.Second))
 	})
 
 	It("refuses an aggregate that also holds a genuine failure", func() {
@@ -62,17 +62,24 @@ var _ = Describe("WaitingErrors", func() {
 		// hold a wait next to a real failure — and a plain errors.As would find the wait and
 		// suppress the failure's Degraded report entirely.
 		joined := errors.Join(wait(time.Minute), errors.New("unknown field \"nodeAffinty\""))
-		waiting, _ := common.WaitingErrors(joined)
+		_, waiting := common.WaitingErrors(joined)
 		Expect(waiting).To(BeFalse())
 	})
 
 	It("takes the SHORTEST delay across a join, not the first one found", func() {
 		// errors.As returns the first match depth-first, so a ten-minute wait on one branch would
 		// hide a five-second wait on another and the cluster would sit idle for the difference.
-		joined := errors.Join(wait(10*time.Minute), wait(5*time.Second), wait(time.Hour))
-		waiting, after := common.WaitingErrors(joined)
+		joined := errors.Join(
+			common.NewRequeueAfterError(10*time.Minute, "Slow", "slow"),
+			common.NewRequeueAfterError(5*time.Second, "Fast", "fast"),
+			common.NewRequeueAfterError(time.Hour, "Slowest", "slowest"),
+		)
+		waitErr, waiting := common.WaitingErrors(joined)
 		Expect(waiting).To(BeTrue())
-		Expect(after).To(Equal(5 * time.Second))
+		Expect(waitErr.After).To(Equal(5 * time.Second))
+		// The reason must belong to the SAME wait as the delay: reporting "Slow" while waiting five
+		// seconds describes a wait that is not the one about to resolve.
+		Expect(waitErr.Reason).To(Equal("Fast"))
 	})
 
 	It("walks nested joins and wrapping chains", func() {
@@ -80,18 +87,18 @@ var _ = Describe("WaitingErrors", func() {
 			fmt.Errorf("role a: %w", wait(time.Minute)),
 			errors.Join(wait(20*time.Second), wait(time.Hour)),
 		)
-		waiting, after := common.WaitingErrors(nested)
+		waitErr, waiting := common.WaitingErrors(nested)
 		Expect(waiting).To(BeTrue())
-		Expect(after).To(Equal(20 * time.Second))
+		Expect(waitErr.After).To(Equal(20 * time.Second))
 	})
 
 	It("treats nil and an opaque wrapper as not waiting", func() {
-		waiting, _ := common.WaitingErrors(nil)
+		_, waiting := common.WaitingErrors(nil)
 		Expect(waiting).To(BeFalse())
 
 		// A wrapper whose cause cannot be inspected must count as a failure: assuming it is a wait
 		// would suppress Degraded for an error nobody can see inside.
-		waiting, _ = common.WaitingErrors(errors.New("opaque"))
+		_, waiting = common.WaitingErrors(errors.New("opaque"))
 		Expect(waiting).To(BeFalse())
 	})
 })

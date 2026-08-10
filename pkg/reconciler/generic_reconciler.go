@@ -574,20 +574,20 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// keeps Degraded and Available current; the wait itself is reported at step 8.
 	var waitFor *waitState
 	if err := r.extensionRegistry.ExecuteClusterPreReconcile(ctx, r.client, cr); err != nil {
-		waiting, after := common.WaitingErrors(err)
+		waitErr, waiting := common.WaitingErrors(err)
 		if !waiting {
 			return ctrl.Result{}, NewReconcileError("PreReconcile", "extension hook failed", err)
 		}
-		waitFor = mergeWait(waitFor, newWaitState(after, err))
+		waitFor = mergeWait(waitFor, newWaitState(waitErr))
 	}
 
 	// 2. Validate dependencies declared by the product (no-op when the hook is unset)
 	if err := r.validateDependencies(ctx, cr); err != nil {
-		waiting, after := common.WaitingErrors(err)
+		waitErr, waiting := common.WaitingErrors(err)
 		if !waiting {
 			return ctrl.Result{}, NewReconcileError("DependencyValidation", "dependency validation failed", err)
 		}
-		waitFor = mergeWait(waitFor, newWaitState(after, err))
+		waitFor = mergeWait(waitFor, newWaitState(waitErr))
 	}
 
 	// 3. Process each role, BEST EFFORT: a role that fails does not stop the others, and does not
@@ -609,7 +609,18 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// updateStatus and make the controller reschedule itself forever.
 	r.warnOnUnknownConfiguredRoles(ctx, cr, spec)
 	var roleErrs []error
+	// A CLUSTER-level wait blocks the roles. That is the whole point of #608's case — a schema
+	// migration Job that must finish before any workload starts — and applying the StatefulSets
+	// anyway would start the product against a database that is not initialised. The pass still
+	// continues below: cleanup, health and PostReconcile run, so the wait does not freeze the
+	// cluster's own observations the way an early return would.
+	//
+	// A ROLE-level wait does not do this. It is raised while iterating, so the roles before it have
+	// already been reconciled, and skipping the rest would make the outcome depend on map ordering.
 	for _, roleName := range slices.Sorted(maps.Keys(spec.Roles)) {
+		if waitFor != nil {
+			break
+		}
 		roleSpec := spec.Roles[roleName]
 		if err := r.reconcileRole(ctx, cr, roleName, &roleSpec); err != nil {
 			// Throttling is the one failure that must stop the pass: the API server is rejecting
@@ -657,11 +668,11 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 		// A genuine failure anywhere outranks a wait: Degraded has to be set and the workqueue has
 		// to back off, and the joined message carries the waiting role's own text alongside the
 		// failure so nothing is hidden. Only an aggregate that is waits ALL THE WAY DOWN is a wait.
-		waiting, after := common.WaitingErrors(joined)
+		waitErr, waiting := common.WaitingErrors(joined)
 		if !waiting {
 			return ctrl.Result{}, joined
 		}
-		waitFor = mergeWait(waitFor, newWaitState(after, joined))
+		waitFor = mergeWait(waitFor, newWaitState(waitErr))
 	}
 
 	// 8. Final status update.

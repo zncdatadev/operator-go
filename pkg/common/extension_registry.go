@@ -212,7 +212,7 @@ func executeHooks[T Extension](ctx context.Context, entries []extensionEntry[T],
 		// channel that pages.
 		// WaitingErrors, not IsRequeueAfterError: a hook may itself return errors.Join of a wait and
 		// a genuine failure, and errors.As would find the wait and launder the failure into one.
-		if waiting, _ := WaitingErrors(err); waiting {
+		if _, waiting := WaitingErrors(err); waiting {
 			log.FromContext(ctx).Info("Extension is waiting, continuing with remaining extensions",
 				"extension", entry.extension.Name(), "reason", err.Error())
 			errs = append(errs, extensionErr)
