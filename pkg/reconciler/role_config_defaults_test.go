@@ -170,6 +170,21 @@ var _ = Describe("Role config defaults", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(reconciler.IsValidationError(err)).To(BeTrue(), "want a *ValidationError, got %T", err)
 		Expect(err.Error()).To(ContainSubstring("logging"))
+		Expect(err.Error()).To(ContainSubstring("RoleGroupBuildContext.ConfigDefaults"))
+	})
+
+	It("names the handler map when THAT is where the bad default came from", func() {
+		// The two defaults are set through different APIs in different files, so an error naming the
+		// wrong one sends the reader to code that does not contain the problem.
+		handler := newHandler()
+		handler.SetRoleConfigDefaults("worker", &v1alpha1.RoleGroupConfigSpec{
+			Logging: &v1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)},
+		})
+
+		_, err := handler.BuildResources(ctx, k8sClient, mockCR, defaultsBuildCtx(nil))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(`SetRoleConfigDefaults("worker")`))
+		Expect(err.Error()).NotTo(ContainSubstring("RoleGroupBuildContext.ConfigDefaults"))
 	})
 
 	It("reports a config-defaults role name the CR does not declare", func() {

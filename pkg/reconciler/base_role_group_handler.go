@@ -601,9 +601,9 @@ func (h *BaseRoleGroupHandler[CR]) containerImage(
 func (h *BaseRoleGroupHandler[CR]) mergedRoleGroupConfig(
 	buildCtx *RoleGroupBuildContext,
 ) (*v1alpha1.RoleGroupConfigSpec, error) {
-	defaults := h.configDefaults(buildCtx)
+	defaults, source := h.configDefaults(buildCtx)
 	if defaults != nil && defaults.Logging != nil {
-		return nil, NewValidationError("RoleGroupBuildContext.ConfigDefaults", buildCtx.RoleName, buildCtx.RoleGroupName,
+		return nil, NewValidationError(source, buildCtx.RoleName, buildCtx.RoleGroupName,
 			fmt.Errorf("config defaults may not set logging: the framework merges logging at the "+
 				"reconciler level from the CR's role and role group only, and has already decided Vector "+
 				"enablement and rendered the logging config file by the time defaults are read — a "+
@@ -615,14 +615,23 @@ func (h *BaseRoleGroupHandler[CR]) mergedRoleGroupConfig(
 
 // configDefaults resolves the product's role-config defaults: the per-call value when the product
 // set one (it depends on WHICH cluster is being built), the handler's per-role map otherwise.
-func (h *BaseRoleGroupHandler[CR]) configDefaults(buildCtx *RoleGroupBuildContext) *v1alpha1.RoleGroupConfigSpec {
+//
+// It also returns WHICH of the two supplied the value, so an error about a bad default names the
+// place the product has to edit. The two are set through different APIs in different files, and a
+// message naming the wrong one sends the reader to code that does not contain the problem.
+func (h *BaseRoleGroupHandler[CR]) configDefaults(
+	buildCtx *RoleGroupBuildContext,
+) (*v1alpha1.RoleGroupConfigSpec, string) {
 	if buildCtx == nil {
-		return nil
+		return nil, ""
 	}
 	if buildCtx.ConfigDefaults != nil {
-		return buildCtx.ConfigDefaults
+		return buildCtx.ConfigDefaults, "RoleGroupBuildContext.ConfigDefaults"
 	}
-	return h.RoleConfigDefaults[buildCtx.RoleName]
+	if defaults, ok := h.RoleConfigDefaults[buildCtx.RoleName]; ok {
+		return defaults, fmt.Sprintf("BaseRoleGroupHandler.SetRoleConfigDefaults(%q)", buildCtx.RoleName)
+	}
+	return nil, ""
 }
 
 // storageMountPath resolves the data PVC mount path for a role: the per-role value when the product
