@@ -372,6 +372,50 @@ treats `PodSpec.Affinity` the same way — Helm values and Kustomize patches rep
 inheritance was tried and reverted: it invented a semantic users would have to learn, and it removed
 the only way to say "this group has no affinity", which a single-node development group needs.
 
+**A product's own config defaults fold BENEATH the CR's two levels.**
+`SetRoleConfigDefaults(roleName, *RoleGroupConfigSpec)` declares what a role's `resources`,
+`affinity` and `gracefulShutdownTimeout` should be when the CR says nothing, and the framework folds
+it through the **same `MergeRoleGroupConfig`** the role and role group use — not a separate "fill the
+nil fields" pass. That is what makes it inherit their rules rather than inventing new ones:
+`resources` folds per **leaf** (a default `cpu.min` survives a user who set only `cpu.max`, which a
+struct-level nil check would have discarded), `affinity` is replaced **wholesale** (so `affinity: {}`
+still clears the default rather than inheriting it — how a single-node development group opts out),
+and anything the user states anywhere still wins.
+
+`RoleGroupBuildContext.ConfigDefaults` is the per-CR channel and outranks the handler's map. It has
+to exist: `DefaultAntiAffinity`'s selector names the **cluster**, and one handler instance serves
+every cluster the operator reconciles (§4), so a default containing one cannot live on the handler at
+all.
+
+```go
+aff, err := reconciler.EncodeAffinity(reconciler.DefaultAntiAffinity(
+    buildCtx.ClusterName, buildCtx.RoleName, reconciler.TopologyKeyHostname, 70))
+if err != nil { return nil, err }
+buildCtx.ConfigDefaults = &commonsv1alpha1.RoleGroupConfigSpec{Affinity: aff}
+```
+
+`DefaultAntiAffinity(cluster, role, topologyKey, weight)` builds the **preferred** pod anti-affinity
+that spreads one role's pods, selecting on the framework's own identity labels
+(`app.kubernetes.io/instance` + `app.kubernetes.io/component`) — the part worth centralising, since a
+downstream operator re-typing those keys as string literals gets a selector matching nothing the
+moment they change, and a preferred term matching no pod is not an error. It selects on the **role**,
+not the role group: three of five ZooKeeper servers on one node is an outage whether or not they
+share a group. `weight` and `topologyKey` are parameters with no defaults, because the operators that
+hand-wrote this already disagree on the weight. `EncodeAffinity` is `DecodeAffinity`'s inverse.
+
+**`logging` may not appear in a config default.** The framework merges logging in the *reconciler*,
+from the CR's two levels only, and has already decided Vector enablement and rendered the config file
+before a default is read — so one set here would apply to neither. It is a `*ValidationError` rather
+than a half-honoured field.
+
+`SetRoleStorageMountPath(roleName, path)` is the per-role `StorageMountPath`, symmetric with the
+other five per-role setters. A role SET to `""` means **no data PVC for this role** even though the
+handler-global default is set, which is distinct from having no entry (inherit it) — and is the case
+this exists for: a product with a stateful and a stateless role could otherwise only choose between
+"every role" and "no role", so one migration deleted a `volumeClaimTemplate` its Gen 2 predecessor
+rendered. Both new maps feed `ConfiguredRoleNames()`, so a typo in either setter still produces the
+`UnknownConfiguredRole` warning.
+
 `RoleGroupHandlerFuncs` is a function adapter for simple handlers that don't need a full struct.
 
 **The framework owns the NAME of every fixed slot; the handler owns its content.** `ConfigMap`,

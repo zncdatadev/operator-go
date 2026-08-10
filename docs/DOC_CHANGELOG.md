@@ -4,6 +4,22 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-10] (product config defaults reuse the CR's own merge)
+
+### Core architecture
+
+- `docs/architecture.md` §2.5 records why a product's role-config defaults fold through
+  `MergeRoleGroupConfig` rather than a separate nil-fill pass: reusing the merge inherits its rules
+  (resources per leaf, affinity wholesale) instead of inventing a second precedence users would have
+  to learn, and it is what keeps `affinity: {}` meaning "no affinity" rather than "inherit".
+
+### Package guides
+
+- Root `AGENTS.md` §3 documents `SetRoleConfigDefaults`, `RoleGroupBuildContext.ConfigDefaults`,
+  `DefaultAntiAffinity`, `EncodeAffinity`, `TopologyKeyHostname` and `SetRoleStorageMountPath` —
+  including why the per-CR channel has to exist (an anti-affinity selector names the cluster, and the
+  handler is shared) and why `logging` is rejected in a default.
+
 ## [2026-08-09d] (the image spec gains a validated tag and a pull secret)
 
 ### Core architecture

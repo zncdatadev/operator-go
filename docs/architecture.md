@@ -107,6 +107,10 @@ Each field type folds with a defined strategy:
 
 This works only because these fields carry **no CRD-level default**: structural defaulting fills a field as soon as its enclosing object exists, so a `+kubebuilder:default` on a leaf makes "unset here" indistinguishable from "explicitly the default" and the Role's value can never win. Defaults therefore live at consumption time (`StorageResource.GetCapacity`, `RoleGroupConfigSpec.GetGracefulShutdownTimeout`, the renderers' root-level INFO).
 
+**A product's own defaults for this block are a third layer beneath the two, folded by the same rule.** `BaseRoleGroupHandler.SetRoleConfigDefaults` (and its per-CR counterpart `RoleGroupBuildContext.ConfigDefaults`) supply what a role's `resources`, `affinity` and `gracefulShutdownTimeout` should be when the CR says nothing. Reusing `MergeRoleGroupConfig` rather than adding a "fill the nil fields" pass is the whole design: a struct-level nil check would discard a product's `cpu.min` the moment a user set `cpu.max`, reintroducing the silent partial loss this table exists to prevent, and it would make `affinity: {}` inherit the product's policy instead of clearing it — removing the only way to say "this group has no affinity" one level further down than the case that already settled it. One rule, three layers, no new precedence for a user to learn.
+
+`logging` is excluded, and rejected rather than ignored: it is merged in the reconciler from the CR's two levels, and Vector enablement and the rendered config file are both decided before a handler default is read, so a default there would apply to neither.
+
 **This rule binds product operators too, and it is checkable.** It is not an explanation of why the
 SDK's own fields are shaped the way they are — it is a constraint on any CRD whose `config` block
 this framework folds, including every field a product adds of its own. Documentation alone was not
