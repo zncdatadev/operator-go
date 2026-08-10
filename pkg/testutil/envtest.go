@@ -26,6 +26,7 @@ import (
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -141,6 +142,13 @@ func (e *TestEnv) Start() error {
 	if err := appsv1.AddToScheme(e.Scheme); err != nil {
 		_ = e.Env.Stop()
 		return fmt.Errorf("failed to add appsv1 to scheme: %w", err)
+	}
+
+	// batch/v1 is not a kind the framework builds, but RoleGroupResources.ExtraResources accepts
+	// arbitrary GVKs and a Job is the one downstream products actually ship there. Without it the
+	// suite cannot reach the API server for that path at all.
+	if err := batchv1.AddToScheme(e.Scheme); err != nil {
+		panic(fmt.Sprintf("failed to add batch/v1 to scheme: %v", err))
 	}
 
 	if err := policyv1.AddToScheme(e.Scheme); err != nil {

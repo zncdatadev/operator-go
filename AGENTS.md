@@ -444,6 +444,18 @@ The third catches what failed nowhere at all: two writers for one object in one 
 apply silently discards the earlier, and if their desired states differ the object is rewritten every
 reconcile, each write waking the framework's own watch with nothing to back the loop off.
 
+**A `batchv1.Job` in that slice is create-once, and that is a typed rule rather than the generic
+copy.** The fallback assigns `spec` wholesale, and the API server *generates* `spec.selector` and
+injects four UID-derived labels into `spec.template` at creation — neither of which a handler-built
+desired object can carry. So the **second** reconcile of an unchanged Job was rejected
+(`spec.selector: Required value`, `spec.template: field is immutable`) and the role group went
+permanently `Degraded` quoting a field the user never wrote. `copyJobState` preserves the live
+`selector`, `template`, `completions`, `completionMode` and `manualSelector`, and lets `parallelism`,
+`suspend`, `backoffLimit`, `activeDeadlineSeconds` and `ttlSecondsAfterFinished` converge — the knobs
+batch deliberately left mutable. Create-once is also the only semantics a Job *has*: its work is a
+side effect that already happened, so a product needing it re-run changes the **name**, and a
+differing template is reported through `ImmutableFieldIgnored` like any other preserved field.
+
 ### 4. RoleGroupBuildContext
 Role and role group configuration reaches a handler through one struct, built per role group by the
 reconciler and passed to `BuildResources`. There is **no role-level interface a product implements**:
