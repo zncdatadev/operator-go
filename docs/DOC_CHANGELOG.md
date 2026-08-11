@@ -4,6 +4,20 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-10c] (a hook can wait without the cluster reporting a fault)
+
+### Package guides
+
+- Root `AGENTS.md` §5 documents `common.RequeueAfterError`, `common.WaitingErrors`, the `Waiting`
+  condition, and the four properties that are load-bearing: the wait is reported at the END of the
+  pass so health still runs (otherwise `Degraded` latches, since `SetDegraded(false, …)` has exactly
+  one writer), an aggregate is a wait only when every leaf is, the delay is clamped (a non-positive
+  `RequeueAfter` never requeues at all), and Reason/Message must be stable or the status write
+  ping-pongs with nothing to back it off.
+- Records the health change that goes with it: a role group absent from `status.roleGroups` has no
+  StatefulSet because the framework has not applied one yet — `Creating`, not `Degraded`. A group in
+  the ledger whose StatefulSet vanished is still a fault.
+
 ## [2026-08-10b] (a Job could not survive the framework's own extras channel)
 
 ### Package guides

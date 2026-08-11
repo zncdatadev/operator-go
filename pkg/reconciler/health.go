@@ -102,7 +102,7 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 	// StatefulSet to read at all.
 	progressing := false
 	evaluated := 0
-	var shortOfReplicas, unreadable []string
+	var shortOfReplicas, unreadable, creating []string
 
 	for roleName, roleSpec := range spec.Roles {
 		for groupName, groupSpec := range roleSpec.RoleGroups {
@@ -110,8 +110,19 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 			resourceName := RoleGroupResourceName(clusterName, roleName, groupName)
 			available, isProgressing, err := h.checkRoleGroupHealth(ctx, namespace, resourceName, groupSpec.GetReplicas())
 			if err != nil {
-				// A role group whose StatefulSet cannot even be read is both not available and a
-				// genuine fault: the object the operator applied is gone or unreachable.
+				// "Never applied yet" and "applied, then vanished" are different facts, and the
+				// status already distinguishes them: status.roleGroups is the ledger of role groups
+				// this framework successfully applied. A role group absent from the ledger has no
+				// StatefulSet because the framework has not got that far — a first install, a build
+				// still waiting on something external — which is Creating, not a fault. Reporting it
+				// as Degraded is what made a normal first install page.
+				if !inLedger(status, roleName, groupName) {
+					logger.V(1).Info("Role group has no StatefulSet yet", "role", roleName, "group", groupName)
+					creating = append(creating, roleName+"/"+groupName)
+					continue
+				}
+				// Applied before and unreadable now: the object the operator applied is gone or
+				// unreachable, which is a genuine fault.
 				logger.Error(err, "Failed to check role group health", "role", roleName, "group", groupName)
 				unreadable = append(unreadable, roleName+"/"+groupName)
 				continue
@@ -128,13 +139,14 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 
 	sort.Strings(shortOfReplicas)
 	sort.Strings(unreadable)
+	sort.Strings(creating)
 
 	switch {
 	case evaluated == 0:
 		// No role group was evaluated, so nothing runs. Reporting "all replicas are available"
 		// for a cluster with zero workloads would make Available useless as a readiness gate.
 		status.SetUnavailable(v1alpha1.ReasonCreating, "Cluster declares no role groups")
-	case len(shortOfReplicas) == 0 && len(unreadable) == 0:
+	case len(shortOfReplicas) == 0 && len(unreadable) == 0 && len(creating) == 0:
 		status.SetAvailable(v1alpha1.ReasonAvailable, "All replicas are available")
 	default:
 		// Name the offenders, and say which kind of problem each one is: with several roles the
@@ -147,10 +159,13 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 		if len(unreadable) > 0 {
 			parts = append(parts, "StatefulSet could not be read: "+strings.Join(unreadable, ", "))
 		}
-		reason := v1alpha1.ReasonPodsNotReady
-		if len(shortOfReplicas) == 0 {
-			reason = v1alpha1.ReasonWorkloadUnreadable
+		if len(creating) > 0 {
+			parts = append(parts, "not created yet: "+strings.Join(creating, ", "))
 		}
+		// The reason names the WORST kind present, so a cluster that is merely still being built
+		// never reports a fault reason. Ordering: a failing workload outranks a missing one, and a
+		// missing one outranks a not-yet-created one.
+		reason := unavailableReason(shortOfReplicas, unreadable)
 		status.SetUnavailable(reason, "Role groups — "+strings.Join(parts, "; "))
 	}
 
@@ -231,6 +246,32 @@ func (h *HealthManager) Check(ctx context.Context, namespace, clusterName string
 	status.SetDegraded(degraded, degradedReason, degradedMessage)
 
 	return nil
+}
+
+// unavailableReason names the WORST kind of unavailability present, so a cluster that is merely
+// still being built never reports a fault reason. A failing workload outranks a missing one, and a
+// missing one outranks a not-yet-created one.
+func unavailableReason(shortOfReplicas, unreadable []string) string {
+	switch {
+	case len(shortOfReplicas) > 0:
+		return v1alpha1.ReasonPodsNotReady
+	case len(unreadable) > 0:
+		return v1alpha1.ReasonWorkloadUnreadable
+	default:
+		return v1alpha1.ReasonCreating
+	}
+}
+
+// inLedger reports whether status.roleGroups records this role group as one the framework has
+// already applied. It is the only evidence available for telling "not created yet" apart from
+// "created, then lost", and it is written by the apply path after a successful pass.
+func inLedger(status *v1alpha1.GenericClusterStatus, roleName, groupName string) bool {
+	for _, recorded := range status.GetRoleGroups()[roleName] {
+		if recorded == groupName {
+			return true
+		}
+	}
+	return false
 }
 
 // checkRoleGroupHealth reports whether a role group has at least as many ready replicas as the spec

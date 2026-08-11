@@ -202,6 +202,23 @@ func executeHooks[T Extension](ctx context.Context, entries []extensionEntry[T],
 		}
 
 		extensionErr := NewExtensionError(entry.extension.Name(), err)
+
+		// A wait is not a precondition failure. Without this branch the default
+		// hookPolicy{stopOnError: true} let one extension that is merely waiting abort every
+		// lower-priority sibling — so a product following AGENTS.md §11b, which puts
+		// EnsureGeneratedSecret in this very hook, would stop generating a Secret another
+		// extension is waiting for. It is also logged at Info rather than Error: #608's complaint
+		// is that a normal first install pages, and an ERROR line every pass forever is the other
+		// channel that pages.
+		// WaitingErrors, not IsRequeueAfterError: a hook may itself return errors.Join of a wait and
+		// a genuine failure, and errors.As would find the wait and launder the failure into one.
+		if _, waiting := WaitingErrors(err); waiting {
+			log.FromContext(ctx).Info("Extension is waiting, continuing with remaining extensions",
+				"extension", entry.extension.Name(), "reason", err.Error())
+			errs = append(errs, extensionErr)
+			continue
+		}
+
 		if entry.stopsOnError(policy.stopOnError) {
 			// Failures already collected from tolerant extensions are reported alongside the
 			// stopping one; dropping them would hide from the CR status that those extensions

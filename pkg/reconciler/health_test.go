@@ -472,16 +472,44 @@ var _ = Describe("HealthManager role group aggregation", func() {
 		hm := reconciler.NewHealthManager(k8sClient)
 		Expect(hm.Check(ctx, namespace, "health-missing-sts", spec, status)).To(Succeed())
 
-		// A StatefulSet that does not exist yet has no available replicas: claiming
-		// Available=True next to Degraded=True would misreport the cluster as usable.
+		// A StatefulSet that does not exist has no available replicas either way: claiming
+		// Available=True would misreport the cluster as usable.
 		available := status.GetCondition(v1alpha1.ConditionAvailable)
 		Expect(available).NotTo(BeNil())
 		Expect(available.Status).To(Equal(metav1.ConditionFalse))
+		// The message names the offender instead of a generic "some replicas are unhealthy".
+		Expect(available.Message).To(ContainSubstring("missing-role/default"))
+
+		// NOT Degraded: status.roleGroups does not record this group, so the framework has not
+		// applied its StatefulSet yet — a first install, or a build still waiting on something
+		// external. Reporting that as a fault is what made a normal first install page.
+		degraded := status.GetCondition(v1alpha1.ConditionDegraded)
+		Expect(degraded).NotTo(BeNil())
+		Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
+		Expect(available.Reason).To(Equal(v1alpha1.ReasonCreating))
+	})
+
+	It("reports Degraded when a role group it ALREADY APPLIED has lost its StatefulSet", func() {
+		// The other side of the same distinction, and the guarantee that must survive: an object
+		// the framework put there and that has since gone is a real fault no pod state reveals.
+		spec := &v1alpha1.GenericClusterSpec{
+			Roles: map[string]v1alpha1.RoleSpec{
+				"missing-role": {
+					RoleGroups: map[string]v1alpha1.RoleGroupSpec{
+						"default": {Replicas: ptr.To(int32(3))},
+					},
+				},
+			},
+		}
+		status.SetRoleGroup("missing-role", "default")
+
+		hm := reconciler.NewHealthManager(k8sClient)
+		Expect(hm.Check(ctx, namespace, "health-missing-sts", spec, status)).To(Succeed())
 
 		degraded := status.GetCondition(v1alpha1.ConditionDegraded)
 		Expect(degraded).NotTo(BeNil())
 		Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
-		// The message names the offender instead of a generic "some replicas are unhealthy".
+		Expect(degraded.Reason).To(Equal(v1alpha1.ReasonWorkloadUnreadable))
 		Expect(degraded.Message).To(ContainSubstring("missing-role/default"))
 	})
 
@@ -611,9 +639,13 @@ var _ = Describe("Degraded is a fault signal, not a progress signal", func() {
 		return status
 	}
 
-	// check runs a single pass over a fresh status.
+	// check runs a single pass over a fresh status that already RECORDS the role group as applied.
+	// That is what these specs mean by an unreadable StatefulSet — one the framework put there and
+	// that has since gone — as distinct from one it has not created yet, which is Creating.
 	check := func(cluster string, specReplicas int32, op *v1alpha1.ClusterOperationSpec) *v1alpha1.GenericClusterStatus {
-		return checkInto(&v1alpha1.GenericClusterStatus{}, cluster, specReplicas, op)
+		status := &v1alpha1.GenericClusterStatus{}
+		status.SetRoleGroup("worker", "default")
+		return checkInto(status, cluster, specReplicas, op)
 	}
 
 	newCluster := func() string {
@@ -828,8 +860,9 @@ var _ = Describe("Degraded is a fault signal, not a progress signal", func() {
 	})
 
 	It("still reports Degraded when a role group's StatefulSet is missing entirely", func() {
-		// Nothing to read means the object the operator applied is gone: a real fault, and one that
-		// no pod state would reveal.
+		// Nothing to read for a role group the framework RECORDED as applied means the object it
+		// applied is gone: a real fault, and one that no pod state would reveal. The ledger is what
+		// distinguishes it from a role group that was never created (see the sibling spec below).
 		status := check(newCluster(), 1, nil)
 		Expect(status.IsDegraded()).To(BeTrue())
 		Expect(status.GetCondition(v1alpha1.ConditionDegraded).Reason).
@@ -854,6 +887,11 @@ var _ = Describe("Available names the right kind of problem", func() {
 
 	check := func(cluster string, groups map[string]v1alpha1.RoleGroupSpec) *v1alpha1.GenericClusterStatus {
 		status := &v1alpha1.GenericClusterStatus{}
+		// Recorded as applied: these specs are about a StatefulSet that vanished, not one that was
+		// never created (see "a role group the framework has not created yet").
+		for groupName := range groups {
+			status.SetRoleGroup("worker", groupName)
+		}
 		Expect(reconciler.NewHealthManager(k8sClient).Check(ctx, ns, cluster,
 			&v1alpha1.GenericClusterSpec{Roles: map[string]v1alpha1.RoleSpec{
 				"worker": {RoleGroups: groups},

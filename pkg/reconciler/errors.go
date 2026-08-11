@@ -20,6 +20,9 @@ import (
 	stderrors "errors"
 	"fmt"
 	"time"
+
+	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 // ConfigError represents a configuration-related error.
@@ -251,4 +254,66 @@ func NewRateLimitError(retryAfter time.Duration, cause error) *RateLimitError {
 func IsRateLimitError(err error) bool {
 	var rateLimitErr *RateLimitError
 	return stderrors.As(err, &rateLimitErr)
+}
+
+// ConditionWaiting reports that the framework is waiting on something outside its control before
+// the desired state can be reached — a database migration Job, a peer cluster's discovery
+// ConfigMap, a secret an external controller has not issued yet.
+//
+// It is a condition of its own rather than an overload of Progressing for two reasons. Progressing
+// has exactly one owner, HealthManager.Check, which writes it on every non-paused pass; a second
+// writer in the same pass flips it and re-stamps LastTransitionTime, so the CR would be rewritten
+// forever. And a wait that spans reconciles needs its OWN LastTransitionTime to be alertable at all
+// — "waiting for more than 30 minutes" is the alert an operator actually wants, and it cannot be
+// expressed on a field another writer resets. ConditionOrphanCleanupPending exists for the same
+// reason and follows the same "only clear what this framework raised" rule.
+const ConditionWaiting v1alpha1.ConditionType = "Waiting"
+
+const (
+	// ReasonWaiting is the ReconcileComplete=False reason while something is waiting.
+	ReasonWaiting = "Waiting"
+	// ReasonWaitSatisfied means nothing is waiting any more.
+	ReasonWaitSatisfied = "WaitSatisfied"
+)
+
+// waitState is the wait a pass has accumulated. Several sites can raise one — the cluster
+// PreReconcile hook, dependency validation, the role aggregate — and the pass reports a single
+// condition, so they are merged rather than the last one winning.
+type waitState struct {
+	After   time.Duration
+	Reason  string
+	Message string
+}
+
+// newWaitState renders the condition from the wait that WaitingErrors selected — the one with the
+// shortest delay. Reason and Message therefore always describe the wait whose deadline is next,
+// rather than whichever one a depth-first search happened to reach first.
+func newWaitState(waitErr *common.RequeueAfterError) *waitState {
+	if waitErr == nil {
+		return nil
+	}
+	state := &waitState{After: common.ClampRequeueAfter(waitErr.After), Reason: waitErr.Reason, Message: waitErr.Message}
+	if state.Reason == "" {
+		state.Reason = ReasonWaiting
+	}
+	if state.Message == "" {
+		state.Message = waitErr.Error()
+	}
+	return state
+}
+
+// mergeWait keeps the SHORTEST delay of the waits a pass raised, so a ten-minute wait at one site
+// cannot make the cluster sit idle through a five-second wait at another. The reason and message of
+// the earliest-deadline wait are the ones reported, since that is the one that will resolve first.
+func mergeWait(existing, next *waitState) *waitState {
+	switch {
+	case existing == nil:
+		return next
+	case next == nil:
+		return existing
+	case next.After < existing.After:
+		return next
+	default:
+		return existing
+	}
 }

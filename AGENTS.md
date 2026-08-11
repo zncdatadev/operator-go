@@ -533,6 +533,62 @@ Three levels of extensions for injecting custom logic, all generic over the prod
 
 There is no `Cleanup()` hook and no shutdown callback.
 
+**A hook can say "not ready YET" without the cluster going Degraded.** Returning
+`common.NewRequeueAfterError(after, reason, message)` reports that the desired state is not
+satisfiable yet — a database migration Job, a peer cluster's discovery ConfigMap, a secret an
+external controller has not issued. The framework requeues after the delay with **no `Degraded`, no
+Warning event and no workqueue backoff**, and raises its own **`Waiting`** condition
+(`reconciler.ConditionWaiting`) carrying the reason and message, while `ReconcileComplete` goes
+False with reason `Waiting`.
+
+```go
+func (e *DBInit) PreReconcile(ctx context.Context, c client.Client, cr *v1alpha1.MyCluster) error {
+    if !done { return common.NewRequeueAfterError(15*time.Second, "WaitingForDBInit", "migration Job has not completed") }
+    return nil
+}
+```
+
+Four things about it are load-bearing:
+
+- **The wait is reported at the END of the pass, not by returning where it was raised.** Cleanup,
+  health and PostReconcile all still run. `SetDegraded(false, …)` has exactly one writer —
+  `HealthManager.Check` — so an early return would leave `Degraded` **latched** at whatever the last
+  completed pass wrote: a cluster whose pods recovered while an extension waits would keep paging
+  with a message naming a pod that no longer exists, and `observedGeneration` would match, so no
+  staleness heuristic catches it. The framework already diagnosed exactly this on the
+  `reconciliationPaused` gate and fixed it the same way — observe, then return.
+- **A wait is not merged with a failure.** `common.WaitingErrors` walks the error tree and reports a
+  wait only when **every leaf** is one, taking the **shortest** delay. The framework joins per-role
+  and per-extension errors, so a tree can hold a wait next to a genuine failure — and a plain
+  `errors.As` would find the wait and launder the failure into one, or return the first delay
+  depth-first and let a ten-minute wait hide a five-second one.
+- **The delay is clamped.** controller-runtime treats `RequeueAfter` as a switch, so a non-positive
+  value never requeues at all; `deadline.Sub(time.Now())` would wedge the cluster permanently the
+  moment the deadline passed. A non-positive value becomes `common.DefaultRequeueAfter`, anything
+  under `common.MinRequeueAfter` becomes that.
+- **`Reason` and `Message` must be STABLE while the wait lasts.** The status write is guarded by a
+  whole-object `DeepEqual`, and this path returns no error so the workqueue `Forget`s the item —
+  a message that counts ("3/5 brokers registered") rewrites the CR every pass with nothing to back
+  the ping-pong off. Put the varying detail in a log line.
+
+**A CLUSTER-level wait blocks the roles**, which is the point of #608's case — a schema migration
+that must finish before any workload starts. The pass still continues to cleanup, health and
+PostReconcile, so blocking the workloads does not also freeze the cluster's own observations. A
+ROLE-level wait does not block: it is raised mid-iteration, so the roles before it have already been
+reconciled and skipping the rest would make the outcome depend on map ordering.
+
+A waiting extension also no longer aborts its lower-priority siblings (the default
+`stopOnError: true` treated it as a precondition failure) and is logged at Info rather than Error —
+`#608`'s complaint is that a normal first install pages, and an ERROR line every pass is the other
+channel that pages.
+
+**Relatedly, a role group the framework has not created yet is `Creating`, not `Degraded`.** Health
+tells "never applied" from "applied, then vanished" using `status.roleGroups`, the ledger of role
+groups a pass successfully applied. Before that, a first install reported `Degraded=True` with
+`WorkloadUnreadable` for every role group whose StatefulSet did not exist yet — for any reason,
+including a build still waiting on something external. A group **in** the ledger whose StatefulSet
+has gone is still a fault, which is the guarantee that had to survive.
+
 Hooks receive the **concrete product CR**, so an extension reads its own spec and writes its own
 status with no type assertion:
 ```go
