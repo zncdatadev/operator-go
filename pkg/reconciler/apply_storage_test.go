@@ -160,9 +160,10 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 	It("says nothing when a data PVC is reconciled unchanged", func() {
 		// #627. The live claim template comes back with spec.volumeMode and a status block the API
 		// server filled in, which a handler-built template has no way to state, so a whole-slice
-		// DeepEqual was true on EVERY pass: the warning accumulated indefinitely on a StatefulSet
-		// whose generation stayed at 1 and whose pods never rolled. It is not just noise — it is the
-		// same warning a genuine resize produces, so the event stopped distinguishing the two.
+		// DeepEqual could never be true and a difference was reported on EVERY pass: the warning
+		// accumulated indefinitely on a StatefulSet whose generation stayed at 1 and whose pods
+		// never rolled. It is not just noise — it is the same warning a genuine resize produces, so
+		// the event stopped distinguishing the two.
 		name := uniqueCRName("storage-steady")
 		_, resourceName := newCluster(name, storage())
 
