@@ -174,16 +174,12 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	volumeClaimTemplates := live.Spec.VolumeClaimTemplates
 	podManagementPolicy := live.Spec.PodManagementPolicy
 
-	// Unlike the other preserved fields, an EMPTY desired value counts here. Everywhere else an
-	// unset field is the handler declining to have an opinion; an empty volumeClaimTemplates is the
-	// handler stating that this role group has no storage, which is exactly the direction that was
-	// being applied silently.
-	claimTemplatesDiffer := !apiequality.Semantic.DeepEqual(desired.Spec.VolumeClaimTemplates, volumeClaimTemplates)
+	claimsDiffer := claimTemplatesDiffer(desired.Spec.VolumeClaimTemplates, volumeClaimTemplates)
 
 	// Captured before the spec is overwritten, and only when it is needed: it is the only record of
 	// where a preserved claim was mounted.
 	var liveTemplate *corev1.PodTemplateSpec
-	if claimTemplatesDiffer {
+	if claimsDiffer {
 		liveTemplate = live.Spec.Template.DeepCopy()
 	}
 
@@ -196,7 +192,7 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	if desired.Spec.ServiceName != "" && desired.Spec.ServiceName != serviceName {
 		ignored = append(ignored, "spec.serviceName")
 	}
-	if claimTemplatesDiffer {
+	if claimsDiffer {
 		ignored = append(ignored, "spec.volumeClaimTemplates")
 	}
 	if desired.Spec.PodManagementPolicy != "" && desired.Spec.PodManagementPolicy != podManagementPolicy {
@@ -229,7 +225,7 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	live.Spec.VolumeClaimTemplates = volumeClaimTemplates
 	live.Spec.PodManagementPolicy = podManagementPolicy
 
-	if claimTemplatesDiffer {
+	if claimsDiffer {
 		// live.Spec was assigned wholesale, so its Containers slice still shares a backing array
 		// with desired's. Deep-copy before mutating, or the fix writes through into the object the
 		// caller built.
@@ -240,6 +236,72 @@ func copyStatefulSetState(desired, live *appsv1.StatefulSet) []string {
 	live.Spec.Template.Annotations = mergeAnnotations(templateAnnotations, desired.Spec.Template.Annotations)
 
 	return ignored
+}
+
+// claimTemplatesDiffer reports whether the handler is ASKING for volumeClaimTemplates other than
+// the live ones — which is a different question from whether the two slices are byte-equal.
+//
+// The live side comes back from the API server carrying values it filled in itself, which a
+// handler-built template has no way to state, so a whole-slice DeepEqual can never be true for a
+// role group that HAS storage. Every reconcile of every such role group therefore reported
+// spec.volumeClaimTemplates as an ignored immutable change (#627): one unchanged StatefulSet
+// accumulated the warning indefinitely while its metadata.generation stayed at 1 and no pod ever
+// rolled.
+//
+// That is not merely noise — it destroys the signal the event exists for. A user who genuinely
+// resizes storage gets exactly the warning they were already getting on every pass, so the one
+// event that says "your resize was dropped" becomes indistinguishable from the background.
+//
+// # Which fields the server actually fills in
+//
+// Measured, rather than assumed, by round-tripping exactly what StatefulSetBuilder.WithStorage
+// produces through the API server (envtest, Kubernetes 1.35):
+//
+//	field                      sent    stored               server-populated
+//	metadata.name              data    data                 no
+//	spec.accessModes           [RWO]   [RWO]                no
+//	spec.resources.requests    1Gi     1Gi                  no
+//	spec.storageClassName      unset   unset                no  <- NOT defaulted on a template
+//	spec.volumeMode            unset   Filesystem           YES
+//	status                     {}      {phase: Pending}     YES
+//	apiVersion / kind          unset   unset                no  <- typed decode clears TypeMeta
+//
+// Only those two are normalised away, and only when the handler stated nothing — the rule
+// copyStatefulSetState already documents and applies to selector, serviceName and
+// podManagementPolicy. Everything else is still compared wholesale, which is what keeps a genuine
+// resize, a rename, or a storageClassName the user changed reportable. The asymmetry is deliberate:
+// a field this misses is a dropped change nobody hears about, while a field it over-reports is
+// noise that the steady-state spec in apply_storage_test.go fails on.
+//
+// The one place an EMPTY desired slice still counts is unchanged. Everywhere else an unset value is
+// the handler declining to have an opinion; an empty volumeClaimTemplates is the handler stating
+// that this role group has no storage, which is exactly the direction that was being applied
+// silently.
+func claimTemplatesDiffer(desired, live []corev1.PersistentVolumeClaim) bool {
+	if len(desired) != len(live) {
+		return true
+	}
+	for i := range desired {
+		if !apiequality.Semantic.DeepEqual(desired[i], claimTemplateAsRequested(desired[i], live[i])) {
+			return true
+		}
+	}
+	return false
+}
+
+// claimTemplateAsRequested returns the live claim template with the server-populated fields the
+// desired one does not state cleared, so the two compare for what the handler actually asked for.
+func claimTemplateAsRequested(desired, live corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {
+	requested := *live.DeepCopy()
+
+	if desired.Spec.VolumeMode == nil {
+		requested.Spec.VolumeMode = nil
+	}
+	if apiequality.Semantic.DeepEqual(desired.Status, corev1.PersistentVolumeClaimStatus{}) {
+		requested.Status = corev1.PersistentVolumeClaimStatus{}
+	}
+
+	return requested
 }
 
 // reconcileClaimVolumeMounts makes the pod template consistent with the volumeClaimTemplates that
