@@ -1276,9 +1276,14 @@ All AI agents and developers working on this project **must** follow these rules
 - If adding new public interfaces, update AGENTS.md accordingly
 
 ### CHANGELOG.md
-**Do NOT edit `CHANGELOG.md` in a pull request.** The entries under a version heading are generated
-**at release time from the commit history**, not written by hand per PR. The unreleased section
-therefore stays empty between releases, and the release process fills it in.
+**Do NOT edit `CHANGELOG.md` in a pull request.** The entries under a version heading are written
+**at release time from the commit history**, not per PR. The unreleased section therefore stays
+empty between releases, and the release fills it in.
+
+There is no generator: a maintainer reads the commits since the last tag and writes the section by
+hand. That is worth saying plainly, because the wording this replaced ("generated at release time")
+described a tool that does not exist and pointed at a release procedure that was never written —
+`.github/workflows/` holds only lint and test, and `hack/` holds only the boilerplate header.
 
 What this means in practice:
 - A PR carries its user-visible description in its **commit message**, which is the input the
@@ -1288,8 +1293,8 @@ What this means in practice:
 - Behavioral and API documentation belongs in `AGENTS.md` (what exists today) and
   `docs/architecture.md` (design intent) — those **are** part of the PR. Hand-maintaining the same
   prose in three places is what made the changelog drift.
-- Only the release itself touches `CHANGELOG.md`: see the release procedure for tagging and version
-  bumps.
+- Only the release itself touches `CHANGELOG.md`. Tagging and the version bump are not documented
+  anywhere yet — see #399.
 
 ### Code Style & Conventions
 - **Formatting**: Must pass `go fmt`

@@ -28,6 +28,23 @@ type AuthenticationClassSpec struct {
 	AuthenticationProvider *AuthenticationProvider `json:"provider"`
 }
 
+// AuthenticationProvider names EXACTLY ONE authentication method. A deployment offering several
+// methods declares several AuthenticationClasses; it does not put several providers in one.
+//
+// The rule is enforced at admission by CEL (ExactlyOneOf desugars to x-kubernetes-validations)
+// because nothing else can enforce it: AuthenticationClass has no controller in any repo, so this
+// object is only ever read at build time by whichever product operator references it. Before the
+// rule, the CRD accepted both zero providers and several, and the five operators that read it had
+// five different readings — first-match with the remaining providers silently unhandled, or, in one
+// case, BOTH an OIDC and an LDAP block concatenated into the same generated config file where the
+// second assignment silently won. An empty provider was worse than ambiguous: it failed OPEN, with
+// the product's authenticator skipped and its UI served unauthenticated, logged at V(5).
+//
+// The marker only stops NEW bad objects, and only once the regenerated CRD is applied. Use
+// ResolveProvider to read one: it gives every operator the same answer on every cluster, including
+// for objects stored before the rule existed.
+//
+// +kubebuilder:validation:ExactlyOneOf=oidc;tls;static;ldap;kerberos
 type AuthenticationProvider struct {
 	// +kubebuilder:validation:Optional
 	OIDC *OIDCProvider `json:"oidc,omitempty"`
