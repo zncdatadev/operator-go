@@ -157,6 +157,59 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 		return nil
 	}
 
+	It("says nothing when a data PVC is reconciled unchanged", func() {
+		// #627. The live claim template comes back with spec.volumeMode and a status block the API
+		// server filled in, which a handler-built template has no way to state, so a whole-slice
+		// DeepEqual was true on EVERY pass: the warning accumulated indefinitely on a StatefulSet
+		// whose generation stayed at 1 and whose pods never rolled. It is not just noise — it is the
+		// same warning a genuine resize produces, so the event stopped distinguishing the two.
+		name := uniqueCRName("storage-steady")
+		_, resourceName := newCluster(name, storage())
+
+		rec := record.NewFakeRecorder(100)
+		r := newReconcilerFor(rec)
+		reconcileOnce(r, name)
+		Expect(getSTS(resourceName).Spec.VolumeClaimTemplates).To(HaveLen(1),
+			"the fixture must actually have a claim template, or this spec passes for free")
+		drainRecorder(rec)
+
+		// Nothing changed: same CR, same handler, same reconciler.
+		reconcileOnce(r, name)
+		Expect(drainRecorder(rec)).NotTo(ContainElement(ContainSubstring("ImmutableFieldIgnored")))
+	})
+
+	It("still reports a resize, which is the change the event exists for", func() {
+		// The other half of #627, and the case narrowing the comparison could have broken: capacity
+		// is the field users actually edit, the framework cannot apply it, and before the event
+		// existed the CR reported ReconcileComplete while the PVC never moved.
+		//
+		// generic_reconciler_test.go asserts the same warning from a hand-built StatefulSet; this
+		// one drives the user's actual route — config.resources.storage through the CRD and the
+		// builder — so it also proves the narrowed comparison does not over-clear on the exact
+		// template shape WithStorage produces.
+		name := uniqueCRName("storage-resize")
+		_, resourceName := newCluster(name, storage())
+
+		rec := record.NewFakeRecorder(100)
+		r := newReconcilerFor(rec)
+		reconcileOnce(r, name)
+		drainRecorder(rec)
+
+		bigger := storage()
+		bigger.Resources.Storage.Capacity = ptr.To(resource.MustParse("10Gi"))
+		setRoleGroupConfig(name, bigger)
+		reconcileOnce(r, name)
+
+		claim := getSTS(resourceName).Spec.VolumeClaimTemplates[0]
+		Expect(claim.Spec.Resources.Requests.Storage().String()).To(Equal("1Gi"),
+			"the claim template is immutable, so the resize cannot be applied in place")
+		Expect(drainRecorder(rec)).To(ContainElement(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ImmutableFieldIgnored"),
+			ContainSubstring("spec.volumeClaimTemplates"),
+		)), "a resize the framework dropped must still be said out loud")
+	})
+
 	It("keeps converging when storage is added to a live role group, and says what it dropped", func() {
 		name := uniqueCRName("storage-add")
 		_, resourceName := newCluster(name, nil)

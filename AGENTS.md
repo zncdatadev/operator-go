@@ -204,6 +204,16 @@ else an unset field is the handler declining to have an opinion, but an empty `v
 is the handler stating this role group has no storage, which is exactly the direction that used to be
 applied in silence.
 
+**Inside a claim template, a value only the server filled in is not a change request.** The live
+template comes back carrying `spec.volumeMode: Filesystem` and a `status` block a handler-built one
+has no way to state, so a whole-slice comparison was true on *every* pass: each role group with a
+data PVC emitted `ImmutableFieldIgnored` forever while its StatefulSet's `generation` stayed at 1 and
+no pod rolled (#627). That is not merely noisy — it is the same warning a genuine resize produces, so
+the event stopped distinguishing "your resize was dropped" from the background. Those two fields are
+therefore compared only when the handler states one; everything else — capacity, access modes, the
+claim's name, `storageClassName` — still counts, and `storageClassName` in particular is **not**
+defaulted into the template by the API server, so changing it is still reported.
+
 **A `configOverrides` change does not roll the pods by itself — the platform restarter does.**
 Editing `configOverrides` makes the framework rewrite the role group ConfigMap, and stop there: the
 pod template is byte-identical, so the StatefulSet controller has no reason to roll anything, and
