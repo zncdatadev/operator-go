@@ -123,7 +123,7 @@ func WithWorkloadRBACExtraLabels(labels map[string]string) WorkloadRBACOption {
 //	// the rules being granted — Kubernetes forbids granting what the granter lacks
 //	// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update
 //	// write access to the RBAC API itself, without which nothing here can be created at all
-//	// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+//	// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
 func EnsureWorkloadRBAC(
 	ctx context.Context,
 	c client.Client,
@@ -395,7 +395,7 @@ func explainWorkloadRBACError(ctx context.Context, err error, rules []rbacv1.Pol
 			"the API server refused to write this cluster's workload RBAC. If the operator lacks access to "+
 				"the RBAC API itself, add "+
 				"`+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,"+
-				"verbs=get;list;watch;create;update;patch;delete` and regenerate its ClusterRole: %w", err)
+				"verbs=get;list;watch;create;update;delete` and regenerate its ClusterRole: %w", err)
 	}
 	log.FromContext(ctx).Error(err, "Workload RBAC was refused: the operator cannot grant permissions it does not hold itself",
 		"rules", rules)

@@ -289,7 +289,7 @@ result.
   // the rules being granted — Kubernetes forbids granting what the granter lacks
   // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update
   // write access to the RBAC API itself, without which nothing here can be created at all
-  // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+  // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
   ```
 
   A 403 has those two distinct causes needing opposite fixes, so the SDK re-explains the API server's
@@ -381,7 +381,7 @@ publishing a baseline is that adopters can stop copying permissions they do not 
 
 | Grant | Needed when |
 | --- | --- |
-| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;patch;delete` | `WorkloadRBACRules` is set (§3.2). A nil hook registers neither the watches nor any write. |
+| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;delete` | `WorkloadRBACRules` is set (§3.2). A nil hook registers neither the watches nor any write. |
 | `core/secrets` — `get;list;watch` | `Dependencies` returns a `DependencySecret`, the oauth2-proxy sidecar is registered, or a handler calls `FetchSecret`. |
 | `core/secrets` — `get;list;watch;create;update` | A product calls `EnsureGeneratedSecret` (§4.9.4 in `architecture.md`) — use this row *instead of* the one above. It is effectively mandatory with oauth2-proxy, whose `Validate` fails when the cookie key is missing. |
 | `core/persistentvolumeclaims` — `list;watch;delete` | See the trap below. |
