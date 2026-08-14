@@ -4,6 +4,48 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-13] (the operator's own ClusterRole, and the two grants that do not announce themselves)
+
+### Core architecture
+
+- `docs/security.md` gains **§3.3 Operator RBAC**, the third axis alongside workload identity (§3.1)
+  and workload RBAC (§3.2): the permissions the operator *process* must hold because
+  `GenericReconciler` writes on its identity. Derived from the framework's own call sites rather
+  than copied from the example, split into a baseline every operator needs and conditional grants
+  with their exact triggers, and explicit about four ways the obvious marker set over-grants (no
+  `patch` on owned kinds, no `delete` on serviceaccounts, no `get` on pods or PVCs, no write verbs
+  on the CR body). Records why the SDK cannot declare any of this itself: controller-gen never walks
+  a dependency's packages, so a marker in `pkg/` generates nothing anywhere. Old §3.3/§3.4 shift to
+  §3.4/§3.5.
+- §3.3.3 names the two grants whose absence is not self-announcing, which is the reason the section
+  exists: `core/events` (client-go discards a 403 on an event with no retry and no error, so the
+  pass reports success) and `core/pods` (a failed pod List is deliberately not the cluster's fault,
+  so `Degraded` silently becomes uncomputable). Every other grant fails loudly — a forbidden
+  informer takes `manager.Start` down, a forbidden write sets `Degraded`.
+- `docs/architecture.md` §4.14 gains **§4.14.3**, the events precondition, attached to the sentence
+  in §4.14.4 that promised `kubectl describe` visibility unconditionally. Records that the loss is
+  uneven: five of the six `Warning` events have a paired log line or condition, and
+  `ImmutableFieldIgnored` has neither — so it is the one whose information exists only as an event,
+  and losing it reintroduces the silent-storage-resize defect it was added for.
+- `docs/architecture.md` §7.1's "Operator requires CRUD permissions for StatefulSet, Service,
+  ConfigMap, etc." is replaced by a pointer to §3.3 rather than a second copy.
+- `docs/security.md` §3.2 corrects the escalation escape hatch: the Role and RoleBinding writes are
+  checked **separately**, with different bypass verbs (`escalate` on roles, `bind` on the referenced
+  role), so `escalate` alone half-converges — the Role lands, the RoleBinding is refused, and the
+  reconcile fails at step 0b on every pass. The same correction lands in
+  `pkg/reconciler/workload_rbac.go`'s godoc, which claimed the failure was at Role create time.
+
+### Package guides
+
+- Root `AGENTS.md` §11c resolves its own dangling pointer: it named the operator's ClusterRole as "a
+  separate axis entirely" and pointed nowhere. It now points at §3.3 and names the two quiet grants.
+- `pkg/reconciler/AGENTS.md`'s `event.go` row and the `GenericReconcilerConfig.Recorder` field doc
+  both state the permission the recorder obliges, and what a 403 does.
+- `examples/trino-operator`'s marker block is narrowed to the derived set and explains each grant;
+  its generated `config/rbac/role.yaml` follows. `make verify-generate`'s pathspec now covers
+  `*/config/rbac`, which it did not — an edited marker whose regenerated ClusterRole was never
+  committed used to pass CI, and that file is now a documented reference.
+
 ## [2026-08-10c] (a hook can wait without the cluster reporting a fault)
 
 ### Package guides

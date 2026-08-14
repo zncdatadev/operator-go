@@ -938,10 +938,36 @@ K8s Events provide a chronological log of significant occurrences within the clu
 - **Degraded-input warnings**: some inputs are bad but not fatal, and they get a `Warning` of their own rather than being dropped silently. The complete vocabulary the framework emits: `ReconcileError`, `ReconcilePanic` (a recovered panic), `PodOverrideIgnored` (a `podOverrides` layer that fails to decode or patch — `MergedConfig.PodOverrideErrors`), `UnknownConfiguredRole` (a handler configured for a role the CR does not declare), `ImmutableFieldIgnored` (a desired change to a preserved immutable field), `VectorSidecarSkipped` (the agent is enabled but nothing supplies `vector.yaml`), plus the three resource-operation `Normal` events above.
 - **Product-facing helpers**: `EmitWarningEvent`, `EmitNormalEvent`, `LogAndEmitError` and `LogAndEmitInfo` are available to extensions and product code. The framework calls only the first two.
 
-### 4.14.3 Core Value
+### 4.14.3 The precondition: `core/events` `create;patch`
+
+Everything in §4.14 depends on a permission the SDK cannot declare for the operator that embeds it,
+and whose absence announces itself nowhere useful. **The operator's own ClusterRole must carry
+`+kubebuilder:rbac:groups=core,resources=events,verbs=create;patch`** (see `security.md` §3.3).
+`patch` is not conventional slack: a repeated event is aggregated onto the existing object, so
+client-go patches rather than creates it.
+
+Without the grant, client-go treats the 403 as permanent — it logs `Server rejected event (will not
+retry!)` and **discards** the event. Emission is fire-and-forget onto a broadcaster channel, so no
+error reaches the reconcile, the status is untouched and the pass reports success. The rejection is
+not literally silent (the log line carries the whole event, because `*v1.Event` renders itself), but
+it is *misrouted*: it leaves `kubectl describe` and `kubectl get events` entirely, and it does not
+go through the operator's own structured logger — controller-runtime never redirects klog, so it
+lands on stderr in klog's text format, rate-limited to roughly 25 and then one per 300s per object.
+
+The cost is not evenly spread across §4.14.2's vocabulary. Five of the six `Warning` events survive
+the loss because the same information exists elsewhere: `ReconcileError` also sets `Degraded`,
+and `ReconcilePanic`, `PodOverrideIgnored`, `VectorSidecarSkipped` and `UnknownConfiguredRole` each
+have a paired log line. **`ImmutableFieldIgnored` has neither** — no log line, no status condition —
+so it is the one framework warning whose information exists *only* as an event. It is also the one
+whose loss reintroduces a known data defect: it exists because preserving an immutable field
+silently is what let a storage resize be accepted, reported as `ReconcileComplete=True`, and never
+applied.
+
+### 4.14.4 Core Value
 
 - **Auditability**: Provides a trace of actions taken by the Operator.
-- **Troubleshooting**: Warning events appear directly in `kubectl describe`, giving immediate visibility into failures.
+- **Troubleshooting**: Warning events appear directly in `kubectl describe`, giving immediate
+  visibility into failures — **provided** the operator holds the grant in §4.14.3.
 
 ## 4.15 Constants Architecture Module
 
@@ -1364,7 +1390,10 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 
 - **K8s Version**: 1.31+ (Adapts to Webhook AdmissionReviewVersions=v1).
 - **Dependent Components**: cert-manager (for Webhook certificate generation), kubebuilder 3.0+ (for code generation).
-- **Permission Requirements**: Operator requires CRUD permissions for resources such as StatefulSet, Service, ConfigMap, etc.
+- **Permission Requirements**: the operator's own ClusterRole must cover everything the framework
+  calls on its identity. The enumerated set — baseline, conditional grants and the two whose absence
+  is not self-announcing — is `security.md` §3.3. It is deliberately not restated here: one copy
+  drifts, two copies disagree.
 
 ## 7.2 New Product Extension Steps
 

@@ -62,8 +62,12 @@ verify-generate: generate manifests ## Fail if the committed generated files are
 # examples/trino-operator is a separate module and is checked too: it embeds the commons API types,
 # so a change to pkg/apis leaves its CRD stale, and it is the reference implementation downstream
 # operators copy. Its own Makefile pins its own controller-gen, so it is driven through that.
+#
+# '*/config/rbac' is in the pathspec because that module's generated ClusterRole is the canonical
+# operator-side permission set docs/security.md §3.3 points adopters at. Without it, an edited
+# +kubebuilder:rbac marker whose regenerated role.yaml was never committed passed CI.
 	$(MAKE) -C examples/trino-operator generate manifests
-	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases' config/crd/bases)"; \
+	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases' config/crd/bases '*/config/rbac')"; \
 	if [ -n "$$drift" ]; then \
 		echo "Generated files are out of date. Run 'make generate manifests' and commit the result:"; \
 		echo "$$drift"; \

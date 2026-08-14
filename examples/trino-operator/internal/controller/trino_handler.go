@@ -37,20 +37,32 @@ import (
 // aggregator address, and generates vector.yaml into the role group ConfigMap.
 var _ reconciler.VectorAggregatorProvider = (*trinov1alpha1.TrinoCluster)(nil)
 
-// RBAC for the resources the SDK GenericReconciler owns on behalf of a TrinoCluster. The
-// GenericReconciler watches the CR plus every kind it Owns() (StatefulSet, Service, ConfigMap,
-// ServiceAccount, PodDisruptionBudget), lists Pods for health status, and deletes orphaned PVCs
-// when a role group shrinks, so the manager ClusterRole has to cover all of them — the informers
-// fail to start otherwise. Regenerate config/rbac/role.yaml with `make manifests` after editing.
+// RBAC for the resources the SDK GenericReconciler consumes on behalf of a TrinoCluster. This is
+// the OPERATOR's own ClusterRole, not the workload's (that is GenericReconcilerConfig's
+// WorkloadRBACRules, which this example does not use) — the canonical set, with the reason for each
+// grant, is docs/security.md §3.3. Keep this block in step with it: the SDK cannot declare these
+// itself, because controller-gen never walks a dependency's packages, so this file is what every
+// adopter copies. Regenerate config/rbac/role.yaml with `make manifests` after editing.
 //
-// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=get;update;patch
+// The verbs are deliberately narrower than "CRUD everything":
+//   - no `patch` on the owned kinds — the apply path is CreateOrUpdate (Get + Create/Update), and
+//     the framework's only Patch is on events
+//   - no `delete` on serviceaccounts — nothing deletes one; it is reclaimed by owner-reference GC
+//   - no `get` on pods or persistentvolumeclaims — both are only ever Listed
+//
+// Two of these do not announce themselves when missing (§3.3.3): `events` is discarded by client-go
+// with no error, and `pods` silently disables the Degraded condition. Everything else fails loudly —
+// a forbidden informer takes manager.Start down with it.
+//
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=update
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=list;watch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 // TrinoRoleGroupHandler builds Trino role group resources. It embeds the SDK's

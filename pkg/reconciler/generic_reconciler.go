@@ -85,7 +85,17 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// Scheme is the runtime scheme for registering types.
 	Scheme *runtime.Scheme
 
-	// Recorder is the event recorder for emitting events.
+	// Recorder is the event recorder for emitting events. Required — the framework emits on every
+	// apply and on several conditions the status does not carry.
+	//
+	// It obliges the OPERATOR's own ClusterRole to hold
+	// `+kubebuilder:rbac:groups=core,resources=events,verbs=create;patch` (`patch` because a repeat
+	// event is aggregated onto the existing object). This is the one framework permission whose
+	// absence does not announce itself: client-go treats a 403 on an event as permanent, logs
+	// "Server rejected event (will not retry!)" and DISCARDS it, and emission is fire-and-forget, so
+	// no error reaches Reconcile, the status is untouched, and the pass reports success. What is
+	// lost includes ImmutableFieldIgnored — the only framework Warning with no paired log line and
+	// no status condition. See docs/security.md §3.3 for the full operator-side set.
 	Recorder record.EventRecorder
 
 	// RoleGroupHandler is the product-specific handler for building resources.

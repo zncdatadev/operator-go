@@ -189,7 +189,9 @@ front of the product's HTTP port.
 
 # 3. Infrastructure Security
 
-This layer focuses on how the Operator constructs the Kubernetes Pods and Resources to minimize the attack surface and ensure proper isolation.
+This layer covers both directions: how the Operator constructs the Kubernetes Pods and Resources to
+minimize the attack surface (§3.1, §3.2, §3.4), and what the Operator process itself must be
+granted in order to do so (§3.3).
 
 ## 3.1 Workload Identity (Service Accounts)
 
@@ -295,6 +297,14 @@ result.
   operator's real effective permissions (wildcards, `resourceNames`, aggregated ClusterRoles) and
   names the missing rule.
 
+  **The escalation check runs twice, on two writes, with two different bypass verbs.** The Role
+  create/update is checked against `escalate` on `roles`; the RoleBinding create is checked
+  separately, and *its* bypass verb is `bind` on the referenced role. So `escalate` alone is not an
+  escape hatch — it is the worst of both: the Role is created, the RoleBinding is refused, and
+  `ensureWorkloadRBAC` then fails at step 0b on every pass, before any hook or role runs, leaving a
+  Role bound to nothing. If you take the hatch at all it is `verbs: ["bind", "escalate"]`; the
+  supported answer remains the superset.
+
 - **Watches are registered only when the hook is set.** An unconditional `Owns(&rbacv1.Role{})` would
   force *every* operator built on this SDK to grant itself cluster-wide `list;watch` on roles and
   rolebindings — and a forbidden informer fails `WaitForCacheSync` for **all** sources, so
@@ -304,7 +314,121 @@ result.
   `ClusterRoleBindingBuilder`) for products assembling RBAC objects the framework does not maintain.
   They write nothing to the API server.
 
-## 3.3 Pod Security Guidelines
+## 3.3 Operator RBAC (what the framework itself consumes)
+
+§3.1 and §3.2 are about the **workload's** identity and permissions. This section is the other axis:
+the permissions the **operator process** must hold, because `GenericReconciler` performs API writes
+on the operator's own ServiceAccount on behalf of every CR it reconciles.
+
+The SDK cannot declare these for you. `controller-gen` only walks the packages named in its `paths`
+argument and never descends into a dependency, so a `+kubebuilder:rbac` marker inside `pkg/` would
+generate nothing anywhere. **The framework consumes the permissions; the adopting operator declares
+them.** That split is the entire reason this section exists — before it, the only way to derive this
+set was to read `examples/trino-operator`'s markers and hope they were complete.
+
+> Derived from the framework's own call sites, not from the example. It describes what the code does
+> today; when the framework's API usage changes, this table is what must be updated with it.
+
+### 3.3.1 The baseline every operator needs
+
+```go
+// The CR itself. The framework Gets it at the top of every pass and watches it via For().
+// It never writes the CR body — only the status subresource.
+// +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>,verbs=get;list;watch
+// +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>/status,verbs=update
+// +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>/finalizers,verbs=update
+
+// The workload the framework builds and reclaims.
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;delete
+
+// The workload identity (§3.1). Every cluster gets one and nothing ever deletes it.
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update
+
+// Health evaluation: one label-selected List per pass. NOT self-announcing — see §3.3.3.
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
+
+// Events. NOT self-announcing — see §3.3.3.
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+```
+
+Four things in that list are easy to get wrong in the direction of granting **too much**, so they are
+stated explicitly:
+
+- **No `patch` on the owned kinds.** The apply path is `controllerutil.CreateOrUpdate`, which is a
+  Get followed by a Create or an Update. The framework issues exactly one `Patch` in the whole SDK,
+  and it is on `events`.
+- **No `delete` on `serviceaccounts`.** The SDK has no code path that deletes one; it carries a
+  controller owner reference and is reclaimed by garbage collection with the CR. Collapsing
+  `services;configmaps;serviceaccounts` into a single marker line is how the extra verb gets in.
+- **No `get` on `pods`.** The framework only ever Lists them. A single-Pod read appears only with
+  `util.ExecUtil`, which is opt-in (§3.3.2).
+- **No `update`/`patch` on the CR body, and no `get`/`patch` on `/status`.** The framework Gets the
+  CR and writes `Status().Update`; nothing else.
+
+`<yourplurals>/finalizers` is required for a reason its name does not suggest — **the SDK registers
+no finalizer anywhere.** `controllerutil.SetControllerReference` stamps `blockOwnerDeletion: true`
+on every owner reference the framework writes, and the `OwnerReferencesPermissionEnforcement`
+admission plugin gates that field on `update` of the *owner's* finalizers subresource. It is
+therefore required on clusters running that plugin (OpenShift enables it) and inert everywhere else.
+Keep it, and keep this sentence with it, or the next reader will delete it as dead.
+
+### 3.3.2 Conditional grants
+
+Grant these only if you use the feature. Each row names its exact trigger, because the point of
+publishing a baseline is that adopters can stop copying permissions they do not need.
+
+| Grant | Needed when |
+| --- | --- |
+| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;patch;delete` | `WorkloadRBACRules` is set (§3.2). A nil hook registers neither the watches nor any write. |
+| `core/secrets` — `get;list;watch` | `Dependencies` returns a `DependencySecret`, the oauth2-proxy sidecar is registered, or a handler calls `FetchSecret`. |
+| `core/secrets` — `get;list;watch;create;update` | A product calls `EnsureGeneratedSecret` (§4.9.4 in `architecture.md`) — use this row *instead of* the one above. It is effectively mandatory with oauth2-proxy, whose `Validate` fails when the cookie key is missing. |
+| `core/persistentvolumeclaims` — `list;watch;delete` | See the trap below. |
+| `core/pods/exec` — `create`, plus `get` on `core/pods` | A product builds `util.NewExecUtil` (e.g. an in-container `ServiceHealthCheck`). This is arbitrary command execution in the product's pods; it is deliberately not in the baseline. |
+| `s3.kubedoop.dev/s3connections;s3buckets` — `get;list;watch` | A product resolves S3 through `pkg/s3` **and** users write `reference:` rather than `inline:` — the inline branch performs no I/O. |
+| your `ExtraResources` kinds — `get;list;watch;create;update;delete` | A handler ships `RoleGroupResources.ExtraResources`. The `list;watch` half is load-bearing at **startup**, not only for cleanup: these kinds are registered through `SetupWithManagerOptions.ExtraOwns`. |
+
+**The PVC trap.** `operator.zncdata.dev/delete-pvcs` is set by whoever *operates* the cluster, on the
+CR, at runtime — not by the operator's author at build time. "We do not use that feature" is
+therefore not a decision you get to make: without the grant, a user who sets the annotation gets
+silent non-reclamation. Cluster **deletion** never touches PVCs (the SDK sets no finalizer and no
+retention policy), so this is strictly the orphan path.
+
+Two more the framework never calls, listed because they are part of a working operator and no
+call-site scan of `pkg/` reveals them — both are wired in your `main.go`:
+`coordination.k8s.io/leases` (`get;create;update`) under `--leader-elect`, and
+`authentication.k8s.io/tokenreviews` + `authorization.k8s.io/subjectaccessreviews` (`create`) when
+the metrics endpoint is protected.
+
+### 3.3.3 Two of these do not announce themselves
+
+Every grant above except two fails **loudly**, which is why they get fixed on first deployment: a
+forbidden informer fails `WaitForCacheSync` for *all* sources, so `manager.Start` returns and the
+process exits (§3.2 relies on the same mechanism), and a forbidden write returns an error that fails
+the role group and sets `Degraded` with the API server's own message.
+
+`pods` and `events` are the exceptions, and both are lazily-created informers or fire-and-forget
+writes with no `Owns()` line to fail at boot:
+
+- **`events`** — client-go classifies a 403 on an event as permanent: it logs
+  `Server rejected event (will not retry!)` and *discards* the event. Emission is fire-and-forget
+  onto a broadcaster channel, so the reconcile never sees an error, the status is untouched, and the
+  pass reports success. What you lose is every `Warning` in §4.14's vocabulary — including
+  `ImmutableFieldIgnored`, which is the **only** one with no paired log line and no status
+  condition, i.e. the only framework warning whose information exists nowhere else. Its own comment
+  records why it was added: doing it silently is what let a storage resize be accepted, reported as
+  `ReconcileComplete=True`, and never applied.
+- **`pods`** — `findFailingPods` is the sole input to `Degraded`, and a failure to list is
+  deliberately *not* treated as the cluster's fault: it is logged and "the verdict falls back to
+  'no failures observed'". So a missing grant does not report a fault — it removes the ability to
+  report one, and `Degraded=False` then means "not checked" rather than "healthy".
+
+Neither is catchable by the project's gates: `make test` runs envtest as cluster-admin, and
+`make verify-generate` diffs a product's own markers against its own generated YAML — a *framework*
+requirement appears in neither. That is what this section is for.
+
+## 3.4 Pod Security Guidelines
 
 The SDK generates `PodSpecs` that adhere to modern container security best practices. The base
 role-group handler applies a **single, canonical default** pod/container `SecurityContext` with no
@@ -315,7 +439,7 @@ The pod-level context lands on `.spec.template.spec.securityContext` (so it cove
 in the Pod); the container-level context is set on the **primary container** the base handler
 builds. Sidecar containers carry whatever `SidecarConfig.SecurityContext` their provider was given.
 
-### 3.3.1 Default SecurityContext
+### 3.4.1 Default SecurityContext
 
 **Pod-level (`spec.securityContext`):**
 
@@ -340,7 +464,7 @@ have the expected owner and mode — true exactly once, the first time a freshly
 mounted. The trade-off is deliberate: ownership that drifts *inside* a volume whose root is still
 correct will not be repaired. That is a repair the framework never promised, and paying for it on
 every start of every stateful pod is the wrong price. A product that wants it back sets
-`fsGroupChangePolicy: Always` through `PodOverrides` (§3.3.2).
+`fsGroupChangePolicy: Always` through `PodOverrides` (§3.4.2).
 
 The policy has no effect on ephemeral volume types (secret, configMap, emptyDir), so the config
 mount and the shared log volume behave identically either way; the data PVC is what it is about.
@@ -356,7 +480,7 @@ mount and the shared log volume behave identically either way; the data PVC is w
 | `capabilities.drop` | `[ALL]` | drop all Linux capabilities |
 | `seccompProfile.type` | `RuntimeDefault` | apply the runtime's default seccomp profile |
 
-### 3.3.2 Overriding via PodOverrides (strategic-merge semantics)
+### 3.4.2 Overriding via PodOverrides (strategic-merge semantics)
 
 Products customize the security context through `MergedConfig.PodOverrides`, which is applied
 as a Kubernetes **Strategic Merge Patch** (the merge strategy `docs/architecture.md` §2.5
@@ -374,7 +498,7 @@ Two handler-wide escape hatches sit alongside the per-role-group overrides:
 role group, and `WithoutDefaultSecurityContext()` disables them entirely (the StatefulSet is then
 built with no SecurityContext unless `PodOverrides` supplies one).
 
-## 3.4 Security Benefits Summary
+## 3.5 Security Benefits Summary
 
 - **Access Isolation**: Product Operators operate with minimal RBAC privileges, reducing the blast radius if an operator is compromised.
 - **Consistency**: Standardizes security configurations across all data products (HDFS, Hive, Trino, etc.).
