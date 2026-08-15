@@ -97,12 +97,17 @@ func WithWorkloadRBACExtraLabels(labels map[string]string) WorkloadRBACOption {
 // the Service — and it is what makes "the rules converge" true in both directions: narrowing to
 // zero is the largest narrowing there is.
 //
-// # A pre-existing RoleBinding is never adopted
+// # A pre-existing RoleBinding is never re-pointed
 //
-// roleRef is immutable, so a RoleBinding already sitting at this name pointing somewhere else
+// roleRef is immutable, so a RoleBinding already sitting at this name pointing somewhere ELSE
 // cannot be converged. This fails with a *ValidationError naming both refs and the one command
 // that fixes it, rather than rebinding the existing object to the workload's ServiceAccount —
 // which would hand those pods whatever the old ref allows.
+//
+// One already pointing at THIS cluster's Role is adopted instead, which is the migration path this
+// helper exists for. Adoption overwrites: subjects become the single derived ServiceAccount, labels
+// are replaced, and the CR takes the controller reference, so the object is from then on garbage-
+// collected with the cluster.
 //
 // # The escalation footgun
 //

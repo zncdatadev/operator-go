@@ -289,11 +289,19 @@ result.
   the pods kept permissions the product had stopped granting. A **nil hook** is different from a hook
   returning empty: nil means the product never opted in and no RBAC object is touched at all.
 
-- **A pre-existing RoleBinding is never adopted.** `roleRef` is immutable, so a RoleBinding already
-  at this name pointing elsewhere cannot be converged. The framework fails with a
+- **A pre-existing RoleBinding is never re-pointed.** `roleRef` is immutable, so a RoleBinding
+  already at this name pointing **elsewhere** cannot be converged. The framework fails with a
   `*reconciler.ValidationError` naming both refs and the command that fixes it, rather than rewriting
   only the subject — which would hand this cluster's pods whatever the old ref allows, and report
   success.
+
+  One already pointing at *this* cluster's Role is the other case, and it **is** adopted — that is
+  the intended migration path off a hand-maintained or Helm-installed binding, and a hand-written one
+  usually does match, since both the binding's name and the Role's are the derived ServiceAccount
+  name. Adoption is not gentle, though: the subjects are replaced with the single derived
+  ServiceAccount, the labels are overwritten, and the CR takes the **controller** reference, so the
+  object is thereafter garbage-collected with the cluster. Anything else that binding was granting —
+  a second subject, a CI account — disappears on the next reconcile.
 
 - **The operator must hold what it grants.** Kubernetes refuses to let a subject grant permissions it
   does not itself hold, so the operator's own ClusterRole must be a superset of every rule passed
@@ -412,6 +420,33 @@ The rule this section follows, therefore: **omit a verb only when omitting it ac
 capability.** "The framework does not call it" is a fact worth recording — and §3.3.3 depends on
 knowing exactly which calls happen — but it is not by itself a reason to withhold a grant.
 
+#### Why a `Get` needs `list;watch`
+
+Several rows grant `list;watch` on kinds the framework never Lists — `core/secrets` and
+`s3.kubedoop.dev/*` in §3.3.2 are read exclusively through `Get` (`Dependencies` validation,
+`FetchSecret`, the oauth2-proxy `Validate`, the S3 reference resolvers). That is not sloppiness, and
+tightening it to `get` is the one "obvious" correction that breaks an operator.
+
+The framework reads through `mgr.GetClient()`, which is **cache-backed**: a read is served from an
+informer, and a read of a kind that has no informer yet **lazily creates one** — which LISTs and then
+WATCHes. So a code path that only ever calls `Get` still requires `get;list;watch`, and it fails at
+the **first read**, mid-reconcile, rather than at startup.
+
+The consequence worth weighing before you grant it: **an informer is cluster-wide and unfiltered by
+default**, so `core/secrets` does not mean "the operator can read the one Secret it needs" — it means
+the operator LISTs and caches *every Secret in every namespace* in its own memory. That is a memory
+cost on a large cluster and a much larger blast radius if the operator is compromised. Scope it in
+your manager options if that matters:
+
+```go
+Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+    &corev1.Secret{}: {Namespaces: map[string]cache.Config{"my-namespace": {}}},
+}}
+```
+
+The same is true of any `ExtraResources` kind you cache, and it is why the `s3` rows are worth
+skipping entirely for a product whose users always write `inline:`.
+
 **Granting the CR-body write back.** The SDK registers no finalizer, but it explicitly contemplates
 products that do (a product finalizer is one of the two paths that leave a CR readable with a
 `deletionTimestamp`). Adding or removing a finalizer writes `metadata.finalizers`, which is the CR
@@ -433,13 +468,19 @@ publishing a baseline is that adopters can stop copying permissions they do not 
 
 | Grant | Needed when |
 | --- | --- |
-| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;patch;delete` | `WorkloadRBACRules` is set (§3.2). A nil hook registers neither the watches nor any write. |
+| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;patch;delete` | `WorkloadRBACRules` is set (§3.2) — **plus every rule your hook returns**, since Kubernetes forbids granting what the granter lacks. That second half cannot be tabulated here, because it is whatever your product passes; without it the operator 403s at step 0b on every pass, before any hook or role runs. A nil hook registers neither the watches nor any write. |
 | `core/secrets` — `get;list;watch` | `Dependencies` returns a `DependencySecret`, the oauth2-proxy sidecar is registered, or a handler calls `FetchSecret`. |
-| `core/secrets` — `get;list;watch;create;update` | A product calls `EnsureGeneratedSecret` (§4.9.4 in `architecture.md`) — use this row *instead of* the one above. It is effectively mandatory with oauth2-proxy, whose `Validate` fails when the cookie key is missing. |
+| `core/secrets` — `get;list;watch;create;update;patch` | A product calls `EnsureGeneratedSecret` (§4.9.4 in `architecture.md`) — use this row *instead of* the one above. It is effectively mandatory with oauth2-proxy, whose `Validate` fails when the cookie key is missing. |
 | `core/persistentvolumeclaims` — `get;list;watch;delete` | Listed in the baseline above because of the trap below, not because every operator reclaims PVCs. |
 | `core/pods/exec` — `create` | A product builds `util.NewExecUtil` (e.g. an in-container `ServiceHealthCheck`). This is arbitrary command execution in the product's pods; it is deliberately not in the baseline. |
 | `s3.kubedoop.dev/s3connections;s3buckets` — `get;list;watch` | A product resolves S3 through `pkg/s3` **and** users write `reference:` rather than `inline:` — the inline branch performs no I/O. |
-| your `ExtraResources` kinds — `get;list;watch;create;update;delete` | A handler ships `RoleGroupResources.ExtraResources`. The `list;watch` half is load-bearing at **startup**, not only for cleanup: these kinds are registered through `SetupWithManagerOptions.ExtraOwns`. |
+| your `ExtraResources` kinds — `get;list;watch;create;update;patch;delete` | A handler ships `RoleGroupResources.ExtraResources`. The `list;watch` half is load-bearing at **startup**, not only for cleanup: these kinds are registered through `SetupWithManagerOptions.ExtraOwns`. |
+
+Both write rows carry `patch` for the same reason the baseline does — these paths are
+`controllerutil.CreateOrUpdate` like every other, so next to `update` the verb grants nothing
+extra, while omitting it would 403 the exported `util.K8sUtil.Patch`. The read-only rows and
+`persistentvolumeclaims` deliberately do **not** get it: the PVC row has no `update` either, so
+there `patch` would genuinely add the ability to modify a claim.
 
 **The PVC trap.** `operator.zncdata.dev/delete-pvcs` is set by whoever *operates* the cluster, on the
 CR, at runtime — not by the operator's author at build time. "We do not use that feature" is
@@ -455,10 +496,22 @@ the metrics endpoint is protected.
 
 ### 3.3.3 What does not announce itself
 
-Most grants above fail **loudly on the apply path**, which is why those get fixed on first
-deployment: a forbidden informer fails `WaitForCacheSync` for *all* sources, so `manager.Start`
-returns and the process exits (§3.2 relies on the same mechanism), and a forbidden create/update
-returns an error that fails the role group and sets `Degraded` with the API server's own message.
+Most grants above fail **loudly**, which is why those get fixed on first deployment. Two mechanisms
+do that, and which one applies depends on where the watch came from:
+
+- a kind registered with `Owns()` — `statefulsets`, `services`, `configmaps`, `serviceaccounts`,
+  `poddisruptionbudgets` and your `ExtraOwns` kinds — starts its informer at **boot**. A forbidden
+  one fails `WaitForCacheSync` for *all* sources, so `manager.Start` returns and the process exits
+  (§3.2 relies on the same mechanism). You cannot miss it.
+- a forbidden create/update returns an error that fails the role group and sets `Degraded` with the
+  API server's own message.
+
+A **lazily**-created informer is the quieter middle case: the kinds read only through `Get`
+(§3.3.1's "Why a `Get` needs `list;watch`") have no `Owns()` line, so nothing fails at boot and the
+403 surfaces on the first read instead — during a reconcile, on whichever cluster happened to
+trigger it.
+
+Three things are quieter still, and the third is a whole code path rather than a grant:
 
 Three things are quiet, and the third is a whole code path rather than a grant:
 
@@ -467,13 +520,13 @@ Three things are quiet, and the third is a whole code path rather than a grant:
   reports `ReconcileComplete=True`. In this baseline that is the `persistentvolumeclaims` grant and
   `delete` on the workload kinds, which is the same "silent non-reclamation" §3.3.2's PVC trap warns
   about, reached from the other direction.
-- `pods` and `events`, below. Both are lazily-created informers or fire-and-forget writes with no
-  `Owns()` line to fail at boot:
+- `pods` and `events`, below. Neither reaches even the first-read failure above: one is read through
+  a path that swallows the error, the other is written fire-and-forget.
 
 - **`events`** — client-go classifies a 403 on an event as permanent: it logs
   `Server rejected event (will not retry!)` and *discards* the event. Emission is fire-and-forget
   onto a broadcaster channel, so the reconcile never sees an error, the status is untouched, and the
-  pass reports success. What you lose is every `Warning` in §4.14's vocabulary — including
+  pass reports success. What you lose is every `Warning` in `architecture.md` §4.14's vocabulary — including
   `ImmutableFieldIgnored`, which is the **only** one with no paired log line and no status
   condition, i.e. the only framework warning whose information exists nowhere else. Its own comment
   records why it was added: doing it silently is what let a storage resize be accepted, reported as

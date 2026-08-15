@@ -1274,7 +1274,13 @@ neither a class nor a listener name is rejected.
 5. **Register Extensions** (optional) - Add custom hooks on a `common.NewExtensionRegistry[*MyCluster]()` and pass it via `GenericReconcilerConfig.ExtensionRegistry` — without that field the reconciler runs no hooks at all
 6. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
 7. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
-8. **Create main.go** - Use `GenericReconciler` with your handler, and register any extra-resource GVKs through `SetupWithManagerOpts`
+8. **Declare the operator's own RBAC** - copy the `+kubebuilder:rbac` block from `docs/security.md`
+   §3.3.1 onto your controller, add whichever §3.3.2 conditional grants your operator actually
+   triggers, and run `make manifests`. The SDK cannot declare these for you (controller-gen never
+   walks a dependency's packages), and the kubebuilder scaffold generates markers only for your
+   **own CR** — nothing the framework consumes. Unlike every other step here, two of these do not
+   announce themselves when missing (§3.3.3)
+9. **Create main.go** - Use `GenericReconciler` with your handler, and register any extra-resource GVKs through `SetupWithManagerOpts`
 
 See `examples/trino-operator/` for a complete example.
 

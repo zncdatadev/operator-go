@@ -1407,7 +1407,12 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 7. *(Optional)* **Add extensions**: implement `ClusterExtension[*YourCluster]` / `RoleExtension[*YourCluster]` / `RoleGroupExtension[*YourCluster]` (declaring the concrete CR in the hook signatures), build a registry with `common.NewExtensionRegistry[*YourCluster]()` in `main.go` before the manager starts, register them with `RegisterClusterExtension`/`RegisterRoleExtension`/`RegisterRoleGroupExtension` (with `common.WithPriority` / `common.WithStopOnError` where ordering or fault tolerance matters), and **set `GenericReconcilerConfig.ExtensionRegistry`** — without that field the hooks never run.
 8. *(Optional)* Implement `ProductDefaulter`/`ProductValidator` interfaces to customize Webhook logic.
 9. *(Optional)* Add product config formats: an adapter implementing `config.ConfigMarshaler`, registered on the handler's `MultiFormatConfigGenerator`.
-10. Generate Webhook and CRD configurations via Kubebuilder and deploy for verification.
+10. **Declare the operator's own RBAC.** Copy the `+kubebuilder:rbac` block from `security.md` §3.3.1
+    onto your controller and add whichever §3.3.2 conditional grants your operator triggers. The SDK
+    consumes these permissions but cannot declare them — controller-gen never walks a dependency's
+    packages — and the scaffold generates markers only for your own CR, not for anything the
+    framework touches. Two of them fail without announcing themselves (§3.3.3).
+11. Generate Webhook and CRD configurations via Kubebuilder and deploy for verification.
 
 # 8. Summary and Outlook
 

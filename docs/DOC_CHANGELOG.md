@@ -40,6 +40,34 @@ This document tracks all changes made to the SDK documentation.
   reconcile fails at step 0b on every pass. The same correction lands in
   `pkg/reconciler/workload_rbac.go`'s godoc, which claimed the failure was at Role create time.
 
+- §3.3.1 gains **"Why a `Get` needs `list;watch`"**: the framework reads through the manager's cache,
+  so a read of a kind with no informer lazily creates one — which LISTs and WATCHes. That is why
+  `core/secrets` and the `s3` rows carry `list;watch` for code that only ever `Get`s, and tightening
+  them to `get` is the one "obvious" correction that breaks an operator, at the first read rather
+  than at boot. It also records the consequence worth weighing before granting: an informer is
+  cluster-wide and unfiltered by default, so `core/secrets` caches every Secret in every namespace
+  in the operator's memory — with `cache.Options.ByObject` as the way to scope it.
+- §3.3.3's loud half is split by where the watch came from: an `Owns()` kind fails at **boot**
+  (`WaitForCacheSync` takes `manager.Start` down), a lazily-created informer fails at the **first
+  read**, mid-reconcile. The two were previously one undifferentiated "fails loudly".
+- §3.2's "a pre-existing RoleBinding is never adopted" is corrected to "never **re-pointed**": one
+  already pointing at *this* cluster's Role **is** adopted, which is the intended migration path off
+  a hand-maintained binding — and adoption overwrites, replacing the subjects with the single derived
+  ServiceAccount and taking the controller reference, so anything else that binding granted
+  disappears. The godoc heading in `workload_rbac.go` follows.
+- §3.3.2's two write rows (`core/secrets` for `EnsureGeneratedSecret`, and the `ExtraResources` row)
+  gain `patch`, which §3.3.1's rule already required of them — both are `CreateOrUpdate` paths like
+  the baseline. `persistentvolumeclaims` deliberately keeps none: it has no `update` either, so there
+  `patch` would genuinely add the ability to modify a claim.
+- §3.3.2's `roles;rolebindings` row now names the **second** obligation setting `WorkloadRBACRules`
+  creates — the operator's ClusterRole must also be a superset of every rule the hook returns — and
+  why it cannot be tabulated. That table is the copy-paste surface, and without the superset the
+  operator 403s at step 0b on every pass.
+- The eight-step "Building a New Operator" checklist (and `architecture.md` §7.2's parallel list)
+  gains a step for declaring the operator's own `+kubebuilder:rbac` markers. Every other obligation
+  in those lists announces itself when missed; this is the only one that partly does not, and it was
+  the only one absent.
+
 ### Package guides
 
 - Root `AGENTS.md` §11c resolves its own dangling pointer: it named the operator's ClusterRole as "a

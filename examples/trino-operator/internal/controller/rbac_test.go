@@ -86,8 +86,9 @@ var _ = Describe("Manager ClusterRole", func() {
 		//     operator that can rewrite its users' spec is a different trust proposition.
 		//
 		// `patch` on the owned kinds stays even though the framework only ever Updates them: next
-		// to `update` it grants no additional capability, and the SDK exports helpers (K8sUtil.Patch,
-		// ExecUtil.PodIsReady) that a product may legitimately call.
+		// to `update` it grants no additional capability, and the SDK exports K8sUtil.Patch, which a
+		// product may legitimately call. `get` on pods is there for the exported ExecUtil.PodIsReady
+		// for the same reason — the framework itself only ever Lists them.
 		expected := []string{
 			// The CR, its status, and its finalizers. The last is not about SDK finalizers — there
 			// are none — but about SetControllerReference stamping blockOwnerDeletion, which the
