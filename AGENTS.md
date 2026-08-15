@@ -936,13 +936,14 @@ the workload has not been built yet; it is deliberately **not** created from the
 Two halves of one thing, both settled per CR at the top of the reconcile (steps 0 and 0b), before
 any extension hook or role runs. **Neither is the operator's own RBAC** — that comes from the
 operator's ClusterRole and is a separate axis entirely, enumerated in `docs/security.md` §3.3.
-Two grants on that axis are worth knowing here because nothing announces them: `core/events`
-`create;patch` (without it every `Warning` in §2 is discarded by client-go with no error and no
-retry, including `ImmutableFieldIgnored`, which has no log line and no condition to fall back on)
-and `core/pods` `list;watch` (without it `Degraded` cannot be computed, and the health check
-deliberately treats a failed pod List as "no failures observed" rather than as the cluster's fault).
-Every other grant the framework needs fails loudly — a forbidden informer takes `manager.Start`
-down, and a forbidden write sets `Degraded`.
+Three things on that axis are worth knowing here because nothing announces them: `core/events`
+`create;patch` (without it every `Warning` in §2 of this file is discarded by client-go with no
+error and no retry, including `ImmutableFieldIgnored`, which has no log line and no condition to
+fall back on); `core/pods` `get;list;watch` (the health pass Lists through the cache, so a 403 stops
+`Degraded` being computed rather than reporting a fault); and the whole **cleanup** path, whose
+errors the reconciler logs and swallows — only a 429 is fatal — so a 403 on a teardown delete leaves
+the pass reporting success. Everything else fails loudly on the apply path: a forbidden informer
+takes `manager.Start` down, and a forbidden create/update sets `Degraded`.
 
 **The identity is derived and unconditional.** Every cluster gets a ServiceAccount named
 `ServiceAccountResourceName(kind, cluster)` — `"<lowercased kind>-<cluster>"`, e.g.

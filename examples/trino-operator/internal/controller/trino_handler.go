@@ -53,9 +53,11 @@ var _ reconciler.VectorAggregatorProvider = (*trinov1alpha1.TrinoCluster)(nil)
 //     operator that can rewrite its users' spec is a different trust proposition. Add it back if
 //     this operator ever registers a finalizer.
 //
-// Two of these do not announce themselves when missing (§3.3.3): `events` is discarded by client-go
-// with no error, and `pods` silently disables the Degraded condition. Everything else fails loudly —
-// a forbidden informer takes manager.Start down with it.
+// Three things do not announce themselves when missing (§3.3.3): `events` is discarded by client-go
+// with no error; `pods` stops the Degraded condition being computed; and the cleanup path swallows
+// its errors, so a 403 on a teardown delete — the persistentvolumeclaims grant, say — leaves the
+// pass reporting success. Everything else fails loudly on the apply path — a forbidden informer
+// takes manager.Start down with it.
 //
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=get;update;patch

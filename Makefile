@@ -63,11 +63,19 @@ verify-generate: generate manifests ## Fail if the committed generated files are
 # so a change to pkg/apis leaves its CRD stale, and it is the reference implementation downstream
 # operators copy. Its own Makefile pins its own controller-gen, so it is driven through that.
 #
-# '*/config/rbac' is in the pathspec because that module's generated ClusterRole is the canonical
+# '*/config/rbac/*' is in the pathspec because that module's generated ClusterRole is the canonical
 # operator-side permission set docs/security.md §3.3 points adopters at. Without it, an edited
 # +kubebuilder:rbac marker whose regenerated role.yaml was never committed passed CI.
+#
+# The trailing /* is load-bearing, and its absence is why the sibling '*/config/crd/bases' entry had
+# been inert since it was written. A git pathspec containing a wildcard is wildmatched against the
+# FULL path with no directory-prefix expansion, so '*/config/rbac' matches a path that IS that
+# directory and never a file inside it — the guard passed unconditionally. Verified by dirtying
+# examples/trino-operator/config/rbac/role.yaml: plain `git status` shows it, the old pathspec
+# reported nothing, the new one reports it. The literal `config/crd/bases` (no wildcard) always
+# worked, which is why only the root module was ever actually covered.
 	$(MAKE) -C examples/trino-operator generate manifests
-	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases' config/crd/bases '*/config/rbac')"; \
+	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases/*' config/crd/bases '*/config/rbac/*')"; \
 	if [ -n "$$drift" ]; then \
 		echo "Generated files are out of date. Run 'make generate manifests' and commit the result:"; \
 		echo "$$drift"; \

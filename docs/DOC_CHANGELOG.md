@@ -16,14 +16,17 @@ This document tracks all changes made to the SDK documentation.
   obvious one is wrong: **omit a verb only when omitting it actually removes a capability.** Two
   verbs are therefore withheld — `delete` on serviceaccounts, and `update`/`patch` on the CR body —
   while `patch` stays on kinds the framework only ever Updates, since next to `update` it grants
-  nothing extra and the SDK exports helpers (`K8sUtil.Patch`, `ExecUtil.PodIsReady`) that need it.
+  nothing extra and the SDK exports a helper (`K8sUtil.Patch`) that needs it.
   Records why the SDK cannot declare any of this itself: controller-gen never walks a dependency's
   packages, so a marker in `pkg/` generates nothing anywhere. Old §3.3/§3.4 shift to §3.4/§3.5.
-- §3.3.3 names the two grants whose absence is not self-announcing, which is the reason the section
-  exists: `core/events` (client-go discards a 403 on an event with no retry and no error, so the
-  pass reports success) and `core/pods` (a failed pod List is deliberately not the cluster's fault,
-  so `Degraded` silently becomes uncomputable). Every other grant fails loudly — a forbidden
-  informer takes `manager.Start` down, a forbidden write sets `Degraded`.
+- §3.3.3 names what does not announce itself, which is the reason the section exists: `core/events`
+  (client-go discards a 403 on an event with no retry and no error, so the pass reports success),
+  `core/pods` (the health pass Lists through the cache, so a 403 stops `Degraded` being computed
+  rather than reporting a fault), and the whole **cleanup** path, whose errors the reconciler logs
+  and swallows — only a 429 is fatal — so a 403 on a teardown delete leaves the pass reporting
+  success. Everything else fails loudly on the apply path. It also points at the exact-match RBAC
+  spec as the one automated link between the published set and a deployed operator, rather than
+  claiming no gate can catch this — the gate is the one this change adds.
 - `docs/architecture.md` §4.14 gains **§4.14.3**, the events precondition, attached to the sentence
   in §4.14.4 that promised `kubectl describe` visibility unconditionally. Records that the loss is
   uneven: five of the six `Warning` events have a paired log line or condition, and
@@ -44,9 +47,12 @@ This document tracks all changes made to the SDK documentation.
 - `pkg/reconciler/AGENTS.md`'s `event.go` row and the `GenericReconcilerConfig.Recorder` field doc
   both state the permission the recorder obliges, and what a 403 does.
 - `examples/trino-operator`'s marker block is narrowed to the derived set and explains each grant;
-  its generated `config/rbac/role.yaml` follows. `make verify-generate`'s pathspec now covers
-  `*/config/rbac`, which it did not — an edited marker whose regenerated ClusterRole was never
-  committed used to pass CI, and that file is now a documented reference.
+  its generated `config/rbac/role.yaml` follows, pinned by an exact-match spec over the generated
+  file. `make verify-generate` now actually covers it: the pathspec gained `*/config/rbac/*`, and
+  the trailing `/*` is the whole fix — a git pathspec with a wildcard is matched against the full
+  path with no directory expansion, so `*/config/rbac` matched nothing, exactly as the pre-existing
+  `*/config/crd/bases` had been matching nothing since it was written. Both are corrected, so the
+  examples module's generated CRD is covered for the first time too.
 
 ## [2026-08-10c] (a hook can wait without the cluster reporting a fault)
 

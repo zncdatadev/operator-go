@@ -195,9 +195,13 @@ granted in order to do so (§3.3).
 
 ## 3.1 Workload Identity (Service Accounts)
 
-A Product Cluster managed by the SDK can operate with its own distinct identity.
+A Product Cluster managed by the SDK can operate with its own distinct identity — distinct both from
+the namespace's `default` account and from the ServiceAccount the **operator process** itself runs
+as, whose permissions are a separate axis entirely (§3.3). This section gives the workload an
+identity; §3.2 gives that identity its permissions.
 
-- **Unconditional Provisioning**: every cluster gets a workload `ServiceAccount`. The reconciler
+- **Unconditional Provisioning**: every cluster the framework reconciles gets a workload
+  `ServiceAccount`. The reconciler
   creates (or updates) it in the CR's namespace with the CR as controller owner at step 0 of the
   reconcile — before any extension hook or role is processed — and propagates the name through
   `RoleGroupBuildContext.ServiceAccountName` into the Pod template. There is no switch to turn it
@@ -219,14 +223,25 @@ A Product Cluster managed by the SDK can operate with its own distinct identity.
   the SA out from under the second's running pods.
 - **Granularity is per CR, not per RoleGroup.** One identity per cluster; there is no per-role or
   per-role-group ServiceAccount.
-- **Scope**: Pods run as this ServiceAccount, so Kubernetes audit logs reflect the specific
-  application identity rather than a generic `default` account.
+- **Scope**: `BaseRoleGroupHandler` binds this ServiceAccount to the Pod template (from
+  `buildCtx.ServiceAccountName`), so pods run as it and Kubernetes audit logs reflect the specific
+  application identity rather than a generic `default` account. A product implementing
+  `RoleGroupHandler` **directly** must bind it itself — the framework creates and owns the
+  ServiceAccount but does not verify that the built StatefulSet uses it.
 - **Predictability is part of the contract**: `ServiceAccountResourceName` is exported so that
   anything outside the operator that must name this ServiceAccount — a hand-written RoleBinding, an
   admission policy, an audit query — derives it from the formula rather than from the operator's
-  source.
-- **Not user-overridable**: the common CRD types (`GenericClusterSpec`) carry **no**
-  `serviceAccountName` field, and there is no config field either. The identity is the framework's.
+  source. Call the exported function rather than re-implementing the concatenation: past 253 bytes
+  (the DNS-subdomain limit) it truncates and appends a deterministic 8-character hash, so a
+  hand-derived name for a long CR name would refer to a ServiceAccount that does not exist.
+- **Not configurable — but reachable through `podOverrides`**: the common CRD types
+  (`GenericClusterSpec`, `RoleGroupConfigSpec`) carry **no** `serviceAccountName` field, so there is
+  no way to *configure* a different identity. `podOverrides` is a different matter: it is
+  strategic-merged onto the assembled pod template **last**, so
+  `podOverrides.spec.serviceAccountName` replaces the derived name outright. What the framework
+  guarantees is this identity's existence, name and lifecycle — **not** that the pods use it. Treat
+  write access to the CR as write access to the workload's identity, and if that matters in your
+  threat model, constrain it at admission rather than expecting the SDK to.
 
 ## 3.2 Workload RBAC (Principle of Least Privilege)
 
@@ -326,6 +341,21 @@ generate nothing anywhere. **The framework consumes the permissions; the adoptin
 them.** That split is the entire reason this section exists — before it, the only way to derive this
 set was to read `examples/trino-operator`'s markers and hope they were complete.
 
+**The two axes differ in provenance, not just in subject, and that is the reliable way to tell them
+apart.** The objects in §3.1 and §3.2 are never authored by anyone: the reconcile loop computes them
+per CR, creates them on the next pass, revokes them when the rule set empties, and lets garbage
+collection reclaim them with the cluster. Nothing about them is in a YAML file in your repository.
+The permissions in *this* section are the mirror image — they are authored, as `+kubebuilder:rbac`
+markers in your own controller package; `make manifests` renders them into `config/rbac/role.yaml`;
+your kustomize overlay or helm chart deploys that as a **ClusterRole bound to the operator's own
+ServiceAccount**, once per install. It exists before any CR does, outlives every CR, and changes only
+when you regenerate and redeploy.
+
+So an adopter who adds a conditional grant from §3.3.2 and does not run `make manifests` **and**
+redeploy gets exactly the 403 this section exists to prevent. And if your repository also ships a
+helm chart, its `templates/clusterrole.yaml` is a second copy that nothing regenerates — keep it in
+step deliberately, or the deployed operator runs on rules that no longer match its markers.
+
 > Derived from the framework's own call sites, not from the example. It describes what the code does
 > today; when the framework's API usage changes, this table is what must be updated with it.
 
@@ -347,7 +377,8 @@ set was to read `examples/trino-operator`'s markers and hope they were complete.
 // The workload identity (§3.1). Every cluster gets one and NOTHING ever deletes it.
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 
-// Health evaluation: one label-selected List per pass. NOT self-announcing — see §3.3.3.
+// Health evaluation: one label-selected List per pass. `get` is there for the exported
+// util.ExecUtil.PodIsReady, which the framework itself never calls. NOT self-announcing — §3.3.3.
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 
 // Orphaned PVCs, when the delete-pvcs annotation is set on the CR at runtime (§3.3.2).
@@ -374,8 +405,7 @@ Everything else matches what `kubebuilder` scaffolds, **including `patch` on kin
 only ever Updates**, and that is deliberate rather than sloppy. In RBAC, `patch` alongside `update`
 grants no additional capability: anything achievable with a PATCH is achievable with a
 read-modify-write PUT. So omitting it would reduce privilege by exactly zero while costing three
-real things — `util.K8sUtil.Patch` and `util.ExecUtil.PodIsReady` are helpers **this SDK exports for
-product code** and would 403; any future move to server-side apply would 403; and every adopter's
+real things — `util.K8sUtil.Patch`, a helper **this SDK exports for product code**, would 403; any future move to server-side apply would 403; and every adopter's
 diff against the scaffold would grow noise for no benefit.
 
 The rule this section follows, therefore: **omit a verb only when omitting it actually removes a
@@ -423,15 +453,22 @@ call-site scan of `pkg/` reveals them — both are wired in your `main.go`:
 `authentication.k8s.io/tokenreviews` + `authorization.k8s.io/subjectaccessreviews` (`create`) when
 the metrics endpoint is protected.
 
-### 3.3.3 Two of these do not announce themselves
+### 3.3.3 What does not announce itself
 
-Every grant above except two fails **loudly**, which is why they get fixed on first deployment: a
-forbidden informer fails `WaitForCacheSync` for *all* sources, so `manager.Start` returns and the
-process exits (§3.2 relies on the same mechanism), and a forbidden write returns an error that fails
-the role group and sets `Degraded` with the API server's own message.
+Most grants above fail **loudly on the apply path**, which is why those get fixed on first
+deployment: a forbidden informer fails `WaitForCacheSync` for *all* sources, so `manager.Start`
+returns and the process exits (§3.2 relies on the same mechanism), and a forbidden create/update
+returns an error that fails the role group and sets `Degraded` with the API server's own message.
 
-`pods` and `events` are the exceptions, and both are lazily-created informers or fire-and-forget
-writes with no `Owns()` line to fail at boot:
+Three things are quiet, and the third is a whole code path rather than a grant:
+
+- the **cleanup** path. `RoleGroupCleaner`'s errors are logged and swallowed — only a 429 aborts the
+  pass — so a 403 on any teardown delete sets no condition, emits no event, and the reconcile still
+  reports `ReconcileComplete=True`. In this baseline that is the `persistentvolumeclaims` grant and
+  `delete` on the workload kinds, which is the same "silent non-reclamation" §3.3.2's PVC trap warns
+  about, reached from the other direction.
+- `pods` and `events`, below. Both are lazily-created informers or fire-and-forget writes with no
+  `Owns()` line to fail at boot:
 
 - **`events`** — client-go classifies a 403 on an event as permanent: it logs
   `Server rejected event (will not retry!)` and *discards* the event. Emission is fire-and-forget
@@ -441,14 +478,27 @@ writes with no `Owns()` line to fail at boot:
   condition, i.e. the only framework warning whose information exists nowhere else. Its own comment
   records why it was added: doing it silently is what let a storage resize be accepted, reported as
   `ReconcileComplete=True`, and never applied.
-- **`pods`** — `findFailingPods` is the sole input to `Degraded`, and a failure to list is
-  deliberately *not* treated as the cluster's fault: it is logged and "the verdict falls back to
-  'no failures observed'". So a missing grant does not report a fault — it removes the ability to
-  report one, and `Degraded=False` then means "not checked" rather than "healthy".
+- **`pods`** — the health pass Lists the cluster's pods once per reconcile, through the manager's
+  **cache**, so a 403 does not arrive as a clean error: the lazily-created pods informer never syncs.
+  The visible symptom is client-go logging `Failed to watch *v1.Pod … is forbidden` on a backoff
+  loop while the cluster's conditions stop moving. Where the read *does* return an error — an
+  uncached reader — the framework deliberately does not treat it as the cluster's fault: it is
+  logged and "the verdict falls back to 'no failures observed'". Either way the grant's absence does
+  not report a fault, it removes the ability to report one, and `Degraded=False` comes to mean "not
+  checked" rather than "healthy". (Failing pods are one of three inputs to `Degraded`; an unreadable
+  StatefulSet and a failing `ServiceHealthCheck` do not depend on this grant.)
 
-Neither is catchable by the project's gates: `make test` runs envtest as cluster-admin, and
-`make verify-generate` diffs a product's own markers against its own generated YAML — a *framework*
-requirement appears in neither. That is what this section is for.
+The project's *runtime* gates cannot catch any of this: `make test` runs envtest as cluster-admin, so
+a missing grant is invisible, and `make verify-generate` only diffs a product's own markers against
+its own generated YAML — a **framework** requirement appears in neither.
+
+What does catch it is a static check over the generated ClusterRole, and this repository ships one
+worth copying: `examples/trino-operator/internal/controller/rbac_test.go` reads
+`config/rbac/role.yaml` off disk, flattens it into `group/resource:verb` triples and asserts
+**equality** with the set published here. No cluster, no envtest. Equality rather than coverage is
+the load-bearing part — it fails when a grant the framework needs goes missing *and* when the
+published minimum quietly grows, and a wildcard rule is recorded verbatim so it fails the comparison
+instead of satisfying it.
 
 ## 3.4 Pod Security Guidelines
 
