@@ -289,7 +289,7 @@ result.
   // the rules being granted — Kubernetes forbids granting what the granter lacks
   // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update
   // write access to the RBAC API itself, without which nothing here can be created at all
-  // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
+  // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
   ```
 
   A 403 has those two distinct causes needing opposite fixes, so the SDK re-explains the API server's
@@ -333,39 +333,61 @@ set was to read `examples/trino-operator`'s markers and hope they were complete.
 
 ```go
 // The CR itself. The framework Gets it at the top of every pass and watches it via For().
-// It never writes the CR body — only the status subresource.
+// It never writes the CR BODY — only the status subresource. See "granting the write back" below
+// if your operator registers a finalizer.
 // +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>,verbs=get;list;watch
-// +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>/status,verbs=update
+// +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>/finalizers,verbs=update
 
 // The workload the framework builds and reclaims.
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 
-// The workload identity (§3.1). Every cluster gets one and nothing ever deletes it.
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update
+// The workload identity (§3.1). Every cluster gets one and NOTHING ever deletes it.
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 
 // Health evaluation: one label-selected List per pass. NOT self-announcing — see §3.3.3.
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+
+// Orphaned PVCs, when the delete-pvcs annotation is set on the CR at runtime (§3.3.2).
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 
 // Events. NOT self-announcing — see §3.3.3.
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 ```
 
-Four things in that list are easy to get wrong in the direction of granting **too much**, so they are
-stated explicitly:
+#### What is and is not minimal here
 
-- **No `patch` on the owned kinds.** The apply path is `controllerutil.CreateOrUpdate`, which is a
-  Get followed by a Create or an Update. The framework issues exactly one `Patch` in the whole SDK,
-  and it is on `events`.
-- **No `delete` on `serviceaccounts`.** The SDK has no code path that deletes one; it carries a
-  controller owner reference and is reclaimed by garbage collection with the CR. Collapsing
-  `services;configmaps;serviceaccounts` into a single marker line is how the extra verb gets in.
-- **No `get` on `pods`.** The framework only ever Lists them. A single-Pod read appears only with
-  `util.ExecUtil`, which is opt-in (§3.3.2).
-- **No `update`/`patch` on the CR body, and no `get`/`patch` on `/status`.** The framework Gets the
-  CR and writes `Status().Update`; nothing else.
+Two verbs are **deliberately absent**, and both absences remove a capability the operator genuinely
+does not need:
+
+- **No `delete` on `serviceaccounts`.** The SDK has no code path that deletes one — it carries a
+  controller owner reference and is reclaimed by garbage collection with the CR. `delete` is not
+  reachable through any other verb, so withholding it is a real reduction. Collapsing
+  `services;configmaps;serviceaccounts` onto one marker line is how it gets granted by accident.
+- **No `update`/`patch` on the CR body.** The framework Gets the CR and writes only
+  `Status().Update`. An operator that can rewrite its users' `spec` is a materially different trust
+  proposition from one that cannot, so this is worth withholding.
+
+Everything else matches what `kubebuilder` scaffolds, **including `patch` on kinds the framework
+only ever Updates**, and that is deliberate rather than sloppy. In RBAC, `patch` alongside `update`
+grants no additional capability: anything achievable with a PATCH is achievable with a
+read-modify-write PUT. So omitting it would reduce privilege by exactly zero while costing three
+real things — `util.K8sUtil.Patch` and `util.ExecUtil.PodIsReady` are helpers **this SDK exports for
+product code** and would 403; any future move to server-side apply would 403; and every adopter's
+diff against the scaffold would grow noise for no benefit.
+
+The rule this section follows, therefore: **omit a verb only when omitting it actually removes a
+capability.** "The framework does not call it" is a fact worth recording — and §3.3.3 depends on
+knowing exactly which calls happen — but it is not by itself a reason to withhold a grant.
+
+**Granting the CR-body write back.** The SDK registers no finalizer, but it explicitly contemplates
+products that do (a product finalizer is one of the two paths that leave a CR readable with a
+`deletionTimestamp`). Adding or removing a finalizer writes `metadata.finalizers`, which is the CR
+**body** — so an operator that registers one needs
+`+kubebuilder:rbac:groups=<your.group>,resources=<yourplurals>,verbs=get;list;watch;update;patch`.
+That is a conscious re-grant, not scaffolding.
 
 `<yourplurals>/finalizers` is required for a reason its name does not suggest — **the SDK registers
 no finalizer anywhere.** `controllerutil.SetControllerReference` stamps `blockOwnerDeletion: true`
@@ -381,11 +403,11 @@ publishing a baseline is that adopters can stop copying permissions they do not 
 
 | Grant | Needed when |
 | --- | --- |
-| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;delete` | `WorkloadRBACRules` is set (§3.2). A nil hook registers neither the watches nor any write. |
+| `rbac.authorization.k8s.io/roles;rolebindings` — `get;list;watch;create;update;patch;delete` | `WorkloadRBACRules` is set (§3.2). A nil hook registers neither the watches nor any write. |
 | `core/secrets` — `get;list;watch` | `Dependencies` returns a `DependencySecret`, the oauth2-proxy sidecar is registered, or a handler calls `FetchSecret`. |
 | `core/secrets` — `get;list;watch;create;update` | A product calls `EnsureGeneratedSecret` (§4.9.4 in `architecture.md`) — use this row *instead of* the one above. It is effectively mandatory with oauth2-proxy, whose `Validate` fails when the cookie key is missing. |
-| `core/persistentvolumeclaims` — `list;watch;delete` | See the trap below. |
-| `core/pods/exec` — `create`, plus `get` on `core/pods` | A product builds `util.NewExecUtil` (e.g. an in-container `ServiceHealthCheck`). This is arbitrary command execution in the product's pods; it is deliberately not in the baseline. |
+| `core/persistentvolumeclaims` — `get;list;watch;delete` | Listed in the baseline above because of the trap below, not because every operator reclaims PVCs. |
+| `core/pods/exec` — `create` | A product builds `util.NewExecUtil` (e.g. an in-container `ServiceHealthCheck`). This is arbitrary command execution in the product's pods; it is deliberately not in the baseline. |
 | `s3.kubedoop.dev/s3connections;s3buckets` — `get;list;watch` | A product resolves S3 through `pkg/s3` **and** users write `reference:` rather than `inline:` — the inline branch performs no I/O. |
 | your `ExtraResources` kinds — `get;list;watch;create;update;delete` | A handler ships `RoleGroupResources.ExtraResources`. The `list;watch` half is load-bearing at **startup**, not only for cleanup: these kinds are registered through `SetupWithManagerOptions.ExtraOwns`. |
 

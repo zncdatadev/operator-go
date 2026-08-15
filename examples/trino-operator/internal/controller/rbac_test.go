@@ -76,14 +76,18 @@ var _ = Describe("Manager ClusterRole", func() {
 
 	It("grants exactly what the framework consumes, and nothing more", func() {
 		// Derived from the framework's call sites, not from the markers this file checks — see
-		// docs/security.md §3.3 for the evidence behind each verb. The narrow spots are deliberate:
+		// docs/security.md §3.3 for the evidence behind each verb.
 		//
-		//   - no `update`/`patch` on the CR body: the framework Gets the CR and writes only
-		//     Status().Update. Nothing in pkg/ writes the body.
-		//   - no `get`/`patch` on /status: the 409 refresh re-reads the MAIN resource.
-		//   - no `patch` on the owned kinds: the apply path is CreateOrUpdate (Get + Create/Update).
-		//   - no `delete` on serviceaccounts: nothing deletes one; owner-reference GC reclaims it.
-		//   - no `get` on pods or PVCs: both are only ever Listed.
+		// Only two verbs are withheld, and each withholding removes a real capability:
+		//
+		//   - no `delete` on serviceaccounts: nothing deletes one; owner-reference GC reclaims it,
+		//     and `delete` is not reachable through any other verb.
+		//   - no `update`/`patch` on the CR body: the framework writes only Status().Update, and an
+		//     operator that can rewrite its users' spec is a different trust proposition.
+		//
+		// `patch` on the owned kinds stays even though the framework only ever Updates them: next
+		// to `update` it grants no additional capability, and the SDK exports helpers (K8sUtil.Patch,
+		// ExecUtil.PodIsReady) that a product may legitimately call.
 		expected := []string{
 			// The CR, its status, and its finalizers. The last is not about SDK finalizers — there
 			// are none — but about SetControllerReference stamping blockOwnerDeletion, which the
@@ -92,31 +96,35 @@ var _ = Describe("Manager ClusterRole", func() {
 			"trino.kubedoop.dev/trinoclusters:get",
 			"trino.kubedoop.dev/trinoclusters:list",
 			"trino.kubedoop.dev/trinoclusters:watch",
+			"trino.kubedoop.dev/trinoclusters/status:get",
 			"trino.kubedoop.dev/trinoclusters/status:update",
+			"trino.kubedoop.dev/trinoclusters/status:patch",
 			"trino.kubedoop.dev/trinoclusters/finalizers:update",
 
 			// The workload the framework builds and reclaims.
 			"apps/statefulsets:get", "apps/statefulsets:list", "apps/statefulsets:watch",
-			"apps/statefulsets:create", "apps/statefulsets:update", "apps/statefulsets:delete",
+			"apps/statefulsets:create", "apps/statefulsets:update", "apps/statefulsets:patch",
+			"apps/statefulsets:delete",
 			"/configmaps:get", "/configmaps:list", "/configmaps:watch",
-			"/configmaps:create", "/configmaps:update", "/configmaps:delete",
+			"/configmaps:create", "/configmaps:update", "/configmaps:patch", "/configmaps:delete",
 			"/services:get", "/services:list", "/services:watch",
-			"/services:create", "/services:update", "/services:delete",
+			"/services:create", "/services:update", "/services:patch", "/services:delete",
 			"policy/poddisruptionbudgets:get", "policy/poddisruptionbudgets:list",
 			"policy/poddisruptionbudgets:watch", "policy/poddisruptionbudgets:create",
-			"policy/poddisruptionbudgets:update", "policy/poddisruptionbudgets:delete",
+			"policy/poddisruptionbudgets:update", "policy/poddisruptionbudgets:patch",
+			"policy/poddisruptionbudgets:delete",
 
-			// The workload identity, which every cluster gets and nothing ever deletes.
+			// The workload identity, which every cluster gets and NOTHING ever deletes.
 			"/serviceaccounts:get", "/serviceaccounts:list", "/serviceaccounts:watch",
-			"/serviceaccounts:create", "/serviceaccounts:update",
+			"/serviceaccounts:create", "/serviceaccounts:update", "/serviceaccounts:patch",
 
 			// Orphaned PVCs, when the delete-pvcs annotation is set on the CR at runtime.
-			"/persistentvolumeclaims:list", "/persistentvolumeclaims:watch",
-			"/persistentvolumeclaims:delete",
+			"/persistentvolumeclaims:get", "/persistentvolumeclaims:list",
+			"/persistentvolumeclaims:watch", "/persistentvolumeclaims:delete",
 
 			// Health evaluation. Without this, Degraded cannot be computed and a failed List is
 			// deliberately not reported as the cluster's fault — so it goes quiet, not loud.
-			"/pods:list", "/pods:watch",
+			"/pods:get", "/pods:list", "/pods:watch",
 
 			// Events. Without this, client-go discards every one with no error and no retry.
 			"/events:create", "/events:patch",

@@ -12,11 +12,13 @@ This document tracks all changes made to the SDK documentation.
   and workload RBAC (§3.2): the permissions the operator *process* must hold because
   `GenericReconciler` writes on its identity. Derived from the framework's own call sites rather
   than copied from the example, split into a baseline every operator needs and conditional grants
-  with their exact triggers, and explicit about four ways the obvious marker set over-grants (no
-  `patch` on owned kinds, no `delete` on serviceaccounts, no `get` on pods or PVCs, no write verbs
-  on the CR body). Records why the SDK cannot declare any of this itself: controller-gen never walks
-  a dependency's packages, so a marker in `pkg/` generates nothing anywhere. Old §3.3/§3.4 shift to
-  §3.4/§3.5.
+  with their exact triggers. The minimality rule it applies is stated explicitly, because the
+  obvious one is wrong: **omit a verb only when omitting it actually removes a capability.** Two
+  verbs are therefore withheld — `delete` on serviceaccounts, and `update`/`patch` on the CR body —
+  while `patch` stays on kinds the framework only ever Updates, since next to `update` it grants
+  nothing extra and the SDK exports helpers (`K8sUtil.Patch`, `ExecUtil.PodIsReady`) that need it.
+  Records why the SDK cannot declare any of this itself: controller-gen never walks a dependency's
+  packages, so a marker in `pkg/` generates nothing anywhere. Old §3.3/§3.4 shift to §3.4/§3.5.
 - §3.3.3 names the two grants whose absence is not self-announcing, which is the reason the section
   exists: `core/events` (client-go discards a 403 on an event with no retry and no error, so the
   pass reports success) and `core/pods` (a failed pod List is deliberately not the cluster's fault,

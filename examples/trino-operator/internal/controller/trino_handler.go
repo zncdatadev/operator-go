@@ -44,25 +44,28 @@ var _ reconciler.VectorAggregatorProvider = (*trinov1alpha1.TrinoCluster)(nil)
 // itself, because controller-gen never walks a dependency's packages, so this file is what every
 // adopter copies. Regenerate config/rbac/role.yaml with `make manifests` after editing.
 //
-// The verbs are deliberately narrower than "CRUD everything":
-//   - no `patch` on the owned kinds — the apply path is CreateOrUpdate (Get + Create/Update), and
-//     the framework's only Patch is on events
+// Two verbs are deliberately absent, and each absence removes a capability this operator does not
+// need — which is the test docs/security.md §3.3.1 applies, rather than "the framework never calls
+// it". `patch` alongside `update` grants nothing extra (a PATCH is reachable through a
+// read-modify-write PUT), and the SDK exports helpers that need it, so it stays:
 //   - no `delete` on serviceaccounts — nothing deletes one; it is reclaimed by owner-reference GC
-//   - no `get` on pods or persistentvolumeclaims — both are only ever Listed
+//   - no `update`/`patch` on the CR body — the framework writes only Status().Update, and an
+//     operator that can rewrite its users' spec is a different trust proposition. Add it back if
+//     this operator ever registers a finalizer.
 //
 // Two of these do not announce themselves when missing (§3.3.3): `events` is discarded by client-go
 // with no error, and `pods` silently disables the Degraded condition. Everything else fails loudly —
 // a forbidden informer takes manager.Start down with it.
 //
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch
-// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=update
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=list;watch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 // TrinoRoleGroupHandler builds Trino role group resources. It embeds the SDK's
