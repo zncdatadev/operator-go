@@ -97,19 +97,28 @@ func WithWorkloadRBACExtraLabels(labels map[string]string) WorkloadRBACOption {
 // the Service — and it is what makes "the rules converge" true in both directions: narrowing to
 // zero is the largest narrowing there is.
 //
-// # A pre-existing RoleBinding is never adopted
+// # A pre-existing RoleBinding is never re-pointed
 //
-// roleRef is immutable, so a RoleBinding already sitting at this name pointing somewhere else
+// roleRef is immutable, so a RoleBinding already sitting at this name pointing somewhere ELSE
 // cannot be converged. This fails with a *ValidationError naming both refs and the one command
 // that fixes it, rather than rebinding the existing object to the workload's ServiceAccount —
 // which would hand those pods whatever the old ref allows.
+//
+// One already pointing at THIS cluster's Role is adopted instead, which is the migration path this
+// helper exists for. Adoption overwrites: subjects become the single derived ServiceAccount, labels
+// are replaced, and the CR takes the controller reference, so the object is from then on garbage-
+// collected with the cluster.
 //
 // # The escalation footgun
 //
 // Kubernetes refuses to let a subject grant permissions it does not itself hold, so the OPERATOR's
 // own ClusterRole must be a superset of every rule passed here. The failure is a 403 at Role
-// create/update time, it is invisible at compile time, and it is invisible in any test that runs as
-// cluster-admin (which envtest does). This re-explains that error rather than pre-checking it: the
+// create/update time OR at RoleBinding create time — the two writes are checked separately, and the
+// verb that waives each check is different: `escalate` on roles for the Role, `bind` on the
+// referenced role for the RoleBinding. Holding only `escalate` is therefore worse than holding
+// neither: the Role lands, the RoleBinding is refused, and this function fails on every pass with a
+// Role bound to nothing. The failure is invisible at compile time, and invisible in any test that
+// runs as cluster-admin (which envtest does). This re-explains that error rather than pre-checking it: the
 // API server's own message already names the exact rule that is missing, and a pre-check would have
 // to reimplement RBAC rule covering — wildcards, resourceNames, aggregated ClusterRoles,
 // non-resource URLs — and would then be wrong in both directions.
@@ -359,8 +368,10 @@ func workloadRBACLabels(owner client.Object, options *workloadRBACOptions) map[s
 //   - The operator lacks write access to roles/rolebindings themselves. Its own ClusterRole needs
 //     `+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,...`.
 //   - The operator holds that, but not the permissions it is trying to grant. Kubernetes refuses to
-//     let a subject grant what it does not itself hold (absent the `escalate` verb), so the
-//     operator's ClusterRole must cover every rule passed here.
+//     let a subject grant what it does not itself hold, so the operator's ClusterRole must cover
+//     every rule passed here. The bypass verbs are `escalate` on roles (for the Role write) and
+//     `bind` on the referenced role (for the RoleBinding write) — two separate checks, so granting
+//     only one of them half-converges rather than escaping.
 //
 // Blanket-attributing every 403 to the second sends an author auditing rules they just added while
 // the real gap is the first, so the escalation wording is used only when the API server's own

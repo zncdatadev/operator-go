@@ -4,6 +4,84 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-13] (the operator's own ClusterRole, and the two grants that do not announce themselves)
+
+### Core architecture
+
+- `docs/security.md` gains **§3.3 Operator RBAC**, the third axis alongside workload identity (§3.1)
+  and workload RBAC (§3.2): the permissions the operator *process* must hold because
+  `GenericReconciler` writes on its identity. Derived from the framework's own call sites rather
+  than copied from the example, split into a baseline every operator needs and conditional grants
+  with their exact triggers. The minimality rule it applies is stated explicitly, because the
+  obvious one is wrong: **omit a verb only when omitting it actually removes a capability.** Two
+  verbs are therefore withheld — `delete` on serviceaccounts, and `update`/`patch` on the CR body —
+  while `patch` stays on kinds the framework only ever Updates, since next to `update` it grants
+  nothing extra and the SDK exports a helper (`K8sUtil.Patch`) that needs it.
+  Records why the SDK cannot declare any of this itself: controller-gen never walks a dependency's
+  packages, so a marker in `pkg/` generates nothing anywhere. Old §3.3/§3.4 shift to §3.4/§3.5.
+- §3.3.3 names what does not announce itself, which is the reason the section exists: `core/events`
+  (client-go discards a 403 on an event with no retry and no error, so the pass reports success),
+  `core/pods` (the health pass Lists through the cache, so a 403 stops `Degraded` being computed
+  rather than reporting a fault), and the whole **cleanup** path, whose errors the reconciler logs
+  and swallows — only a 429 is fatal — so a 403 on a teardown delete leaves the pass reporting
+  success. Everything else fails loudly on the apply path. It also points at the exact-match RBAC
+  spec as the one automated link between the published set and a deployed operator, rather than
+  claiming no gate can catch this — the gate is the one this change adds.
+- `docs/architecture.md` §4.14 gains **§4.14.3**, the events precondition, attached to the sentence
+  in §4.14.4 that promised `kubectl describe` visibility unconditionally. Records that the loss is
+  uneven: five of the six `Warning` events have a paired log line or condition, and
+  `ImmutableFieldIgnored` has neither — so it is the one whose information exists only as an event,
+  and losing it reintroduces the silent-storage-resize defect it was added for.
+- `docs/architecture.md` §7.1's "Operator requires CRUD permissions for StatefulSet, Service,
+  ConfigMap, etc." is replaced by a pointer to §3.3 rather than a second copy.
+- `docs/security.md` §3.2 corrects the escalation escape hatch: the Role and RoleBinding writes are
+  checked **separately**, with different bypass verbs (`escalate` on roles, `bind` on the referenced
+  role), so `escalate` alone half-converges — the Role lands, the RoleBinding is refused, and the
+  reconcile fails at step 0b on every pass. The same correction lands in
+  `pkg/reconciler/workload_rbac.go`'s godoc, which claimed the failure was at Role create time.
+
+- §3.3.1 gains **"Why a `Get` needs `list;watch`"**: the framework reads through the manager's cache,
+  so a read of a kind with no informer lazily creates one — which LISTs and WATCHes. That is why
+  `core/secrets` and the `s3` rows carry `list;watch` for code that only ever `Get`s, and tightening
+  them to `get` is the one "obvious" correction that breaks an operator, at the first read rather
+  than at boot. It also records the consequence worth weighing before granting: an informer is
+  cluster-wide and unfiltered by default, so `core/secrets` caches every Secret in every namespace
+  in the operator's memory — with `cache.Options.ByObject` as the way to scope it.
+- §3.3.3's loud half is split by where the watch came from: an `Owns()` kind fails at **boot**
+  (`WaitForCacheSync` takes `manager.Start` down), a lazily-created informer fails at the **first
+  read**, mid-reconcile. The two were previously one undifferentiated "fails loudly".
+- §3.2's "a pre-existing RoleBinding is never adopted" is corrected to "never **re-pointed**": one
+  already pointing at *this* cluster's Role **is** adopted, which is the intended migration path off
+  a hand-maintained binding — and adoption overwrites, replacing the subjects with the single derived
+  ServiceAccount and taking the controller reference, so anything else that binding granted
+  disappears. The godoc heading in `workload_rbac.go` follows.
+- §3.3.2's two write rows (`core/secrets` for `EnsureGeneratedSecret`, and the `ExtraResources` row)
+  gain `patch`, which §3.3.1's rule already required of them — both are `CreateOrUpdate` paths like
+  the baseline. `persistentvolumeclaims` deliberately keeps none: it has no `update` either, so there
+  `patch` would genuinely add the ability to modify a claim.
+- §3.3.2's `roles;rolebindings` row now names the **second** obligation setting `WorkloadRBACRules`
+  creates — the operator's ClusterRole must also be a superset of every rule the hook returns — and
+  why it cannot be tabulated. That table is the copy-paste surface, and without the superset the
+  operator 403s at step 0b on every pass.
+- The eight-step "Building a New Operator" checklist (and `architecture.md` §7.2's parallel list)
+  gains a step for declaring the operator's own `+kubebuilder:rbac` markers. Every other obligation
+  in those lists announces itself when missed; this is the only one that partly does not, and it was
+  the only one absent.
+
+### Package guides
+
+- Root `AGENTS.md` §11c resolves its own dangling pointer: it named the operator's ClusterRole as "a
+  separate axis entirely" and pointed nowhere. It now points at §3.3 and names the two quiet grants.
+- `pkg/reconciler/AGENTS.md`'s `event.go` row and the `GenericReconcilerConfig.Recorder` field doc
+  both state the permission the recorder obliges, and what a 403 does.
+- `examples/trino-operator`'s marker block is narrowed to the derived set and explains each grant;
+  its generated `config/rbac/role.yaml` follows, pinned by an exact-match spec over the generated
+  file. `make verify-generate` now actually covers it: the pathspec gained `*/config/rbac/*`, and
+  the trailing `/*` is the whole fix — a git pathspec with a wildcard is matched against the full
+  path with no directory expansion, so `*/config/rbac` matched nothing, exactly as the pre-existing
+  `*/config/crd/bases` had been matching nothing since it was written. Both are corrected, so the
+  examples module's generated CRD is covered for the first time too.
+
 ## [2026-08-10c] (a hook can wait without the cluster reporting a fault)
 
 ### Package guides

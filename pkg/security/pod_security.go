@@ -222,7 +222,7 @@ func (b *PodSecurityBuilder) BuildPodSecurityContext() *corev1.PodSecurityContex
 // restate any default it wants to change. An image that has to run as root sets both
 // `runAsUser: 0` and `runAsNonRoot: false`; setting only the first inherits `runAsNonRoot: true`
 // and the kubelet refuses to start the container. See the base handler's WithSecurityContext docs
-// and docs/security.md §3.3.2.
+// and docs/security.md §3.4.2.
 //
 // Wholesale replacement is a different mechanism: SidecarConfig.SecurityContext replaces a
 // sidecar's context outright, and BaseRoleGroupHandler.WithSecurityContext replaces this default
@@ -256,7 +256,7 @@ func (b *PodSecurityBuilder) BuildDefaultSecurityContext() *corev1.SecurityConte
 // MergedConfig.PodOverrides customizes it and DEEP-MERGES PER FIELD (strategic merge patch): an
 // override stating only `fsGroupChangePolicy: Always` gets the recursion back while keeping
 // fsGroup, the identity and the seccomp profile. That field-level merge is what makes the escape
-// hatch on DefaultFSGroupChangePolicy usable at all. See docs/security.md §3.3.2.
+// hatch on DefaultFSGroupChangePolicy usable at all. See docs/security.md §3.4.2.
 func (b *PodSecurityBuilder) BuildDefaultPodSecurityContext() *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
 		RunAsUser:           ptr.To(DefaultRunAsUser),

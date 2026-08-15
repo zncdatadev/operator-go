@@ -37,17 +37,34 @@ import (
 // aggregator address, and generates vector.yaml into the role group ConfigMap.
 var _ reconciler.VectorAggregatorProvider = (*trinov1alpha1.TrinoCluster)(nil)
 
-// RBAC for the resources the SDK GenericReconciler owns on behalf of a TrinoCluster. The
-// GenericReconciler watches the CR plus every kind it Owns() (StatefulSet, Service, ConfigMap,
-// ServiceAccount, PodDisruptionBudget), lists Pods for health status, and deletes orphaned PVCs
-// when a role group shrinks, so the manager ClusterRole has to cover all of them — the informers
-// fail to start otherwise. Regenerate config/rbac/role.yaml with `make manifests` after editing.
+// RBAC for the resources the SDK GenericReconciler consumes on behalf of a TrinoCluster. This is
+// the OPERATOR's own ClusterRole, not the workload's (that is GenericReconcilerConfig's
+// WorkloadRBACRules, which this example does not use) — the canonical set, with the reason for each
+// grant, is docs/security.md §3.3. Keep this block in step with it: the SDK cannot declare these
+// itself, because controller-gen never walks a dependency's packages, so this file is what every
+// adopter copies. Regenerate config/rbac/role.yaml with `make manifests` after editing.
 //
-// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch;update;patch
+// Two verbs are deliberately absent, and each absence removes a capability this operator does not
+// need — which is the test docs/security.md §3.3.1 applies, rather than "the framework never calls
+// it". `patch` alongside `update` grants nothing extra (a PATCH is reachable through a
+// read-modify-write PUT), and the SDK exports helpers that need it, so it stays:
+//   - no `delete` on serviceaccounts — nothing deletes one; it is reclaimed by owner-reference GC
+//   - no `update`/`patch` on the CR body — the framework writes only Status().Update, and an
+//     operator that can rewrite its users' spec is a different trust proposition. Add it back if
+//     this operator ever registers a finalizer.
+//
+// Three things do not announce themselves when missing (§3.3.3): `events` is discarded by client-go
+// with no error; `pods` stops the Degraded condition being computed; and the cleanup path swallows
+// its errors, so a 403 on a teardown delete — the persistentvolumeclaims grant, say — leaves the
+// pass reporting success. Everything else fails loudly on the apply path — a forbidden informer
+// takes manager.Start down with it.
+//
+// +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=trino.kubedoop.dev,resources=trinoclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch

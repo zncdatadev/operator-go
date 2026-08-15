@@ -935,7 +935,15 @@ the workload has not been built yet; it is deliberately **not** created from the
 
 Two halves of one thing, both settled per CR at the top of the reconcile (steps 0 and 0b), before
 any extension hook or role runs. **Neither is the operator's own RBAC** — that comes from the
-operator's ClusterRole and is a separate axis entirely.
+operator's ClusterRole and is a separate axis entirely, enumerated in `docs/security.md` §3.3.
+Three things on that axis are worth knowing here because nothing announces them: `core/events`
+`create;patch` (without it every `Warning` in §2 of this file is discarded by client-go with no
+error and no retry, including `ImmutableFieldIgnored`, which has no log line and no condition to
+fall back on); `core/pods` `get;list;watch` (the health pass Lists through the cache, so a 403 stops
+`Degraded` being computed rather than reporting a fault); and the whole **cleanup** path, whose
+errors the reconciler logs and swallows — only a 429 is fatal — so a 403 on a teardown delete leaves
+the pass reporting success. Everything else fails loudly on the apply path: a forbidden informer
+takes `manager.Start` down, and a forbidden create/update sets `Degraded`.
 
 **The identity is derived and unconditional.** Every cluster gets a ServiceAccount named
 `ServiceAccountResourceName(kind, cluster)` — `"<lowercased kind>-<cluster>"`, e.g.
@@ -1266,7 +1274,13 @@ neither a class nor a listener name is rejected.
 5. **Register Extensions** (optional) - Add custom hooks on a `common.NewExtensionRegistry[*MyCluster]()` and pass it via `GenericReconcilerConfig.ExtensionRegistry` — without that field the reconciler runs no hooks at all
 6. **Setup Webhooks** (optional) - Use common defaults/validators from `pkg/webhook/`
 7. **Register Health Checks** (optional) - Implement `ServiceHealthCheck` for business-level health verification
-8. **Create main.go** - Use `GenericReconciler` with your handler, and register any extra-resource GVKs through `SetupWithManagerOpts`
+8. **Declare the operator's own RBAC** - copy the `+kubebuilder:rbac` block from `docs/security.md`
+   §3.3.1 onto your controller, add whichever §3.3.2 conditional grants your operator actually
+   triggers, and run `make manifests`. The SDK cannot declare these for you (controller-gen never
+   walks a dependency's packages), and the kubebuilder scaffold generates markers only for your
+   **own CR** — nothing the framework consumes. Unlike every other step here, two of these do not
+   announce themselves when missing (§3.3.3)
+9. **Create main.go** - Use `GenericReconciler` with your handler, and register any extra-resource GVKs through `SetupWithManagerOpts`
 
 See `examples/trino-operator/` for a complete example.
 
