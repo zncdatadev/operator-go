@@ -606,17 +606,15 @@ var _ = Describe("GenericReconciler rate limiting", func() {
 	})
 })
 
-// vectorTestHandler builds the role group resources by hand and declares a log producer, which is
-// what makes the framework consider injecting the Vector sidecar. providesVectorConfig switches
-// the VectorConfigProvider answer: false is a product that neither generates vector.yaml itself
-// nor exposes a Vector aggregator on its CR.
+// vectorTestHandler builds the role group resources by hand. The log producer that makes the
+// framework consider injecting the Vector sidecar is declared by vectorTestCatalog below.
 type vectorTestHandler struct {
-	providesVectorConfig bool
-	configMapData        map[string]string
+	configMapData map[string]string
 }
 
-// vectorTestCatalog is what the handler used to declare through LoggingProducerProvider and
-// VectorConfigProvider: the producers, and whether the product writes vector.yaml itself.
+// vectorTestCatalog carries the two declaration fields the Vector gates read: the log producers,
+// and whether the product writes vector.yaml itself. ownsVectorConfig false is a product that
+// neither generates vector.yaml nor exposes a Vector aggregator on its CR.
 func vectorTestCatalog(ownsVectorConfig bool) reconciler.RoleCatalog {
 	return reconciler.RoleCatalog{"broker": {
 		LogProducers: []productlogging.ContainerLogging{
@@ -752,8 +750,7 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		cr, resourceName := newVectorCR(crName)
 
 		handler := &vectorTestHandler{
-			providesVectorConfig: true,
-			configMapData:        map[string]string{vector.VectorConfigFileName: "# product-owned vector config"},
+			configMapData: map[string]string{vector.VectorConfigFileName: "# product-owned vector config"},
 		}
 		r := newReconcilerWithRoles(handler, record.NewFakeRecorder(100), vectorTestCatalog(true))
 

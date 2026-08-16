@@ -298,3 +298,54 @@ var _ = Describe("ValidateProductConfigType", func() {
 		Expect(reconciler.ValidateProductConfigType[taggedCompositeConfig]()).To(Succeed())
 	})
 })
+
+var _ = Describe("RoleGroupBuildContext.EffectiveConfig", func() {
+	// The accessor exists because the fold's result is SUBSTITUTED into RoleGroupSpec.Config, a
+	// field whose name says "what the user wrote for this group". A product reading that field
+	// directly and re-folding the role level by hand is the #631 defect; the accessor names what is
+	// actually there.
+	It("returns the folded config, not the role group's own block", func() {
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			RoleGroupSpec: commonsv1alpha1.RoleGroupSpec{
+				Config: &commonsv1alpha1.RoleGroupConfigSpec{
+					Resources: &commonsv1alpha1.ResourcesSpec{
+						CPU:    &commonsv1alpha1.CPUResource{Min: resource.NewMilliQuantity(250, resource.DecimalSI)},
+						Memory: &commonsv1alpha1.MemoryResource{Limit: resource.NewQuantity(2<<30, resource.BinarySI)},
+					},
+				},
+			},
+		}
+		cfg := buildCtx.EffectiveConfig()
+		Expect(cfg.Resources.CPU.Min.MilliValue()).To(Equal(int64(250)),
+			"a leaf the role supplied and the group did not")
+		Expect(cfg.Resources.Memory.Limit.Value()).To(Equal(int64(2 << 30)))
+	})
+
+	It("is never nil, so a caller need not guard before reaching for a field", func() {
+		// A role group that states no config at all is the common case on a first install. Making
+		// every caller nil-check is how one of them eventually forgets. The guarantee comes from
+		// RoleGroupSpec.GetConfig, one layer down; this pins it at the boundary a product actually
+		// calls, so moving the fold off that accessor cannot silently take it away.
+		buildCtx := &reconciler.RoleGroupBuildContext{}
+		Expect(buildCtx.EffectiveConfig()).NotTo(BeNil())
+		Expect(buildCtx.EffectiveConfig().Resources).To(BeNil())
+	})
+
+	It("feeds HeapMB, which is the calculation this accessor exists to make possible", func() {
+		// Three operators hand-wrote this with the same 0.8 factor and a fourth froze the answer
+		// into a literal, because the effective config did not exist until after the ConfigMap had
+		// been built.
+		buildCtx := &reconciler.RoleGroupBuildContext{
+			RoleGroupSpec: commonsv1alpha1.RoleGroupSpec{
+				Config: &commonsv1alpha1.RoleGroupConfigSpec{
+					Resources: &commonsv1alpha1.ResourcesSpec{
+						Memory: &commonsv1alpha1.MemoryResource{Limit: resource.NewQuantity(1<<30, resource.BinarySI)},
+					},
+				},
+			},
+		}
+		mb, ok := reconciler.HeapMB(buildCtx.EffectiveConfig(), 0.8)
+		Expect(ok).To(BeTrue())
+		Expect(mb).To(Equal(int64(819)), "floor(1024 * 0.8)")
+	})
+})

@@ -488,16 +488,13 @@ func copyString(s *string) *string {
 // into one answer by FoldCommonConfig.
 //
 // It is the input a RoleGroupResolver derives from, and it is never nil — a role group that states
-// no config at all yields an empty struct rather than requiring every caller to nil-check before
-// reaching for a field.
+// no config at all yields an empty struct (RoleGroupSpec.GetConfig's guarantee) rather than
+// requiring every caller to nil-check before reaching for a field.
 //
 // A product's OWN config fields are not here: those are the product's half of the embedded struct,
 // folded by the product with FoldProductConfig.
 func (c *RoleGroupBuildContext) EffectiveConfig() *v1alpha1.RoleGroupConfigSpec {
-	if cfg := c.RoleGroupSpec.GetConfig(); cfg != nil {
-		return cfg
-	}
-	return &v1alpha1.RoleGroupConfigSpec{}
+	return c.RoleGroupSpec.GetConfig()
 }
 
 // LogFileTarget returns the path a producer's rolling log file must be written to, or "" meaning
