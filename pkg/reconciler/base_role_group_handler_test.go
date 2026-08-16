@@ -1522,7 +1522,9 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		sidecarMgr.Register(
 			vector.NewVectorSidecarProvider("test-image:latest",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "test-cluster-default"}}),
+				vector.WithProducers([]productlogging.ContainerLogging{
+					{Container: "test-cluster-default", Framework: productlogging.LoggingFrameworkLogback},
+				}),
 			),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
@@ -1614,7 +1616,9 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		sidecarMgr.Register(
 			vector.NewVectorSidecarProvider("test-image:latest",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "test-cluster-default"}}),
+				vector.WithProducers([]productlogging.ContainerLogging{
+					{Container: "test-cluster-default", Framework: productlogging.LoggingFrameworkLogback},
+				}),
 				vector.WithLogVolumeSize(resource.MustParse("128Mi")),
 			),
 			&sidecar.SidecarConfig{Enabled: true},
@@ -1972,7 +1976,7 @@ var _ = Describe("Sidecar product image propagation", func() {
 		mgr.Register(
 			vector.NewVectorSidecarProvider("",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main"}})),
+				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main", Framework: productlogging.LoggingFrameworkLogback}})),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 

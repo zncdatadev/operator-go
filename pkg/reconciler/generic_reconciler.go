@@ -995,18 +995,6 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 			fmt.Sprintf("role %s group %s: %v", roleName, groupName, overrideErr))
 	}
 
-	// Resolve the Vector aggregator address (if the CR exposes it) so the framework can own
-	// vector.yaml generation. Must run before building resources / the ConfigMap.
-	if err := r.resolveVectorAggregatorAddress(ctx, cr, buildCtx); err != nil {
-		return NewResourceBuildError("resources", roleName, groupName, "failed to resolve vector aggregator address", err)
-	}
-
-	// Auto-create SidecarManager based on CRD configuration. The product image is propagated to
-	// the registered sidecars by BaseRoleGroupHandler.BuildResources — after the product's
-	// BuildResources override has resolved the CR-driven image — so both plain and embedding
-	// handlers are covered without a concrete-type assertion here.
-	buildCtx.SidecarManager = r.buildSidecarManager(ctx, cr, buildCtx)
-
 	// Delegate to handler for resource building
 	resources, err := r.roleGroupHandler.BuildResources(ctx, r.client, cr, buildCtx)
 	if err != nil {
@@ -1200,6 +1188,23 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 		ServiceAccountName: r.resolveServiceAccountName(cr),
 	}
 
+	// Stage 1b — RESOLVE THE LOG PIPELINE, before anything derives from it.
+	//
+	// Whether the Vector sidecar lands is a pure function of inputs the framework already holds:
+	// logging.enableVectorAgent from the folded config, the producer list and the log volume size
+	// from the declaration, and the vector.yaml source from the CR or the declaration. So the
+	// framework settles it, and nothing downstream re-derives it.
+	//
+	// It runs HERE for the same reason the config fold moved: a product rendering its own logging
+	// config file does so in the resolver below, and it must see the resolved answer rather than a
+	// nil it would silently read as "console only" — which would emit a config with no file
+	// appender on every pass, leaving Vector to collect nothing while every signal stayed green.
+	if err := r.resolveVectorAggregatorAddress(ctx, cr, buildCtx); err != nil {
+		return nil, fmt.Errorf("resolving the vector aggregator address for role %s group %s: %w",
+			roleName, groupName, err)
+	}
+	buildCtx.SidecarManager = r.buildSidecarManager(ctx, cr, buildCtx)
+
 	// Stage 2 — DERIVE from the folded result. The resolver sees the effective typed config and
 	// contributes config-file content and environment that follow from it: a JVM heap sized from
 	// the memory limit the user may have raised. It deliberately does NOT see the merged overrides,
@@ -1291,8 +1296,9 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 	// unless the registration at the end of this function is reached.
 	buildCtx.VectorLogPipelineActive = ptr.To(false)
 
-	// Logging was deep-merged once in buildRoleGroupContext.
-	logging := buildCtx.MergedConfig.Logging
+	// Read the FOLDED logging, not MergedConfig's copy: this runs before the override merge now, and
+	// stage 3 assigns MergedConfig.Logging from exactly this value.
+	logging := buildCtx.RoleGroupSpec.GetConfig().Logging
 	if !vector.IsAgentEnabled(logging) {
 		return mgr
 	}

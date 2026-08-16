@@ -619,7 +619,9 @@ type vectorTestHandler struct {
 // VectorConfigProvider: the producers, and whether the product writes vector.yaml itself.
 func vectorTestCatalog(ownsVectorConfig bool) reconciler.RoleCatalog {
 	return reconciler.RoleCatalog{"broker": {
-		LogProducers:     []productlogging.ContainerLogging{{Container: "app"}},
+		LogProducers: []productlogging.ContainerLogging{
+			{Container: "app", Framework: productlogging.LoggingFrameworkLogback},
+		},
 		OwnsVectorConfig: ownsVectorConfig,
 	}}
 }
@@ -807,20 +809,22 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		})
 
 		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
-		// OwnConfigFile: this product builds its own logging config file (Airflow's log_config.py
-		// has to extend Airflow's DEFAULT_LOGGING_CONFIG, so it can never be a rendered template)
-		// and only wants the container joined to the Vector pipeline.
+		// This product builds its own logging config file (Airflow's log_config.py has to extend
+		// Airflow's DEFAULT_LOGGING_CONFIG, so it can never be a rendered template) and only wants
+		// the container joined to the Vector pipeline.
 		r := newReconcilerWithRoles(&productLogConfigHandler{BaseRoleGroupHandler: base},
 			record.NewFakeRecorder(100), reconciler.RoleCatalog{
 				"broker": {
 					MainContainerName: "app",
-					// Two separate statements: OwnConfigFile means the framework renders no logging
-					// config file for this producer, OwnsVectorConfig means the product writes
-					// vector.yaml. This product does both.
+					// Two separate statements: an empty Framework means the framework renders no
+					// logging config file for this producer, OwnsVectorConfig means the product
+					// writes vector.yaml. This product does both.
 					OwnsVectorConfig: true,
 					LogProducers: []productlogging.ContainerLogging{
-						{Container: "app", Framework: productlogging.LoggingFrameworkLogback,
-							OwnConfigFile: true},
+						// No Framework, so logFileName is required and must carry a suffix the
+						// Vector source globs on — otherwise the file is written and collected by
+						// nothing.
+						{Container: "app", LogFileName: "airflow.py.json"},
 					},
 				},
 			})
@@ -831,8 +835,8 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		sts := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
 
-		// The producer is declared like any other, so it passes gate 2 and the sidecar lands.
-		// OwnConfigFile changes only whether the framework RENDERS a file for it.
+		// The producer is declared like any other, so it passes gate 2 and the sidecar lands. An
+		// empty Framework changes only whether the framework RENDERS a file for it.
 		Expect(hasVectorSidecar(sts)).To(BeTrue())
 
 		app := sidecar.FindContainer(&sts.Spec.Template.Spec, "app")
@@ -851,17 +855,21 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		// ...and the other half of the seam: the framework renders NO config file for that
 		// producer, so there is no key to collide with the one the product writes itself.
 		Expect(cm.Data).NotTo(HaveKey("logback.xml"))
+		Expect(cm.Data).To(HaveKey("log_config.py"), "the product's own file is the only one")
+		// The framework handed the product a resolved path rather than a boolean to re-derive from.
+		Expect(cm.Data["log_config.py"]).To(ContainSubstring(
+			"/kubedoop/log/app/airflow.py.json"))
 	})
 })
 
-// productLogConfigHandler is the shape a product uses when it owns its own logging config file. It
-// declares the producer normally — so the container gets the shared log volume, its RW mount, the
-// pre-created log directory and the Vector source — and marks it OwnConfigFile, so the framework
-// renders no config file for it and there is no ConfigMap key to collide with the one the product
-// writes itself.
+// productLogConfigHandler is the shape a product uses when it writes its own logging config file.
+// It declares the producer with an EMPTY Framework — so the container still gets the shared log
+// volume, its RW mount, the pre-created log directory and the Vector source, while the framework
+// renders nothing and there is no ConfigMap key to collide with the one the product writes.
 //
-// This used to need two separately-addressable lists and an interface override the embedded base
-// handler could not see; one declaration field replaces both.
+// It asks the framework where the log file goes rather than composing the path itself: that answer
+// depends on whether the Vector pipeline is active this cycle, which is the framework's decision to
+// make from the CRD.
 type productLogConfigHandler struct {
 	*reconciler.BaseRoleGroupHandler[*testutil.MockCluster]
 }
@@ -880,6 +888,18 @@ func (h *productLogConfigHandler) BuildResources(
 		res.ConfigMap.Data = map[string]string{}
 	}
 	res.ConfigMap.Data[vector.VectorConfigFileName] = "# product-owned vector config"
+
+	// The product renders its own file, from the framework's folded logging spec and the resolved
+	// log target. Airflow's log_config.py is the real case: it has to extend Airflow's own
+	// DEFAULT_LOGGING_CONFIG, so it can never be a rendered template.
+	decl := buildCtx.Declaration.LogProducers[0]
+	spec := buildCtx.ContainerLogging(decl.Container)
+	level := "INFO"
+	if spec != nil && spec.Console != nil && spec.Console.Level != "" {
+		level = spec.Console.Level
+	}
+	res.ConfigMap.Data["log_config.py"] = fmt.Sprintf(
+		"# product-rendered\nLEVEL = %q\nTARGET = %q\n", level, buildCtx.LogFileTarget(decl))
 	return res, nil
 }
 

@@ -19,6 +19,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"path"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/common"
@@ -354,11 +355,11 @@ func RenderLoggingConfigMapData(buildCtx *RoleGroupBuildContext, producers []pro
 
 	data := make(map[string]string)
 	for _, lc := range producers {
-		// A producer whose config file the PRODUCT writes still counts as a producer everywhere
-		// else — the shared log volume, its mount, the pre-created directory, the Vector source —
-		// but the framework renders nothing for it. Rendering one would collide with the key the
-		// product writes itself and fail the role group.
-		if lc.OwnConfigFile {
+		// No framework means the PRODUCT writes this container's config file. It still counts as a
+		// producer everywhere else — the shared log volume, its mount, the pre-created directory,
+		// the Vector source — but the framework renders nothing for it, so there is no key to
+		// collide with the one the product writes.
+		if lc.Framework == "" {
 			continue
 		}
 		filename, content, err := RenderContainerLogging(buildCtx, lc)
@@ -458,4 +459,37 @@ func copyString(s *string) *string {
 		return nil
 	}
 	return ptr.To(*s)
+}
+
+// LogFileTarget returns the path a producer's rolling log file must be written to, or "" meaning
+// console only.
+//
+// It exists for a product that renders its own logging config file — Airflow's log_config.py, which
+// must be built on Airflow's own DEFAULT_LOGGING_CONFIG and so can never be a rendered template.
+// Such a product declares its producer with an empty Framework and calls this to learn where the
+// file goes.
+//
+// It hands back a CONCLUSION, not the inputs to one. Whether the Vector pipeline is active is a
+// pure function of things the framework already holds — logging.enableVectorAgent from the folded
+// config, the producer list and the vector.yaml source from the declaration — so the framework
+// settles it and nothing else re-derives it. Exposing the boolean instead would make the product a
+// second participant in a decision already made, and it would leave the product composing the path
+// itself from LogDirFor and ContainerLogFileName: a composition that is correct while Vector is on
+// and silently wrong the moment it is off, because the appender then writes into the container's
+// writable layer where nothing collects it.
+//
+// The empty return is not a failure. It means this role group has no shared log volume this cycle,
+// so a file appender would write nowhere useful and the product should emit a console-only config.
+func (c *RoleGroupBuildContext) LogFileTarget(decl productlogging.ContainerLogging) string {
+	if !vectorLogPipelineActive(c) {
+		return ""
+	}
+	name := decl.LogFileName
+	if name == "" {
+		name = productlogging.ContainerLogFileName(decl.Framework, decl.Container)
+	}
+	if name == "" {
+		return ""
+	}
+	return path.Join(productlogging.LogDirFor(decl), name)
 }

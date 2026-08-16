@@ -39,21 +39,24 @@ type ContainerLogging struct {
 	// Container is the container name; its merged logging spec (CRD logging.containers.<name>)
 	// drives the generated file.
 	Container string
-	// OwnConfigFile declares that the PRODUCT writes this container's logging config file, so the
-	// framework renders none — while the container still joins the Vector pipeline in every other
-	// respect: the shared log volume, its RW mount, the pre-created log directory and the source.
+	// Framework selects the output format (logback / log4j / log4j2 / python), and by being set at
+	// all it says the FRAMEWORK renders this container's config file.
 	//
-	// It is the seam for a config file that can never be a rendered template. Airflow's
+	// EMPTY means the product writes the file itself, and then LogFileName is required. The
+	// container still joins the Vector pipeline in every other respect — the shared log volume, its
+	// RW mount, the pre-created log directory, the source — but the framework renders nothing for
+	// it, so there is no ConfigMap key to collide with the one the product writes.
+	//
+	// That is the seam for a config file which can never be a rendered template: Airflow's
 	// log_config.py must be built on Airflow's own DEFAULT_LOGGING_CONFIG, and the python
-	// generator's default file name is log_config.py — so a rendered file would collide with the
-	// product's own ConfigMap key and fail the role group, while omitting the producer entirely
-	// would cost the shared volume, the mount, the log directory and the Vector source.
+	// generator's default file name is log_config.py, so a rendered file would collide with the
+	// product's own key and fail the role group — while dropping the producer entirely would cost
+	// the volume, the mount, the directory and the source.
 	//
-	// The product then owns the two obligations the framework can no longer meet: its log file must
-	// land at LogDirFor(decl) carrying LogFileSuffix, or the pipeline comes up and collects
-	// nothing.
-	OwnConfigFile bool
-	// Framework selects the output format (logback / log4j / log4j2 / python).
+	// It is expressed by leaving this empty rather than by a "do not render" flag because the
+	// product then has to STATE what it will write (LogFileName), which is what makes the
+	// cross-producer collision check real and the suffix checkable. A flag only says what the
+	// framework will not do, and leaves the product's half in prose.
 	Framework LoggingFramework
 	// FileName overrides the ConfigMap key / file name. Empty uses the framework default
 	// (e.g. "logback.xml").
@@ -162,6 +165,27 @@ func ValidateProducers(decls []ContainerLogging) error {
 		if err := validateLogDirName(decl); err != nil {
 			return err
 		}
+		// A producer whose file the PRODUCT writes must say what it will write. Without a name the
+		// framework has nothing real to check the cross-producer collision against, and no way to
+		// tell whether the file will be collectible at all.
+		if decl.Framework == "" && decl.LogFileName == "" {
+			return fmt.Errorf(
+				"container %q declares no logging framework, so the product writes its own config file — "+
+					"then logFileName is required, naming the rolling log file the product will write. "+
+					"Set framework to have the framework render the file instead",
+				decl.Container)
+		}
+		// The Vector pipeline globs "<logDir>*/*<suffix>" once per framework, so the SUFFIX is what
+		// decides whether a file is collected and which edge parser reads it. When the framework
+		// renders the file it owns that; when the product does, this is the only place it is
+		// checkable — and skipping it is how a product could mount the volume, create the directory,
+		// write its logs and have Vector collect nothing, with every signal green.
+		if decl.Framework == "" && !hasKnownLogFileSuffix(decl.LogFileName) {
+			return fmt.Errorf(
+				"log file name %q for container %q ends in no known framework suffix (%s): the Vector "+
+					"source globs on that suffix, so nothing would collect the file",
+				decl.LogFileName, decl.Container, strings.Join(KnownLogFileSuffixes(), ", "))
+		}
 		logFileName := ContainerLogFileName(decl.Framework, decl.Container)
 		if decl.LogFileName != "" {
 			logFileName = decl.LogFileName
@@ -175,6 +199,33 @@ func ValidateProducers(decls []ContainerLogging) error {
 		seen[full] = decl.Container
 	}
 	return nil
+}
+
+// KnownLogFileSuffixes returns every rolling log-file suffix the Vector pipeline globs on, sorted
+// so the set is stable in an error message. A product writing its own log file must use one of
+// them, or nothing collects it.
+func KnownLogFileSuffixes() []string {
+	seen := make(map[string]struct{}, len(loggingFrameworks))
+	out := make([]string, 0, len(loggingFrameworks))
+	for _, spec := range loggingFrameworks {
+		if _, dup := seen[spec.logFileSuffix]; dup {
+			continue
+		}
+		seen[spec.logFileSuffix] = struct{}{}
+		out = append(out, spec.logFileSuffix)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// hasKnownLogFileSuffix reports whether name ends in a suffix the Vector pipeline globs on.
+func hasKnownLogFileSuffix(name string) bool {
+	for _, suffix := range KnownLogFileSuffixes() {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // LoggingFramework defines the logging framework type.

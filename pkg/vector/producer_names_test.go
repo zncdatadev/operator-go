@@ -30,7 +30,7 @@ import (
 // them is what forced a product's Vector event tag to equal its container name.
 func TestProvider_Inject_MountFollowsContainerAndMkdirFollowsLogDir(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]productlogging.ContainerLogging{
-		{Container: "node", LogDirName: "superset"},
+		{Container: "node", LogDirName: "superset", Framework: productlogging.LoggingFrameworkLogback},
 	}))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{{Name: "node", Image: "node-image"}},
@@ -66,7 +66,7 @@ func TestProvider_Inject_MountFollowsContainerAndMkdirFollowsLogDir(t *testing.T
 // filesystem, Vector collects nothing, and every signal says healthy.
 func TestProvider_Inject_RejectsProducerMatchingNoContainer(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]productlogging.ContainerLogging{
-		{Container: "ghost"},
+		{Container: "ghost", Framework: productlogging.LoggingFrameworkLogback},
 	}))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{{Name: "node", Image: "node-image"}},
@@ -89,7 +89,7 @@ func TestProvider_Inject_RejectsProducerMatchingNoContainer(t *testing.T) {
 // volume, and the phase ordering guarantees it exists by the time Vector is injected.
 func TestProvider_Inject_AcceptsInitContainerProducer(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]productlogging.ContainerLogging{
-		{Container: "exporter"},
+		{Container: "exporter", Framework: productlogging.LoggingFrameworkLogback},
 	}))
 	podSpec := &corev1.PodSpec{
 		Containers:     []corev1.Container{{Name: "node", Image: "node-image"}},
@@ -104,7 +104,7 @@ func TestProvider_Inject_AcceptsInitContainerProducer(t *testing.T) {
 // re-checks what the framework path already validated — the value lands in its own shell command.
 func TestProvider_Inject_RejectsUnusableLogDirName(t *testing.T) {
 	p := NewVectorSidecarProvider("test-product:latest", WithProducers([]productlogging.ContainerLogging{
-		{Container: "node", LogDirName: "x; touch /tmp/pwn"},
+		{Container: "node", LogDirName: "x; touch /tmp/pwn", Framework: productlogging.LoggingFrameworkLogback},
 	}))
 	podSpec := &corev1.PodSpec{
 		Containers: []corev1.Container{{Name: "node", Image: "node-image"}},
