@@ -10,14 +10,14 @@ This is an example operator built with [Kubebuilder](https://book.kubebuilder.io
 - **BaseRoleGroupHandler Delegation**: `TrinoRoleGroupHandler` embeds
   `reconciler.BaseRoleGroupHandler`, so the framework builds the ConfigMap, Services, StatefulSet
   and role PDB; the override only appends what the merge pipeline cannot express.
-- **ProductConfig Hook**: `product.ComputeConfig` contributes Trino's `config.properties` as the
+- **RoleGroupResolver**: `product.ComputeConfig` contributes Trino's `config.properties` as the
   lowest-precedence merge layer, so any user `configOverrides` wins over it.
 - **Typed Extension Registry**: `common.NewExtensionRegistry[*TrinoCluster]()` holds
   `ClusterExtension` (Catalog, Discovery) and `RoleExtension` (Health) hooks, each declaring
   `*TrinoCluster` in its signatures.
 - **Admission Webhook**: a `CustomDefaulter` fills product defaults into the typed spec and a
   `CustomValidator` rejects invalid clusters before they reach the reconciler.
-- **Declarative Logging**: `LoggingContainers` lets the framework render the Log4j2 config from
+- **Declarative Logging**: `RoleDeclaration.LogProducers` lets the framework render the Log4j2 config from
   the CRD logging spec.
 
 ## Project Structure
@@ -46,7 +46,7 @@ trino-operator/
 │   │   ├── discovery_extension.go   # ClusterExtension + discovery ConfigMap example
 │   │   └── health_extension.go      # RoleExtension example
 │   ├── product/
-│   │   └── config.go                # ProductConfig hook and role name constants
+│   │   └── config.go                # RoleGroupResolver and role name constants
 │   ├── config/
 │   │   ├── trino_config.go          # jvm.config generation
 │   │   └── catalog_config.go        # Catalog properties generation
@@ -292,26 +292,31 @@ func (h *TrinoRoleGroupHandler) BuildResources(
 }
 ```
 
-`NewTrinoRoleGroupHandler` configures the framework defaults on the embedded handler
-(`ConfigGenerator`, `ConfigMountPath`, `MainContainerName`, `ProductName`, `LoggingContainers`,
-per-role container and service ports).
+`NewTrinoRoleGroupHandler(scheme)` configures only what a role cannot differ on
+(`ConfigGenerator`, `ConfigMountPath`). Everything role-shaped — primary container name, container
+and service ports, log producers — is stated by `DeclareRoles`, which implements
+`reconciler.RoleProvider` and receives the cr, so a port that moves because the CR enabled TLS is
+computed there rather than written into handler state the next cluster inherits.
 
-### 3. Contributing Product Config
+### 3. Deriving Config from the Effective Config
 
 ```go
 // ComputeConfig is merged as the LOWEST layer (product < role < role group), so a user's
-// configOverrides always win over it. It is recomputed every reconcile and may derive from
-// live cluster state — here, the discovery URI of the coordinator Service.
+// configOverrides always win over it. It runs once per role group, AFTER the typed config
+// block has been folded — so it can read rg.EffectiveConfig() — and before anything is built.
+// It is recomputed every reconcile and may derive from live cluster state; here, the discovery
+// URI of the coordinator Service.
 func ComputeConfig(
-    _ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster, roleName, _ string,
-) (*commonsv1alpha1.OverridesSpec, error) {
+    _ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster,
+    rg *reconciler.RoleGroupBuildContext,
+) (*reconciler.Contribution, error) {
     port := CoordinatorPort(cr)
 
     props := map[string]string{
         "http-server.http.port": fmt.Sprintf("%d", port),
         "discovery.uri":         discoveryURI(cr, port),
     }
-    switch roleName {
+    switch rg.RoleName {
     case RoleCoordinators:
         props["coordinator"] = "true"
         props["node-scheduler.include-coordinator"] = "false"
@@ -319,7 +324,7 @@ func ComputeConfig(
     case RoleWorkers:
         props["coordinator"] = "false"
     }
-    return &commonsv1alpha1.OverridesSpec{
+    return &reconciler.Contribution{
         ConfigOverrides: map[string]map[string]string{
             "config.properties": props,
         },
@@ -365,7 +370,7 @@ reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster
     Scheme:              mgr.GetScheme(),
     Recorder:            mgr.GetEventRecorderFor("trino-cluster-controller"),
     RoleGroupHandler:    trinocontroller.NewTrinoRoleGroupHandler(mgr.GetScheme()),
-    ProductConfig:       product.ComputeConfig,
+    RoleGroupResolver:   reconciler.RoleGroupResolverFunc[*trinov1alpha1.TrinoCluster](product.ComputeConfig),
     HealthCheckInterval: 120 * time.Second,
     HealthCheckTimeout:  300 * time.Second,
     Prototype:           &trinov1alpha1.TrinoCluster{},

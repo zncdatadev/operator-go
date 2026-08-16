@@ -11,14 +11,18 @@ Every non-test file in this package:
 | File | Purpose |
 |------|---------|
 | `generic_reconciler.go` | `GenericReconcilerConfig` / `GenericReconciler` — the reconcile loop, panic recovery, workload identity + RBAC provisioning, dependency checks, role/role-group iteration, sidecar validation, status write, `SetupWithManager*` |
-| `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, `VectorConfigProvider`, `LoggingProducerProvider`, `MergeRoleGroupConfig`, logging-config rendering helpers |
-| `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `RoleNameProvider`, `BuildRolePodDisruptionBudget`, per-role setters |
+| `role_group_handler.go` | `RoleGroupHandler` / `RoleGroupHandlerFuncs`, `RoleGroupBuildContext` (incl. `EffectiveConfig()` and `LogFileTarget()`), `RoleBuildContext`, `RoleGroupResources`, `VolumeProvider`, `VectorAggregatorProvider`, logging-config rendering helpers |
+| `role_declaration.go` | `RoleDeclaration`, `RoleCatalog`, `RoleProvider` / `RoleProviderFunc`, `DataVolume`, `ValidateCatalog` — a product's per-role statement, produced once per pass with the cr in hand |
+| `role_group_resolver.go` | `RoleGroupResolver` / `RoleGroupResolverFunc`, `Contribution`, `HeapMB` — the seam that derives config-file content from a role group's EFFECTIVE config, folded beneath the user's overrides |
+| `config_fold.go` | `FoldCommonConfig` (the framework's half of the `config` block), `FoldProductConfig[T]` / `ValidateProductConfigType[T]` (the product's half), `ConfigFoldTag` / `ConfigFoldAtomic` — per-leaf for `resources`, per-member for `affinity`, empty clears |
+| `resolved_image.go` | `ResolvedImage`, `ImageResolution` — image, pull policy, pull secret and product version resolved ONCE per role group so the container and the sidecars cannot be told different things |
+| `base_role_group_handler.go` | `BaseRoleGroupHandler` — the default resource builder products embed; `NewBaseRoleGroupHandler(scheme)`, `BuildRolePodDisruptionBudget`. Carries only reconcile-INVARIANT settings (`ConfigGenerator`, `Scheme`, `ConfigMountPath`, `LabelDomain`, sidecar manager, security contexts); everything role-shaped is in `RoleDeclaration` |
 | `apply.go` | `copyDesiredState` — update semantics of the apply path (issue #526): labels replaced wholesale, annotations merged, per-kind spec assigned wholesale minus the API-server-owned/immutable fields that are restored from the live object (StatefulSet selector/serviceName/volumeClaimTemplates/podManagementPolicy; Service clusterIP(s)/ipFamilies/ipFamilyPolicy/healthCheckNodePort/loadBalancerClass/allocated NodePorts), unstructured top-level copy for arbitrary-GVK extras. `reconcileClaimVolumeMounts` keeps the pod template consistent with the claim templates that were preserved: a mount for a claim that was not created is dropped (the API server rejects the whole StatefulSet for it), and every mount a preserved claim had is restored from the live template (or the PVC stays bound and mounted nowhere), keyed on mount path so a multiply-mounted claim keeps all of its paths and a path the desired template already uses wins. `claimTemplatesDiffer` decides both that repair and the `ImmutableFieldIgnored` report, and asks whether the handler REQUESTED something else rather than whether the slices are byte-equal: `spec.volumeMode` and `status` are filled in by the server and count only when the handler states one, so an unchanged data PVC is silent (#627) while a resize or a rename is still reported |
 | `cleaner.go` | `RoleGroupCleaner` — orphan cleanup as a multi-pass state machine (PDB → StatefulSet drain → [PVCs] → StatefulSet → [product extras] → ConfigMap → Service → headless → metrics, plus the role PDB of a removed role), `WithExtraResourceKinds`, gray-delete grace period, status pruning, `WithEventManager` / `WithDrainPollInterval` / `WithDrainTimeout` / `WithAPIReader` / `WithRateLimitRetryAfter`, `AnnotationPendingDeletion` / `AnnotationDeletePVCs` / `AnnotationDrainStarted`, `LabelRolePodDisruptionBudget` / `LabelRoleGroupPodDisruptionBudget`, `ConditionOrphanCleanupPending`, `DefaultDrainPollInterval` / `DefaultDrainTimeout` |
 | `health.go` | `HealthManager` — role group aggregation into Available/Progressing, pod-failure detection into Degraded, the `Paused` condition, plus the optional product `ServiceHealthCheck` (run under `Timeout`) |
 | `dependency.go` | `Dependency` / `DependencyKind` / `DependencyResolver` — declarative existence checks for referenced ConfigMaps and Secrets, plus the explicit `ValidateS3Connection` / `ValidateDatabaseConnection` / `ValidateZKConfig` helpers |
 | `errors.go` | Typed reconcile errors: `ReconcileError`, `ConfigError`, `ResourceBuildError`, `ResourceApplyError`, `ValidationError`, `RateLimitError` and their `Is*` predicates |
-| `event.go` | `EventManager` — Normal/Warning event emission on the CR. `NewEventManager(recorder, scheme)`: the scheme resolves the Kind named in resource events, which the typed objects `pkg/builder` produces do not carry. The framework emits exactly `Created`/`Updated`/`Deleted` (Normal) and `ReconcileError`/`ReconcilePanic`/`PodOverrideIgnored`/`UnknownConfiguredRole`/`ImmutableFieldIgnored`/`VectorSidecarSkipped` (Warning) — **there are no reconcile start/completion events**. `LogAndEmitError`/`LogAndEmitInfo` exist for product code and the framework never calls them. **Every emit here depends on the operator's own ClusterRole holding `core/events: create;patch`** (`docs/security.md` §3.3): client-go treats a 403 on an event as permanent, logs `Server rejected event (will not retry!)` and discards it, and emission is fire-and-forget, so nothing reaches `Reconcile` and the pass reports success. `ImmutableFieldIgnored` is the only Warning with no paired log line and no status condition, so it is the one that goes completely dark |
+| `event.go` | `EventManager` — Normal/Warning event emission on the CR. `NewEventManager(recorder, scheme)`: the scheme resolves the Kind named in resource events, which the typed objects `pkg/builder` produces do not carry. The framework emits exactly `Created`/`Updated`/`Deleted` (Normal) and `ReconcileError`/`ReconcilePanic`/`PodOverrideIgnored`/`UnusedRoleDeclaration`/`ImmutableFieldIgnored`/`VectorSidecarSkipped` (Warning) — **there are no reconcile start/completion events**. `LogAndEmitError`/`LogAndEmitInfo` exist for product code and the framework never calls them. **Every emit here depends on the operator's own ClusterRole holding `core/events: create;patch`** (`docs/security.md` §3.3): client-go treats a 403 on an event as permanent, logs `Server rejected event (will not retry!)` and discards it, and emission is fire-and-forget, so nothing reaches `Reconcile` and the pass reports success. `ImmutableFieldIgnored` is the only Warning with no paired log line and no status condition, so it is the one that goes completely dark |
 | `discovery.go` | `EnsureDiscoveryConfigMap` — shared ensure-helper for product discovery ConfigMaps (CreateOrUpdate + controller owner ref + canonical labels; the product computes the data map) |
 | `generated_secret.go` | `EnsureGeneratedSecret` — the ensure-helper for an object whose content must NOT converge: values are generated once, a missing key is filled, an existing value is never rewritten. Controller owner ref + canonical labels, `IsAlreadyExists` tolerated |
 | `workload_rbac.go` | `EnsureWorkloadRBAC` — the namespaced `Role` + `RoleBinding` giving the cluster's PODS their API permissions, named after the derived ServiceAccount. Empty rules revoke; a foreign `roleRef` is never adopted; 403s are re-explained by cause (missing RBAC API access vs. escalation refusal) |
@@ -121,10 +125,11 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
    `SidecarManager.ValidateAll` after the ConfigMap/Services/extras are applied and **before** the
    StatefulSet. A failure aborts the role group with a `*ValidationError` (`NewValidationError` /
    `IsValidationError`) instead of creating pods that crash-loop on a missing mount.
-10. **Configuration mistakes are surfaced, not swallowed:** a handler implementing
-    `RoleNameProvider` has its `ConfiguredRoleNames()` checked against `spec.roles`; names the CR
-    does not declare produce an `UnknownConfiguredRole` Warning event (a warning, not a failure —
-    a handler may be configured for optional roles). A `podOverrides` layer that fails to decode is
+10. **Configuration mistakes are surfaced, not swallowed:** the `RoleCatalog` is checked against
+    `spec.roles` once per pass, asymmetrically — a role the CR declares that the catalog does not is
+    a **hard error** naming the typo and listing the near misses, while a role the catalog declares
+    that the CR does not use is an `UnusedRoleDeclaration` Warning (a product may support more roles
+    than a cluster runs; `RoleDeclaration.Optional` silences it). A `podOverrides` layer that fails to decode is
     recorded on `config.MergedConfig.PodOverrideErrors` and re-emitted as a `PodOverrideIgnored`
     Warning event, so a dropped override is visible on the CR.
 
@@ -173,12 +178,14 @@ There is no `reconciler.go`, `status.go` or `finalizer.go` in this package — s
     still the only source that can attribute a *pre-labels* resource to a role group.
 13. **Vector sidecar gating:** the framework injects the Vector sidecar only when something supplies
     `vector.yaml` — the CR implements `VectorAggregatorProvider` (the framework then renders it) or
-    the handler implements `VectorConfigProvider` and claims the role. Otherwise it logs, emits a
-    `VectorSidecarSkipped` Warning and skips the sidecar: registering it would fail the provider's
-    own validation on every cycle and abort the whole cluster's reconcile. The resolved answer is
-    recorded on `RoleGroupBuildContext.VectorLogPipelineActive`, and the logging renderers gate the
-    rolling file appender on it — the Vector provider owns the shared log volume, so without the
-    sidecar an appender would write to an unmounted path.
+    the role sets `RoleDeclaration.OwnsVectorConfig` (the product writes it). Otherwise it logs,
+    emits a `VectorSidecarSkipped` Warning and skips the sidecar: registering it would fail the
+    provider's own validation on every cycle and abort the whole cluster's reconcile. The resolved
+    answer is recorded on the build context **unexported** — every input to it is already the
+    framework's, so nothing else re-derives it — and reaches a product only as the conclusion
+    `RoleGroupBuildContext.LogFileTarget(decl)`, which returns "" for console-only. The logging
+    renderers gate the rolling file appender on the same answer: the Vector provider owns the shared
+    log volume, so without the sidecar an appender would write to an unmounted path.
 14. **Framework-owned selector labels:** the StatefulSet/Service/PDB selectors are derived from the
     cluster/role/role group names alone (or the product's `LabelDomain` identity labels). A CR
     label that collides with a selector key is **inert**, not an error: `buildLabels` applies the
