@@ -189,15 +189,5 @@ func jvmConfig(roleName string) string {
 	return b.Build()
 }
 
-// defaultImage is the operator's default Trino image. The CR's spec.image (defaulted by the
-// webhook) overrides it per reconcile in BuildResources.
-func defaultImage() string {
-	return fmt.Sprintf("%s/trino:%s-%s",
-		constants.DefaultImageRepo,
-		constants.DefaultImageProductVersion,
-		constants.DefaultImageKubedoopVersion,
-	)
-}
-
 // Ensure interface implementation.
 var _ reconciler.RoleGroupHandler[*trinov1alpha1.TrinoCluster] = &TrinoRoleGroupHandler{}

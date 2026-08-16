@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 )
@@ -198,3 +199,121 @@ var _ = Describe("The role declaration and derivation seams", func() {
 func ptrQuantity(s string) *resource.Quantity {
 	return ptr.To(resource.MustParse(s))
 }
+
+var _ = Describe("What the declaration may and may not beat", func() {
+	ctx := context.Background()
+
+	build := func(decl reconciler.RoleDeclaration, merged *config.MergedConfig) *appsv1.StatefulSet {
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
+		res, err := handler.BuildResources(ctx, k8sClient,
+			testutil.NewMockCluster("decl-precedence", testNamespace),
+			&reconciler.RoleGroupBuildContext{
+				ClusterName:      "decl-precedence",
+				ClusterNamespace: testNamespace,
+				ClusterSpec:      &commonsv1alpha1.GenericClusterSpec{},
+				RoleName:         "broker",
+				RoleSpec:         &commonsv1alpha1.RoleSpec{},
+				RoleGroupName:    "default",
+				RoleGroupSpec:    commonsv1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+				MergedConfig:     merged,
+				ResourceName:     reconciler.RoleGroupResourceName("decl-precedence", "broker", "default"),
+				ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
+				Declaration:      decl,
+			})
+		Expect(err).NotTo(HaveOccurred())
+		return res.StatefulSet
+	}
+
+	It("lets a user's envOverrides beat a declared env var of the same name", func() {
+		// THE guard against the defect the deleted container callback embodied. That callback ran on
+		// the ASSEMBLED container, after the merged env had been written into it, so a product
+		// setting env there silently deleted what the user wrote. A declaration must be beneath.
+		//
+		// Kubernetes resolves a duplicate env name to the LAST entry, so this asserts on ordering,
+		// not on absence.
+		sts := build(
+			reconciler.RoleDeclaration{Env: []corev1.EnvVar{{Name: "JAVA_OPTS", Value: "from-product"}}},
+			&config.MergedConfig{EnvVars: map[string]string{"JAVA_OPTS": "from-user"}},
+		)
+
+		env := sts.Spec.Template.Spec.Containers[0].Env
+		var last string
+		for _, e := range env {
+			if e.Name == "JAVA_OPTS" {
+				last = e.Value
+			}
+		}
+		Expect(last).To(Equal("from-user"), "the user's envOverrides must win")
+	})
+
+	It("still delivers a declared env var the user did not restate", func() {
+		sts := build(
+			reconciler.RoleDeclaration{Env: []corev1.EnvVar{
+				{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+			}},
+			&config.MergedConfig{EnvVars: map[string]string{"OTHER": "x"}},
+		)
+
+		// A valueFrom is the case this channel exists for: the override map is map[string]string
+		// and cannot express one at all.
+		Expect(sts.Spec.Template.Spec.Containers[0].Env).To(ContainElement(
+			HaveField("Name", "POD_NAME")))
+	})
+
+	It("names a declared data volume, rather than always calling it \"data\"", func() {
+		// The claim template's name is immutable and preserved by the apply path, so a product that
+		// named its volume something else could not have fixed it in place afterwards. The field was
+		// accepted and documented for a while before anything read it.
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
+		res, err := handler.BuildResources(ctx, k8sClient,
+			testutil.NewMockCluster("decl-volume", testNamespace),
+			&reconciler.RoleGroupBuildContext{
+				ClusterName:      "decl-volume",
+				ClusterNamespace: testNamespace,
+				ClusterSpec:      &commonsv1alpha1.GenericClusterSpec{},
+				RoleName:         "broker",
+				RoleSpec:         &commonsv1alpha1.RoleSpec{},
+				RoleGroupName:    "default",
+				RoleGroupSpec: commonsv1alpha1.RoleGroupSpec{
+					Replicas: ptr.To(int32(1)),
+					// Whether the role HAS a volume is declared; how big it is comes from the
+					// effective config, so a user can size it.
+					Config: &commonsv1alpha1.RoleGroupConfigSpec{
+						Resources: &commonsv1alpha1.ResourcesSpec{
+							Storage: &commonsv1alpha1.StorageResource{Capacity: ptrQuantity("5Gi")},
+						},
+					},
+				},
+				MergedConfig:  &config.MergedConfig{},
+				ResourceName:  reconciler.RoleGroupResourceName("decl-volume", "broker", "default"),
+				ResolvedImage: reconciler.ResolvedImage{Reference: "test-image:latest"},
+				Declaration: reconciler.RoleDeclaration{DataVolume: &reconciler.DataVolume{
+					Name: "journal", MountPath: "/kubedoop/journal"}},
+			})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(res.StatefulSet.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		Expect(res.StatefulSet.Spec.VolumeClaimTemplates[0].Name).To(Equal("journal"))
+		// The mount must carry the same name, or the pod references a volume that does not exist.
+		Expect(res.StatefulSet.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(
+			SatisfyAll(HaveField("Name", "journal"), HaveField("MountPath", "/kubedoop/journal"))))
+	})
+
+	It("applies a declared Command and Lifecycle to the primary container", func() {
+		sts := build(
+			reconciler.RoleDeclaration{
+				Command: []string{"/bin/bash", "-c", "start.sh"},
+				Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{
+					Sleep: &corev1.SleepAction{Seconds: 5}}},
+			},
+			&config.MergedConfig{},
+		)
+
+		c := sts.Spec.Template.Spec.Containers[0]
+		Expect(c.Command).To(Equal([]string{"/bin/bash", "-c", "start.sh"}))
+		// A sleep action had no route through the builder's three narrow lifecycle helpers.
+		Expect(c.Lifecycle).NotTo(BeNil())
+		Expect(c.Lifecycle.PreStop.Sleep).NotTo(BeNil())
+	})
+})

@@ -112,11 +112,6 @@ type StatefulSetBuilder struct {
 	// PodOverrideViolations() by the caller, which fails the role group.
 	podOverrideViolations []error
 
-	// mainContainerCustomizer is the product's hook into the assembled primary container; see
-	// WithMainContainerCustomizer. mainContainerViolations records what it got wrong.
-	mainContainerCustomizer func(*corev1.Container) error
-	mainContainerViolations []error
-
 	// Graceful shutdown timeout
 	TerminationGracePeriodSeconds *int64
 
@@ -382,42 +377,6 @@ func (b *StatefulSetBuilder) WithEnableServiceLinks(enable bool) *StatefulSetBui
 // most recent build — so call it afterwards. Empty means the merge preserved everything the
 // framework mounted.
 //
-// WithMainContainerCustomizer registers a function that gets the assembled primary container just
-// before pod overrides are applied.
-//
-// It exists because the framework owns the primary container's name, image, ports, security
-// context, volume mounts and probes, but nothing else — so every product reached into the
-// StatefulSet the framework had just returned and edited it in place, re-deriving the container it
-// was handed. zookeeper-operator located it as `Containers[0]`, an assumption the framework has
-// never promised: the moment a sidecar provider inserts a container earlier, that silently
-// configures the wrong one.
-//
-// TIMING IS THE POINT, and it is why this cannot be a post-Build patch. The customizer runs AFTER
-// the framework has assembled the container and BEFORE podOverrides are strategic-merged, so a
-// user's podOverrides still outrank whatever the product set here — a post-Build edit would invert
-// that precedence silently.
-//
-// The image is off limits: it is resolved once and propagated to the sidecars before the
-// StatefulSet is built (the Vector agent ships inside the product image), so changing it here would
-// leave them on a different one. Build() records that as a violation rather than accepting it; set
-// RoleGroupBuildContext.Image instead.
-func (b *StatefulSetBuilder) WithMainContainerCustomizer(fn func(*corev1.Container) error) *StatefulSetBuilder {
-	b.mainContainerCustomizer = fn
-	return b
-}
-
-// MainContainerViolations returns the errors the main container customizer produced, if any.
-//
-// Build() cannot return an error, so — exactly as with PodOverrideViolations — the failure is
-// recorded and the caller surfaces it. BaseRoleGroupHandler turns these into a *ValidationError
-// that fails the role group, because a customizer that failed silently would ship a workload
-// missing the command, args or probes the product meant to set.
-func (b *StatefulSetBuilder) MainContainerViolations() []error {
-	if len(b.mainContainerViolations) == 0 {
-		return nil
-	}
-	return append([]error(nil), b.mainContainerViolations...)
-}
 
 // The slice is copied out, like every other value Build() hands back: the builder must not share
 // mutable state with its callers.
@@ -452,12 +411,12 @@ func (b *StatefulSetBuilder) WithPodOverrides(overrides *corev1.PodTemplateSpec)
 	return b
 }
 
-// WithStorage sets the storage configuration.
 // DefaultDataVolumeName is the claim-template and mount name a data volume gets when the caller
 // names none. It is reserved: a VolumeProvider must not reuse it, because duplicate volume names
 // make the API server reject the pod.
 const DefaultDataVolumeName = "data"
 
+// WithStorage sets the storage configuration, naming the claim template DefaultDataVolumeName.
 func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, mountPath string) *StatefulSetBuilder {
 	return b.WithNamedStorage(DefaultDataVolumeName, storage, mountPath)
 }
@@ -677,12 +636,6 @@ func (b *StatefulSetBuilder) DisableStartupProbe() *StatefulSetBuilder {
 // rewrites the template when pod overrides are applied), so sharing would let a pod-level change
 // contaminate ObjectMeta, the immutable .spec.selector, or a second Build() from the same builder.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
-	// Reset here, not next to the podOverrides reset below: customizedContainer runs inside
-	// buildPodSpec, which the struct literal calls before we ever reach that point. Same reason as
-	// there — the list describes THIS build, so a reused builder must not report the previous
-	// build's violations, nor report this one's twice.
-	b.mainContainerViolations = nil
-
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
@@ -749,7 +702,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 		Volumes:                       cloneSlice(b.Volumes),
 		InitContainers:                cloneSlice(b.InitContainers),
 		Containers: []corev1.Container{
-			b.customizedContainer(),
+			b.buildContainer(),
 		},
 	}
 
@@ -766,31 +719,6 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	}
 
 	return spec
-}
-
-// customizedContainer assembles the primary container and hands it to the registered customizer.
-// Any error, and any attempt to change the image, is recorded for the caller to surface.
-func (b *StatefulSetBuilder) customizedContainer() corev1.Container {
-	container := b.buildContainer()
-	if b.mainContainerCustomizer == nil {
-		return container
-	}
-
-	image := container.Image
-	if err := b.mainContainerCustomizer(&container); err != nil {
-		b.mainContainerViolations = append(b.mainContainerViolations,
-			fmt.Errorf("main container customizer for %q: %w", container.Name, err))
-		return container
-	}
-	if container.Image != image {
-		b.mainContainerViolations = append(b.mainContainerViolations, fmt.Errorf(
-			"main container customizer changed the image of %q from %q to %q: the image is resolved "+
-				"once and propagated to the sidecars before the StatefulSet is built, so changing it "+
-				"here would leave them on the old one — set RoleGroupBuildContext.Image instead",
-			container.Name, image, container.Image))
-		container.Image = image
-	}
-	return container
 }
 
 // buildContainer builds the main container.

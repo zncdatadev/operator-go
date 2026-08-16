@@ -780,14 +780,6 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 			stderrors.Join(violations...))
 	}
 
-	// A customizer that failed would otherwise ship a workload missing the command, args or probes
-	// the product meant to set — the same reason podOverrides violations fail the build rather than
-	// being logged.
-	if violations := stsBuilder.MainContainerViolations(); len(violations) > 0 {
-		return nil, NewValidationError("mainContainerCustomizer", buildCtx.RoleName, buildCtx.RoleGroupName,
-			stderrors.Join(violations...))
-	}
-
 	// Inject sidecars: prefer buildCtx (SDK auto-created), fallback to instance field
 	sidecarMgr := buildCtx.SidecarManager
 	if sidecarMgr == nil {

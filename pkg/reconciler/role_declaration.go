@@ -151,8 +151,14 @@ type RoleDeclaration struct {
 	// computes — a downward-API POD_NAME, a secretKeyRef.
 	//
 	// It exists because the merged-override channel is map[string]string and cannot carry a
-	// `valueFrom` at all. These are appended after the override-derived env, so they sit BESIDE a
-	// user's envOverrides rather than above them.
+	// `valueFrom` at all; a value the product COMPUTES belongs in Contribution.EnvVars, which folds
+	// per key.
+	//
+	// These are emitted BENEATH the merged overrides: Kubernetes resolves a duplicate env name to
+	// the last entry, so a user's envOverrides of the same name wins. That ordering is the
+	// precedence, and it is the reason this is a declaration rather than a post-build edit — the
+	// deleted container callback ran after the merged env was already written into the container,
+	// so a product setting env there silently deleted what the user wrote.
 	Env []corev1.EnvVar
 
 	// ConfigDefaults is the product's default for the FRAMEWORK-owned half of this role's config

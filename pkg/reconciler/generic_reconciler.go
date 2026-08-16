@@ -1212,6 +1212,14 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 		}
 	}
 
+	// A listener class the resolver computed replaces the declared one for THIS role group. This is
+	// the whole reason the field exists: a product may expose the listener class as a user-settable
+	// field in its own config block, and such a value arrives from the fold per role group — after
+	// the declaration, which is fixed once per pass, was produced.
+	if derived != nil && derived.ListenerClass != "" {
+		buildCtx.Declaration.ListenerClass = derived.ListenerClass
+	}
+
 	// Stage 3 — MERGE the overrides, in increasing precedence: derived (lowest) < product config <
 	// role < role group. Everything a product contributes sits beneath everything a user states, so
 	// a value set anywhere in the CRD always wins.

@@ -17,8 +17,6 @@ limitations under the License.
 package builder_test
 
 import (
-	"fmt"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -1814,29 +1812,5 @@ var _ = Describe("storageClass distinguishes unset from empty", func() {
 	It("writes the named class", func() {
 		Expect(build(ptr.To("fast-ssd")).Spec.VolumeClaimTemplates[0].Spec.StorageClassName).
 			To(HaveValue(Equal("fast-ssd")))
-	})
-})
-
-var _ = Describe("Main container customizer violations", func() {
-	It("reports only the current build's violations when a builder is reused", func() {
-		// The list describes THIS build. Accumulating would report a stale violation for a builder
-		// whose customizer has since been fixed, and report a surviving one twice — the same reason
-		// podOverrideViolations is reset, and the reset has to happen earlier here because
-		// customizedContainer runs inside buildPodSpec.
-		b := builder.NewStatefulSetBuilder("sts", "default").
-			WithImage("img:1", corev1.PullIfNotPresent).
-			WithMainContainerCustomizer(func(*corev1.Container) error {
-				return fmt.Errorf("boom")
-			})
-
-		b.Build()
-		Expect(b.MainContainerViolations()).To(HaveLen(1))
-
-		b.Build()
-		Expect(b.MainContainerViolations()).To(HaveLen(1), "the second build must not double-count")
-
-		b.WithMainContainerCustomizer(func(*corev1.Container) error { return nil })
-		b.Build()
-		Expect(b.MainContainerViolations()).To(BeEmpty(), "a fixed customizer must clear the list")
 	})
 })
