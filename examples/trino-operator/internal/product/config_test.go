@@ -25,6 +25,7 @@ import (
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/product"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/reconciler"
 )
 
 func testCR() *trinov1alpha1.TrinoCluster {
@@ -40,7 +41,8 @@ func testCR() *trinov1alpha1.TrinoCluster {
 
 func configProps(t *testing.T, cr *trinov1alpha1.TrinoCluster, role string) map[string]string {
 	t.Helper()
-	ov, err := product.ComputeConfig(context.Background(), nil, cr, role, "default")
+	ov, err := product.ComputeConfig(context.Background(), nil, cr,
+		&reconciler.RoleGroupBuildContext{RoleName: role, RoleGroupName: "default"})
 	if err != nil {
 		t.Fatalf("ComputeConfig failed: %v", err)
 	}

@@ -95,24 +95,33 @@ var opaqueLeafTypes = map[reflect.Type]struct{}{
 //
 //   - resources folds per LEAF. Overriding one knob (cpu.max, a storageClass) and keeping its
 //     siblings is the normal way to use this API, and a struct-level fold silently dropped the rest.
-//   - affinity folds per MEMBER. Each layer is decoded STRICTLY (DecodeAffinity rejects an unknown
-//     field, so `nodeAffinty` is a build failure rather than pods scheduled anywhere), then
-//     nodeAffinity / podAffinity / podAntiAffinity are resolved independently and each replaces
-//     wholesale. `affinity: {}` therefore INHERITS all three, and `affinity: {podAntiAffinity: {}}`
-//     clears one member while keeping a sibling the product set — which wholesale replacement could
-//     not express, so dropping a spreading rule also nuked a rack-awareness nodeAffinity beside it.
-//     The result is normalized, so a cleared member renders byte-identically to one that never
-//     existed and produces no churn in the apply path's diff.
+//   - affinity folds per MEMBER, and an empty value CLEARS. Each layer is decoded STRICTLY
+//     (DecodeAffinity rejects an unknown field, so `nodeAffinty` is a build failure rather than pods
+//     scheduled anywhere), then nodeAffinity / podAffinity / podAntiAffinity are resolved
+//     independently. `affinity: {}` clears all three — the single-node development escape hatch —
+//     and `affinity: {podAntiAffinity: {}}` clears one while keeping a sibling the product set. The
+//     result is normalized, so a cleared member renders byte-identically to one that never existed
+//     and produces no churn in the apply path's diff.
 //   - gracefulShutdownTimeout is atomic: a non-nil upper value wins.
 //   - logging folds through productlogging.MergeLoggingSpec — on THIS path and no other.
 //
-// There is NO clear operator. An empty container (`config: {}`, `resources: {}`, `affinity: {}`)
-// states nothing and inherits everything; clearing is writing the value that means "none", which
-// exists in-type for exactly the two leaves whose absence is a distinct behaviour (an affinity
-// member `{}`, `storageClass: ""`). This is forced by the schema: `resources` is structural in the
-// generated CRD, so the API server PRUNES a mistyped `resources.cpu.maxx: "4"` down to a stored
-// `cpu: {}` — under "empty clears" that typo would silently delete the product's CPU policy, while
-// under presence-wins it is a no-op.
+// CLEARING IS PER FIELD, and the rule follows the SCHEMA rather than taste.
+//
+// `affinity` is `x-kubernetes-preserve-unknown-fields`, so the API server never prunes inside it: a
+// stored `{}` is always something a user wrote, and treating it as "no affinity" is honest.
+//
+// `resources` and its leaves are structural, so the API server PRUNES what it does not recognise —
+// a mistyped `resources.cpu.maxx: "4"` is stored as `cpu: {}`. Reading that as a clear would let a
+// typo silently delete the product's CPU policy, so an empty value there states nothing and
+// inherits. `storage: {}` inherits for the same reason, which is also what lets a product use an
+// empty storage block as its "this role has a data volume" marker.
+//
+// Per-member folding matters now in a way it did not before, and that is why an earlier attempt at
+// it was reverted rather than wrong. With only the CR's two levels, both written by the same person
+// in the same file, wholesale replacement is the simpler thing to understand. With a product default
+// underneath them, written by someone else entirely, replacement means a user adding a nodeAffinity
+// silently deletes the anti-affinity the product ships to spread a quorum — with no event and no
+// log line.
 //
 // Framework floors are NOT applied here: DefaultGracefulShutdownTimeout and DefaultStorageCapacity
 // stay at consumption time behind GetGracefulShutdownTimeout() / GetCapacity(), below the fold's
@@ -149,10 +158,24 @@ func FoldCommonConfig(layers ...*v1alpha1.RoleGroupConfigSpec) (*v1alpha1.RoleGr
 
 // foldAffinityMembers resolves nodeAffinity / podAffinity / podAntiAffinity independently. A member
 // the upper layer did not state inherits; a member it stated — including as an empty struct —
-// replaces.
+// replaces. An upper layer that states the whole affinity as empty clears all three.
+//
+// The two readings are one rule: an empty value at a level means "nothing at this level". `affinity:
+// {}` is no affinity, `affinity: {podAntiAffinity: {}}` is no pod anti-affinity while a sibling the
+// product set survives — which wholesale replacement could not express, so dropping a spreading rule
+// also nuked a rack-awareness nodeAffinity declared beside it.
+//
+// Clearing works HERE and not in `resources` because the schemas differ, and the difference is
+// Kubernetes' rather than ours: `affinity` is `x-kubernetes-preserve-unknown-fields`, so the API
+// server never prunes inside it and a stored `{}` is always something the user wrote. `resources` is
+// structural, so a mistyped `resources.cpu.maxx` is PRUNED down to a stored `cpu: {}` — treating
+// that as a clear would let a typo silently delete the product's CPU policy.
 func foldAffinityMembers(lower, upper *corev1.Affinity) *corev1.Affinity {
 	if upper == nil {
 		return lower
+	}
+	if upper.NodeAffinity == nil && upper.PodAffinity == nil && upper.PodAntiAffinity == nil {
+		return nil
 	}
 	out := &corev1.Affinity{}
 	if lower != nil {

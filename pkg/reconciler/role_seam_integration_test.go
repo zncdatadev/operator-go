@@ -48,8 +48,9 @@ var _ = Describe("The role declaration and derivation seams", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
+			ImageResolution:   reconciler.ImageResolution{Defaults: commonsv1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:          rec,
-			RoleGroupHandler:  reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:latest", testScheme),
+			RoleGroupHandler:  reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme),
 			RoleProvider:      provider,
 			RoleGroupResolver: resolver,
 			Prototype:         testutil.NewMockCluster("proto", testNamespace),
@@ -145,6 +146,41 @@ var _ = Describe("The role declaration and derivation seams", func() {
 			// 2Gi = 2048MiB, times 0.8 = 1638
 			Expect(sts.Spec.Template.Spec.Containers[0].Env).To(ContainElement(
 				corev1.EnvVar{Name: "HEAP_MB", Value: "1638"}))
+		})
+	})
+
+	Context("a logging default declared by the product", func() {
+		It("survives the fold instead of being rejected outright", func() {
+			// This used to be a hard *ValidationError — "config defaults may not set logging" — and
+			// the reason was real but was about the FRAMEWORK, not the product: logging was merged
+			// on a second path from the CR's two levels only, so a default set here reached neither
+			// consumer. Now it folds with everything else, on one path, so it reaches both.
+			provider := reconciler.RoleProviderFunc[*testutil.MockCluster](
+				func(context.Context, client.Client, *testutil.MockCluster) (reconciler.RoleCatalog, error) {
+					return reconciler.RoleCatalog{"broker": {
+						ConfigDefaults: &commonsv1alpha1.RoleGroupConfigSpec{
+							Logging: &commonsv1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)},
+						},
+					}}, nil
+				})
+
+			// Read the FOLDED config, which is what this stage sees; the reconciler assigns
+			// MergedConfig.Logging from exactly this value immediately afterwards, and
+			// MergedConfig itself is deliberately not populated yet because this stage contributes
+			// to it.
+			var seen *commonsv1alpha1.LoggingSpec
+			resolver := reconciler.RoleGroupResolverFunc[*testutil.MockCluster](
+				func(_ context.Context, _ client.Client, _ *testutil.MockCluster,
+					rg *reconciler.RoleGroupBuildContext) (*reconciler.Contribution, error) {
+					seen = rg.RoleGroupSpec.GetConfig().Logging
+					return nil, nil
+				})
+
+			_, _, err := reconcileWith(uniqueCRName("logging-default"), provider, resolver)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seen).NotTo(BeNil(), "the product's logging default survived the fold")
+			Expect(seen.EnableVectorAgent).To(HaveValue(BeTrue()))
 		})
 	})
 

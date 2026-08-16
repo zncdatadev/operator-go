@@ -39,6 +39,20 @@ type ContainerLogging struct {
 	// Container is the container name; its merged logging spec (CRD logging.containers.<name>)
 	// drives the generated file.
 	Container string
+	// OwnConfigFile declares that the PRODUCT writes this container's logging config file, so the
+	// framework renders none — while the container still joins the Vector pipeline in every other
+	// respect: the shared log volume, its RW mount, the pre-created log directory and the source.
+	//
+	// It is the seam for a config file that can never be a rendered template. Airflow's
+	// log_config.py must be built on Airflow's own DEFAULT_LOGGING_CONFIG, and the python
+	// generator's default file name is log_config.py — so a rendered file would collide with the
+	// product's own ConfigMap key and fail the role group, while omitting the producer entirely
+	// would cost the shared volume, the mount, the log directory and the Vector source.
+	//
+	// The product then owns the two obligations the framework can no longer meet: its log file must
+	// land at LogDirFor(decl) carrying LogFileSuffix, or the pipeline comes up and collects
+	// nothing.
+	OwnConfigFile bool
 	// Framework selects the output format (logback / log4j / log4j2 / python).
 	Framework LoggingFramework
 	// FileName overrides the ConfigMap key / file name. Empty uses the framework default

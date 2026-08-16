@@ -51,7 +51,7 @@ var _ = Describe("Affinity is decoded strictly", func() {
 	var counter int
 
 	newHandler := func() *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
-		return reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
+		return reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 	}
 
 	build := func(affinity *k8sruntime.RawExtension) error {
@@ -60,6 +60,7 @@ var _ = Describe("Affinity is decoded strictly", func() {
 		_, err := newHandler().BuildResources(context.Background(), k8sClient,
 			testutil.NewMockCluster(name, testNamespace),
 			&reconciler.RoleGroupBuildContext{
+				ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 				ClusterName:      name,
 				ClusterNamespace: testNamespace,
 				ClusterSpec:      &v1alpha1.GenericClusterSpec{},
@@ -101,6 +102,7 @@ var _ = Describe("Affinity is decoded strictly", func() {
 		resources, err := newHandler().BuildResources(context.Background(), k8sClient,
 			testutil.NewMockCluster(name, testNamespace),
 			&reconciler.RoleGroupBuildContext{
+				ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 				ClusterName:      name,
 				ClusterNamespace: testNamespace,
 				ClusterSpec:      &v1alpha1.GenericClusterSpec{},
@@ -149,42 +151,57 @@ var _ = Describe("Affinity is decoded strictly", func() {
 	})
 })
 
-var _ = Describe("Affinity is replaced wholesale, not merged", func() {
-	// The one field in RoleGroupConfigSpec that does not fold per leaf. `resources` is a set of
-	// independent knobs where overriding one and keeping the rest is the normal thing to want; an
-	// affinity is a single scheduling POLICY. Kubernetes agrees — Helm values and Kustomize patches
-	// replace PodSpec.Affinity, they do not interleave it.
+var _ = Describe("Affinity folds per member, and an empty value clears", func() {
+	// Per-member folding is what a product DEFAULT needs, and the default layer is why this rule
+	// changed. With only the CR's two levels — both written by the same person in the same file —
+	// wholesale replacement is the simpler thing to understand. With a product default underneath
+	// them, replacement means a user adding a nodeAffinity silently deletes the anti-affinity the
+	// product ships to spread a quorum, with no event and no log line.
 	roleAntiAffinity := `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[` +
 		`{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"role":"worker"}}}]}}`
 	groupNodeAffinity := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
 		`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"instance-type","operator":"In","values":["r5.xlarge"]}]}]}}}`
 
 	mergedConfig := func(role, group *k8sruntime.RawExtension) *v1alpha1.RoleGroupConfigSpec {
-		return reconciler.MergeRoleGroupConfig(
+		out, err := reconciler.FoldCommonConfig(
 			&v1alpha1.RoleGroupConfigSpec{Affinity: role},
 			&v1alpha1.RoleGroupConfigSpec{Affinity: group},
 		)
+		Expect(err).NotTo(HaveOccurred())
+		return out
 	}
 
 	It("inherits the role's affinity when the group declares none", func() {
 		Expect(members(mergedConfig(raw(roleAntiAffinity), nil).Affinity)).To(HaveKey("podAntiAffinity"))
 	})
 
-	It("replaces the role's affinity entirely when the group declares one", func() {
-		// The group states a whole policy, so it gets a whole policy — the role's podAntiAffinity is
-		// NOT carried along. A group that wants both restates both, which is verbose but says
-		// exactly what will be scheduled.
+	It("keeps a member the group did not state while applying the one it did", func() {
+		// The behaviour this rule exists for. Under wholesale replacement the group's nodeAffinity
+		// deleted the role's podAntiAffinity — so a user asking for an instance type also, silently,
+		// stopped their quorum being spread across nodes.
 		m := members(mergedConfig(raw(roleAntiAffinity), raw(groupNodeAffinity)).Affinity)
-		Expect(m).To(HaveKey("nodeAffinity"))
-		Expect(m).NotTo(HaveKey("podAntiAffinity"))
+		Expect(m).To(HaveKey("nodeAffinity"), "the member the group stated")
+		Expect(m).To(HaveKey("podAntiAffinity"), "and the one it did not, inherited")
 	})
 
-	It("lets a group clear the role's affinity with an empty object", func() {
-		// This is the case per-member inheritance cannot express, and it is a real one: a
-		// single-node development role group has to be able to opt out of the role's spreading.
-		affinity, err := reconciler.DecodeAffinity(mergedConfig(raw(roleAntiAffinity), raw(`{}`)).Affinity)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(affinity).To(Equal(&corev1.Affinity{}), "an empty policy, not the role's")
+	It("lets a group clear one member while keeping a sibling", func() {
+		// Wholesale replacement could not express this at all: clearing the spread also nuked any
+		// rack-awareness nodeAffinity declared beside it.
+		both := `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[` +
+			`{"topologyKey":"kubernetes.io/hostname"}]},` +
+			`"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
+			`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"rack","operator":"Exists"}]}]}}}`
+		m := members(mergedConfig(raw(both), raw(`{"podAntiAffinity":{}}`)).Affinity)
+		Expect(m).NotTo(HaveKey("podAntiAffinity"), "the member the group emptied")
+		Expect(m).To(HaveKey("nodeAffinity"), "the sibling survives")
+	})
+
+	It("lets a group clear the role's affinity entirely with an empty object", func() {
+		// The single-node development escape hatch, preserved. It works here and NOT in `resources`
+		// because the schemas differ: `affinity` is x-kubernetes-preserve-unknown-fields, so the API
+		// server never prunes inside it and a stored `{}` is always something the user wrote.
+		Expect(mergedConfig(raw(roleAntiAffinity), raw(`{}`)).Affinity).To(BeNil(),
+			"no affinity at all, not the role's")
 	})
 
 	It("keeps the group's affinity when the role declares none", func() {
@@ -249,16 +266,18 @@ var _ = Describe("DecodeAffinity", func() {
 
 var _ = Describe("Role-level affinity reaches a role group through the reconciler", func() {
 	It("applies a role's affinity to a group that declares none", func() {
-		// End to end through MergeRoleGroupConfig and buildStatefulSet, which is the path the
-		// reconciler takes: role-level config was silently dropped before the merge existed, and
-		// this is the guarantee that keeps it delivered.
-		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
+		// End to end through FoldCommonConfig and buildStatefulSet, which is the path the reconciler
+		// takes: role-level config was silently dropped before the fold existed, and this is the
+		// guarantee that keeps it delivered.
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		roleAffinity := raw(`{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[` +
 			`{"weight":100,"podAffinityTerm":{"topologyKey":"kubernetes.io/hostname"}}]}}`)
 
 		groupSpec := v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(2))}
 		roleConfig := &v1alpha1.RoleGroupConfigSpec{Affinity: roleAffinity}
-		groupSpec.Config = reconciler.MergeRoleGroupConfig(roleConfig, groupSpec.GetConfig())
+		folded, foldErr := reconciler.FoldCommonConfig(roleConfig, groupSpec.GetConfig())
+		Expect(foldErr).NotTo(HaveOccurred())
+		groupSpec.Config = folded
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient,
 			testutil.NewMockCluster("aff-role", testNamespace),
@@ -272,6 +291,7 @@ var _ = Describe("Role-level affinity reaches a role group through the reconcile
 				RoleGroupSpec:    groupSpec,
 				MergedConfig:     &config.MergedConfig{},
 				ResourceName:     reconciler.RoleGroupResourceName("aff-role", "worker", "default"),
+				ResolvedImage:    reconciler.ResolvedImage{Reference: "product:1"},
 			})
 		Expect(err).NotTo(HaveOccurred())
 

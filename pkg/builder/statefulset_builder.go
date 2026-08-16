@@ -55,8 +55,11 @@ type StatefulSetBuilder struct {
 	Volumes         []corev1.Volume
 	VolumeMounts    []corev1.VolumeMount
 	EnvVars         []corev1.EnvVar
-	Command         []string
-	Args            []string
+	// BaseEnvVars are emitted BEFORE the merged config's env, so they sit beneath a user's
+	// envOverrides rather than above them. See buildContainer.
+	BaseEnvVars []corev1.EnvVar
+	Command     []string
+	Args        []string
 
 	// InitContainers are run before the main container starts. Products use these for
 	// one-shot preparation steps (e.g. generating node ids, fetching secrets).
@@ -149,6 +152,7 @@ func NewStatefulSetBuilder(name, namespace string) *StatefulSetBuilder {
 		Volumes:         make([]corev1.Volume, 0),
 		VolumeMounts:    make([]corev1.VolumeMount, 0),
 		EnvVars:         make([]corev1.EnvVar, 0),
+		BaseEnvVars:     make([]corev1.EnvVar, 0),
 		Ports:           make([]corev1.ContainerPort, 0),
 	}
 }
@@ -526,6 +530,17 @@ func (b *StatefulSetBuilder) WithTerminationGracePeriod(seconds int64) *Stateful
 	return b
 }
 
+// WithBaseEnvVars declares env vars that sit BENEATH the merged config's — a downward-API POD_NAME,
+// a secretKeyRef. They are the only route for a `valueFrom`, since the override channel is
+// map[string]string and cannot express one at all.
+//
+// Emitted before the merged env so a user's envOverrides of the same name wins: Kubernetes resolves
+// a duplicate name to the last entry.
+func (b *StatefulSetBuilder) WithBaseEnvVars(env []corev1.EnvVar) *StatefulSetBuilder {
+	b.BaseEnvVars = append(b.BaseEnvVars, cloneSlice(env)...)
+	return b
+}
+
 // WithLifecycle sets the primary container's lifecycle hooks wholesale, deep-copied.
 //
 // The three narrow helpers below cover only an exec preStop, an exec postStart, and an HTTPGet
@@ -801,6 +816,12 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 	if len(b.Args) > 0 {
 		container.Args = slices.Clone(b.Args)
 	}
+
+	// Base env vars go FIRST, beneath the merged config's. Kubernetes resolves a duplicate name to
+	// the LAST entry, so this ordering is the precedence: a product declaring FOO here is a default
+	// the user's envOverrides still beats. Appending them after — where BaseEnvVars' sibling
+	// EnvVars goes — would invert that silently.
+	container.Env = append(container.Env, cloneSlice(b.BaseEnvVars)...)
 
 	// Add environment variables from merged config. Iterate in sorted key order: EnvVars is a
 	// map, and Go map iteration order is randomized, so appending directly would produce a

@@ -56,13 +56,20 @@ func slotCRName(prefix string) string {
 // ClusterLabels in particular, which the mock does not do.
 func slotReconciler(
 	c client.Client,
-	configure func(*reconciler.BaseRoleGroupHandler[*testutil.MockCluster]),
+	catalog reconciler.RoleCatalog,
 	post func(*reconciler.RoleGroupBuildContext, *reconciler.RoleGroupResources),
 ) *reconciler.GenericReconciler[*testutil.MockCluster] {
-	base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
-	if configure != nil {
-		configure(base)
+	// A nil catalog means "this test does not declare roles", which must leave the catalog check
+	// switched off entirely — validating against an EMPTY catalog would reject every role the CR
+	// declares.
+	var roleProvider reconciler.RoleProvider[*testutil.MockCluster]
+	if catalog != nil {
+		roleProvider = reconciler.RoleProviderFunc[*testutil.MockCluster](
+			func(context.Context, client.Client, *testutil.MockCluster) (reconciler.RoleCatalog, error) {
+				return catalog, nil
+			})
 	}
+	base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 	handler := &reconciler.RoleGroupHandlerFuncs[*testutil.MockCluster]{
 		BuildResourcesFunc: func(ctx context.Context, k8sClient client.Client, cr *testutil.MockCluster,
 			buildCtx *reconciler.RoleGroupBuildContext) (*reconciler.RoleGroupResources, error) {
@@ -79,7 +86,9 @@ func slotReconciler(
 	r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 		Client:           c,
 		Scheme:           testScheme,
+		ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 		Recorder:         recorder,
+		RoleProvider:     roleProvider,
 		RoleGroupHandler: handler,
 		Prototype:        testutil.NewMockCluster("proto", testNamespace),
 	})
@@ -212,9 +221,10 @@ var _ = Describe("Fixed role group slot names", func() {
 		// Declaring service ports makes the base handler emit the client Service too, so this
 		// control covers all four names the handler produces plus a metrics slot at the fifth.
 		r := slotReconciler(k8sClient,
-			func(b *reconciler.BaseRoleGroupHandler[*testutil.MockCluster]) {
-				b.SetRoleServicePorts("worker", []corev1.ServicePort{{Name: "http", Port: 8080, TargetPort: intstr.FromInt32(8080)}})
-			},
+			reconciler.RoleCatalog{"worker": {
+				ContainerPorts: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+				ServicePorts:   []corev1.ServicePort{{Name: "http", Port: 8080, TargetPort: intstr.FromInt32(8080)}},
+			}},
 			func(buildCtx *reconciler.RoleGroupBuildContext, res *reconciler.RoleGroupResources) {
 				res.MetricsService = &corev1.Service{
 					ObjectMeta: metav1.ObjectMeta{Name: buildCtx.ResourceName + "-metrics", Namespace: buildCtx.ClusterNamespace},
@@ -386,9 +396,10 @@ var _ = Describe("Reserved framework labels on the cluster CR", func() {
 		Expect(victim).To(Equal(reconciler.RoleGroupResourceName(name, "w", "g")+"-metrics"),
 			"the spec only bites if the two names really collide")
 
-		r := slotReconciler(k8sClient, func(b *reconciler.BaseRoleGroupHandler[*testutil.MockCluster]) {
-			b.SetRoleServicePorts("w", []corev1.ServicePort{{Name: "http", Port: 8080, TargetPort: intstr.FromInt32(8080)}})
-		}, nil)
+		r := slotReconciler(k8sClient, reconciler.RoleCatalog{"w": {
+			ContainerPorts: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+			ServicePorts:   []corev1.ServicePort{{Name: "http", Port: 8080, TargetPort: intstr.FromInt32(8080)}},
+		}}, nil)
 
 		Expect(reconcileSlotCR(ctx, r, name)).To(Succeed())
 		svc := &corev1.Service{}

@@ -86,6 +86,7 @@ var _ = Describe("An extension that is waiting", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
+			ImageResolution:   reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:          rec,
 			RoleGroupHandler:  testutil.NewMockRoleGroupHandler(),
 			ExtensionRegistry: registry,

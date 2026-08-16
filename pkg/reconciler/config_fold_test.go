@@ -116,10 +116,10 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 		Expect(decoded.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(HaveLen(1))
 	})
 
-	It("treats `affinity: {}` as stating nothing, so a pruning artifact cannot delete a default", func() {
-		// `resources` is structural in the generated CRD, so the API server prunes a mistyped
-		// `resources.cpu.maxx` down to an empty `cpu` object. Under "empty clears" that typo would
-		// silently delete the product's scheduling policy.
+	It("lets `affinity: {}` clear the product's whole scheduling policy", func() {
+		// The single-node development escape hatch. `affinity` is
+		// x-kubernetes-preserve-unknown-fields, so the API server never prunes inside it and a
+		// stored `{}` is always something the user wrote.
 		productDefault := affinityConfig(&corev1.Affinity{
 			PodAntiAffinity: &corev1.PodAntiAffinity{
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
@@ -131,8 +131,23 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 		Expect(err).NotTo(HaveOccurred())
 		decoded, err := reconciler.DecodeAffinity(out.Affinity)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(decoded).NotTo(BeNil())
-		Expect(decoded.PodAntiAffinity).NotTo(BeNil(), "an empty affinity inherits, it does not clear")
+		Expect(decoded).To(BeNil(), "an explicitly empty affinity must not inherit the product default")
+	})
+
+	It("treats an empty `resources` leaf as stating nothing, so a pruning artifact cannot delete a default", func() {
+		// The opposite call, and the schema is why: `resources` is structural, so the API server
+		// PRUNES a mistyped `resources.cpu.maxx: "4"` down to a stored `cpu: {}`. Reading that as a
+		// clear would let a typo silently delete the product's CPU policy.
+		productDefault := &commonsv1alpha1.RoleGroupConfigSpec{
+			Resources: &commonsv1alpha1.ResourcesSpec{
+				CPU: &commonsv1alpha1.CPUResource{Min: foldQ("100m"), Max: foldQ("200m")}}}
+		prunedTypo := &commonsv1alpha1.RoleGroupConfigSpec{
+			Resources: &commonsv1alpha1.ResourcesSpec{CPU: &commonsv1alpha1.CPUResource{}}}
+
+		out, err := reconciler.FoldCommonConfig(productDefault, prunedTypo)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Resources.CPU.Min.String()).To(Equal("100m"))
+		Expect(out.Resources.CPU.Max.String()).To(Equal("200m"))
 	})
 
 	It("rejects an affinity that does not strictly decode", func() {

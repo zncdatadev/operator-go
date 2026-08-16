@@ -27,7 +27,6 @@ import (
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
-	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 )
 
@@ -42,6 +41,11 @@ const (
 // the CRD. The SDK merges it as the LOWEST layer (product < role < role group), so any value
 // a user sets via configOverrides always wins.
 //
+// It runs AFTER the typed config block is folded (product defaults < role < role group), so a
+// value derived from the effective config — a JVM heap sized from the memory limit the user raised
+// — is reachable here and reaches the ConfigMap. That was impossible before: the effective config
+// was not computed until after the role group's ConfigMap had already been written.
+//
 // This is config generation, not defaulting: it runs every reconcile and is where
 // role-specific product knowledge lives (coordinator vs worker) and where values are derived
 // from live cluster state (the discovery URI is built from the coordinator Service the
@@ -51,8 +55,10 @@ const (
 // address does that lookup here and reports a failure through the error return, rather than
 // swallowing it and rendering a silently wrong config.
 func ComputeConfig(
-	_ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster, roleName, _ string,
-) (*commonsv1alpha1.OverridesSpec, error) {
+	_ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster,
+	rg *reconciler.RoleGroupBuildContext,
+) (*reconciler.Contribution, error) {
+	roleName := rg.RoleName
 	port := CoordinatorPort(cr)
 
 	props := map[string]string{
@@ -69,7 +75,7 @@ func ComputeConfig(
 		props["coordinator"] = "false"
 	}
 
-	return &commonsv1alpha1.OverridesSpec{
+	return &reconciler.Contribution{
 		ConfigOverrides: map[string]map[string]string{
 			"config.properties": props,
 		},

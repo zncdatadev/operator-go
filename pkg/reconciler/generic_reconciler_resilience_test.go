@@ -116,6 +116,7 @@ var _ = Describe("GenericReconciler panic recovery", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         fakeRecorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -232,6 +233,7 @@ var _ = Describe("GenericReconciler dependency validation", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -304,6 +306,7 @@ var _ = Describe("GenericReconciler sidecar validation", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -361,6 +364,7 @@ var _ = Describe("GenericReconciler status write conflicts", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           conflicting,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -408,6 +412,7 @@ var _ = Describe("GenericReconciler metrics Service reclaim", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -490,6 +495,7 @@ var _ = Describe("GenericReconciler controller setup", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			// No periodic requeue: the repair below can only be triggered by a watch event.
@@ -575,6 +581,7 @@ var _ = Describe("GenericReconciler rate limiting", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:              &throttlingCreateClient{Client: k8sClient},
 			Scheme:              testScheme,
+			ImageResolution:     reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:            recorder,
 			RoleGroupHandler:    &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			RateLimitRetryAfter: 3 * time.Second,
@@ -608,13 +615,14 @@ type vectorTestHandler struct {
 	configMapData        map[string]string
 }
 
-func (h *vectorTestHandler) LoggingProducers(string) []productlogging.ContainerLogging {
-	return []productlogging.ContainerLogging{{Container: "app"}}
+// vectorTestCatalog is what the handler used to declare through LoggingProducerProvider and
+// VectorConfigProvider: the producers, and whether the product writes vector.yaml itself.
+func vectorTestCatalog(ownsVectorConfig bool) reconciler.RoleCatalog {
+	return reconciler.RoleCatalog{"broker": {
+		LogProducers:     []productlogging.ContainerLogging{{Container: "app"}},
+		OwnsVectorConfig: ownsVectorConfig,
+	}}
 }
-
-func (h *vectorTestHandler) LogVolumeSizeLimit() string { return "" }
-
-func (h *vectorTestHandler) ProvidesVectorConfig(string) bool { return h.providesVectorConfig }
 
 func (h *vectorTestHandler) BuildResources(
 	_ context.Context,
@@ -692,12 +700,23 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		return cr, resourceName
 	}
 
-	newReconciler := func(handler reconciler.RoleGroupHandler[*testutil.MockCluster], rec record.EventRecorder) *reconciler.GenericReconciler[*testutil.MockCluster] {
+	newReconcilerWithRoles := func(handler reconciler.RoleGroupHandler[*testutil.MockCluster],
+		rec record.EventRecorder, catalog reconciler.RoleCatalog,
+	) *reconciler.GenericReconciler[*testutil.MockCluster] {
+		var provider reconciler.RoleProvider[*testutil.MockCluster]
+		if catalog != nil {
+			provider = reconciler.RoleProviderFunc[*testutil.MockCluster](
+				func(context.Context, client.Client, *testutil.MockCluster) (reconciler.RoleCatalog, error) {
+					return catalog, nil
+				})
+		}
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         rec,
 			RoleGroupHandler: handler,
+			RoleProvider:     provider,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -709,7 +728,7 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		cr, resourceName := newVectorCR(crName)
 
 		fakeRecorder := record.NewFakeRecorder(100)
-		r := newReconciler(&vectorTestHandler{}, fakeRecorder)
+		r := newReconcilerWithRoles(&vectorTestHandler{}, fakeRecorder, vectorTestCatalog(false))
 
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
 		// The CR does not implement VectorAggregatorProvider and the handler does not write
@@ -734,7 +753,7 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 			providesVectorConfig: true,
 			configMapData:        map[string]string{vector.VectorConfigFileName: "# product-owned vector config"},
 		}
-		r := newReconciler(handler, record.NewFakeRecorder(100))
+		r := newReconcilerWithRoles(handler, record.NewFakeRecorder(100), vectorTestCatalog(true))
 
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
 		Expect(err).NotTo(HaveOccurred())
@@ -754,12 +773,15 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: testNamespace}})
 		})
 
-		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme)
-		handler.MainContainerName = "app"
-		handler.LoggingContainers = []productlogging.ContainerLogging{
-			{Container: "app", Framework: productlogging.LoggingFrameworkLogback},
-		}
-		r := newReconciler(handler, record.NewFakeRecorder(100))
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
+		r := newReconcilerWithRoles(handler, record.NewFakeRecorder(100), reconciler.RoleCatalog{
+			"broker": {
+				MainContainerName: "app",
+				LogProducers: []productlogging.ContainerLogging{
+					{Container: "app", Framework: productlogging.LoggingFrameworkLogback},
+				},
+			},
+		})
 
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
 		Expect(err).NotTo(HaveOccurred())
@@ -784,13 +806,24 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: testNamespace}})
 		})
 
-		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme)
-		base.MainContainerName = "app"
-		// Deliberately empty: this product builds its own logging config file (Airflow's
-		// log_config.py has to extend Airflow's DEFAULT_LOGGING_CONFIG, so it can never be a
-		// rendered template) and only wants the container joined to the Vector pipeline.
-		base.LoggingContainers = nil
-		r := newReconciler(&productLogConfigHandler{BaseRoleGroupHandler: base}, record.NewFakeRecorder(100))
+		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
+		// OwnConfigFile: this product builds its own logging config file (Airflow's log_config.py
+		// has to extend Airflow's DEFAULT_LOGGING_CONFIG, so it can never be a rendered template)
+		// and only wants the container joined to the Vector pipeline.
+		r := newReconcilerWithRoles(&productLogConfigHandler{BaseRoleGroupHandler: base},
+			record.NewFakeRecorder(100), reconciler.RoleCatalog{
+				"broker": {
+					MainContainerName: "app",
+					// Two separate statements: OwnConfigFile means the framework renders no logging
+					// config file for this producer, OwnsVectorConfig means the product writes
+					// vector.yaml. This product does both.
+					OwnsVectorConfig: true,
+					LogProducers: []productlogging.ContainerLogging{
+						{Container: "app", Framework: productlogging.LoggingFrameworkLogback,
+							OwnConfigFile: true},
+					},
+				},
+			})
 
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: cr.Name}})
 		Expect(err).NotTo(HaveOccurred())
@@ -830,15 +863,6 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 type productLogConfigHandler struct {
 	*reconciler.BaseRoleGroupHandler[*testutil.MockCluster]
 }
-
-func (h *productLogConfigHandler) LoggingProducers(string) []productlogging.ContainerLogging {
-	// Framework is set on purpose: if rendering were ever rewired to this list, a logback.xml
-	// would appear in the ConfigMap and the spec above would catch it.
-	return []productlogging.ContainerLogging{{Container: "app", Framework: productlogging.LoggingFrameworkLogback}}
-}
-
-// ProvidesVectorConfig satisfies gate 3: the product writes vector.yaml itself.
-func (h *productLogConfigHandler) ProvidesVectorConfig(string) bool { return true }
 
 func (h *productLogConfigHandler) BuildResources(
 	ctx context.Context,
@@ -885,6 +909,7 @@ var _ = Describe("GenericReconciler status stability", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -919,6 +944,7 @@ var _ = Describe("GenericReconciler status stability", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         fakeRecorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -995,11 +1021,12 @@ var _ = Describe("GenericReconciler cluster label ownership", func() {
 		})
 
 		handler := &clusterLabelWritingHandler{
-			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme),
+			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme),
 		}
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -1043,11 +1070,12 @@ var _ = Describe("GenericReconciler cluster label ownership", func() {
 		})
 
 		handler := &clusterLabelWritingHandler{
-			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme),
+			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme),
 		}
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -1097,6 +1125,7 @@ var _ = Describe("GenericReconciler orphan drain wiring", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:              k8sClient,
 			Scheme:              testScheme,
+			ImageResolution:     reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:            recorder,
 			RoleGroupHandler:    &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:           testutil.NewMockCluster("proto", testNamespace),
@@ -1149,8 +1178,9 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget reclaim", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
-			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("img:1", testScheme),
+			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme),
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1215,8 +1245,9 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget lifecycle", func() 
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
-			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("test-image:latest", testScheme),
+			RoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme),
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1261,6 +1292,7 @@ var _ = Describe("GenericReconciler deletion handling", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -1395,6 +1427,7 @@ var _ = Describe("GenericReconciler best-effort role iteration", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
