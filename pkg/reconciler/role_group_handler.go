@@ -206,7 +206,15 @@ type RoleGroupBuildContext struct {
 	// RoleGroupName is the name of the role group.
 	RoleGroupName string
 
-	// RoleGroupSpec is the role group specification.
+	// RoleGroupSpec is the role group specification, with ONE substitution: its Config field
+	// carries the EFFECTIVE config — RoleDeclaration.ConfigDefaults, the CR's role level and the
+	// CR's role group level already folded into one answer by FoldCommonConfig — not the raw
+	// per-group block the user wrote. Read it through EffectiveConfig().
+	//
+	// The fold is substituted in rather than published beside the raw spec because there is no
+	// legitimate consumer of the unfolded value: a product reading it would re-derive an answer
+	// the framework already computed, and would get it wrong in exactly the way #631 describes —
+	// a role group that states one field of `resources` does not thereby decline the rest.
 	RoleGroupSpec v1alpha1.RoleGroupSpec
 
 	// MergedConfig is the folded override stack: the product's derived contribution beneath the
@@ -473,6 +481,23 @@ func copyString(s *string) *string {
 		return nil
 	}
 	return ptr.To(*s)
+}
+
+// EffectiveConfig returns this role group's folded framework-owned config: the product's
+// RoleDeclaration.ConfigDefaults, the CR's role `config` and the CR's role group `config`, resolved
+// into one answer by FoldCommonConfig.
+//
+// It is the input a RoleGroupResolver derives from, and it is never nil — a role group that states
+// no config at all yields an empty struct rather than requiring every caller to nil-check before
+// reaching for a field.
+//
+// A product's OWN config fields are not here: those are the product's half of the embedded struct,
+// folded by the product with FoldProductConfig.
+func (c *RoleGroupBuildContext) EffectiveConfig() *v1alpha1.RoleGroupConfigSpec {
+	if cfg := c.RoleGroupSpec.GetConfig(); cfg != nil {
+		return cfg
+	}
+	return &v1alpha1.RoleGroupConfigSpec{}
 }
 
 // LogFileTarget returns the path a producer's rolling log file must be written to, or "" meaning

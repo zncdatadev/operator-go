@@ -1272,7 +1272,7 @@ func (r *GenericReconciler[CR]) declareRoles(
 		return nil, NewValidationError("RoleProvider", "", "", err)
 	}
 	for _, roleName := range unused {
-		r.eventManager.EmitWarningEvent(cr, "UnknownConfiguredRole",
+		r.eventManager.EmitWarningEvent(cr, "UnusedRoleDeclaration",
 			fmt.Sprintf("the product declares role %q, which this cluster does not use", roleName))
 	}
 	return catalog, nil
