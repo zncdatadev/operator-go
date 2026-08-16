@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"github.com/zncdatadev/operator-go/pkg/constant"
 	corev1 "k8s.io/api/core/v1"
@@ -95,43 +96,90 @@ func EncodeAffinity(affinity *corev1.Affinity) (*k8sruntime.RawExtension, error)
 // wants by default, and is named here so a product does not re-type the string.
 const TopologyKeyHostname = "kubernetes.io/hostname"
 
-// DefaultAntiAffinity builds the preferred pod anti-affinity that spreads one ROLE's pods across a
-// topology domain — the rule every product in this family wants and each has hand-written.
+// ClusterSelectorLabels is the framework's identity selector for every pod of one cluster
+// (`app.kubernetes.io/instance`).
 //
-// The label selector is the framework's own role identity (`app.kubernetes.io/instance` +
-// `app.kubernetes.io/component`), which is the part worth centralising: those keys are framework-
-// owned and stamped by BaseRoleGroupHandler, and a downstream operator that re-types them as string
-// literals gets a selector matching nothing the moment the framework changes them — a silent
-// scheduling failure, since a preferred term that matches no pod is not an error.
+// Exported so an affinity term matches what the framework actually stamps: those keys are
+// framework-owned, and a downstream operator re-typing them as string literals gets a selector
+// matching nothing the moment they change — a silent scheduling failure, since a PREFERRED term
+// that matches no pod is not an error.
+func ClusterSelectorLabels(clusterName string) map[string]string {
+	return map[string]string{constant.LabelKubernetesInstance: clusterName}
+}
+
+// RoleSelectorLabels is the same for one ROLE (instance + component).
 //
-// It selects on the ROLE, not the role group: two groups of the same role are the same failure
-// domain problem (three of five ZooKeeper servers on one node is an outage whether or not they share
-// a group), and the role group's own marker key is not unique across roles anyway (see
-// RoleGroupMarkerLabelKey).
+// It selects on the role, not the role group: two groups of the same role are the same failure
+// domain problem — three of five ZooKeeper servers on one node is an outage whether or not they
+// share a group — and the role group's own marker key is not unique across roles anyway.
+func RoleSelectorLabels(clusterName, roleName string) map[string]string {
+	return map[string]string{
+		constant.LabelKubernetesInstance:  clusterName,
+		constant.LabelKubernetesComponent: roleName,
+	}
+}
+
+// PreferredAffinityTerm builds one weighted term for a pod (anti-)affinity's
+// PreferredDuringSchedulingIgnoredDuringExecution list.
 //
-// `weight` and `topologyKey` are parameters with no defaults on purpose. The three operators that
-// wrote this already disagree on the weight (20 and 70 both appear), so a helper that fixed it would
-// change their rendered pods; and the topology key is a cluster-topology decision — spreading across
-// zones is a different guarantee from spreading across nodes.
+// It replaces a single-shot DefaultAntiAffinity helper, which could emit exactly ONE anti-affinity
+// term and so could not express the composite two of these products actually want: a cluster-wide
+// pod affinity at one weight PLUS a role anti-affinity at another. Both hand-wrote it instead, and
+// both got it wrong — one commented the merge out entirely, the other applied its default
+// unconditionally and silently discarded the user's own `config.affinity`.
 //
-// PREFERRED rather than required, because required turns a too-small cluster into pods that never
-// schedule at all: with three nodes and five replicas, two stay Pending forever with no way to
-// express "spread as far as you can". A product that genuinely requires the spread builds its own.
-func DefaultAntiAffinity(clusterName, roleName, topologyKey string, weight int32) *corev1.Affinity {
-	return &corev1.Affinity{
-		PodAntiAffinity: &corev1.PodAntiAffinity{
-			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
-				Weight: weight,
-				PodAffinityTerm: corev1.PodAffinityTerm{
-					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							constant.LabelKubernetesInstance:  clusterName,
-							constant.LabelKubernetesComponent: roleName,
-						},
-					},
-					TopologyKey: topologyKey,
-				},
-			}},
+// PREFERRED only, and there is deliberately no Required constructor: a required spread turns a
+// too-small cluster into pods that never schedule at all (three nodes, five replicas, two Pending
+// forever), with no way to say "spread as far as you can". A product that genuinely requires it
+// writes the corev1 term itself.
+//
+// `weight` and `topologyKey` are parameters with no defaults: the operators that hand-wrote this
+// already disagree on the weight (20 and 70 both appear), and spreading across zones is a different
+// guarantee from spreading across nodes.
+func PreferredAffinityTerm(weight int32, topologyKey string, selector map[string]string) corev1.WeightedPodAffinityTerm {
+	matchLabels := make(map[string]string, len(selector))
+	maps.Copy(matchLabels, selector)
+	return corev1.WeightedPodAffinityTerm{
+		Weight: weight,
+		PodAffinityTerm: corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			TopologyKey:   topologyKey,
 		},
 	}
+}
+
+// NormalizeAffinity drops members that carry no term and returns nil when none is left, so a member
+// a user cleared with `{}` renders byte-identically to one that never existed.
+//
+// This is what makes per-member folding free of churn. Without it a cleared member reaches the pod
+// template as an empty struct, which differs from absent in the serialized spec and therefore shows
+// up as a diff in the apply path on every single reconcile.
+//
+// Exported so a product assembling an affinity by hand produces the same bytes the fold does.
+func NormalizeAffinity(a *corev1.Affinity) *corev1.Affinity {
+	if a == nil {
+		return nil
+	}
+	out := a.DeepCopy()
+
+	if out.NodeAffinity != nil &&
+		out.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil &&
+		len(out.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution) == 0 {
+		out.NodeAffinity = nil
+	}
+	if out.PodAffinity != nil &&
+		len(out.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) == 0 &&
+		len(out.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution) == 0 {
+		out.PodAffinity = nil
+	}
+	if out.PodAntiAffinity != nil &&
+		len(out.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution) == 0 &&
+		len(out.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution) == 0 {
+		out.PodAntiAffinity = nil
+	}
+
+	if out.NodeAffinity == nil && out.PodAffinity == nil && out.PodAntiAffinity == nil {
+		return nil
+	}
+	return out
 }
