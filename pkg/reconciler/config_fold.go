@@ -60,10 +60,19 @@ const ConfigFoldTag = "kubedoop"
 // field into wholesale replacement, which ValidateProductConfigType otherwise refuses.
 const ConfigFoldAtomic = "atomic"
 
-// commonConfigType is the framework-owned half's type. FoldProductConfig SKIPS a field of this type
-// rather than folding it: that half is resolved by the framework and published on the build context,
-// and folding it here as well would compute one answer in two places.
+// commonConfigType is the framework-owned half's type. FoldProductConfig SKIPS the EMBEDDED field of
+// this type rather than folding it: that half is resolved by the framework and published on the
+// build context, and folding it here as well would compute one answer in two places.
 var commonConfigType = reflect.TypeFor[*v1alpha1.RoleGroupConfigSpec]()
+
+// isEmbeddedCommonConfig reports whether a field IS the framework's half — embedded, not just of
+// that type. The distinction is load-bearing in both directions: a named field of the same type is
+// an ordinary product field and must be folded like one (matching by type alone dropped it in
+// silence, and the validator accepted the shape), while an embedded one must be skipped because
+// FoldCommonConfig already owns it.
+func isEmbeddedCommonConfig(f reflect.StructField) bool {
+	return f.Anonymous && f.Type == commonConfigType
+}
 
 // opaqueLeafTypes are struct types the fold treats as single values rather than composites.
 //
@@ -256,7 +265,8 @@ func foldResources(lower, upper *v1alpha1.ResourcesSpec) *v1alpha1.ResourcesSpec
 // be machinery for a case that does not exist; ValidateProductConfigType refuses the shapes this
 // rule cannot handle honestly rather than guessing at them.
 //
-// It SKIPS an embedded *v1alpha1.RoleGroupConfigSpec. That half is the framework's, resolved by
+// It SKIPS the EMBEDDED *v1alpha1.RoleGroupConfigSpec — and only the embedded one; a NAMED field of
+// that type is an ordinary product field and folds like any other. That half is the framework's, resolved by
 // FoldCommonConfig and published on the build context; folding it here as well would compute one
 // answer in two places, which is the defect that made the previous seam unreadable. The returned
 // value's commons field is therefore nil — read the effective commons config from the build context.
@@ -280,7 +290,10 @@ func FoldProductConfig[T any](layers ...*T) (*T, error) {
 
 	for i := range outElem.NumField() {
 		field := outElem.Type().Field(i)
-		if !field.IsExported() || field.Type == commonConfigType {
+		// EMBEDDED, not merely of that type. Skipping by type alone silently dropped a NAMED
+		// field of the same type — a plausible product field, since a per-sidecar resources block
+		// is spelled exactly that way — with no error from the validator either.
+		if !field.IsExported() || isEmbeddedCommonConfig(field) {
 			continue
 		}
 		// Highest layer first: the first layer that stated anything owns the field.
@@ -299,6 +312,14 @@ func FoldProductConfig[T any](layers ...*T) (*T, error) {
 
 // deepCopyValue copies a reflected field so the fold's result never aliases a layer — which, for
 // the CR's own two levels, means never aliasing the live object in the informer cache.
+//
+// STRUCTS ARE THE CASE THAT MATTERS, and returning them as-is is the bug this shape had. A struct
+// assigned by value copies its fields by value, so every pointer, slice and map INSIDE it stays
+// shared. Two shapes the fold explicitly permits hit that: a slice of structs (`[]corev1.EnvVar`,
+// whose `ValueFrom` is a pointer) and a pointer to an allowlisted opaque leaf (`*RawExtension`,
+// whose `Raw` is a []byte — and RawExtension is what `affinity` is carried in). Mutating the fold's
+// result then wrote through into the CR in the shared informer cache, which is process-wide: every
+// other controller and every later reconcile would see it.
 func deepCopyValue(v reflect.Value) reflect.Value {
 	switch v.Kind() {
 	case reflect.Pointer:
@@ -317,6 +338,12 @@ func deepCopyValue(v reflect.Value) reflect.Value {
 			out.Index(i).Set(deepCopyValue(v.Index(i)))
 		}
 		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := range v.Len() {
+			out.Index(i).Set(deepCopyValue(v.Index(i)))
+		}
+		return out
 	case reflect.Map:
 		if v.IsNil() {
 			return v
@@ -325,6 +352,33 @@ func deepCopyValue(v reflect.Value) reflect.Value {
 		iter := v.MapRange()
 		for iter.Next() {
 			out.SetMapIndex(iter.Key(), deepCopyValue(iter.Value()))
+		}
+		return out
+	case reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(deepCopyValue(v.Elem()))
+		return out
+	case reflect.Struct:
+		// A type's own DeepCopy is authoritative and is the only thing that can reach unexported
+		// state — resource.Quantity hides an *inf.Dec that reflection may not touch. Every
+		// generated Kubernetes API type has one, so this is the path the allowlisted leaves take.
+		if m := v.MethodByName("DeepCopy"); m.IsValid() {
+			if mt := m.Type(); mt.NumIn() == 0 && mt.NumOut() == 1 && mt.Out(0) == v.Type() {
+				return m.Call(nil)[0]
+			}
+		}
+		// Otherwise copy by value first — which carries unexported fields the loop cannot set —
+		// then deep-copy each exported field over the top.
+		out := reflect.New(v.Type()).Elem()
+		out.Set(v)
+		for i := range v.NumField() {
+			if !v.Type().Field(i).IsExported() {
+				continue
+			}
+			out.Field(i).Set(deepCopyValue(v.Field(i)))
 		}
 		return out
 	default:
@@ -350,8 +404,9 @@ func deepCopyValue(v reflect.Value) reflect.Value {
 //	    wholesale drops the sibling fields a user did not restate — the defect this fold exists to
 //	    prevent — and deep-folding a product struct needs rules the framework cannot infer.
 //
-// An embedded *v1alpha1.RoleGroupConfigSpec is always accepted and always skipped by the fold: it
-// is the framework's half.
+// An EMBEDDED *v1alpha1.RoleGroupConfigSpec is always accepted and always skipped by the fold: it
+// is the framework's half. A NAMED field of that type is not exempt — it is a composite like any
+// other, so V5 requires `kubedoop:"atomic"` on it rather than dropping it in silence.
 func ValidateProductConfigType[T any]() error {
 	t := reflect.TypeFor[T]()
 	if t.Kind() != reflect.Struct {
@@ -362,7 +417,7 @@ func ValidateProductConfigType[T any]() error {
 	for i := range t.NumField() {
 		f := t.Field(i)
 
-		if f.Type == commonConfigType {
+		if isEmbeddedCommonConfig(f) {
 			continue // the framework's half
 		}
 		if !f.IsExported() {
