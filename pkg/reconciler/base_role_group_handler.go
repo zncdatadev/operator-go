@@ -72,47 +72,12 @@ const managedByValue = "operator-go"
 // inherits the previous CR's value.
 type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
-	// ProductName is the kubedoop product name (e.g. "trino"). It supplies two unrelated things:
-	// the app.kubernetes.io/name label value, and the repository path segment used when resolving
-	// spec.image into "{repo}/{ProductName}:{version}-kubedoop{v}".
-	//
-	// It no longer decides WHETHER spec.image is read — that is ImageDefaults' job now. The two
-	// were coupled, and because the image half could not express the kubedoop tag convention (see
-	// ImageDefaults), three migrated operators gave up all of it: they left ProductName empty,
-	// hand-rolled image resolution, and two of them emit no app.kubernetes.io/version at all.
-	//
-
-	// ImageDefaults fills in whatever spec.image leaves empty. It is read on every reconcile,
-	// which is the whole point:
-	//
-	//	handler.ProductName = "hive"
-	//	handler.ImageDefaults = commonsv1alpha1.ImageSpec{
-	//	    Repo:            "quay.io/zncdatadev",
-	//	    ProductVersion:  "4.0.1",
-	//	    KubedoopVersion: version.BuildVersion, // the operator's own build version
-	//	}
-	//
-	// KubedoopVersion is why this cannot be a webhook's job. Kubedoop product images are published
-	// only with the "-kubedoop<version>" suffix, and the natural value of that suffix is the
-	// operator's build version — a reconcile-time fact that moves when the operator binary is
-	// upgraded. Webhook defaults are persisted into the spec at admission and never recomputed
-	// (docs/architecture.md §2.6), so a cluster admitted by operator 0.1.0 would keep asking for
-	// -kubedoop0.1.0 images forever. Evaluated here, an operator upgrade moves existing clusters
-	// onto the co-released product image.
-	//
-
 	// ConfigGenerator is used to generate configuration files.
 	// Optional - if nil, config files are generated from MergedConfig only.
 	ConfigGenerator *config.MultiFormatConfigGenerator
 
 	// Scheme is the runtime scheme for ownership setup.
 	Scheme *runtime.Scheme
-
-	// RoleStorageMountPaths maps role names to a role-specific data PVC mount path, overriding
-	// StorageMountPath for that role. Symmetric with RoleContainerPorts and its siblings, and the
-	// one per-role override the handler was missing: a product either gave a data PVC to every
-	// StatefulSet role or to none.
-	//
 
 	// ConfigMountPath is where the generated config ConfigMap is mounted in the primary
 	// container. Products whose application reads config from a specific directory (e.g.
@@ -126,12 +91,6 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// links at the destination. See docs/architecture.md §4.1.5.
 	ConfigMountPath string
 
-	// MainContainerName, when set, renames the primary (first) container of the StatefulSet.
-	// Products use this when the container name is significant — e.g. it must match the
-	// per-container logging key (logging.containers.<name>) declared in LoggingContainers.
-	// Defaults to the resource name (set by the StatefulSet builder) when empty.
-	//
-
 	// LabelDomain, when set (e.g. "zookeeper.kubedoop.dev"), enables product-owned identity
 	// labels — "<domain>/cluster", "<domain>/role", "<domain>/role-group" — that are used
 	// for resource selectors (StatefulSet, Services, PDB) instead of the descriptive
@@ -141,25 +100,6 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// When empty, selectors fall back to the framework-owned app.kubernetes.io/* identity subset
 	// (see frameworkSelectorLabels).
 	LabelDomain string
-
-	// LoggingContainers declares, per container, how its logging config file is generated
-	// from the deep-merged CRD logging spec and injected into the role group ConfigMap.
-	// The framework owns the whole pipeline (merge -> convert -> render -> ConfigMap key);
-	// products only declare the product-specific bits (framework, pattern). Empty means the
-	// product handles logging itself (or has none).
-	//
-	// LoggingContainers also names the producers of the Vector log pipeline. When the role group
-	// enables the Vector agent, the GenericReconciler passes these container names to the Vector
-	// sidecar provider (via LoggingProducers()), which is the single owner of the shared log
-	// volume: it creates the size-limited log emptyDir, RW-mounts it on each producer container,
-	// and mounts it on itself (pre-creating each producer's per-container log directory before
-	// exec'ing vector). Whenever the sidecar does not land — Vector disabled, no producer, or no
-	// source for vector.yaml — no shared volume exists and no file appender is emitted
-	// (console-only); see RoleGroupBuildContext.VectorLogPipelineActive.
-	//
-	// Products whose primary container name (and therefore its logging key) differs per role set
-	// this per role via SetRoleLoggingContainers; the per-role value wins over this global list.
-	//
 
 	// SidecarManager manages sidecar injection into pods.
 	// Optional - if nil, no sidecars are injected.
@@ -334,17 +274,17 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 // above all the rolling file appender — has to key off the same resolved decision, or the product
 // is pointed at a path no volume backs.
 //
-// A nil RoleGroupBuildContext.VectorLogPipelineActive means the context was not built by
+// A nil RoleGroupBuildContext.LogFileTarget means the context was not built by
 // GenericReconciler (a product assembling one by hand): the enablement flag is then all that is
 // known, which is the behavior such a caller already had.
 func vectorLogPipelineActive(buildCtx *RoleGroupBuildContext) bool {
 	if !vectorEnabledFor(buildCtx) {
 		return false
 	}
-	if buildCtx.VectorLogPipelineActive == nil {
+	if buildCtx.vectorLogPipelineActive == nil {
 		return true
 	}
-	return *buildCtx.VectorLogPipelineActive
+	return *buildCtx.vectorLogPipelineActive
 }
 
 // ClusterLabelKey returns the identity label key for the cluster, under the given domain.

@@ -75,8 +75,7 @@ func DecodeAffinity(raw *k8sruntime.RawExtension) (*corev1.Affinity, error) {
 
 // EncodeAffinity is the inverse of DecodeAffinity: it renders an affinity into the schema-free
 // RawExtension the CRD field holds, so a product can supply one as a role config default
-// (BaseRoleGroupHandler.SetRoleConfigDefaults) using the typed Kubernetes API rather than a JSON
-// literal. A nil affinity encodes to nil, which the merge reads as "no opinion".
+// (RoleDeclaration.ConfigDefaults) using the typed Kubernetes API rather than a JSON literal. A nil affinity encodes to nil, which the merge reads as "no opinion".
 //
 // Three Gen 3 migrations wrote this by hand, each with its own comment explaining that the marshal
 // cannot realistically fail. It can, in exactly one way — a value the Kubernetes API itself cannot

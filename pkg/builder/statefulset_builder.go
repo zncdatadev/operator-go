@@ -368,7 +368,6 @@ func (b *StatefulSetBuilder) WithEnableServiceLinks(enable bool) *StatefulSetBui
 // most recent build — so call it afterwards. Empty means the merge preserved everything the
 // framework mounted.
 //
-
 // The slice is copied out, like every other value Build() hands back: the builder must not share
 // mutable state with its callers.
 func (b *StatefulSetBuilder) PodOverrideViolations() []error {
@@ -825,8 +824,8 @@ func (b *StatefulSetBuilder) buildReadinessProbe() *corev1.Probe {
 // ever waiting for a member to actually come up. For a data system that is worse than a probe on an
 // imperfect port.
 //
-// It targets b.Ports[0], which makes the first entry of BaseRoleGroupHandler.SetRoleContainerPorts
-// (or WithPorts) a real part of the contract rather than an accident: put the port that means "this
+// It targets b.Ports[0], which makes the first entry of RoleDeclaration.ContainerPorts (or
+// WithPorts) a real part of the contract rather than an accident: put the port that means "this
 // pod can serve" first. Products needing anything else call WithReadinessProbe.
 func (b *StatefulSetBuilder) buildDefaultTCPReadinessProbe() *corev1.Probe {
 	if len(b.Ports) == 0 {

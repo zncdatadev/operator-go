@@ -345,7 +345,7 @@ func (p *VectorSidecarProvider) Inject(podSpec *corev1.PodSpec, config *sidecar.
 	if len(unmatched) > 0 {
 		return fmt.Errorf(
 			"log producers %v name no container in this pod: the shared log volume cannot be mounted, so their logs are written where nothing collects them. "+
-				"Name the real pod container (BaseRoleGroupHandler.MainContainerName / SetRoleMainContainerName controls the primary one); "+
+				"Name the real pod container (RoleDeclaration.MainContainerName controls the primary one); "+
 				"to change only the log tag, set ContainerLogging.LogDirName instead of the container name",
 			unmatched)
 	}

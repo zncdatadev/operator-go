@@ -126,10 +126,11 @@ type RoleGroupResources struct {
 // builder path as the config volume. Both pkg/security.SecretProvisioner and
 // pkg/listener.ListenerProvisioner satisfy this interface.
 //
-// Reserved names: the framework already uses the pod volume/mount names "config" (the config
-// ConfigMap volume, always present) and "data" (the data PVC, when StorageMountPath is set); a
-// provider must not reuse either name, because duplicate volume names make the Kubernetes API
-// server reject the pod — a hard reconcile failure.
+// Reserved names: the framework already uses the pod volume/mount name "config" (the config
+// ConfigMap volume, always present), and the name of the role's data volume when
+// RoleDeclaration.DataVolume is set — builder.DefaultDataVolumeName ("data") unless the
+// declaration names it. A provider must not reuse either, because duplicate volume names make the
+// Kubernetes API server reject the pod — a hard reconcile failure.
 type VolumeProvider interface {
 	Volumes() []corev1.Volume
 	VolumeMounts() []corev1.VolumeMount
@@ -137,13 +138,16 @@ type VolumeProvider interface {
 
 // RoleBuildContext provides context for building role-level resources — those that cover every
 // pod of a role across all of its role groups (today: the role's single PodDisruptionBudget).
+// Its ProductName and ProductVersion are what put app.kubernetes.io/name and /version on the role
+// PDB, so it carries the same identity as every other resource of the role.
+//
 // It is the role-scoped analogue of RoleGroupBuildContext and is built by GenericReconciler once
 // per role.
 //
-// It is a struct rather than a positional argument list because role-level resources need the
-// same identity inputs as role group ones — including ClusterSpec, from which the
-// app.kubernetes.io/version label is derived — and a struct lets a later input be added without
-// breaking every handler that builds a role-level resource.
+// It is a struct rather than a positional argument list because role-level resources need the same
+// identity inputs as role group ones — ProductName and ProductVersion, which carry
+// app.kubernetes.io/name and /version — and a struct lets a later input be added without breaking
+// every handler that builds a role-level resource.
 type RoleBuildContext struct {
 	// ClusterName is the name of the cluster CR.
 	ClusterName string
@@ -247,9 +251,13 @@ type RoleGroupBuildContext struct {
 	// GenericReconcilerConfig.RoleProvider for THIS cr. It is the single source for everything a
 	// role's shape is made of: ports, container name, command, data volume, log producers, probes.
 	//
-	// WRITTEN BY THE FRAMEWORK, read by the build path. Assigning it has no effect — the reconciler
-	// has already resolved the image and the Vector gates from it by the time BuildResources runs.
-	// A zero value means no RoleProvider is registered.
+	// WRITTEN BY THE FRAMEWORK. A zero value means no RoleProvider is registered.
+	//
+	// Assigning it in a BuildResources override is a HALF-honoured change, which is worse than one
+	// wholly ignored: the image, the config fold and the Vector gates are already settled from it
+	// by the time BuildResources runs, while ports, container name, command, probes, data volume,
+	// listener class and log producers are read during the build and WOULD take effect. Declare the
+	// role in RoleProvider, where every consumer sees the same answer.
 	Declaration RoleDeclaration
 
 	// ResolvedImage is the role's image and everything that follows from it — pull policy, pull
@@ -279,7 +287,7 @@ type RoleGroupBuildContext struct {
 	// off).
 	VectorAggregatorAddress string
 
-	// VectorLogPipelineActive is the resolved answer to "will the Vector sidecar actually be
+	// vectorLogPipelineActive is the resolved answer to "will the Vector sidecar actually be
 	// injected into this role group's pods?" — the agent is enabled AND at least one producer is
 	// declared AND something supplies vector.yaml (see GenericReconciler.buildSidecarManager,
 	// which populates it). The Vector provider owns the shared log emptyDir and its mounts, so
@@ -287,9 +295,15 @@ type RoleGroupBuildContext struct {
 	// flag alone: a skipped sidecar means no shared volume, and a file appender would send the
 	// product's logs to an unmounted path.
 	//
+	// It is UNEXPORTED because every input to it — logging.enableVectorAgent from the folded
+	// config, the producer list and the vector.yaml source from the role declaration — is already
+	// the framework's, so the framework settles the chain and nothing else re-derives it. A product
+	// that renders its own logging config asks LogFileTarget where the file goes; that is the
+	// conclusion, and the only thing a product can act on without re-deciding.
+	//
 	// Nil means the build context was not produced by GenericReconciler; the renderers then fall
 	// back to the enablement flag.
-	VectorLogPipelineActive *bool
+	vectorLogPipelineActive *bool
 }
 
 // VectorAggregatorProvider is optionally implemented by a product CR to expose the name of the
@@ -321,8 +335,8 @@ func (c *RoleGroupBuildContext) ContainerLogging(container string) *v1alpha1.Log
 
 // RenderContainerLogging is a build-context convenience over productlogging.RenderConfigFile:
 // it resolves the container's merged logging spec from the build context and renders the
-// config file. Handlers embedding BaseRoleGroupHandler get this wired automatically via
-// LoggingContainers; handlers that build their own ConfigMap can call it directly.
+// config file. Handlers embedding BaseRoleGroupHandler get this wired automatically from
+// RoleDeclaration.LogProducers; handlers that build their own ConfigMap can call it directly.
 func RenderContainerLogging(buildCtx *RoleGroupBuildContext, decl productlogging.ContainerLogging) (string, string, error) {
 	// Emit the rolling file appender only when the Vector sidecar is really injected: file logging
 	// is coupled to Vector, which owns the shared log volume the appender writes into. Gating here

@@ -1287,14 +1287,14 @@ func (r *GenericReconciler[CR]) declareRoles(
 // StaticContainerProvider), so pod container injection always flows through the manager
 // rather than being mutated directly.
 //
-// It also records the resolved Vector decision on buildCtx (VectorLogPipelineActive), so the
+// It also records the resolved Vector decision on buildCtx (vectorLogPipelineActive), so the
 // logging renderers gate the rolling file appender on the sidecar that is really injected rather
 // than on the enablement flag they cannot fully evaluate.
 func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
 	mgr := sidecar.NewSidecarManager()
 	// Every early return below leaves the shared log volume unbuilt, so the pipeline is inactive
 	// unless the registration at the end of this function is reached.
-	buildCtx.VectorLogPipelineActive = ptr.To(false)
+	buildCtx.vectorLogPipelineActive = ptr.To(false)
 
 	// Read the FOLDED logging, not MergedConfig's copy: this runs before the override merge now, and
 	// stage 3 assigns MergedConfig.Logging from exactly this value.
@@ -1308,12 +1308,11 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 	// RW-mounts it on the producer containers, mounts it on itself (pre-creating the per-container
 	// log dirs, as it starts first), and adds the sidecar.
 	//
-	// This asserts on r.roleGroupHandler — the OUTER handler — so a product overriding
-	// LoggingProducers is honored here, while BaseRoleGroupHandler renders config files from its own
-	// LoggingContainers field and cannot see that override (Go has no virtual dispatch). Do not
-	// "simplify" this to read the rendered list: the two being separately addressable is the
-	// documented way to join the Vector pipeline without a framework-rendered config file, which is
-	// what a product owning its own logging config (Airflow's log_config.py) needs.
+	// ONE list serves both jobs. A producer whose config file the product writes leaves its
+	// Framework empty: it still joins the pipeline here, and the renderer skips it — so a product
+	// owning its own logging config (Airflow's log_config.py) no longer needs two separately
+	// addressable lists, which is what the old shape used and what made an override invisible to
+	// the embedded handler.
 	producers := buildCtx.Declaration.LogProducers
 	logVolumeSize := buildCtx.Declaration.LogVolumeSize
 
@@ -1330,15 +1329,16 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 
 	// The sidecar runs "vector --config <mount>/vector.yaml", so it is only injected when
 	// something actually writes that key into the role group ConfigMap: the framework does it for
-	// a CR implementing VectorAggregatorProvider, otherwise the handler must claim the file
-	// through VectorConfigProvider. With neither, registering the provider would fail sidecar
+	// a CR implementing VectorAggregatorProvider, otherwise the role must claim the file through
+	// RoleDeclaration.OwnsVectorConfig. With neither, registering the provider would fail sidecar
 	// validation on every cycle and abort the whole cluster's reconcile over a product that is
 	// simply not wired for Vector — so this is reported as the product-configuration mistake it
 	// is, and the rest of the cluster keeps converging.
 	if !r.vectorConfigIsProvided(cr, buildCtx.Declaration) {
 		message := fmt.Sprintf(
-			"role %s group %s enables the vector agent, but neither the cluster resource implements VectorAggregatorProvider "+
-				"nor the role group handler implements VectorConfigProvider; no vector.yaml would be generated, so the sidecar is skipped",
+			"role %s group %s enables the vector agent, but nothing supplies vector.yaml: the cluster resource does not "+
+				"implement VectorAggregatorProvider, and the role's declaration does not set OwnsVectorConfig. "+
+				"No vector.yaml would be generated, so the sidecar is skipped",
 			buildCtx.RoleName, buildCtx.RoleGroupName)
 		log.FromContext(ctx).Info("Skipping vector sidecar: no source for vector.yaml",
 			"role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
@@ -1355,6 +1355,8 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 		vector.WithProducers(producers),
 	}
 	if logVolumeSize != "" {
+		// Already validated in RoleDeclaration.Validate, once per pass; this branch cannot be
+		// reached through the reconciler, and a hand-built declaration falling back is harmless.
 		if q, err := resource.ParseQuantity(logVolumeSize); err != nil {
 			log.FromContext(ctx).Error(err, "invalid LogVolumeSize; using vector default",
 				"logVolumeSize", logVolumeSize, "role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
@@ -1363,7 +1365,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 		}
 	}
 	mgr.Register(vector.NewVectorSidecarProvider("", opts...), &sidecar.SidecarConfig{Enabled: true})
-	buildCtx.VectorLogPipelineActive = ptr.To(true)
+	buildCtx.vectorLogPipelineActive = ptr.To(true)
 
 	return mgr
 }
@@ -1371,7 +1373,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 // vectorConfigIsProvided reports whether anything will write vector.yaml into the role group
 // ConfigMap: the framework generates it for a CR exposing an aggregator ConfigMap
 // (VectorAggregatorProvider, see resolveVectorAggregatorAddress), and a product that builds the
-// file itself says so through VectorConfigProvider on its handler. It gates Vector sidecar
+// file itself says so through OwnsVectorConfig on its role declaration. It gates Vector sidecar
 // registration, so the two sides of the contract cannot drift apart.
 func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, decl RoleDeclaration) bool {
 	if _, ok := any(cr).(VectorAggregatorProvider); ok {
@@ -1379,11 +1381,6 @@ func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, decl RoleDeclarati
 	}
 	return decl.OwnsVectorConfig
 }
-
-// loggingProducers returns the handler's declared log-producer containers when it implements
-// LoggingProducerProvider (nil otherwise). Both Vector sidecar registration and aggregator-address
-// resolution gate on "≥1 producer" so they stay consistent: the framework only wires Vector — and
-// only resolves/generates its config — when there is actually something to collect.
 
 // resolveVectorAggregatorAddress resolves the Vector aggregator discovery address for a role group
 // and stores it on buildCtx, enabling framework-owned vector.yaml generation

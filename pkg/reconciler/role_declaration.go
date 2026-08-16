@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -287,6 +288,18 @@ func (d RoleDeclaration) Validate(roleName string) error {
 		if p.Name == "" {
 			problems = append(problems, fmt.Sprintf("containerPorts[%d] has no name", i))
 		}
+	}
+	// Checked HERE, once per pass, rather than where it is consumed: the consumer could only log
+	// and fall back to the 33Mi default, and that is the failure this field exists to prevent — the
+	// emptyDir fills, the kubelet evicts the pod, and nothing names the operator.
+	if d.LogVolumeSize != "" {
+		if _, err := resource.ParseQuantity(d.LogVolumeSize); err != nil {
+			problems = append(problems, fmt.Sprintf("logVolumeSize %q is not a quantity: %v",
+				d.LogVolumeSize, err))
+		}
+	}
+	if err := productlogging.ValidateProducers(d.LogProducers); err != nil {
+		problems = append(problems, err.Error())
 	}
 
 	if len(problems) > 0 {
