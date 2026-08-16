@@ -31,6 +31,7 @@ import (
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/product"
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/vector"
 )
@@ -113,5 +114,14 @@ var _ = Describe("Vector agent, end to end through the reconciler", func() {
 			"the CR implements VectorAggregatorProvider, so the framework owns vector.yaml")
 		Expect(cm.Data[vector.VectorConfigFileName]).To(ContainSubstring("vector-aggregator:6000"),
 			"the resolved aggregator address must reach the rendered pipeline")
+
+		By("asserting the identity labels survive a real reconcile")
+		// ProductName reaches the label builder only through the build context, and the reconciler
+		// is the only thing that fills it in. Every handler-level test sets it by hand, so an
+		// omission there is invisible: app.kubernetes.io/name is simply absent on every resource
+		// the framework builds, and nothing fails.
+		Expect(cm.Labels).To(HaveKeyWithValue(constant.LabelKubernetesName, constants.ProductName),
+			"app.kubernetes.io/name comes from ImageResolution.ProductName via the build context")
+		Expect(cm.Labels).To(HaveKeyWithValue(constant.LabelKubernetesInstance, clusterName))
 	})
 })

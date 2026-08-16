@@ -362,6 +362,8 @@ field the hooks are never executed.
 
 ```go
 // In main.go
+roleGroupHandler := trinocontroller.NewTrinoRoleGroupHandler(mgr.GetScheme())
+
 reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
     Client: mgr.GetClient(),
     // Uncached: refreshes the resourceVersion after a conflicting status write, which the
@@ -369,8 +371,19 @@ reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster
     APIReader:           mgr.GetAPIReader(),
     Scheme:              mgr.GetScheme(),
     Recorder:            mgr.GetEventRecorderFor("trino-cluster-controller"),
-    RoleGroupHandler:    trinocontroller.NewTrinoRoleGroupHandler(mgr.GetScheme()),
+    RoleGroupHandler:    roleGroupHandler,
+    // The same object declares this product's roles, once per pass with the cr in hand.
+    // Without it the framework has no ports, no container name and no log producers for any
+    // role, and every role the CR declares is an error.
+    RoleProvider:        roleGroupHandler,
     RoleGroupResolver:   reconciler.RoleGroupResolverFunc[*trinov1alpha1.TrinoCluster](product.ComputeConfig),
+    // Read every reconcile, so an operator upgrade moves existing clusters onto the
+    // co-released product image — which a mutating webhook cannot do, since its defaults are
+    // persisted at admission and never recomputed.
+    ImageResolution: reconciler.ImageResolution{
+        ProductName: constants.ProductName,
+        Defaults:    constants.ImageDefaults(),
+    },
     HealthCheckInterval: 120 * time.Second,
     HealthCheckTimeout:  300 * time.Second,
     Prototype:           &trinov1alpha1.TrinoCluster{},

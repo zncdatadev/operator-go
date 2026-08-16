@@ -625,9 +625,23 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// call chain rather than stored on the reconciler: one reconciler instance serves every
 	// cluster, so a field here would leak one CR's declarations into another's pass — the exact
 	// process-wide-state hazard this seam exists to remove.
-	catalog, catalogErr := r.declareRoles(ctx, cr, spec)
-	if catalogErr != nil {
-		return ctrl.Result{}, catalogErr
+	//
+	// A wait behaves like the two steps above: RoleProvider's contract says a
+	// *common.RequeueAfterError reports "not ready yet" — a product whose declaration depends on an
+	// authentication class or an S3 connection that has not been issued yet — and returning it raw
+	// here made that a lie. It left Reconcile early with an error, so the workqueue backed off
+	// exponentially, no Waiting condition was raised, and Degraded stayed LATCHED at whatever the
+	// last completed pass wrote, because cleanup and health never ran (§5). The catalog is
+	// unusable either way, so the roles are skipped; everything that observes the cluster is not.
+	var catalog RoleCatalog
+	if declared, err := r.declareRoles(ctx, cr, spec); err != nil {
+		waitErr, waiting := common.WaitingErrors(err)
+		if !waiting {
+			return ctrl.Result{}, err
+		}
+		waitFor = mergeWait(waitFor, newWaitState(waitErr))
+	} else {
+		catalog = declared
 	}
 
 	var roleErrs []error
@@ -1173,6 +1187,7 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 	buildCtx := &RoleGroupBuildContext{
 		Declaration:      decl,
 		ResolvedImage:    resolvedImage,
+		ProductName:      r.imageResolution.ProductName,
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
 		ClusterLabels:    handlerWritableLabels(ctx, cr.GetLabels()),

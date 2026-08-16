@@ -92,6 +92,27 @@ func TestLogFileTargetIsAnsweredBeforeTheMerge(t *testing.T) {
 	}
 }
 
+// ContainerLogging is the other accessor a product calls from its RoleGroupResolver, and it had the
+// same stage-2 nil: it read MergedConfig, so a product rendering its own logging config saw no
+// per-container settings at all and silently emitted defaults with the user's levels dropped.
+func TestContainerLoggingIsAnsweredBeforeTheMerge(t *testing.T) {
+	buildCtx := stageOneBuildContext(true)
+	buildCtx.RoleGroupSpec.Config.Logging.Containers = map[string]v1alpha1.LoggingConfigSpec{
+		"trino": {Console: &v1alpha1.LogLevelSpec{Level: "DEBUG"}},
+	}
+
+	got := buildCtx.ContainerLogging("trino")
+	if got == nil {
+		t.Fatal("ContainerLogging returned nil at stage 2: the user's levels are silently dropped")
+	}
+	if got.Console == nil || got.Console.Level != "DEBUG" {
+		t.Errorf("ContainerLogging = %+v, want the folded console level DEBUG", got)
+	}
+	if buildCtx.ContainerLogging("not-a-container") != nil {
+		t.Error("an undeclared container must resolve to nil")
+	}
+}
+
 // A context a product assembled by hand carries no folded spec. Such a caller sets
 // MergedConfig.Logging, and must keep the behaviour it already had.
 func TestVectorEnabledFallsBackForAHandBuiltContext(t *testing.T) {

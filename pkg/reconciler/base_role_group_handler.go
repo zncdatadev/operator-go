@@ -192,18 +192,12 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 
 	resources := &RoleGroupResources{}
 
-	// Propagate the product image to the registered sidecars (e.g. Vector, which ships inside
-	// the product image). This must happen here — not earlier in GenericReconciler — because the
-	// documented embedding pattern resolves the CR-driven image inside the product's
-	// BuildResources override, immediately before delegating to this method; any earlier
-	// propagation would see a stale (or empty) image. Doing it in the base implementation means
-	// every embedding handler gets it for free instead of hand-calling SetProductImage.
+	// Propagate the product image to the registered sidecars (e.g. Vector, which ships inside the
+	// product image). The reconciler resolves the image before this method runs and publishes it as
+	// buildCtx.ResolvedImage, so this is a propagation step rather than a resolution one.
 	//
-	// Select the manager exactly as sidecar injection does below (prefer the SDK-created one,
-	// fall back to the instance field) so propagation and injection can never target different
-	// managers. Call SetProductImage unconditionally: it rejects an empty image, so a
-	// misconfigured product fails loudly here instead of silently injecting a sidecar with an
-	// empty image field.
+	// Select the manager exactly as sidecar injection does below (prefer the SDK-created one, fall
+	// back to the instance field) so propagation and injection can never target different managers.
 	if sidecarMgr := buildCtx.SidecarManager; sidecarMgr != nil || h.sidecarManager != nil {
 		if sidecarMgr == nil {
 			// The handler's manager is process-wide, and SetProductImage below writes THIS
@@ -216,6 +210,18 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 		}
 		image, pullPolicy := buildCtx.ResolvedImage.Reference, buildCtx.ResolvedImage.PullPolicy
 		if err := sidecarMgr.SetProductImage(image, pullPolicy); err != nil {
+			// SetProductImage rejects an empty image, and an empty one here is not a sidecar
+			// problem — it means nothing resolved an image for this role at all. Reporting it as
+			// "failed to set product image on sidecars" sent readers to the sidecar config, and
+			// worse, it only surfaced when a sidecar happened to be registered: with none, the
+			// empty image reached the container and the pods failed with InvalidImageName, naming
+			// nothing. Say which knob is unset.
+			if image == "" {
+				return nil, NewValidationError("image", buildCtx.RoleName, buildCtx.RoleGroupName,
+					fmt.Errorf("no image resolved for this role: set GenericReconcilerConfig.ImageResolution "+
+						"(ProductName + Defaults), or spec.image.custom on the cluster, or "+
+						"RoleDeclaration.Image for this role; a sidecar cannot be built without it either: %w", err))
+			}
 			return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
 		}
 	}

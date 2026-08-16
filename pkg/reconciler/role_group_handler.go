@@ -332,10 +332,21 @@ type VectorAggregatorProvider interface {
 // type and rendering live in pkg/productlogging; this accessor must live here because it is a
 // method on the reconciler's RoleGroupBuildContext.
 func (c *RoleGroupBuildContext) ContainerLogging(container string) *v1alpha1.LoggingConfigSpec {
-	if c.MergedConfig == nil || c.MergedConfig.Logging == nil {
+	// The FOLD, not MergedConfig.Logging, for the same reason vectorEnabledFor reads it: a product
+	// calls this from its RoleGroupResolver, which runs in stage 2 — before stage 3 assigns
+	// MergedConfig. Reading the copy returned nil there, so a product rendering its own logging
+	// config saw no per-container settings at all and silently emitted defaults, with the user's
+	// levels dropped and nothing reporting it. MergedConfig.Logging is assigned from this same
+	// value in stage 3, so this is the source rather than a second opinion.
+	logging := c.RoleGroupSpec.GetConfig().Logging
+	if logging == nil && c.MergedConfig != nil {
+		// A context assembled by hand carries no folded spec.
+		logging = c.MergedConfig.Logging
+	}
+	if logging == nil {
 		return nil
 	}
-	if cfg, ok := c.MergedConfig.Logging.Containers[container]; ok {
+	if cfg, ok := logging.Containers[container]; ok {
 		return &cfg
 	}
 	return nil
