@@ -255,16 +255,37 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	return resources, nil
 }
 
-// vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on
-// the deep-merged logging spec. It is the enablement FLAG only — whether the sidecar is really
-// injected is decided by vectorLogPipelineActive.
+// vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on the
+// folded logging spec. It is the enablement FLAG only — whether the sidecar is really injected is
+// decided by vectorLogPipelineActive.
+//
+// IT READS THE FOLD, NOT MergedConfig.Logging, and that is an ordering requirement rather than a
+// preference. MergedConfig is not assigned until stage 3 of buildRoleGroupContext, while three
+// callers run before it: resolveVectorAggregatorAddress and buildSidecarManager in stage 1b, and
+// LogFileTarget from a product's RoleGroupResolver in stage 2. Reading MergedConfig made this
+// return false for all three — so the aggregator address was never resolved, no vector.yaml was
+// ever written, and LogFileTarget answered "console only" at exactly the point a product asks it
+// where to write. The sidecar was still registered (buildSidecarManager reads the fold), so its
+// Validate then failed on the missing key and the role group stayed Degraded forever.
+//
+// MergedConfig.Logging is a COPY, assigned from this same folded value in stage 3, so reading the
+// source is not a second opinion — it is the only one, available from stage 1 onward.
+//
+// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and the
+// consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
 func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
-	if buildCtx == nil || buildCtx.MergedConfig == nil {
+	if buildCtx == nil {
 		return false
 	}
-	// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and
-	// the consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
-	return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
+	if logging := buildCtx.RoleGroupSpec.GetConfig().Logging; logging != nil {
+		return vector.IsAgentEnabled(logging)
+	}
+	// A context assembled by hand rather than by GenericReconciler carries no folded spec; fall
+	// back to whatever such a caller supplied, which is the behavior it already had.
+	if buildCtx.MergedConfig != nil {
+		return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
+	}
+	return false
 }
 
 // vectorLogPipelineActive reports whether the shared Vector log pipeline really exists for this
