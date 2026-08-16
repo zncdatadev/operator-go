@@ -478,27 +478,55 @@ cannot honor a field it does not know.
 resolved independently — and an empty value clears. See §4b, where the reason the rule changed is
 the product-default layer beneath the user's two.
 
-`DefaultAntiAffinity(cluster, role, topologyKey, weight)` builds the **preferred** pod anti-affinity
-that spreads one role's pods, selecting on the framework's own identity labels
-(`app.kubernetes.io/instance` + `app.kubernetes.io/component`) — the part worth centralising, since a
-downstream operator re-typing those keys as string literals gets a selector matching nothing the
-moment they change, and a preferred term matching no pod is not an error. It selects on the **role**,
-not the role group: three of five ZooKeeper servers on one node is an outage whether or not they
-share a group. `weight` and `topologyKey` are parameters with no defaults, because the operators that
-hand-wrote this already disagree on the weight. `EncodeAffinity` is `DecodeAffinity`'s inverse, so a
+**The affinity helpers are composable terms, not one canned policy.**
+`PreferredAffinityTerm(weight, topologyKey, selector)` builds one weighted term;
+`ClusterSelectorLabels(cluster)` and `RoleSelectorLabels(cluster, role)` are the selectors, built
+from the framework's own identity labels (`app.kubernetes.io/instance` +
+`app.kubernetes.io/component`) — the part worth centralising, since a downstream operator re-typing
+those keys as string literals gets a selector matching nothing the moment they change, and a
+preferred term matching no pod is not an error. `EncodeAffinity` is `DecodeAffinity`'s inverse, so a
 product supplies a default with the typed Kubernetes API rather than a JSON literal:
 
 ```go
-aff, err := reconciler.EncodeAffinity(reconciler.DefaultAntiAffinity(
-    cr.GetName(), "server", reconciler.TopologyKeyHostname, 70))
+aff, err := reconciler.EncodeAffinity(&corev1.Affinity{
+    // spread this role's pods across nodes
+    PodAntiAffinity: &corev1.PodAntiAffinity{PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+        reconciler.PreferredAffinityTerm(70, reconciler.TopologyKeyHostname,
+            reconciler.RoleSelectorLabels(cr.GetName(), "datanode")),
+    }},
+    // …while keeping the cluster together
+    PodAffinity: &corev1.PodAffinity{PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+        reconciler.PreferredAffinityTerm(20, reconciler.TopologyKeyHostname,
+            reconciler.ClusterSelectorLabels(cr.GetName())),
+    }},
+})
 if err != nil { return nil, err }
 decl.ConfigDefaults = &commonsv1alpha1.RoleGroupConfigSpec{Affinity: aff}
 ```
 
-**`logging` may not appear in a config default.** The framework merges logging in the *reconciler*,
-from the CR's two levels only, and has already decided Vector enablement and rendered the config file
-before a default is read — so one set here would apply to neither. It is a `*ValidationError` rather
-than a half-honoured field.
+This replaces a single-shot `DefaultAntiAffinity` helper that emitted exactly **one** anti-affinity
+term — which is why hdfs-operator, the product with the most roles, could not use it at all: its
+default is composite (a cluster-level pod *affinity* at weight 20 beside a role-level
+*anti*-affinity at weight 70). Both operators that needed a composite hand-wrote it, and both got it
+wrong — one commented the merge out entirely, the other applied its default unconditionally and
+silently discarded the user's own `config.affinity`.
+
+There is deliberately **no Required constructor**: a required spread turns a too-small cluster into
+pods that never schedule (three nodes, five replicas, two `Pending` forever), with no way to say
+"spread as far as you can". A product that genuinely requires it writes the `corev1` term itself.
+`NormalizeAffinity` is exported so a hand-assembled affinity produces the same bytes the fold does —
+without it a member cleared with `{}` reaches the pod template as an empty struct, which differs
+from absent in the serialized spec and shows up as a diff on every reconcile.
+
+**`logging` IS a supported config default now**, folded through `productlogging.MergeLoggingSpec`
+like every other field in the block. It used to be rejected with a `*ValidationError`, and the
+rejection was correct for the code as it stood: the framework merged logging in the reconciler from
+the CR's two levels only, and had already decided Vector enablement and rendered the config file
+before a default was ever read — so one set here would have applied to neither. Moving the fold
+ahead of both consumers is what made the field honourable, and the reconciler now reads Vector
+enablement off the **folded** value. This is issue #631's item 2: the old godoc advertised `logging`
+while the code hard-rejected it, and the fix was to make the code match the doc rather than the
+other way round.
 
 **A data PVC is per role, declared not configured.** `RoleDeclaration.DataVolume{Name, MountPath}`
 opts the role in; nil means the role has none. That is a structural property of the role rather than
