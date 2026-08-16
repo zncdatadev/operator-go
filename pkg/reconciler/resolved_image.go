@@ -39,7 +39,14 @@ import (
 // it beside the reference is what stops that from being re-derivable-but-forgotten.
 type ResolvedImage struct {
 	// Reference is the container image. Empty means neither the CR nor the product expressed an
-	// opinion, and the caller falls back.
+	// opinion — with ImageResolution.ProductName unset, nothing beyond spec.image.custom is read,
+	// so a CR stating only spec.image.repo resolves to "".
+	//
+	// There is no fallback left to take: the handler's static image is gone, so an empty reference
+	// reaches BuildResources, which fails the role group with a *ValidationError naming the three
+	// knobs that could set it. Saying "the caller falls back" described the pre-refactor shape and
+	// pointed a reader at a mechanism that no longer exists. The one legitimate way to leave this
+	// empty is to supply the image through podOverrides, which is merged onto the container later.
 	Reference string
 
 	// PullPolicy is the effective imagePullPolicy.

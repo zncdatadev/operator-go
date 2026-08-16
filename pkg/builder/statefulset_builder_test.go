@@ -1814,3 +1814,54 @@ var _ = Describe("storageClass distinguishes unset from empty", func() {
 			To(HaveValue(Equal("fast-ssd")))
 	})
 })
+
+var _ = Describe("WithNamedStorage", func() {
+	// The custom-name path is the entire reason the name parameter exists — it is what
+	// RoleDeclaration.DataVolume{Name} reaches — and it had no coverage at all. The invariant that
+	// matters is that the claim template and the volumeMount carry the SAME name: if they drift,
+	// the pod references a volume that does not exist and the API server rejects the StatefulSet
+	// naming a field the user never wrote.
+	storage := func() *v1alpha1.StorageResource {
+		return &v1alpha1.StorageResource{
+			Capacity: ptr.To(resource.MustParse("10Gi")),
+		}
+	}
+
+	It("names the claim template and the mount identically", func() {
+		sts := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithNamedStorage("journal", storage(), "/kubedoop/journal").
+			Build()
+
+		Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal("journal"))
+
+		mounts := sts.Spec.Template.Spec.Containers[0].VolumeMounts
+		var found *corev1.VolumeMount
+		for i := range mounts {
+			if mounts[i].MountPath == "/kubedoop/journal" {
+				found = &mounts[i]
+			}
+		}
+		Expect(found).NotTo(BeNil(), "the declared mount path must be mounted")
+		Expect(found.Name).To(Equal("journal"),
+			"the mount must name the claim template, or the pod references a volume that does not exist")
+	})
+
+	It("falls back to the framework's default name when none is given", func() {
+		sts := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithNamedStorage("", storage(), "/kubedoop/data").
+			Build()
+		Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal(builder.DefaultDataVolumeName))
+	})
+
+	It("declines to build a claim when the role group states no storage", func() {
+		// A nil storage is a role group that said nothing, not one asking for a zero-sized volume.
+		sts := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithNamedStorage("data", nil, "/kubedoop/data").
+			Build()
+		Expect(sts.Spec.VolumeClaimTemplates).To(BeEmpty())
+	})
+})
