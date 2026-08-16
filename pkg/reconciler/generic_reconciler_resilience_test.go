@@ -831,9 +831,8 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		sts := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: resourceName}, sts)).To(Succeed())
 
-		// Gate 2 reads the OUTER handler, so the override counts even though the embedded base
-		// handler's LoggingContainers is empty. Rewiring it to the rendered list would silently
-		// drop the sidecar from every product that owns its logging config.
+		// The producer is declared like any other, so it passes gate 2 and the sidecar lands.
+		// OwnConfigFile changes only whether the framework RENDERS a file for it.
 		Expect(hasVectorSidecar(sts)).To(BeTrue())
 
 		app := sidecar.FindContainer(&sts.Spec.Template.Spec, "app")
@@ -855,11 +854,14 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 	})
 })
 
-// productLogConfigHandler is the shape a product uses when it owns its own logging config file: it
-// embeds BaseRoleGroupHandler, leaves LoggingContainers empty so the framework renders nothing, and
-// overrides LoggingProducers so the container still joins the Vector pipeline. Go has no virtual
-// dispatch, so the embedded base cannot see this override — which is exactly why the reconciler
-// reads producers off the outer handler and rendering reads the field.
+// productLogConfigHandler is the shape a product uses when it owns its own logging config file. It
+// declares the producer normally — so the container gets the shared log volume, its RW mount, the
+// pre-created log directory and the Vector source — and marks it OwnConfigFile, so the framework
+// renders no config file for it and there is no ConfigMap key to collide with the one the product
+// writes itself.
+//
+// This used to need two separately-addressable lists and an interface override the embedded base
+// handler could not see; one declaration field replaces both.
 type productLogConfigHandler struct {
 	*reconciler.BaseRoleGroupHandler[*testutil.MockCluster]
 }

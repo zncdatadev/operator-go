@@ -54,9 +54,10 @@ type StatefulSetBuilder struct {
 	Ports           []corev1.ContainerPort
 	Volumes         []corev1.Volume
 	VolumeMounts    []corev1.VolumeMount
-	EnvVars         []corev1.EnvVar
-	// BaseEnvVars are emitted BEFORE the merged config's env, so they sit beneath a user's
-	// envOverrides rather than above them. See buildContainer.
+	// BaseEnvVars are the container's declared env vars, emitted BEFORE the merged config's, so a
+	// user's envOverrides of the same name wins. It is the ONLY env channel: a second one that
+	// emitted after the merged env would let a caller silently beat the user, which is the shape
+	// this framework removed everywhere else.
 	BaseEnvVars []corev1.EnvVar
 	Command     []string
 	Args        []string
@@ -146,7 +147,6 @@ func NewStatefulSetBuilder(name, namespace string) *StatefulSetBuilder {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Volumes:         make([]corev1.Volume, 0),
 		VolumeMounts:    make([]corev1.VolumeMount, 0),
-		EnvVars:         make([]corev1.EnvVar, 0),
 		BaseEnvVars:     make([]corev1.EnvVar, 0),
 		Ports:           make([]corev1.ContainerPort, 0),
 	}
@@ -294,15 +294,6 @@ func (b *StatefulSetBuilder) AddVolume(volume corev1.Volume) *StatefulSetBuilder
 // AddVolumeMount adds a volume mount.
 func (b *StatefulSetBuilder) AddVolumeMount(mount corev1.VolumeMount) *StatefulSetBuilder {
 	b.VolumeMounts = append(b.VolumeMounts, mount)
-	return b
-}
-
-// AddEnvVar adds an environment variable.
-func (b *StatefulSetBuilder) AddEnvVar(name, value string) *StatefulSetBuilder {
-	b.EnvVars = append(b.EnvVars, corev1.EnvVar{
-		Name:  name,
-		Value: value,
-	})
 	return b
 }
 
@@ -494,7 +485,7 @@ func (b *StatefulSetBuilder) WithTerminationGracePeriod(seconds int64) *Stateful
 // map[string]string and cannot express one at all.
 //
 // Emitted before the merged env so a user's envOverrides of the same name wins: Kubernetes resolves
-// a duplicate name to the last entry.
+// a duplicate name to the last entry, which makes the ordering the precedence.
 func (b *StatefulSetBuilder) WithBaseEnvVars(env []corev1.EnvVar) *StatefulSetBuilder {
 	b.BaseEnvVars = append(b.BaseEnvVars, cloneSlice(env)...)
 	return b
@@ -745,10 +736,10 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 		container.Args = slices.Clone(b.Args)
 	}
 
-	// Base env vars go FIRST, beneath the merged config's. Kubernetes resolves a duplicate name to
-	// the LAST entry, so this ordering is the precedence: a product declaring FOO here is a default
-	// the user's envOverrides still beats. Appending them after — where BaseEnvVars' sibling
-	// EnvVars goes — would invert that silently.
+	// Declared env goes FIRST, beneath the merged config's. Kubernetes resolves a duplicate name to
+	// the LAST entry, so this ordering IS the precedence: a product declaring FOO here is a default
+	// the user's envOverrides still beats. Appending it after would invert that silently, which is
+	// why there is no second channel that does.
 	container.Env = append(container.Env, cloneSlice(b.BaseEnvVars)...)
 
 	// Add environment variables from merged config. Iterate in sorted key order: EnvVars is a
@@ -773,9 +764,6 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 			container.Args = append(container.Args, b.Config.CliArgs...)
 		}
 	}
-
-	// Add explicit env vars (these override config env vars)
-	container.Env = append(container.Env, cloneSlice(b.EnvVars)...)
 
 	// Apply lifecycle hooks
 	if b.lifecycle != nil {

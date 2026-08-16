@@ -171,14 +171,14 @@ var _ = Describe("StatefulSetBuilder", func() {
 		})
 	})
 
-	Describe("AddEnvVar", func() {
+	Describe("WithBaseEnvVars", func() {
 		It("should add an environment variable", func() {
-			result := stsBuilder.AddEnvVar("KEY", "value")
+			result := stsBuilder.WithBaseEnvVars([]corev1.EnvVar{{Name: "KEY", Value: "value"}})
 
 			Expect(result).To(Equal(stsBuilder))
-			Expect(stsBuilder.EnvVars).To(HaveLen(1))
-			Expect(stsBuilder.EnvVars[0].Name).To(Equal("KEY"))
-			Expect(stsBuilder.EnvVars[0].Value).To(Equal("value"))
+			Expect(stsBuilder.BaseEnvVars).To(HaveLen(1))
+			Expect(stsBuilder.BaseEnvVars[0].Name).To(Equal("KEY"))
+			Expect(stsBuilder.BaseEnvVars[0].Value).To(Equal("value"))
 		})
 	})
 
@@ -829,7 +829,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			}
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).
-				AddEnvVar("COMMON_VAR", "built-value").
+				WithBaseEnvVars([]corev1.EnvVar{{Name: "COMMON_VAR", Value: "built-value"}}).
 				WithPodOverrides(overrides).
 				Build()
 
@@ -1203,7 +1203,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).
 				WithConfig(cfg).
-				AddEnvVar("OVERRIDE_KEY", "override-value").
+				WithBaseEnvVars([]corev1.EnvVar{{Name: "OVERRIDE_KEY", Value: "override-value"}}).
 				Build()
 
 			container := sts.Spec.Template.Spec.Containers[0]
@@ -1306,7 +1306,7 @@ var _ = Describe("StatefulSetBuilder Build isolation", func() {
 			WithPorts([]corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}).
 			AddVolume(corev1.Volume{Name: "config"}).
 			AddVolumeMount(corev1.VolumeMount{Name: "config", MountPath: "/etc/config"}).
-			AddEnvVar("KEY", "value")
+			WithBaseEnvVars([]corev1.EnvVar{{Name: "KEY", Value: "value"}})
 	}
 
 	It("does not let a pod template mutation reach ObjectMeta or the selector", func() {
@@ -1541,7 +1541,7 @@ var _ = Describe("StatefulSetBuilder podOverrides on mutually exclusive fields",
 			},
 		}
 		sts := newBuilder().
-			AddEnvVar("PASSWORD", "built-in-plaintext").
+			WithBaseEnvVars([]corev1.EnvVar{{Name: "PASSWORD", Value: "built-in-plaintext"}}).
 			WithPodOverrides(overrides).
 			Build()
 
