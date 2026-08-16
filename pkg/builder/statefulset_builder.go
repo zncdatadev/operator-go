@@ -449,9 +449,31 @@ func (b *StatefulSetBuilder) WithPodOverrides(overrides *corev1.PodTemplateSpec)
 }
 
 // WithStorage sets the storage configuration.
+// DefaultDataVolumeName is the claim-template and mount name a data volume gets when the caller
+// names none. It is reserved: a VolumeProvider must not reuse it, because duplicate volume names
+// make the API server reject the pod.
+const DefaultDataVolumeName = "data"
+
 func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, mountPath string) *StatefulSetBuilder {
+	return b.WithNamedStorage(DefaultDataVolumeName, storage, mountPath)
+}
+
+// WithNamedStorage is WithStorage with the claim template's name chosen by the caller. An empty
+// name uses DefaultDataVolumeName.
+//
+// The name is a parameter because a claim template's name is IMMUTABLE and preserved by the apply
+// path, so a product that wanted its volume called anything else could not fix it afterwards
+// without deleting the StatefulSet by hand. It must not collide with "config" (the config ConfigMap
+// volume, always present) or with any VolumeProvider's name — duplicate volume names make the API
+// server reject the pod outright.
+func (b *StatefulSetBuilder) WithNamedStorage(
+	name string, storage *v1alpha1.StorageResource, mountPath string,
+) *StatefulSetBuilder {
 	if storage == nil {
 		return b
+	}
+	if name == "" {
+		name = DefaultDataVolumeName
 	}
 
 	b.StorageConfig = &StorageConfig{
@@ -459,7 +481,7 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 		VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
 			{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "data",
+					Name: name,
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -488,9 +510,10 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = ptr.To(*storage.StorageClass)
 	}
 
-	// Add volume mount for data
+	// The mount must carry the SAME name as the claim template, or the pod references a volume that
+	// does not exist.
 	b.VolumeMounts = append(b.VolumeMounts, corev1.VolumeMount{
-		Name:      "data",
+		Name:      name,
 		MountPath: mountPath,
 	})
 
@@ -500,6 +523,23 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 // WithTerminationGracePeriod sets the termination grace period.
 func (b *StatefulSetBuilder) WithTerminationGracePeriod(seconds int64) *StatefulSetBuilder {
 	b.TerminationGracePeriodSeconds = &seconds
+	return b
+}
+
+// WithLifecycle sets the primary container's lifecycle hooks wholesale, deep-copied.
+//
+// The three narrow helpers below cover only an exec preStop, an exec postStart, and an HTTPGet
+// preStop with a path and port — so a `sleep` action, or an HTTPGet needing a scheme, host or
+// headers, had no route to the container at all. A declared lifecycle that cannot be applied is
+// worse than one the API does not offer.
+//
+// It replaces whatever the helpers set, rather than merging: a lifecycle is a small one-of, and
+// merging two partial ones produces a hook nobody wrote.
+func (b *StatefulSetBuilder) WithLifecycle(lifecycle *corev1.Lifecycle) *StatefulSetBuilder {
+	if lifecycle == nil {
+		return b
+	}
+	b.lifecycle = lifecycle.DeepCopy()
 	return b
 }
 

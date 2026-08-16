@@ -104,12 +104,22 @@ func resolveImage(
 		return ResolvedImage{}, err
 	}
 
-	return ResolvedImage{
+	out := ResolvedImage{
 		Reference:      reference,
 		PullPolicy:     crImage.ResolvedPullPolicy(defaults),
 		PullSecretName: crImage.ResolvedPullSecretName(defaults),
-		ProductVersion: crImage.ResolvedProductVersion(defaults),
-	}, nil
+	}
+
+	// ProductVersion is published only when the framework actually assembled the reference. With an
+	// empty ProductName the product resolves its own images, so a version read from spec.image
+	// describes an image the framework did not build — a guess, stamped on every resource as
+	// app.kubernetes.io/version. A spec.image.custom WITH a productVersion still publishes it:
+	// `custom` replaces the reference, and that field remains the user's declaration of which
+	// product version it is.
+	if res.ProductName != "" {
+		out.ProductVersion = crImage.ResolvedProductVersion(defaults)
+	}
+	return out, nil
 }
 
 // foldImageSpec folds `over` beneath `spec`, per field: a field the upper layer states wins, and

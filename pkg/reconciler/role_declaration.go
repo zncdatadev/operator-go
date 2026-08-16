@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
@@ -131,7 +132,28 @@ type RoleDeclaration struct {
 
 	// OwnsVectorConfig declares that the product writes vector.yaml itself, rather than the
 	// framework rendering it from the CR's aggregator ConfigMap.
+	//
+	// It replaces only ONE branch of the "does vector.yaml have a source" gate. A CR that
+	// implements VectorAggregatorProvider still satisfies the other, so leaving this false does not
+	// switch the sidecar off for an aggregator-based product.
 	OwnsVectorConfig bool
+
+	// LogVolumeSize overrides the SizeLimit of the shared log emptyDir the Vector provider owns.
+	// Empty uses vector.DefaultLogVolumeSize.
+	//
+	// It is per-role because log volume is: a DataNode writes far more than a JournalNode, and the
+	// producers it sizes are already declared per role. An unparsable value fails the role rather
+	// than being logged and ignored — silently reverting to the 33Mi default is how a chatty pod
+	// gets evicted by the kubelet with nothing naming the operator.
+	LogVolumeSize string
+
+	// Env are environment variables on the primary container that the product declares rather than
+	// computes — a downward-API POD_NAME, a secretKeyRef.
+	//
+	// It exists because the merged-override channel is map[string]string and cannot carry a
+	// `valueFrom` at all. These are appended after the override-derived env, so they sit BESIDE a
+	// user's envOverrides rather than above them.
+	Env []corev1.EnvVar
 
 	// ConfigDefaults is the product's default for the FRAMEWORK-owned half of this role's config
 	// block — resources, affinity, gracefulShutdownTimeout, logging — folded BENEATH the CR's role
@@ -159,8 +181,9 @@ type DataVolume struct {
 	MountPath string
 }
 
-// DefaultDataVolumeName is the claim-template name a DataVolume gets when it names none.
-const DefaultDataVolumeName = "data"
+// DefaultDataVolumeName is the claim-template name a DataVolume gets when it names none. It is
+// defined by the builder, which owns the reserved-name rule.
+const DefaultDataVolumeName = builder.DefaultDataVolumeName
 
 // RoleCatalog is a product's complete statement about the roles it supports, for ONE cluster. The
 // key set IS the set of role names that cluster may declare.

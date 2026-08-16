@@ -101,6 +101,14 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// RoleGroupHandler is the product-specific handler for building resources.
 	RoleGroupHandler RoleGroupHandler[CR]
 
+	// ImageResolution is the reconcile-invariant half of image resolution: the product's name and
+	// the defaults its operator ships. The reconciler resolves each role's image from it once per
+	// role group and publishes the answer — reference, pull policy, pull secret and product
+	// version — on RoleGroupBuildContext.ResolvedImage, so the container and the sidecars cannot be
+	// told different things.
+	// +optional
+	ImageResolution ImageResolution
+
 	// RoleProvider declares the roles this product supports, once per reconcile pass, with the cr
 	// in hand. Its catalog is checked against spec.roles before any role is reconciled: a role the
 	// CR declares and the product does not is a hard error naming both sides, where it used to
@@ -327,6 +335,7 @@ type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	dependencies      func(cr CR) []Dependency
 	roleProvider      RoleProvider[CR]
 	roleGroupResolver RoleGroupResolver[CR]
+	imageResolution   ImageResolution
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -410,6 +419,7 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 		dependencies:        cfg.Dependencies,
 		roleProvider:        cfg.RoleProvider,
 		roleGroupResolver:   cfg.RoleGroupResolver,
+		imageResolution:     cfg.ImageResolution,
 	}, nil
 }
 
@@ -1193,7 +1203,17 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 	mergedGroupSpec := groupSpec.DeepCopy()
 	mergedGroupSpec.Config = foldedConfig
 
+	// Resolve the image ONCE, here, so the primary container, the sidecars, the pod's
+	// imagePullSecrets and the app.kubernetes.io/version label all read the same answer. Deriving
+	// them independently is how the pull secret got silently dropped for ten product CRDs.
+	resolvedImage, err := resolveImage(cr.GetSpec(), decl, r.imageResolution)
+	if err != nil {
+		return nil, NewValidationError("image", roleName, groupName, err)
+	}
+
 	buildCtx := &RoleGroupBuildContext{
+		Declaration:      decl,
+		ResolvedImage:    resolvedImage,
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
 		ClusterLabels:    handlerWritableLabels(ctx, cr.GetLabels()),
@@ -1232,8 +1252,12 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 				roleName, groupName, err)
 		}
 	}
+	derivedOverrides, err := derived.overrides()
+	if err != nil {
+		return nil, NewValidationError("RoleGroupResolver", roleName, groupName, err)
+	}
 	buildCtx.MergedConfig = r.configMerger.Merge(
-		derived.overrides(), productConfig, roleSpec.GetOverrides(), groupSpec.GetOverrides())
+		derivedOverrides, productConfig, roleSpec.GetOverrides(), groupSpec.GetOverrides())
 
 	// Logging has ONE home: the fold above. It used to be merged on a second path from the CR's two
 	// levels only, which is why nothing read the folded copy and why a product logging default

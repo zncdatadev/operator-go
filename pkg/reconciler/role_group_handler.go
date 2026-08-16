@@ -224,6 +224,29 @@ type RoleGroupBuildContext struct {
 	// calling BaseRoleGroupHandler.BuildResources. Empty means no extra volumes (backward compatible).
 	VolumeProviders []VolumeProvider
 
+	// Declaration is the product's RoleDeclaration for this role group's role, as returned by
+	// GenericReconcilerConfig.RoleProvider for THIS cr. It is the single source for everything a
+	// role's shape is made of: ports, container name, command, data volume, log producers, probes.
+	//
+	// WRITTEN BY THE FRAMEWORK, read by the build path. Assigning it has no effect — the reconciler
+	// has already resolved the image and the Vector gates from it by the time BuildResources runs.
+	// A zero value means no RoleProvider is registered.
+	Declaration RoleDeclaration
+
+	// ResolvedImage is the role's image and everything that follows from it — pull policy, pull
+	// secret, product version — resolved ONCE by the reconciler from spec.image over the role's
+	// declared Image over the operator's ImageDefaults.
+	//
+	// It is one struct because its four consumers must agree: the primary container, the sidecars
+	// (a Vector agent ships inside the product image, so it must be the SAME reference), the pod's
+	// imagePullSecrets and the app.kubernetes.io/version label. They used to be derived
+	// independently at four call sites, which is how the pull secret got silently dropped for ten
+	// product CRDs at once.
+	//
+	// WRITTEN BY THE FRAMEWORK. An empty Reference means nobody expressed an opinion and the
+	// handler falls back to whatever image it would have used anyway.
+	ResolvedImage ResolvedImage
+
 	// Image, ImagePullPolicy, ContainerPorts and ServicePorts are the per-CR inputs a product
 	// derives from the cluster it is building for. Set them here, NOT on the handler.
 	//

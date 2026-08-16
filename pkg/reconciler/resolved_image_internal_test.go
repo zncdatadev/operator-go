@@ -143,4 +143,25 @@ var _ = Describe("resolveImage", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.Reference).To(BeEmpty())
 	})
+
+	It("publishes no product version when the framework did not assemble the reference", func() {
+		// With ProductName empty the product resolves its own images, so a version read off
+		// spec.image describes an image the framework did not build. Stamping it on every resource
+		// as app.kubernetes.io/version would be a guess.
+		spec := &v1alpha1.GenericClusterSpec{Image: &v1alpha1.ImageSpec{
+			Custom: "own/image:1", ProductVersion: "3.9.2"}}
+		out, err := resolveImage(spec, RoleDeclaration{}, ImageResolution{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.ProductVersion).To(BeEmpty())
+	})
+
+	It("publishes the version for a custom reference when the product IS named", func() {
+		// `custom` replaces the reference; productVersion remains the user's declaration of which
+		// product version it is.
+		spec := &v1alpha1.GenericClusterSpec{Image: &v1alpha1.ImageSpec{
+			Custom: "internal.registry/zk:pinned", ProductVersion: "3.9.2"}}
+		out, err := resolveImage(spec, RoleDeclaration{}, operatorDefaults)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.ProductVersion).To(Equal("3.9.2"))
+	})
 })
