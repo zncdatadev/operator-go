@@ -265,14 +265,3 @@ func (d RoleDeclaration) Validate(roleName string) error {
 	}
 	return nil
 }
-
-// dataVolumeName resolves the claim-template name for a role's data volume.
-func (d RoleDeclaration) dataVolumeName() string {
-	if d.DataVolume == nil {
-		return ""
-	}
-	if d.DataVolume.Name == "" {
-		return DefaultDataVolumeName
-	}
-	return d.DataVolume.Name
-}
