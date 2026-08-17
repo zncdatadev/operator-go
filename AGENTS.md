@@ -1015,9 +1015,16 @@ LogProducers: []productlogging.ContainerLogging{{
 ```
 
 Such a producer still joins the pipeline in full — shared volume, RW mount, log directory, Vector
-source — with no framework-rendered file and no ConfigMap key to collide with its own. Airflow's
-`log_config.py`, which must be built on Airflow's own `DEFAULT_LOGGING_CONFIG` and so can never be a
-rendered template, is the case this exists for.
+source — with no framework-rendered file and no ConfigMap key to collide with its own.
+
+Airflow's `log_config.py` is the case this exists for, and the reason is ownership rather than
+impossibility: its content has to import Airflow's own `DEFAULT_LOGGING_CONFIG` and patch it, or the
+task-log machinery that config wires up (`airflow.task` → `FileTaskHandler`) is lost. That file is
+perfectly renderable — but only by something that knows Airflow's import path and dict layout, and
+`pkg/productlogging`'s python renderer is shared by every Python product, so it emits a standalone
+`dictConfig` instead. The collision is what makes the seam necessary rather than merely tidy: the
+python renderer's default file name **is** `log_config.py`, so a rendered file would take the key the
+product writes itself.
 
 The product picks up the two obligations the framework can then no longer meet, and both are
 **enforced** rather than left to a doc comment: `LogFileName` is required (without it nothing decides
