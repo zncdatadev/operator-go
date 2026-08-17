@@ -33,6 +33,7 @@ import (
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"github.com/zncdatadev/operator-go/pkg/testutil"
 )
@@ -224,6 +225,48 @@ var _ = Describe("What the declaration may and may not beat", func() {
 		return res.StatefulSet
 	}
 
+	buildResources := func(decl reconciler.RoleDeclaration) *reconciler.RoleGroupResources {
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
+		res, err := handler.BuildResources(ctx, k8sClient,
+			testutil.NewMockCluster("decl-precedence", testNamespace),
+			&reconciler.RoleGroupBuildContext{
+				ClusterName:      "decl-precedence",
+				ClusterNamespace: testNamespace,
+				ClusterSpec:      &commonsv1alpha1.GenericClusterSpec{},
+				RoleName:         "broker",
+				RoleSpec:         &commonsv1alpha1.RoleSpec{},
+				RoleGroupName:    "default",
+				RoleGroupSpec:    commonsv1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+				MergedConfig:     &config.MergedConfig{},
+				ResourceName:     reconciler.RoleGroupResourceName("decl-precedence", "broker", "default"),
+				ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
+				Declaration:      decl,
+			})
+		Expect(err).NotTo(HaveOccurred())
+		return res
+	}
+
+	It("maps a declared ListenerClass onto the client-facing Service's type", func() {
+		// Untested before, in both directions: disabling the assignment left every Service a
+		// ClusterIP, and an external-unstable role that silently stops being reachable from outside
+		// the cluster looks exactly like one that was never configured for it.
+		res := buildResources(reconciler.RoleDeclaration{
+			ContainerPorts: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+			ServicePorts:   []corev1.ServicePort{{Name: "http", Port: 8080}},
+			ListenerClass:  listener.ListenerClassExternalUnstable,
+		})
+		Expect(res.Service).NotTo(BeNil())
+		Expect(res.Service.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+	})
+
+	It("leaves the Service a ClusterIP when the role declares no listener class", func() {
+		res := buildResources(reconciler.RoleDeclaration{
+			ContainerPorts: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+			ServicePorts:   []corev1.ServicePort{{Name: "http", Port: 8080}},
+		})
+		Expect(res.Service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+	})
+
 	It("lets a user's envOverrides beat a declared env var of the same name", func() {
 		// THE guard against the defect the deleted container callback embodied. That callback ran on
 		// the ASSEMBLED container, after the merged env had been written into it, so a product
@@ -315,5 +358,44 @@ var _ = Describe("What the declaration may and may not beat", func() {
 		// A sleep action had no route through the builder's three narrow lifecycle helpers.
 		Expect(c.Lifecycle).NotTo(BeNil())
 		Expect(c.Lifecycle.PreStop.Sleep).NotTo(BeNil())
+	})
+
+	It("applies the declared probes to the primary container", func() {
+		// Without this, deleting the three probe assignments is invisible: the generated TCP
+		// readiness probe on ContainerPorts[0] silently substitutes for a declared exec probe, so a
+		// product whose readiness is "can this member see the quorum" reports Ready as soon as the
+		// port is open.
+		exec := &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+				Command: []string{"/bin/bash", "-c", "zkServer.sh status"}}},
+			PeriodSeconds: 11,
+		}
+		startup := &corev1.Probe{
+			ProbeHandler:     corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{}},
+			FailureThreshold: 42,
+		}
+		liveness := &corev1.Probe{
+			ProbeHandler:        corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/live"}}},
+			InitialDelaySeconds: 17,
+		}
+
+		sts := build(
+			reconciler.RoleDeclaration{
+				ContainerPorts: []corev1.ContainerPort{{Name: "client", ContainerPort: 2282}},
+				ReadinessProbe: exec,
+				LivenessProbe:  liveness,
+				StartupProbe:   startup,
+			},
+			&config.MergedConfig{},
+		)
+
+		c := sts.Spec.Template.Spec.Containers[0]
+		Expect(c.ReadinessProbe).NotTo(BeNil())
+		Expect(c.ReadinessProbe.Exec).NotTo(BeNil(), "the declared probe, not the generated TCP one")
+		Expect(c.ReadinessProbe.PeriodSeconds).To(Equal(int32(11)))
+		Expect(c.LivenessProbe).NotTo(BeNil())
+		Expect(c.LivenessProbe.InitialDelaySeconds).To(Equal(int32(17)))
+		Expect(c.StartupProbe).NotTo(BeNil())
+		Expect(c.StartupProbe.FailureThreshold).To(Equal(int32(42)))
 	})
 })
