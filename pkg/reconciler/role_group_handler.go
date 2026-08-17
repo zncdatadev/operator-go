@@ -270,7 +270,7 @@ type RoleGroupBuildContext struct {
 
 	// ResolvedImage is the role's image and everything that follows from it — pull policy, pull
 	// secret, product version — resolved ONCE by the reconciler from spec.image over the role's
-	// declared Image over the operator's ImageDefaults.
+	// declared Image over ImageResolution.Defaults.
 	//
 	// It is one struct because its four consumers must agree: the primary container, the sidecars
 	// (a Vector agent ships inside the product image, so it must be the SAME reference), the pod's
@@ -278,8 +278,9 @@ type RoleGroupBuildContext struct {
 	// independently at four call sites, which is how the pull secret got silently dropped for ten
 	// product CRDs at once.
 	//
-	// WRITTEN BY THE FRAMEWORK. An empty Reference means nobody expressed an opinion and the
-	// handler falls back to whatever image it would have used anyway.
+	// WRITTEN BY THE FRAMEWORK. There is no fallback behind an empty Reference: on the
+	// BaseRoleGroupHandler path it fails the role group with a *ValidationError naming the knobs
+	// that could set it (see ResolvedImage.Reference).
 	ResolvedImage ResolvedImage
 
 	// ProductName is GenericReconcilerConfig.ImageResolution.ProductName, stamped as

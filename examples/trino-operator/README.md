@@ -373,8 +373,9 @@ reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster
     Recorder:            mgr.GetEventRecorderFor("trino-cluster-controller"),
     RoleGroupHandler:    roleGroupHandler,
     // The same object declares this product's roles, once per pass with the cr in hand.
-    // Without it the framework has no ports, no container name and no log producers for any
-    // role, and every role the CR declares is an error.
+    // Leaving it unset is legal and means the catalog is EMPTY: no role is rejected, but every
+    // role builds with a zero declaration — no ports, no container name, no Service, no log
+    // producers — and the reconcile reports success. Set it unless the handler builds everything.
     RoleProvider:        roleGroupHandler,
     RoleGroupResolver:   reconciler.RoleGroupResolverFunc[*trinov1alpha1.TrinoCluster](product.ComputeConfig),
     // Read every reconcile, so an operator upgrade moves existing clusters onto the

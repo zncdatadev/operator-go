@@ -463,7 +463,7 @@ are applied before `podOverrides`, so user pod overrides keep precedence. The fr
 affinity only when the config provides one, so products that post-process the built StatefulSet with
 `if podSpec.Affinity == nil {...}` default guards remain correct.
 
-**`config.affinity` is decoded STRICTLY, and merges per member.** The CRD carries it as a
+**`config.affinity` is decoded STRICTLY, and is replaced wholesale.** The CRD carries it as a
 schema-free `RawExtension` (`type: object` + `x-kubernetes-preserve-unknown-fields`), so the API
 server neither validates nor prunes it. `reconciler.DecodeAffinity` therefore decodes with
 `DisallowUnknownFields` and an unknown field **fails the build**, naming it. Before that, `nodeAffinty`
@@ -474,9 +474,9 @@ with its data). The trade-off is deliberate: a field from a newer Kubernetes API
 built against is now rejected rather than ignored, which is the honest answer, since the framework
 cannot honor a field it does not know.
 
-`config.affinity` **folds per member** — `nodeAffinity`, `podAffinity` and `podAntiAffinity` are
-resolved independently — and an empty value clears. See §4b, where the reason the rule changed is
-the product-default layer beneath the user's two.
+`config.affinity` is **replaced wholesale** by any layer that states one — the rule Kubernetes uses
+for `PodSpec.affinity` — and an empty value clears. What a replacement discarded is reported as an
+`AffinityOverridden` Warning event. See §4b for why the Kubernetes rule is kept and what it costs.
 
 **The affinity helpers are composable terms, not one canned policy.**
 `PreferredAffinityTerm(weight, topologyKey, selector)` builds one weighted term;
@@ -662,10 +662,19 @@ commons struct inline and adds its own fields beside it:
 type ConfigSpec struct {
     *commonsv1alpha1.RoleGroupConfigSpec `json:",inline"`   // resources, affinity, logging, …
 
-    MyProductSetting string `json:"myProductSetting,omitempty"`
-    Tls              *TlsSpec `json:"tls,omitempty"`
+    // A POINTER, not a bare string: the fold's "was this stated?" test is the zero value, so a
+    // bare string cannot tell `myProductSetting: ""` from an absent field.
+    MyProductSetting *string `json:"myProductSetting,omitempty"`
+
+    // A composite must say how it folds. `atomic` accepts wholesale replacement; the alternative
+    // is to flatten it into scalar pointers. Untagged, ValidateProductConfigType REFUSES it.
+    Tls *TlsSpec `json:"tls,omitempty" kubedoop:"atomic"`
 }
 ```
+
+Both annotations are load-bearing rather than stylistic — `ValidateProductConfigType[ConfigSpec]()`
+rejects the shape without them, and `FoldProductConfig` calls that validator first, so the call below
+would return an error rather than a config.
 
 That is the sanctioned extension mechanism, so folding it has **two owners**, and each folds its own
 half with the framework's machinery:
@@ -697,7 +706,7 @@ where the user sees the rejection at `kubectl apply`.
 
 **Per-field rules.** `resources` folds per **leaf**, so a default `cpu.min` survives a user who set
 only `cpu.max` — a struct-level nil check would have discarded it. Scalars fold on presence.
-`affinity` folds per **member**:
+`affinity` is replaced **wholesale**, and the replacement is **reported**:
 
 ```yaml
 roles:
@@ -712,25 +721,42 @@ roles:
             nodeAffinity: {…}          # group: pin to an instance type
 ```
 
-Both survive. Under the old wholesale replacement the group's `nodeAffinity` **deleted** the role's
-`podAntiAffinity`, with no event and no log line — a user asking for an instance type also, silently,
-stopped their quorum being spread across nodes. The rule changed because the product-default layer
-arrived: with only the CR's two levels, both written by one person in one file, replacement was the
-simpler thing to understand; with a product default underneath, replacement means a user adding a
-`nodeAffinity` deletes the anti-affinity the product ships.
+The group wins the whole field: the role's `podAntiAffinity` is gone. That is the rule Kubernetes
+itself uses for `PodSpec.affinity`, and the rule a Helm value and a Kustomize patch use, and keeping
+it is a deliberate choice about **what a user has to learn**. Per-member folding was implemented once
+and reverted, and the objection that carried the revert still holds: it obliges a user to learn a
+merge semantic for exactly one field of one CRD, and `kubectl explain` is the only place they could
+learn it. `resources` can fold per leaf without that cost because `resources.cpu.min` is a knob, not
+a Kubernetes type a user already knows.
 
-An **empty** member clears it (`podAntiAffinity: {}` removes the spread and keeps a sibling
-`nodeAffinity`), and `affinity: {}` clears the lot — the single-node development escape hatch,
-preserved. That works here and **not** in `resources` because the schemas differ: `affinity` is
+The cost of keeping the Kubernetes rule is real, and it is paid to an **event** rather than to a
+second semantic. `FoldCommonConfig` returns a second value naming the members each replacement
+discarded, and the reconciler emits a **`AffinityOverridden` Warning** on the CR:
+
+```
+role "server" group "default": the role group's config replaces config.affinity wholesale,
+discarding the podAntiAffinity declared beneath it. config.affinity follows the Kubernetes rule
+and is not merged per member; restate the discarded member alongside your own to keep it
+```
+
+Without it the loss is invisible everywhere: the CR still reads as the user wrote it, the pod spec is
+valid, and every status condition stays green while the quorum quietly stops being spread. An
+**empty** value (`affinity: {}`) clears — the single-node development escape hatch — and reports
+**nothing**, because clearing is exactly what that value asks for. That clearing rule works here and
+**not** in `resources` because the schemas differ: `affinity` is
 `x-kubernetes-preserve-unknown-fields`, so the API server never prunes inside it and a stored `{}` is
 always something the user wrote, while `resources` is structural and `cpu: {}` may be a pruning
 artifact.
 
-**A product field can opt out of leaf folding** with the `kubedoop:"atomic"` struct tag, which makes
-that field replace wholesale — for a value that is a single policy rather than a set of knobs.
-`ValidateProductConfigType[T]()` refuses shapes `FoldProductConfig` cannot fold honestly; call it at
-start-up to turn a latent mis-fold into a boot failure. `FoldProductConfig` calls it too, so a caller
-that skips the start-up check still gets an error rather than a silently wrong config.
+**A product field is folded presence-wins per top-level field, with no depth.** A composite
+(a struct or pointer-to-struct) is **refused** unless it carries the `kubedoop:"atomic"` struct tag,
+which accepts wholesale replacement for a value that is a single policy rather than a set of knobs;
+the alternative is to flatten it into scalar pointers. A bare scalar is refused too — the fold's
+"was this stated?" test is the zero value, and a bare `string` cannot distinguish a stated `""` from
+an absent field, so product config fields are **pointers**. `ValidateProductConfigType[T]()` is that
+check; call it at start-up to turn a latent mis-fold into a boot failure. `FoldProductConfig` calls
+it too, so a caller that skips the start-up check still gets an error rather than a silently wrong
+config.
 
 **Overrides are a separate axis and keep their own rules.** The typed `config` block folds as above;
 `configOverrides`/`envOverrides`/`cliOverrides`/`podOverrides` fold through `config.ConfigMerger`

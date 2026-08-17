@@ -225,10 +225,8 @@ func (m *ConfigMerger) mergePodOverrideInto(base *corev1.PodTemplateSpec, overri
 	return m.mergePodTemplates(base, overridePod)
 }
 
-// mergePodTemplates strategic-merges override onto base. Both callers need this — the RawExtension
-// path above after it has decoded its layer, and MergeBeneath, whose "override" is an
-// already-merged template rather than raw JSON — so it lives in one place rather than two that can
-// drift.
+// mergePodTemplates strategic-merges override onto base, for the RawExtension path above once it
+// has decoded its layer.
 func (m *ConfigMerger) mergePodTemplates(
 	base, overridePod *corev1.PodTemplateSpec,
 ) (*corev1.PodTemplateSpec, error) {

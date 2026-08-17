@@ -36,10 +36,10 @@ const (
 	RoleWorkers      = "workers"
 )
 
-// ComputeConfig is the Trino ProductConfig hook. It computes the product's config.properties
-// for a given role group and returns it as an *OverridesSpec — the same shape users write in
-// the CRD. The SDK merges it as the LOWEST layer (product < role < role group), so any value
-// a user sets via configOverrides always wins.
+// ComputeConfig is Trino's RoleGroupResolver. It computes the product's config.properties for a
+// given role group and returns it as a *reconciler.Contribution, which the SDK renders into the
+// same override shape users write in the CRD. The SDK merges it as the LOWEST layer
+// (product < role < role group), so any value a user sets via configOverrides always wins.
 //
 // It runs AFTER the typed config block is folded (product defaults < role < role group), so a
 // value derived from the effective config — a JVM heap sized from the memory limit the user raised
