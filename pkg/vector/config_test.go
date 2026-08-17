@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -202,6 +203,55 @@ func TestRenderVectorConfig_SourceGlobsMatchLogFileSuffixes(t *testing.T) {
 		glob := "/kubedoop/log/*/*" + suffix
 		if !strings.Contains(result, glob) {
 			t.Errorf("RenderVectorConfig() has no source glob %q for framework %q", glob, framework)
+		}
+	}
+}
+
+// TestRenderVectorConfig_SourceGlobsAreExactlyKnownLogFileSuffixes pins the two lists to each other
+// in BOTH directions, which its sibling above does not: that one only asserts every framework this
+// package can render has a glob.
+//
+// The other direction is the one that broke. productlogging.KnownLogFileSuffixes is what
+// ValidateProducers rejects a product-rendered log file against, and it was derived from the
+// GENERATOR registry — so it answered "can this package render it" rather than "does the pipeline
+// collect it", and hard-failed the reconcile for `.stdout.log`, `.stderr.log` and `.airlift.json`,
+// all three of which this template globs and edge-parses. Those are precisely the files a product
+// that renders its own logging config writes, which is the seam the check exists to serve.
+//
+// pkg/productlogging cannot import pkg/vector (the dependency runs the other way), so this test is
+// where the coupling is enforced: adding a source here without adding its suffix there — or the
+// reverse — fails.
+func TestRenderVectorConfig_SourceGlobsAreExactlyKnownLogFileSuffixes(t *testing.T) {
+	result, err := RenderVectorConfig(defaultConfigData())
+	if err != nil {
+		t.Fatalf("RenderVectorConfig() error = %v", err)
+	}
+
+	globPattern := regexp.MustCompile(`- /kubedoop/log/\*/\*(\S+)`)
+	rendered := make(map[string]struct{})
+	for _, match := range globPattern.FindAllStringSubmatch(result, -1) {
+		rendered[match[1]] = struct{}{}
+	}
+	if len(rendered) == 0 {
+		t.Fatal("no source globs found in the rendered config; the glob shape changed")
+	}
+
+	known := make(map[string]struct{})
+	for _, suffix := range productlogging.KnownLogFileSuffixes() {
+		known[suffix] = struct{}{}
+	}
+
+	for suffix := range rendered {
+		if _, ok := known[suffix]; !ok {
+			t.Errorf("the pipeline collects %q but productlogging.KnownLogFileSuffixes() omits it: "+
+				"ValidateProducers would reject a product-rendered log file that Vector does collect",
+				suffix)
+		}
+	}
+	for suffix := range known {
+		if _, ok := rendered[suffix]; !ok {
+			t.Errorf("productlogging.KnownLogFileSuffixes() permits %q but no source globs it: "+
+				"ValidateProducers would accept a log file nothing collects", suffix)
 		}
 	}
 }

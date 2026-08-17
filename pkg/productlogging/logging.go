@@ -186,6 +186,17 @@ func ValidateProducers(decls []ContainerLogging) error {
 					"source globs on that suffix, so nothing would collect the file",
 				decl.LogFileName, decl.Container, strings.Join(KnownLogFileSuffixes(), ", "))
 		}
+		// The same bare-name rule RenderConfigFile applies, enforced HERE as well because this is the
+		// only gate a product-rendered producer passes through — RenderConfigFile is never reached
+		// for one, since it starts by looking up a generator for the empty framework. The glob is one
+		// level deep ("<logDir>*/*<suffix>"), and only LogDirFor's directory is pre-created, so a
+		// name carrying a separator writes where nothing collects and, for "..", outside the shared
+		// volume altogether.
+		if decl.LogFileName != "" && strings.Contains(decl.LogFileName, "/") {
+			return fmt.Errorf(
+				"log file name %q for container %q must be a bare file name: a path separator would escape the per-container log directory and the Vector collection glob",
+				decl.LogFileName, decl.Container)
+		}
 		logFileName := ContainerLogFileName(decl.Framework, decl.Container)
 		if decl.LogFileName != "" {
 			logFileName = decl.LogFileName
@@ -201,18 +212,43 @@ func ValidateProducers(decls []ContainerLogging) error {
 	return nil
 }
 
+// ProductRenderedLogFileSuffixes are the rolling log-file suffixes the Vector pipeline collects that
+// NO generator in this package renders — so a file carrying one can only have been written by the
+// product itself.
+//
+// They are the reason this list is not simply the generator registry's. The pipeline carries a
+// source and an edge parser for each of them: `.stdout.log` and `.stderr.log` are the redirect
+// convention a product's entrypoint uses, and `.airlift.json` is Trino's own logger. Deriving the
+// allow-list from the four frameworks this package can RENDER answered a different question than the
+// one being asked — "can we render it" rather than "does anything collect it" — and rejected exactly
+// the formats the product-renders-its-own-file seam exists to serve.
+//
+// pkg/vector cannot be imported here (it imports this package), so the coupling is pinned from the
+// other side: a test in pkg/vector asserts the rendered vector.yaml's source globs are exactly
+// KnownLogFileSuffixes(), and fails if either list moves without the other.
+var ProductRenderedLogFileSuffixes = []string{".airlift.json", ".stderr.log", ".stdout.log"}
+
 // KnownLogFileSuffixes returns every rolling log-file suffix the Vector pipeline globs on, sorted
 // so the set is stable in an error message. A product writing its own log file must use one of
 // them, or nothing collects it.
+//
+// This is the SOURCE set, not the generator set: it is the union of the suffixes this package
+// renders (one per framework) and ProductRenderedLogFileSuffixes, which only a product writes.
 func KnownLogFileSuffixes() []string {
-	seen := make(map[string]struct{}, len(loggingFrameworks))
-	out := make([]string, 0, len(loggingFrameworks))
-	for _, spec := range loggingFrameworks {
-		if _, dup := seen[spec.logFileSuffix]; dup {
-			continue
+	seen := make(map[string]struct{}, len(loggingFrameworks)+len(ProductRenderedLogFileSuffixes))
+	out := make([]string, 0, len(loggingFrameworks)+len(ProductRenderedLogFileSuffixes))
+	add := func(suffix string) {
+		if _, dup := seen[suffix]; dup {
+			return
 		}
-		seen[spec.logFileSuffix] = struct{}{}
-		out = append(out, spec.logFileSuffix)
+		seen[suffix] = struct{}{}
+		out = append(out, suffix)
+	}
+	for _, spec := range loggingFrameworks {
+		add(spec.logFileSuffix)
+	}
+	for _, suffix := range ProductRenderedLogFileSuffixes {
+		add(suffix)
 	}
 	sort.Strings(out)
 	return out

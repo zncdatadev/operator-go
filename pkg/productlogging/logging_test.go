@@ -429,6 +429,35 @@ var _ = Describe("A producer whose config file the product writes", func() {
 		})).To(Succeed())
 	})
 
+	It("accepts every suffix the pipeline collects, not only the ones this package renders", func() {
+		// The allow-list answers "does anything collect it", not "can we render it". Deriving it
+		// from the generator registry rejected `.stdout.log`, `.stderr.log` and `.airlift.json` —
+		// all three globbed and edge-parsed by the framework's own pipeline, and precisely the files
+		// a product that renders its own logging config writes. Trino's `.airlift.json` is the
+		// shipped case, so the seam rejected the product it was built for.
+		for _, name := range []string{
+			"coordinator.airlift.json", "server.stdout.log", "server.stderr.log",
+			"app.log4j.xml", "app.log4j2.xml", "app.py.json",
+		} {
+			Expect(productlogging.ValidateProducers([]productlogging.ContainerLogging{
+				{Container: "trino", LogFileName: name},
+			})).To(Succeed(), "%s is collected by a Vector source, so it must validate", name)
+		}
+	})
+
+	It("rejects a log file name carrying a path separator", func() {
+		// The bare-name rule RenderConfigFile applies, enforced here too because this is the ONLY
+		// gate a product-rendered producer passes: RenderConfigFile starts by looking up a generator
+		// for the empty framework and is never reached. The glob is one level deep and only
+		// LogDirFor's directory is pre-created, so a name with a separator writes where nothing
+		// collects, and ".." escapes the shared volume altogether.
+		err := productlogging.ValidateProducers([]productlogging.ContainerLogging{
+			{Container: "airflow", LogFileName: "logs/airflow.py.json"},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("bare file name"))
+	})
+
 	It("still collides with another producer writing the same file", func() {
 		// The collision check is now against the name the product REALLY writes, rather than one
 		// the framework guessed from a framework the product does not use.
