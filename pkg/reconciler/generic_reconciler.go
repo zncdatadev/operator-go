@@ -1169,10 +1169,12 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 	// derived from the effective config could reach a config file at all.
 	//
 	// The fold works on copies; the CR's spec objects are never mutated.
-	foldedConfig, err := FoldCommonConfig(decl.ConfigDefaults, roleSpec.GetConfig(), groupSpec.GetConfig())
+	foldedConfig, replacedAffinity, err := FoldCommonConfig(
+		decl.ConfigDefaults, roleSpec.GetConfig(), groupSpec.GetConfig())
 	if err != nil {
 		return nil, NewValidationError("config", roleName, groupName, err)
 	}
+	r.reportAffinityReplacements(cr, roleName, groupName, replacedAffinity)
 	mergedGroupSpec := groupSpec.DeepCopy()
 	mergedGroupSpec.Config = foldedConfig
 
@@ -1258,6 +1260,45 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 	return buildCtx, nil
 }
 
+// affinityLayerNames names FoldCommonConfig's layers in the words a CR author uses. The fold
+// reports an index because it does not know who supplied a layer; the reconciler always passes the
+// same three, in this order.
+var affinityLayerNames = [...]string{
+	"the product's role defaults",
+	"the role's config",
+	"the role group's config",
+}
+
+// reportAffinityReplacements turns the fold's record of a wholesale affinity replacement into a
+// Warning event on the CR.
+//
+// `config.affinity` follows the Kubernetes rule — any layer that states one replaces the layer
+// beneath it entirely — which is what a user editing the field expects, and is why the framework
+// does not fold it per member. The cost is that a user pinning an instance type with a nodeAffinity
+// also discards the podAntiAffinity their product ships to spread a quorum. That is a legitimate
+// thing to do and must not fail the role group; it must also not be SILENT, because nothing else
+// reports it: the CR still says what the user wrote, the pod spec is valid, and every status
+// condition stays green while the quorum quietly stops being spread.
+//
+// The message is assembled from a fixed member order and a fixed layer name, so it is byte-stable
+// across passes — an unstable message would defeat the no-op guard in updateStatus. Emitting it on
+// every pass is deliberate and matches ImmutableFieldIgnored: the API server aggregates repeats of
+// one (reason, message, object) into a single event with a count.
+func (r *GenericReconciler[CR]) reportAffinityReplacements(
+	cr CR, roleName, groupName string, replacements []AffinityReplacement) {
+	for _, replacement := range replacements {
+		layer := "a lower layer"
+		if replacement.Layer >= 0 && replacement.Layer < len(affinityLayerNames) {
+			layer = affinityLayerNames[replacement.Layer]
+		}
+		r.eventManager.EmitWarningEvent(cr, "AffinityOverridden", fmt.Sprintf(
+			"role %q group %q: %s replaces config.affinity wholesale, discarding the %s declared "+
+				"beneath it. config.affinity follows the Kubernetes rule and is not merged per "+
+				"member; restate the discarded member alongside your own to keep it",
+			roleName, groupName, layer, strings.Join(replacement.Dropped, " and ")))
+	}
+}
+
 // declareRoles asks the product for its role catalog, once per reconcile pass, and checks it
 // against the roles the CR declares.
 //
@@ -1276,10 +1317,22 @@ func (r *GenericReconciler[CR]) declareRoles(
 		return nil, err
 	}
 
-	for roleName, decl := range catalog {
-		if err := decl.Validate(roleName); err != nil {
-			return nil, NewValidationError("RoleProvider", roleName, "", err)
+	// Sorted, and EVERY failure reported rather than the first one found.
+	//
+	// Ranging a map returns a random role on each pass, so with two invalid declarations — one
+	// helper computing LogVolumeSize for several roles fails them together — the error text, and
+	// therefore the Degraded and ReconcileComplete messages, flipped between passes at random. That
+	// defeats updateStatus's whole-object DeepEqual guard, so every pass wrote the CR, and the
+	// controller's watch on its own CR turned each write into another reconcile. It is the same
+	// stability rule the role loop states for itself and ValidateCatalog already honours.
+	var declErrs []error
+	for _, roleName := range slices.Sorted(maps.Keys(catalog)) {
+		if err := catalog[roleName].Validate(roleName); err != nil {
+			declErrs = append(declErrs, NewValidationError("RoleProvider", roleName, "", err))
 		}
+	}
+	if len(declErrs) > 0 {
+		return nil, stderrors.Join(declErrs...)
 	}
 
 	unused, err := ValidateCatalog(catalog, spec.Roles)

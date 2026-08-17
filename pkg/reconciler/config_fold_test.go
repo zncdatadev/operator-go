@@ -73,7 +73,7 @@ func affinityConfig(members *corev1.Affinity) *commonsv1alpha1.RoleGroupConfigSp
 
 var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 	It("folds resources per LEAF, so overriding cpu.max keeps the product's cpu.min", func() {
-		out, err := reconciler.FoldCommonConfig(
+		out, _, err := reconciler.FoldCommonConfig(
 			&commonsv1alpha1.RoleGroupConfigSpec{Resources: &commonsv1alpha1.ResourcesSpec{
 				CPU:    &commonsv1alpha1.CPUResource{Min: foldQ("100m"), Max: foldQ("200m")},
 				Memory: &commonsv1alpha1.MemoryResource{Limit: foldQ("512Mi")},
@@ -88,9 +88,59 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 		Expect(out.Resources.Memory.Limit.String()).To(Equal("512Mi"), "sibling struct survives")
 	})
 
-	It("folds affinity per MEMBER, so clearing one keeps a sibling the product set", func() {
-		// Wholesale replacement could not express this: dropping a spreading rule also nuked a
-		// rack-awareness nodeAffinity declared beside it.
+	It("folds the STORAGE leaves, so a group overriding only storageClass keeps the role's capacity", func() {
+		// Ported from the specs the MergeRoleGroupConfig deletion took with it. This branch is the
+		// one whose regression cannot be repaired in place: a lost capacity falls through to the
+		// 10Gi framework floor, and volumeClaimTemplates is immutable and preserved by the apply
+		// path, so the only fix is deleting the StatefulSet by hand.
+		out, _, err := reconciler.FoldCommonConfig(
+			&commonsv1alpha1.RoleGroupConfigSpec{Resources: &commonsv1alpha1.ResourcesSpec{
+				Storage: &commonsv1alpha1.StorageResource{Capacity: foldQ("500Gi")},
+			}},
+			&commonsv1alpha1.RoleGroupConfigSpec{Resources: &commonsv1alpha1.ResourcesSpec{
+				Storage: &commonsv1alpha1.StorageResource{StorageClass: ptr.To("fast-ssd")},
+			}},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Resources.Storage.StorageClass).To(HaveValue(Equal("fast-ssd")), "user wins")
+		Expect(out.Resources.Storage.Capacity.String()).To(Equal("500Gi"), "sibling leaf survives")
+		effective := out.Resources.Storage.GetCapacity()
+		Expect(effective.String()).To(Equal("500Gi"), "and the framework floor never fires")
+	})
+
+	It("copies an inherited storageClass instead of aliasing the layer it came from", func() {
+		// The other half of the deleted pair. A product commonly holds its ConfigDefaults as a
+		// package-level value, so writing through the fold's result would corrupt every later
+		// cluster's default.
+		roleLayer := &commonsv1alpha1.RoleGroupConfigSpec{Resources: &commonsv1alpha1.ResourcesSpec{
+			Storage: &commonsv1alpha1.StorageResource{StorageClass: ptr.To("fast-ssd")},
+		}}
+		out, _, err := reconciler.FoldCommonConfig(roleLayer,
+			&commonsv1alpha1.RoleGroupConfigSpec{Resources: &commonsv1alpha1.ResourcesSpec{
+				Storage: &commonsv1alpha1.StorageResource{Capacity: foldQ("20Gi")},
+			}})
+		Expect(err).NotTo(HaveOccurred())
+
+		*out.Resources.Storage.StorageClass = "mutated"
+		Expect(roleLayer.Resources.Storage.StorageClass).To(HaveValue(Equal("fast-ssd")))
+	})
+
+	It("lets the UPPER gracefulShutdownTimeout win, so a user beats the product's default", func() {
+		out, _, err := reconciler.FoldCommonConfig(
+			&commonsv1alpha1.RoleGroupConfigSpec{GracefulShutdownTimeout: ptr.To("5m")},
+			&commonsv1alpha1.RoleGroupConfigSpec{GracefulShutdownTimeout: ptr.To("90s")},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.GracefulShutdownTimeout).To(HaveValue(Equal("90s")))
+	})
+
+	It("replaces affinity WHOLESALE, and names what the replacement discarded", func() {
+		// The Kubernetes rule for this field, kept deliberately: PodSpec.affinity, a Helm value and
+		// a Kustomize patch all replace wholesale, and folding per member would oblige a user to
+		// learn a semantic for exactly one field of one CRD. The product's default is therefore
+		// beaten in full — and the fold says which members it took away, because nothing else does:
+		// the CR still reads as the user wrote it, the pod spec is valid, and every condition is
+		// green while the quorum quietly stops being spread.
 		productDefault := affinityConfig(&corev1.Affinity{
 			PodAffinity: &corev1.PodAffinity{
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
@@ -103,17 +153,28 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 						reconciler.RoleSelectorLabels("zk", "server")),
 				}},
 		})
-		// A single-node development group clears ONLY the spread.
-		userClears := affinityConfig(&corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{}})
+		// The user pins an instance type, and says nothing about the product's two members.
+		userPins := affinityConfig(&corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+						MatchExpressions: []corev1.NodeSelectorRequirement{{
+							Key: "instance-type", Operator: corev1.NodeSelectorOpExists}},
+					}}}}})
 
-		out, err := reconciler.FoldCommonConfig(productDefault, userClears)
+		out, replaced, err := reconciler.FoldCommonConfig(productDefault, userPins)
 		Expect(err).NotTo(HaveOccurred())
 
 		decoded, err := reconciler.DecodeAffinity(out.Affinity)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(decoded.PodAntiAffinity).To(BeNil(), "the member the user emptied is cleared")
-		Expect(decoded.PodAffinity).NotTo(BeNil(), "the sibling member survives")
-		Expect(decoded.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(HaveLen(1))
+		Expect(decoded.NodeAffinity).NotTo(BeNil(), "what the user stated")
+		Expect(decoded.PodAffinity).To(BeNil(), "the product's members are replaced, not merged")
+		Expect(decoded.PodAntiAffinity).To(BeNil())
+
+		Expect(replaced).To(HaveLen(1))
+		Expect(replaced[0].Layer).To(Equal(1))
+		Expect(replaced[0].Dropped).To(Equal([]string{"podAffinity", "podAntiAffinity"}),
+			"a fixed order, so the event message is byte-stable across passes")
 	})
 
 	It("lets `affinity: {}` clear the product's whole scheduling policy", func() {
@@ -127,7 +188,7 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 						reconciler.RoleSelectorLabels("zk", "server")),
 				}}})
 
-		out, err := reconciler.FoldCommonConfig(productDefault, affinityConfig(&corev1.Affinity{}))
+		out, _, err := reconciler.FoldCommonConfig(productDefault, affinityConfig(&corev1.Affinity{}))
 		Expect(err).NotTo(HaveOccurred())
 		decoded, err := reconciler.DecodeAffinity(out.Affinity)
 		Expect(err).NotTo(HaveOccurred())
@@ -144,7 +205,7 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 		prunedTypo := &commonsv1alpha1.RoleGroupConfigSpec{
 			Resources: &commonsv1alpha1.ResourcesSpec{CPU: &commonsv1alpha1.CPUResource{}}}
 
-		out, err := reconciler.FoldCommonConfig(productDefault, prunedTypo)
+		out, _, err := reconciler.FoldCommonConfig(productDefault, prunedTypo)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.Resources.CPU.Min.String()).To(Equal("100m"))
 		Expect(out.Resources.CPU.Max.String()).To(Equal("200m"))
@@ -153,7 +214,7 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 	It("rejects an affinity that does not strictly decode", func() {
 		// `nodeAffinty` — one letter short — passed admission and decoded into an empty Affinity,
 		// so the pods were scheduled anywhere with no event and no status change.
-		_, err := reconciler.FoldCommonConfig(&commonsv1alpha1.RoleGroupConfigSpec{
+		_, _, err := reconciler.FoldCommonConfig(&commonsv1alpha1.RoleGroupConfigSpec{
 			Affinity: &k8sruntime.RawExtension{Raw: []byte(`{"nodeAffinty":{}}`)},
 		})
 		Expect(err).To(HaveOccurred())
@@ -161,7 +222,7 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 	})
 
 	It("folds logging on this path, so a product logging default is honoured", func() {
-		out, err := reconciler.FoldCommonConfig(
+		out, _, err := reconciler.FoldCommonConfig(
 			&commonsv1alpha1.RoleGroupConfigSpec{
 				Logging: &commonsv1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)}},
 			&commonsv1alpha1.RoleGroupConfigSpec{},
@@ -172,13 +233,13 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 	})
 
 	It("skips nil layers and never returns nil", func() {
-		out, err := reconciler.FoldCommonConfig(nil, nil)
+		out, _, err := reconciler.FoldCommonConfig(nil, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).NotTo(BeNil())
 	})
 
 	It("leaves the framework floors to consumption time, below the bottom layer", func() {
-		out, err := reconciler.FoldCommonConfig()
+		out, _, err := reconciler.FoldCommonConfig()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.GracefulShutdownTimeout).To(BeNil(), "the fold states nothing")
 		Expect(out.GetGracefulShutdownTimeout()).To(Equal(commonsv1alpha1.DefaultGracefulShutdownTimeout))
@@ -186,7 +247,7 @@ var _ = Describe("FoldCommonConfig (the framework's half)", func() {
 
 	It("does not alias its inputs, so a resolved value cannot write back into the live CR", func() {
 		role := &commonsv1alpha1.RoleGroupConfigSpec{GracefulShutdownTimeout: ptr.To("5m")}
-		out, err := reconciler.FoldCommonConfig(role)
+		out, _, err := reconciler.FoldCommonConfig(role)
 		Expect(err).NotTo(HaveOccurred())
 		*out.GracefulShutdownTimeout = "999h"
 		Expect(role.GracefulShutdownTimeout).To(HaveValue(Equal("5m")))

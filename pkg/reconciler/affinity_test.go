@@ -151,61 +151,86 @@ var _ = Describe("Affinity is decoded strictly", func() {
 	})
 })
 
-var _ = Describe("Affinity folds per member, and an empty value clears", func() {
-	// Per-member folding is what a product DEFAULT needs, and the default layer is why this rule
-	// changed. With only the CR's two levels — both written by the same person in the same file —
-	// wholesale replacement is the simpler thing to understand. With a product default underneath
-	// them, replacement means a user adding a nodeAffinity silently deletes the anti-affinity the
-	// product ships to spread a quorum, with no event and no log line.
+var _ = Describe("Affinity is replaced wholesale, and the replacement is reported", func() {
+	// `affinity` follows the Kubernetes rule: any layer that states one replaces the layer beneath
+	// it entirely. Per-member inheritance was implemented here once and reverted, and the objection
+	// that carried the revert still stands — PodSpec.affinity, a Helm value and a Kustomize patch
+	// all replace wholesale, so folding per member obliges a user to learn a semantic for exactly
+	// one field of one CRD. What the replacement DISCARDS is reported instead, so the product
+	// default a user overrode is not lost in silence.
 	roleAntiAffinity := `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[` +
 		`{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"role":"worker"}}}]}}`
 	groupNodeAffinity := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
 		`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"instance-type","operator":"In","values":["r5.xlarge"]}]}]}}}`
 
-	mergedConfig := func(role, group *k8sruntime.RawExtension) *v1alpha1.RoleGroupConfigSpec {
-		out, err := reconciler.FoldCommonConfig(
+	fold := func(role, group *k8sruntime.RawExtension) (
+		*v1alpha1.RoleGroupConfigSpec, []reconciler.AffinityReplacement) {
+		out, replaced, err := reconciler.FoldCommonConfig(
 			&v1alpha1.RoleGroupConfigSpec{Affinity: role},
 			&v1alpha1.RoleGroupConfigSpec{Affinity: group},
 		)
 		Expect(err).NotTo(HaveOccurred())
+		return out, replaced
+	}
+	mergedConfig := func(role, group *k8sruntime.RawExtension) *v1alpha1.RoleGroupConfigSpec {
+		out, _ := fold(role, group)
 		return out
 	}
 
 	It("inherits the role's affinity when the group declares none", func() {
-		Expect(members(mergedConfig(raw(roleAntiAffinity), nil).Affinity)).To(HaveKey("podAntiAffinity"))
+		cfg, replaced := fold(raw(roleAntiAffinity), nil)
+		Expect(members(cfg.Affinity)).To(HaveKey("podAntiAffinity"))
+		Expect(replaced).To(BeEmpty(), "a layer that states nothing discards nothing")
 	})
 
-	It("keeps a member the group did not state while applying the one it did", func() {
-		// The behaviour this rule exists for. Under wholesale replacement the group's nodeAffinity
-		// deleted the role's podAntiAffinity — so a user asking for an instance type also, silently,
-		// stopped their quorum being spread across nodes.
+	It("replaces the role's affinity wholesale when the group states one", func() {
+		// The Kubernetes rule, and the cost it carries: asking for an instance type at the group
+		// level takes the whole field over, so the role's spread is gone.
 		m := members(mergedConfig(raw(roleAntiAffinity), raw(groupNodeAffinity)).Affinity)
 		Expect(m).To(HaveKey("nodeAffinity"), "the member the group stated")
-		Expect(m).To(HaveKey("podAntiAffinity"), "and the one it did not, inherited")
+		Expect(m).NotTo(HaveKey("podAntiAffinity"), "and the role's, replaced wholesale")
 	})
 
-	It("lets a group clear one member while keeping a sibling", func() {
-		// Wholesale replacement could not express this at all: clearing the spread also nuked any
-		// rack-awareness nodeAffinity declared beside it.
-		both := `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[` +
-			`{"topologyKey":"kubernetes.io/hostname"}]},` +
-			`"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
-			`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"rack","operator":"Exists"}]}]}}}`
-		m := members(mergedConfig(raw(both), raw(`{"podAntiAffinity":{}}`)).Affinity)
-		Expect(m).NotTo(HaveKey("podAntiAffinity"), "the member the group emptied")
-		Expect(m).To(HaveKey("nodeAffinity"), "the sibling survives")
+	It("REPORTS the members a wholesale replacement discarded", func() {
+		// The mitigation the revert to wholesale is paid for with. Without it, a user pinning an
+		// instance type silently stops their quorum being spread across nodes — invisible in the CR,
+		// in the pod spec and in every status condition.
+		_, replaced := fold(raw(roleAntiAffinity), raw(groupNodeAffinity))
+		Expect(replaced).To(HaveLen(1))
+		Expect(replaced[0].Layer).To(Equal(1), "the layer that did the replacing")
+		Expect(replaced[0].Dropped).To(Equal([]string{"podAntiAffinity"}))
 	})
 
-	It("lets a group clear the role's affinity entirely with an empty object", func() {
-		// The single-node development escape hatch, preserved. It works here and NOT in `resources`
-		// because the schemas differ: `affinity` is x-kubernetes-preserve-unknown-fields, so the API
-		// server never prunes inside it and a stored `{}` is always something the user wrote.
-		Expect(mergedConfig(raw(roleAntiAffinity), raw(`{}`)).Affinity).To(BeNil(),
-			"no affinity at all, not the role's")
+	It("reports every discarded member in a fixed order, so the message is byte-stable", func() {
+		// An unstable message would defeat the no-op guard in updateStatus and make the controller
+		// reschedule itself forever, so the order is the struct's, never a map's.
+		both := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":` +
+			`{"nodeSelectorTerms":[{"matchExpressions":[{"key":"rack","operator":"Exists"}]}]}},` +
+			`"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[` +
+			`{"topologyKey":"kubernetes.io/hostname"}]}}`
+		for range 20 {
+			_, replaced := fold(raw(both), raw(`{"podAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[`+
+				`{"topologyKey":"kubernetes.io/hostname"}]}}`))
+			Expect(replaced).To(HaveLen(1))
+			Expect(replaced[0].Dropped).To(Equal([]string{"nodeAffinity", "podAntiAffinity"}))
+		}
 	})
 
-	It("keeps the group's affinity when the role declares none", func() {
-		Expect(members(mergedConfig(nil, raw(groupNodeAffinity)).Affinity)).To(HaveKey("nodeAffinity"))
+	It("lets a group clear the role's affinity entirely with an empty object, and reports nothing", func() {
+		// The single-node development escape hatch, preserved. No report: clearing is exactly what
+		// `affinity: {}` asks for, and warning about an explicit request is noise. It works here and
+		// NOT in `resources` because the schemas differ: `affinity` is
+		// x-kubernetes-preserve-unknown-fields, so the API server never prunes inside it and a
+		// stored `{}` is always something the user wrote.
+		cfg, replaced := fold(raw(roleAntiAffinity), raw(`{}`))
+		Expect(cfg.Affinity).To(BeNil(), "no affinity at all, not the role's")
+		Expect(replaced).To(BeEmpty(), "an explicit clear is the user's own visible decision")
+	})
+
+	It("keeps the group's affinity when the role declares none, and reports nothing", func() {
+		cfg, replaced := fold(nil, raw(groupNodeAffinity))
+		Expect(members(cfg.Affinity)).To(HaveKey("nodeAffinity"))
+		Expect(replaced).To(BeEmpty(), "there was nothing beneath to discard")
 	})
 
 	It("produces no affinity when neither declares one", func() {
@@ -275,7 +300,7 @@ var _ = Describe("Role-level affinity reaches a role group through the reconcile
 
 		groupSpec := v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(2))}
 		roleConfig := &v1alpha1.RoleGroupConfigSpec{Affinity: roleAffinity}
-		folded, foldErr := reconciler.FoldCommonConfig(roleConfig, groupSpec.GetConfig())
+		folded, _, foldErr := reconciler.FoldCommonConfig(roleConfig, groupSpec.GetConfig())
 		Expect(foldErr).NotTo(HaveOccurred())
 		groupSpec.Config = folded
 

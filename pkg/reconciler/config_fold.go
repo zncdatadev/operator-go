@@ -104,13 +104,11 @@ var opaqueLeafTypes = map[reflect.Type]struct{}{
 //
 //   - resources folds per LEAF. Overriding one knob (cpu.max, a storageClass) and keeping its
 //     siblings is the normal way to use this API, and a struct-level fold silently dropped the rest.
-//   - affinity folds per MEMBER, and an empty value CLEARS. Each layer is decoded STRICTLY
-//     (DecodeAffinity rejects an unknown field, so `nodeAffinty` is a build failure rather than pods
-//     scheduled anywhere), then nodeAffinity / podAffinity / podAntiAffinity are resolved
-//     independently. `affinity: {}` clears all three — the single-node development escape hatch —
-//     and `affinity: {podAntiAffinity: {}}` clears one while keeping a sibling the product set. The
-//     result is normalized, so a cleared member renders byte-identically to one that never existed
-//     and produces no churn in the apply path's diff.
+//   - affinity is REPLACED WHOLESALE by any layer that states one, and an empty value CLEARS. Each
+//     layer is decoded STRICTLY (DecodeAffinity rejects an unknown field, so `nodeAffinty` is a
+//     build failure rather than pods scheduled anywhere). The result is normalized, so a cleared
+//     member renders byte-identically to one that never existed and produces no churn in the apply
+//     path's diff. What a replacement discarded is REPORTED — see the second return value.
 //   - gracefulShutdownTimeout is atomic: a non-nil upper value wins.
 //   - logging folds through productlogging.MergeLoggingSpec — on THIS path and no other.
 //
@@ -125,21 +123,32 @@ var opaqueLeafTypes = map[reflect.Type]struct{}{
 // inherits. `storage: {}` inherits for the same reason, which is also what lets a product use an
 // empty storage block as its "this role has a data volume" marker.
 //
-// Per-member folding matters now in a way it did not before, and that is why an earlier attempt at
-// it was reverted rather than wrong. With only the CR's two levels, both written by the same person
-// in the same file, wholesale replacement is the simpler thing to understand. With a product default
-// underneath them, written by someone else entirely, replacement means a user adding a nodeAffinity
-// silently deletes the anti-affinity the product ships to spread a quorum — with no event and no
-// log line.
+// WHY AFFINITY IS NOT FOLDED PER MEMBER, given that resources is folded per leaf. Per-member
+// inheritance was implemented here once and reverted, and the objection that carried the revert is
+// the one that still stands: `affinity` is a field Kubernetes itself defines, and every adjacent
+// tool a user knows — `PodSpec.affinity`, a Helm value, a Kustomize patch — replaces it wholesale.
+// A framework that folds it per member obliges the user to learn a semantic for exactly one field
+// of one CRD, and `kubectl explain` is where they would have to learn it. Keeping the Kubernetes
+// rule costs the product's default when a user states any affinity at all; that cost is paid to the
+// REPORT below rather than to a second semantic.
 //
 // Framework floors are NOT applied here: DefaultGracefulShutdownTimeout and DefaultStorageCapacity
 // stay at consumption time behind GetGracefulShutdownTimeout() / GetCapacity(), below the fold's
 // bottom layer, so they fire only when nobody stated anything at all.
-func FoldCommonConfig(layers ...*v1alpha1.RoleGroupConfigSpec) (*v1alpha1.RoleGroupConfigSpec, error) {
+//
+// The second return value names what wholesale replacement THREW AWAY, so the caller can say so.
+// That is the whole mitigation for the one case per-member folding was reaching for: a product
+// ships a quorum-spreading podAntiAffinity as a role default, a user adds a nodeAffinity to pin an
+// instance type, and the spread is gone. Wholesale replacement is still the right answer — the user
+// took the field over, which is what the field means everywhere else — but it must not be SILENT,
+// because the loss is invisible in the CR, in the pod spec and in every status condition.
+func FoldCommonConfig(layers ...*v1alpha1.RoleGroupConfigSpec) (
+	*v1alpha1.RoleGroupConfigSpec, []AffinityReplacement, error) {
 	out := &v1alpha1.RoleGroupConfigSpec{}
 	var affinity *corev1.Affinity
+	var replaced []AffinityReplacement
 
-	for _, layer := range layers {
+	for i, layer := range layers {
 		if layer == nil {
 			continue
 		}
@@ -152,54 +161,76 @@ func FoldCommonConfig(layers ...*v1alpha1.RoleGroupConfigSpec) (*v1alpha1.RoleGr
 
 		decoded, err := DecodeAffinity(layer.Affinity)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		affinity = foldAffinityMembers(affinity, decoded)
+		next, dropped := foldAffinity(affinity, decoded)
+		if len(dropped) > 0 {
+			replaced = append(replaced, AffinityReplacement{Layer: i, Dropped: dropped})
+		}
+		affinity = next
 	}
 
 	encoded, err := EncodeAffinity(NormalizeAffinity(affinity))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out.Affinity = encoded
-	return out, nil
+	return out, replaced, nil
 }
 
-// foldAffinityMembers resolves nodeAffinity / podAffinity / podAntiAffinity independently. A member
-// the upper layer did not state inherits; a member it stated — including as an empty struct —
-// replaces. An upper layer that states the whole affinity as empty clears all three.
+// AffinityReplacement records one layer's affinity value discarding members that a layer beneath it
+// had declared. It exists so wholesale replacement is loud rather than silent; it is never an error,
+// because the upper layer getting its way IS the rule.
+type AffinityReplacement struct {
+	// Layer indexes the layers passed to FoldCommonConfig, so the caller names it in the words its
+	// own users use ("the role group config", not "layer 2").
+	Layer int
+
+	// Dropped names the members the replacement discarded, in a fixed order — nodeAffinity,
+	// podAffinity, podAntiAffinity — so a message built from it is byte-stable across reconciles.
+	// An unstable message would defeat the no-op guard in updateStatus.
+	Dropped []string
+}
+
+// foldAffinity replaces the accumulated affinity with the upper layer's, wholesale, and reports the
+// members that replacement discarded.
 //
-// The two readings are one rule: an empty value at a level means "nothing at this level". `affinity:
-// {}` is no affinity, `affinity: {podAntiAffinity: {}}` is no pod anti-affinity while a sibling the
-// product set survives — which wholesale replacement could not express, so dropping a spreading rule
-// also nuked a rack-awareness nodeAffinity declared beside it.
-//
-// Clearing works HERE and not in `resources` because the schemas differ, and the difference is
-// Kubernetes' rather than ours: `affinity` is `x-kubernetes-preserve-unknown-fields`, so the API
-// server never prunes inside it and a stored `{}` is always something the user wrote. `resources` is
-// structural, so a mistyped `resources.cpu.maxx` is PRUNED down to a stored `cpu: {}` — treating
-// that as a clear would let a typo silently delete the product's CPU policy.
-func foldAffinityMembers(lower, upper *corev1.Affinity) *corev1.Affinity {
+// A layer that states nothing (a nil or empty RawExtension, which DecodeAffinity reports as a nil
+// affinity) inherits. A layer that states `affinity: {}` clears — the single-node development escape
+// hatch — and reports NOTHING, because clearing is exactly what that value asks for and warning
+// about an explicit request is noise.
+func foldAffinity(lower, upper *corev1.Affinity) (*corev1.Affinity, []string) {
 	if upper == nil {
-		return lower
+		return lower, nil
 	}
-	if upper.NodeAffinity == nil && upper.PodAffinity == nil && upper.PodAntiAffinity == nil {
+	if NormalizeAffinity(upper) == nil {
+		return nil, nil
+	}
+	return upper.DeepCopy(), droppedAffinityMembers(lower, upper)
+}
+
+// droppedAffinityMembers names the members `lower` carried that `upper` does not state.
+//
+// `lower` is normalized first so a member that is present but carries no term — which renders
+// identically to absent — is not reported as a loss. `upper` is compared as STATED rather than
+// normalized: a user who wrote `podAntiAffinity: {}` asked for that member to be empty, so it is
+// their own visible decision and not a surprise worth an event.
+func droppedAffinityMembers(lower, upper *corev1.Affinity) []string {
+	lower = NormalizeAffinity(lower)
+	if lower == nil {
 		return nil
 	}
-	out := &corev1.Affinity{}
-	if lower != nil {
-		out = lower.DeepCopy()
+	var dropped []string
+	if lower.NodeAffinity != nil && upper.NodeAffinity == nil {
+		dropped = append(dropped, "nodeAffinity")
 	}
-	if upper.NodeAffinity != nil {
-		out.NodeAffinity = upper.NodeAffinity.DeepCopy()
+	if lower.PodAffinity != nil && upper.PodAffinity == nil {
+		dropped = append(dropped, "podAffinity")
 	}
-	if upper.PodAffinity != nil {
-		out.PodAffinity = upper.PodAffinity.DeepCopy()
+	if lower.PodAntiAffinity != nil && upper.PodAntiAffinity == nil {
+		dropped = append(dropped, "podAntiAffinity")
 	}
-	if upper.PodAntiAffinity != nil {
-		out.PodAntiAffinity = upper.PodAntiAffinity.DeepCopy()
-	}
-	return out
+	return dropped
 }
 
 // foldResources folds the upper layer's resources into the lower's, leaf by leaf.

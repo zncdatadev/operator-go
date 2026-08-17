@@ -519,7 +519,7 @@ var _ = Describe("StatefulSet building", func() {
 				EnableVectorAgent: ptr.To(true),
 			},
 		}
-		merged, mergeErr := reconciler.FoldCommonConfig(roleCfg, &v1alpha1.RoleGroupConfigSpec{})
+		merged, _, mergeErr := reconciler.FoldCommonConfig(roleCfg, &v1alpha1.RoleGroupConfigSpec{})
 		Expect(mergeErr).NotTo(HaveOccurred())
 		Expect(merged.Logging).NotTo(BeIdenticalTo(roleCfg.Logging),
 			"the merged result must be a fresh copy, never the CR's own object")
@@ -532,7 +532,7 @@ var _ = Describe("StatefulSet building", func() {
 	It("consumes role-level config when the role group declares none (role->group fallback)", func() {
 		// Regression: only logging and overrides were merged role->group; role-level
 		// resources/affinity/gracefulShutdownTimeout were silently dropped.
-		merged, mergeErr := reconciler.FoldCommonConfig(
+		merged, _, mergeErr := reconciler.FoldCommonConfig(
 			&v1alpha1.RoleGroupConfigSpec{
 				GracefulShutdownTimeout: ptr.To("60s"),
 				Resources: &v1alpha1.ResourcesSpec{
@@ -548,7 +548,7 @@ var _ = Describe("StatefulSet building", func() {
 	})
 
 	It("lets role group config win per field over role config", func() {
-		merged, mergeErr := reconciler.FoldCommonConfig(
+		merged, _, mergeErr := reconciler.FoldCommonConfig(
 			&v1alpha1.RoleGroupConfigSpec{
 				GracefulShutdownTimeout: ptr.To("60s"),
 				Resources: &v1alpha1.ResourcesSpec{

@@ -31,9 +31,11 @@ import (
 // DecodeAffinity decodes the schema-free `config.affinity` RawExtension into a corev1.Affinity,
 // REJECTING fields the type does not have.
 //
-// This file is only about READING that field. How it folds across the role and role group levels is
-// a property of the config merge and lives with the other merge rules in role_group_handler.go:
-// affinity is replaced wholesale, so there is no merge helper to keep alongside this one.
+// This file is only about READING that field. How it folds across the product default, role and
+// role group levels lives with the other merge rules, in config_fold.go: any layer that states an
+// affinity replaces the layer beneath it WHOLESALE — the rule Kubernetes itself uses for
+// PodSpec.affinity — and FoldCommonConfig reports which members that replacement discarded so the
+// loss is not silent.
 //
 // The CRD declares this field `type: object` with `x-kubernetes-preserve-unknown-fields: true`, so
 // the API server neither validates nor prunes it — and a plain json.Unmarshal ignores what it does
@@ -150,9 +152,10 @@ func PreferredAffinityTerm(weight int32, topologyKey string, selector map[string
 // NormalizeAffinity drops members that carry no term and returns nil when none is left, so a member
 // a user cleared with `{}` renders byte-identically to one that never existed.
 //
-// This is what makes per-member folding free of churn. Without it a cleared member reaches the pod
-// template as an empty struct, which differs from absent in the serialized spec and therefore shows
-// up as a diff in the apply path on every single reconcile.
+// Without it a member a user wrote as `{}` reaches the pod template as an empty struct, which
+// differs from absent in the serialized spec and therefore shows up as a diff in the apply path on
+// every single reconcile. The fold also uses it to decide whether a layer said anything at all: an
+// affinity that normalizes to nil is the explicit clear, not a statement to inherit from.
 //
 // Exported so a product assembling an affinity by hand produces the same bytes the fold does.
 func NormalizeAffinity(a *corev1.Affinity) *corev1.Affinity {
