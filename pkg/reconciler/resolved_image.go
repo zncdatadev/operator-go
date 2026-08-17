@@ -45,8 +45,12 @@ type ResolvedImage struct {
 	// There is no fallback left to take: the handler's static image is gone, so an empty reference
 	// reaches BuildResources, which fails the role group with a *ValidationError naming the three
 	// knobs that could set it. Saying "the caller falls back" described the pre-refactor shape and
-	// pointed a reader at a mechanism that no longer exists. The one legitimate way to leave this
-	// empty is to supply the image through podOverrides, which is merged onto the container later.
+	// pointed a reader at a mechanism that no longer exists.
+	//
+	// Leaving it empty is legitimate ONLY for a product that implements RoleGroupHandler itself and
+	// drives StatefulSetBuilder directly — it can then supply the image through podOverrides, which
+	// the builder merges onto the container in Build(). With BaseRoleGroupHandler that never gets a
+	// chance: the empty reference is rejected before the StatefulSet is built.
 	Reference string
 
 	// PullPolicy is the effective imagePullPolicy.
@@ -132,10 +136,23 @@ func resolveImage(
 // foldImageSpec folds `over` beneath `spec`, per field: a field the upper layer states wins, and
 // the rest are inherited. Same rule the config fold uses, for the same reason — replacing an image
 // spec wholesale would drop the sibling fields the upper layer did not restate.
+//
+// `custom` is the one field a per-field fold cannot treat like the others, because it does not sit
+// BESIDE repo/productVersion/kubedoopVersion — it REPLACES them. ImageSpec.ResolveImage already
+// encodes that as "a layer stating any structured field suppresses the layer beneath it's custom",
+// and applies it between the CR and everything below. Without the same rule here, a lower layer's
+// `custom` survived the fold beside the upper layer's structured fields and then won the arbitration
+// downstream: an operator whose ImageResolution.Defaults pinned an air-gapped `custom` silently
+// ignored every RoleDeclaration.Image that pinned one role to a different product version, and
+// dropped app.kubernetes.io/version with it. The declaration is documented to outrank the defaults,
+// so the fold has to say so in the same vocabulary the resolver reads.
 func foldImageSpec(spec, over v1alpha1.ImageSpec) v1alpha1.ImageSpec {
 	out := over
-	if spec.Custom != "" {
+	switch {
+	case spec.Custom != "":
 		out.Custom = spec.Custom
+	case spec.Repo != "" || spec.ProductVersion != "" || spec.KubedoopVersion != "":
+		out.Custom = ""
 	}
 	if spec.Repo != "" {
 		out.Repo = spec.Repo

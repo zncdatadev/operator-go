@@ -62,6 +62,39 @@ var _ = Describe("resolveImage", func() {
 		Expect(out.ProductVersion).To(Equal("3.9.3"))
 	})
 
+	It("lets a role's declared structured image beat a custom in the operator's defaults", func() {
+		// `custom` does not sit BESIDE repo/productVersion/kubedoopVersion — it replaces them — so a
+		// per-field fold that carried a lower layer's custom upward inverted the documented
+		// precedence downstream: ImageSpec.ResolveImage computes "did this layer state structured
+		// fields" from the CR alone, so nothing suppressed the defaults' custom and the role's
+		// declared version was discarded. An operator pinning an air-gapped `custom` default then
+		// ignored every RoleDeclaration.Image, and dropped app.kubernetes.io/version with it.
+		res := operatorDefaults
+		res.Defaults.Custom = "registry.internal/zookeeper:3.9.2-kubedoop0.2.0"
+		decl := RoleDeclaration{Image: &v1alpha1.ImageSpec{ProductVersion: "3.8.4"}}
+
+		out, err := resolveImage(&v1alpha1.GenericClusterSpec{}, decl, res)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Reference).To(Equal("quay.io/zncdatadev/zookeeper:3.8.4-kubedoop0.2.0"))
+		Expect(out.ProductVersion).To(Equal("3.8.4"), "and the version label follows it")
+	})
+
+	It("still lets a role declare a custom image of its own", func() {
+		res := operatorDefaults
+		decl := RoleDeclaration{Image: &v1alpha1.ImageSpec{Custom: "internal/namenode:1.2"}}
+		out, err := resolveImage(&v1alpha1.GenericClusterSpec{}, decl, res)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Reference).To(Equal("internal/namenode:1.2"))
+	})
+
+	It("keeps the operator's custom default when the role declares no image at all", func() {
+		res := operatorDefaults
+		res.Defaults.Custom = "registry.internal/zookeeper:pinned"
+		out, err := resolveImage(&v1alpha1.GenericClusterSpec{}, RoleDeclaration{}, res)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Reference).To(Equal("registry.internal/zookeeper:pinned"))
+	})
+
 	It("honours spec.image.custom verbatim", func() {
 		spec := &v1alpha1.GenericClusterSpec{
 			Image: &v1alpha1.ImageSpec{Custom: "internal.registry/zk:pinned"}}
