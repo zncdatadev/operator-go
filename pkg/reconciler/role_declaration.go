@@ -31,6 +31,8 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
+	"github.com/zncdatadev/operator-go/pkg/sidecar"
+	"github.com/zncdatadev/operator-go/pkg/vector"
 )
 
 // RoleDeclaration is everything a product knows about ONE role.
@@ -52,8 +54,8 @@ import (
 // handler state that the next cluster inherits.
 type RoleDeclaration struct {
 	// Image is this role's image spec, folded per field UNDER the CR's own spec.image and OVER
-	// GenericReconcilerConfig.ImageDefaults. Nil is the common case: the role runs the cluster's
-	// image.
+	// GenericReconcilerConfig.ImageResolution.Defaults. Nil is the common case: the role runs the
+	// cluster's image.
 	//
 	// The CR still outranks it. A product pinning a role to a different image must not silently
 	// beat a user who pinned spec.image.custom to an air-gapped mirror.
@@ -175,8 +177,12 @@ type RoleDeclaration struct {
 	// cluster the operator serves.
 	ConfigDefaults *v1alpha1.RoleGroupConfigSpec
 
-	// Optional marks a role a CR need not declare. The zero value means a CR that omits this role
-	// is a configuration error.
+	// Optional silences the UnusedRoleDeclaration warning for a role a CR need not deploy.
+	//
+	// The zero value only makes an omitted role WARN — a Warning event, and a reconcile that
+	// succeeds. The hard error runs the other way, and is not affected by this field: a role the CR
+	// declares that the catalog does not is always fatal (see ValidateCatalog, whose two directions
+	// are deliberately asymmetric).
 	Optional bool
 }
 
@@ -191,6 +197,31 @@ type DataVolume struct {
 // DefaultDataVolumeName is the claim-template name a DataVolume gets when it names none. It is
 // defined by the builder, which owns the reserved-name rule.
 const DefaultDataVolumeName = builder.DefaultDataVolumeName
+
+// ConfigVolumeName is the pod volume that mounts the role group's generated ConfigMap. It is
+// reserved: a data volume or a VolumeProvider taking this name displaces the product's own
+// configuration (see reservedVolumeNames).
+const ConfigVolumeName = "config"
+
+// reservedVolumeNames are the pod volume names the framework creates itself, mapped to what each one
+// is for so the rejection can say WHICH thing the product would have displaced.
+//
+// A claim template may not take one. Kubernetes does not stop it — the API server accepts a
+// StatefulSet whose volumeClaimTemplate shares a name with a pod volume, and the StatefulSet
+// controller resolves the conflict by dropping the pod volume — so this check is the only thing
+// between a product typo and a pod whose generated config is mounted nowhere.
+//
+// Only the framework's OWN names are listed. A VolumeProvider's volumes are registered per role
+// group, after the declaration is validated, so they are not knowable here; they are also chosen by
+// the same product that writes the declaration, which makes a collision its own visible mistake
+// rather than a framework-supplied surprise.
+var reservedVolumeNames = map[string]string{
+	ConfigVolumeName:                    "the role group's ConfigMap volume",
+	vector.VectorLogVolumeName:          "the shared log volume",
+	vector.VectorConfigVolumeName:       "the Vector agent's config volume",
+	vector.VectorDataVolumeName:         "the Vector agent's data volume",
+	sidecar.JMXExporterConfigVolumeName: "the JMX exporter's config volume",
+}
 
 // RoleCatalog is a product's complete statement about the roles it supports, for ONE cluster. The
 // key set IS the set of role names that cluster may declare.
@@ -272,8 +303,16 @@ func ValidateCatalog(catalog RoleCatalog, specRoles map[string]v1alpha1.RoleSpec
 func (d RoleDeclaration) Validate(roleName string) error {
 	var problems []string
 
-	if d.DataVolume != nil && d.DataVolume.MountPath == "" {
-		problems = append(problems, "dataVolume declares no mountPath")
+	if d.DataVolume != nil {
+		if d.DataVolume.MountPath == "" {
+			problems = append(problems, "dataVolume declares no mountPath")
+		}
+		if reason, reserved := reservedVolumeNames[d.DataVolume.Name]; reserved {
+			problems = append(problems, fmt.Sprintf(
+				"dataVolume name %q is reserved for %s: a claim template sharing a pod volume's name is "+
+					"ACCEPTED by the API server and then silently replaces that volume with the PVC",
+				d.DataVolume.Name, reason))
+		}
 	}
 	if len(d.ServicePorts) > 0 && len(d.ContainerPorts) == 0 {
 		problems = append(problems,

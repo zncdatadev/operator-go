@@ -416,9 +416,15 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 //
 // The name is a parameter because a claim template's name is IMMUTABLE and preserved by the apply
 // path, so a product that wanted its volume called anything else could not fix it afterwards
-// without deleting the StatefulSet by hand. It must not collide with "config" (the config ConfigMap
-// volume, always present) or with any VolumeProvider's name — duplicate volume names make the API
-// server reject the pod outright.
+// without deleting the StatefulSet by hand.
+//
+// It must not collide with "config" (the config ConfigMap volume, always present), with the shared
+// log volume, or with any VolumeProvider's name — and the consequence of a collision is worse than a
+// rejection, which is why RoleDeclaration.Validate rejects the reserved names before anything is
+// built. The API server ACCEPTS a StatefulSet whose claim template shares a name with a pod volume;
+// the StatefulSet controller then silently replaces the pod volume with the PVC. Named "config",
+// that means the generated ConfigMap is mounted nowhere and the product starts on an empty config
+// directory, with no event and no rejected write to say so.
 func (b *StatefulSetBuilder) WithNamedStorage(
 	name string, storage *v1alpha1.StorageResource, mountPath string,
 ) *StatefulSetBuilder {

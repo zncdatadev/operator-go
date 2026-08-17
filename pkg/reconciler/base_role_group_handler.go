@@ -559,7 +559,7 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 	// and strip the framework's. The mount references buildCtx.ResourceName, which the same
 	// handler's buildConfigMap always creates, so the referenced ConfigMap always exists.
 	stsBuilder.AddVolume(corev1.Volume{
-		Name: "config",
+		Name: ConfigVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
@@ -569,7 +569,7 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 		},
 	})
 	stsBuilder.AddVolumeMount(corev1.VolumeMount{
-		Name:      "config",
+		Name:      ConfigVolumeName,
 		MountPath: h.configMountPath(),
 		ReadOnly:  true,
 	})
