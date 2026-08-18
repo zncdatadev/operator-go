@@ -32,7 +32,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constant"
-	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/util"
 	"github.com/zncdatadev/operator-go/pkg/vector"
@@ -100,6 +99,34 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 
 	// RoleGroupHandler is the product-specific handler for building resources.
 	RoleGroupHandler RoleGroupHandler[CR]
+
+	// ImageResolution is the reconcile-invariant half of image resolution: the product's name and
+	// the defaults its operator ships. The reconciler resolves each role's image from it once per
+	// role group and publishes the answer — reference, pull policy, pull secret and product
+	// version — on RoleGroupBuildContext.ResolvedImage, so the container and the sidecars cannot be
+	// told different things.
+	// +optional
+	ImageResolution ImageResolution
+
+	// RoleProvider declares the roles this product supports, once per reconcile pass, with the cr
+	// in hand. Its catalog is checked against spec.roles before any role is reconciled: a role the
+	// CR declares and the product does not is a hard error naming both sides, where it used to
+	// build a portless, Service-less workload and report success.
+	//
+	// Each declaration's ConfigDefaults are folded BENEATH the CR's role and role group levels by
+	// FoldCommonConfig, so anything a user states anywhere wins.
+	// +optional
+	RoleProvider RoleProvider[CR]
+
+	// RoleGroupResolver derives values from a role group's EFFECTIVE config — after the product's
+	// defaults, the role level and the role group level are folded into one answer — and
+	// contributes them beneath the user's own overrides.
+	//
+	// It runs before anything is built, which is the point: the effective config used to be
+	// computed after the role group's ConfigMap had already been written, so a value derived from
+	// it could not reach a config file at all.
+	// +optional
+	RoleGroupResolver RoleGroupResolver[CR]
 
 	// HealthCheckInterval is the interval between health checks. It is the cadence at which a
 	// successful reconcile requeues itself (ctrl.Result.RequeueAfter), so state that produces no
@@ -199,35 +226,6 @@ type GenericReconcilerConfig[CR common.ClusterResource[CR]] struct {
 	// +optional
 	WorkloadRBACRules func(cr CR) []rbacv1.PolicyRule
 
-	// ProductConfig, when set, computes the product's configuration contribution for a role
-	// group at reconcile time, returned as an *v1alpha1.OverridesSpec (the same shape users
-	// write in the CRD). The GenericReconciler merges it as the LOWEST-precedence layer,
-	// beneath the role and role group overrides, so a user's configOverrides always win.
-	//
-	// This is config generation, not defaulting: unlike the webhook ProductDefaulter (which
-	// fills static fallbacks into typed spec fields at admission), ProductConfig is recomputed
-	// every reconcile and may derive from live cluster state — e.g. a ZooKeeper connection
-	// string built from the actual resources, a quorum peer list from pod ordinals, or a JVM
-	// heap sized from the role group's resources. Computing here, rather than freezing values
-	// into the spec at admission, means operator upgrades propagate config changes to existing
-	// clusters. Returning a nil spec contributes nothing for that role group.
-	//
-	// The ctx and client are what make "may derive from live cluster state" true rather than
-	// aspirational. Without them the hook could only be a pure function of the CR, so a product
-	// needing an API lookup — resolving an S3Connection reference to an endpoint — could not use
-	// it at all, and had no way to report a failed lookup either: a Get error could only be
-	// swallowed, rendering a silently wrong config, or panicked. Zero operators used the hook,
-	// which was the symptom; the products that needed a product-config layer were exactly the
-	// ones it could not serve.
-	//
-	// A returned error fails the role group. For a product that already performs its lookup
-	// inside BuildResources and does not want to repeat it here, the imperative counterpart is
-	// RoleGroupBuildContext.ApplyProductDefaults.
-	// +optional
-	ProductConfig func(
-		ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string,
-	) (*v1alpha1.OverridesSpec, error)
-
 	// Dependencies, when set, returns the external objects the CR references (ConfigMaps and
 	// Secrets that the product does not create itself, e.g. a Kerberos keytab Secret or an
 	// authentication ConfigMap). They are verified to exist before any role is reconciled; a
@@ -303,8 +301,10 @@ type GenericReconciler[CR common.ClusterResource[CR]] struct {
 	healthCheckInterval time.Duration
 	// workloadRBACRules, when set, declares the workload's API permissions (see the config field).
 	workloadRBACRules func(cr CR) []rbacv1.PolicyRule
-	productConfig     func(ctx context.Context, c client.Client, cr CR, roleName, roleGroupName string) (*v1alpha1.OverridesSpec, error)
 	dependencies      func(cr CR) []Dependency
+	roleProvider      RoleProvider[CR]
+	roleGroupResolver RoleGroupResolver[CR]
+	imageResolution   ImageResolution
 }
 
 // NewGenericReconciler creates a new GenericReconciler.
@@ -384,8 +384,10 @@ func NewGenericReconciler[CR common.ClusterResource[CR]](cfg *GenericReconcilerC
 		rateLimitRetryAfter: rateLimitRetryAfter,
 		healthCheckInterval: healthCheckInterval,
 		workloadRBACRules:   cfg.WorkloadRBACRules,
-		productConfig:       cfg.ProductConfig,
 		dependencies:        cfg.Dependencies,
+		roleProvider:        cfg.RoleProvider,
+		roleGroupResolver:   cfg.RoleGroupResolver,
+		imageResolution:     cfg.ImageResolution,
 	}, nil
 }
 
@@ -617,7 +619,31 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 	// The iteration stays sorted so the aggregated error — and therefore the Degraded message —
 	// is byte-stable across cycles; an unstable message would defeat the no-op guard in
 	// updateStatus and make the controller reschedule itself forever.
-	r.warnOnUnknownConfiguredRoles(ctx, cr, spec)
+
+	// Declare the product's roles ONCE for this pass, with the cr in hand, and check the catalog
+	// against spec.roles before any role is reconciled. The catalog is threaded down through the
+	// call chain rather than stored on the reconciler: one reconciler instance serves every
+	// cluster, so a field here would leak one CR's declarations into another's pass — the exact
+	// process-wide-state hazard this seam exists to remove.
+	//
+	// A wait behaves like the two steps above: RoleProvider's contract says a
+	// *common.RequeueAfterError reports "not ready yet" — a product whose declaration depends on an
+	// authentication class or an S3 connection that has not been issued yet — and returning it raw
+	// here made that a lie. It left Reconcile early with an error, so the workqueue backed off
+	// exponentially, no Waiting condition was raised, and Degraded stayed LATCHED at whatever the
+	// last completed pass wrote, because cleanup and health never ran (§5). The catalog is
+	// unusable either way, so the roles are skipped; everything that observes the cluster is not.
+	var catalog RoleCatalog
+	if declared, err := r.declareRoles(ctx, cr, spec); err != nil {
+		waitErr, waiting := common.WaitingErrors(err)
+		if !waiting {
+			return ctrl.Result{}, err
+		}
+		waitFor = mergeWait(waitFor, newWaitState(waitErr))
+	} else {
+		catalog = declared
+	}
+
 	var roleErrs []error
 	// A CLUSTER-level wait blocks the roles. That is the whole point of #608's case — a schema
 	// migration Job that must finish before any workload starts — and applying the StatefulSets
@@ -632,7 +658,7 @@ func (r *GenericReconciler[CR]) reconcile(ctx context.Context, cr CR, stored cli
 			break
 		}
 		roleSpec := spec.Roles[roleName]
-		if err := r.reconcileRole(ctx, cr, roleName, &roleSpec); err != nil {
+		if err := r.reconcileRole(ctx, cr, roleName, &roleSpec, catalog[roleName]); err != nil {
 			// Throttling is the one failure that must stop the pass: the API server is rejecting
 			// this operator's requests, so pushing the remaining roles through would only deepen
 			// the backlog.
@@ -794,7 +820,7 @@ func (r *GenericReconciler[CR]) validateDependencies(ctx context.Context, cr CR)
 }
 
 // reconcileRole reconciles a single role.
-func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec) error {
+func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, decl RoleDeclaration) error {
 	logger := log.FromContext(ctx)
 
 	// Execute role PreReconcile extensions
@@ -819,7 +845,7 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 	for _, groupName := range slices.Sorted(maps.Keys(roleGroups)) {
 		groupSpec := roleGroups[groupName]
 		groupSpecCopy := *groupSpec.DeepCopy()
-		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy); err != nil {
+		if err := r.reconcileRoleGroup(ctx, cr, roleName, roleSpec, groupName, &groupSpecCopy, decl); err != nil {
 			// A 429 stops everything: see the role loop in reconcile.
 			if IsRateLimitError(err) {
 				return err
@@ -831,7 +857,7 @@ func (r *GenericReconciler[CR]) reconcileRole(ctx context.Context, cr CR, roleNa
 	// Reconcile the role-level PodDisruptionBudget (one per role, covering all its role groups).
 	// Still attempted when a group failed: the PDB protects the groups that ARE running, and it is
 	// derived from roleConfig, not from anything a failed group produced.
-	if err := r.reconcileRolePodDisruptionBudget(ctx, cr, roleName, roleSpec); err != nil {
+	if err := r.reconcileRolePodDisruptionBudget(ctx, cr, roleName, roleSpec, decl); err != nil {
 		if IsRateLimitError(err) {
 			return err
 		}
@@ -915,7 +941,7 @@ type rolePodDisruptionBudgetBuilder interface {
 // across every role group), so it is reconciled here rather than per role group. When the PDB
 // is unset or disabled, any previously-created role PDB is deleted so toggling it off takes
 // effect. Handlers that neither are nor embed BaseRoleGroupHandler manage their own PDBs.
-func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec) error {
+func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, decl RoleDeclaration) error {
 	handler, ok := r.roleGroupHandler.(rolePodDisruptionBudgetBuilder)
 	if !ok {
 		return nil
@@ -923,6 +949,11 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 
 	name := RoleResourceName(cr.GetName(), roleName)
 
+	// The role's image resolves from role-scoped inputs only, so the PDB gets the same
+	// app.kubernetes.io/name and /version every other resource of this role carries. An error here
+	// is not fatal to the PDB: the labels are descriptive, and the role group build reports the
+	// same failure with more context.
+	resolved, _ := resolveImage(cr.GetSpec(), decl, r.imageResolution)
 	pdb := handler.BuildRolePodDisruptionBudget(&RoleBuildContext{
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
@@ -930,6 +961,8 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 		ClusterSpec:      cr.GetSpec(),
 		RoleName:         roleName,
 		RoleSpec:         roleSpec,
+		ProductName:      r.imageResolution.ProductName,
+		ProductVersion:   resolved.ProductVersion,
 	})
 	if pdb == nil {
 		// PDB unset or disabled: remove the role PDB we previously created. Gated on the slot
@@ -953,7 +986,7 @@ func (r *GenericReconciler[CR]) reconcileRolePodDisruptionBudget(ctx context.Con
 }
 
 // reconcileRoleGroup reconciles a single role group.
-func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec) error {
+func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec, decl RoleDeclaration) error {
 	logger := log.FromContext(ctx)
 
 	// Execute role group PreReconcile extensions
@@ -962,7 +995,7 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 	}
 
 	// Build context
-	buildCtx, err := r.buildRoleGroupContext(ctx, cr, roleName, roleSpec, groupName, groupSpec)
+	buildCtx, err := r.buildRoleGroupContext(ctx, cr, roleName, roleSpec, groupName, groupSpec, decl)
 	if err != nil {
 		return WrapConfigError(fmt.Sprintf("role %s group %s", roleName, groupName), err)
 	}
@@ -975,18 +1008,6 @@ func (r *GenericReconciler[CR]) reconcileRoleGroup(ctx context.Context, cr CR, r
 		r.eventManager.EmitWarningEvent(cr, "PodOverrideIgnored",
 			fmt.Sprintf("role %s group %s: %v", roleName, groupName, overrideErr))
 	}
-
-	// Resolve the Vector aggregator address (if the CR exposes it) so the framework can own
-	// vector.yaml generation. Must run before building resources / the ConfigMap.
-	if err := r.resolveVectorAggregatorAddress(ctx, cr, buildCtx); err != nil {
-		return NewResourceBuildError("resources", roleName, groupName, "failed to resolve vector aggregator address", err)
-	}
-
-	// Auto-create SidecarManager based on CRD configuration. The product image is propagated to
-	// the registered sidecars by BaseRoleGroupHandler.BuildResources — after the product's
-	// BuildResources override has resolved the CR-driven image — so both plain and embedding
-	// handlers are covered without a concrete-type assertion here.
-	buildCtx.SidecarManager = r.buildSidecarManager(ctx, cr, buildCtx)
 
 	// Delegate to handler for resource building
 	resources, err := r.roleGroupHandler.BuildResources(ctx, r.client, cr, buildCtx)
@@ -1134,34 +1155,41 @@ func RoleGroupMarkerLabelKey(clusterName, roleName, roleGroupName string) string
 }
 
 // buildRoleGroupContext creates the build context for a role group.
-func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec) (*RoleGroupBuildContext, error) {
-	// Merge configurations in increasing precedence: product config (lowest) < role < role
-	// group (highest). The product's computed config flows through the same merge pipeline as
-	// CRD overrides, so a value set anywhere in the CRD always wins over it.
-	var productConfig *v1alpha1.OverridesSpec
-	if r.productConfig != nil {
-		var err error
-		productConfig, err = r.productConfig(ctx, r.client, cr, roleName, groupName)
-		if err != nil {
-			return nil, fmt.Errorf("computing the product config for role %s group %s: %w",
-				roleName, groupName, err)
-		}
+func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR, roleName string, roleSpec *v1alpha1.RoleSpec, groupName string, groupSpec *v1alpha1.RoleGroupSpec, decl RoleDeclaration) (*RoleGroupBuildContext, error) {
+	// Stage 1 — FOLD the framework-owned half of the config block, ONCE, over three layers: the
+	// product's declared defaults, the CR's role level, its role group level.
+	//
+	// It used to be computed twice and disagree with itself — the reconciler folded role+group into
+	// the field products read, while the handler folded defaults+role+group into a local it threw
+	// away — so a product reading the obvious field got a value silently missing its own defaults.
+	//
+	// Folding it HERE also repairs an ordering that made derivation impossible. This runs before
+	// BuildResources, and therefore before the role group's ConfigMap is built; the old fold ran
+	// inside the StatefulSet build, after the ConfigMap had already been written, so nothing
+	// derived from the effective config could reach a config file at all.
+	//
+	// The fold works on copies; the CR's spec objects are never mutated.
+	foldedConfig, replacedAffinity, err := FoldCommonConfig(
+		decl.ConfigDefaults, roleSpec.GetConfig(), groupSpec.GetConfig())
+	if err != nil {
+		return nil, NewValidationError("config", roleName, groupName, err)
 	}
-	mergedConfig := r.configMerger.Merge(productConfig, roleSpec.GetOverrides(), groupSpec.GetOverrides())
-	// Deep-merge logging (role + role group) once, so both Vector enablement and per-container
-	// logging config file generation read from a single merged source.
-	mergedConfig.Logging = productlogging.MergeLoggingSpec(roleSpec.GetConfig().Logging, groupSpec.GetConfig().Logging)
-
-	// Merge the role-level config into the role group config (group wins per field), so
-	// role-wide defaults for resources/affinity/gracefulShutdownTimeout reach every group —
-	// previously only logging and overrides were merged and role-level config was silently
-	// dropped. The merge works on copies; the CR's spec objects are never mutated.
+	r.reportAffinityReplacements(cr, roleName, groupName, replacedAffinity)
 	mergedGroupSpec := groupSpec.DeepCopy()
-	mergedGroupSpec.Config = MergeRoleGroupConfig(roleSpec.GetConfig(), groupSpec.GetConfig())
+	mergedGroupSpec.Config = foldedConfig
 
-	resourceName := RoleGroupResourceName(cr.GetName(), roleName, groupName)
+	// Resolve the image ONCE, here, so the primary container, the sidecars, the pod's
+	// imagePullSecrets and the app.kubernetes.io/version label all read the same answer. Deriving
+	// them independently is how the pull secret got silently dropped for ten product CRDs.
+	resolvedImage, err := resolveImage(cr.GetSpec(), decl, r.imageResolution)
+	if err != nil {
+		return nil, NewValidationError("image", roleName, groupName, err)
+	}
 
-	return &RoleGroupBuildContext{
+	buildCtx := &RoleGroupBuildContext{
+		Declaration:      decl,
+		ResolvedImage:    resolvedImage,
+		ProductName:      r.imageResolution.ProductName,
 		ClusterName:      cr.GetName(),
 		ClusterNamespace: cr.GetNamespace(),
 		ClusterLabels:    handlerWritableLabels(ctx, cr.GetLabels()),
@@ -1170,13 +1198,152 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 		RoleSpec:         roleSpec,
 		RoleGroupName:    groupName,
 		RoleGroupSpec:    *mergedGroupSpec,
-		MergedConfig:     mergedConfig,
-		ResourceName:     resourceName,
+		ResourceName:     RoleGroupResourceName(cr.GetName(), roleName, groupName),
 		// Propagate the reconciler-managed ServiceAccount so the workload pods actually run as
 		// the SA the reconciler creates. Derived from the CR (kind + name), never configured and
 		// never empty — this is the consumption half of the identity settled at step 0.
 		ServiceAccountName: r.resolveServiceAccountName(cr),
-	}, nil
+	}
+
+	// Stage 1b — RESOLVE THE LOG PIPELINE, before anything derives from it.
+	//
+	// Whether the Vector sidecar lands is a pure function of inputs the framework already holds:
+	// logging.enableVectorAgent from the folded config, the producer list and the log volume size
+	// from the declaration, and the vector.yaml source from the CR or the declaration. So the
+	// framework settles it, and nothing downstream re-derives it.
+	//
+	// It runs HERE for the same reason the config fold moved: a product rendering its own logging
+	// config file does so in the resolver below, and it must see the resolved answer rather than a
+	// nil it would silently read as "console only" — which would emit a config with no file
+	// appender on every pass, leaving Vector to collect nothing while every signal stayed green.
+	if err := r.resolveVectorAggregatorAddress(ctx, cr, buildCtx); err != nil {
+		return nil, fmt.Errorf("resolving the vector aggregator address for role %s group %s: %w",
+			roleName, groupName, err)
+	}
+	buildCtx.SidecarManager = r.buildSidecarManager(ctx, cr, buildCtx)
+
+	// Stage 2 — DERIVE from the folded result. The resolver sees the effective typed config and
+	// contributes config-file content and environment that follow from it: a JVM heap sized from
+	// the memory limit the user may have raised. It deliberately does NOT see the merged overrides,
+	// because it is contributing to them.
+	var derived *Contribution
+	if r.roleGroupResolver != nil {
+		derived, err = r.roleGroupResolver.ResolveRoleGroup(ctx, r.client, cr, buildCtx)
+		if err != nil {
+			return nil, fmt.Errorf("deriving config for role %s group %s: %w", roleName, groupName, err)
+		}
+	}
+
+	// A listener class the resolver computed replaces the declared one for THIS role group. This is
+	// the whole reason the field exists: a product may expose the listener class as a user-settable
+	// field in its own config block, and such a value arrives from the fold per role group — after
+	// the declaration, which is fixed once per pass, was produced.
+	if derived != nil && derived.ListenerClass != "" {
+		buildCtx.Declaration.ListenerClass = derived.ListenerClass
+	}
+
+	// Stage 3 — MERGE the overrides, in increasing precedence: derived (lowest) < product config <
+	// role < role group. Everything a product contributes sits beneath everything a user states, so
+	// a value set anywhere in the CRD always wins.
+	derivedOverrides, err := derived.overrides()
+	if err != nil {
+		return nil, NewValidationError("RoleGroupResolver", roleName, groupName, err)
+	}
+	buildCtx.MergedConfig = r.configMerger.Merge(
+		derivedOverrides, roleSpec.GetOverrides(), groupSpec.GetOverrides())
+
+	// Logging has ONE home: the fold above. It used to be merged on a second path from the CR's two
+	// levels only, which is why nothing read the folded copy and why a product logging default
+	// reached neither consumer and had to be rejected outright.
+	buildCtx.MergedConfig.Logging = foldedConfig.Logging
+
+	return buildCtx, nil
+}
+
+// affinityLayerNames names FoldCommonConfig's layers in the words a CR author uses. The fold
+// reports an index because it does not know who supplied a layer; the reconciler always passes the
+// same three, in this order.
+var affinityLayerNames = [...]string{
+	"the product's role defaults",
+	"the role's config",
+	"the role group's config",
+}
+
+// reportAffinityReplacements turns the fold's record of a wholesale affinity replacement into a
+// Warning event on the CR.
+//
+// `config.affinity` follows the Kubernetes rule — any layer that states one replaces the layer
+// beneath it entirely — which is what a user editing the field expects, and is why the framework
+// does not fold it per member. The cost is that a user pinning an instance type with a nodeAffinity
+// also discards the podAntiAffinity their product ships to spread a quorum. That is a legitimate
+// thing to do and must not fail the role group; it must also not be SILENT, because nothing else
+// reports it: the CR still says what the user wrote, the pod spec is valid, and every status
+// condition stays green while the quorum quietly stops being spread.
+//
+// The message is assembled from a fixed member order and a fixed layer name, so it is byte-stable
+// across passes — an unstable message would defeat the no-op guard in updateStatus. Emitting it on
+// every pass is deliberate and matches ImmutableFieldIgnored: the API server aggregates repeats of
+// one (reason, message, object) into a single event with a count.
+func (r *GenericReconciler[CR]) reportAffinityReplacements(
+	cr CR, roleName, groupName string, replacements []AffinityReplacement) {
+	for _, replacement := range replacements {
+		layer := "a lower layer"
+		if replacement.Layer >= 0 && replacement.Layer < len(affinityLayerNames) {
+			layer = affinityLayerNames[replacement.Layer]
+		}
+		r.eventManager.EmitWarningEvent(cr, "AffinityOverridden", fmt.Sprintf(
+			"role %q group %q: %s replaces config.affinity wholesale, discarding the %s declared "+
+				"beneath it. config.affinity follows the Kubernetes rule and is not merged per "+
+				"member; restate the discarded member alongside your own to keep it",
+			roleName, groupName, layer, strings.Join(replacement.Dropped, " and ")))
+	}
+}
+
+// declareRoles asks the product for its role catalog, once per reconcile pass, and checks it
+// against the roles the CR declares.
+//
+// A role the CR declares and the product does not support is a HARD error: the framework would
+// otherwise build that role group with no ports, no container name and no Service, and report
+// success. A role the product declares and this CR does not use is a warning event, because a
+// product may legitimately support more roles than a given cluster deploys.
+func (r *GenericReconciler[CR]) declareRoles(
+	ctx context.Context, cr CR, spec *v1alpha1.GenericClusterSpec) (RoleCatalog, error) {
+	if r.roleProvider == nil {
+		return RoleCatalog{}, nil
+	}
+
+	catalog, err := r.roleProvider.DeclareRoles(ctx, r.client, cr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sorted, and EVERY failure reported rather than the first one found.
+	//
+	// Ranging a map returns a random role on each pass, so with two invalid declarations — one
+	// helper computing LogVolumeSize for several roles fails them together — the error text, and
+	// therefore the Degraded and ReconcileComplete messages, flipped between passes at random. That
+	// defeats updateStatus's whole-object DeepEqual guard, so every pass wrote the CR, and the
+	// controller's watch on its own CR turned each write into another reconcile. It is the same
+	// stability rule the role loop states for itself and ValidateCatalog already honours.
+	var declErrs []error
+	for _, roleName := range slices.Sorted(maps.Keys(catalog)) {
+		if err := catalog[roleName].Validate(roleName); err != nil {
+			declErrs = append(declErrs, NewValidationError("RoleProvider", roleName, "", err))
+		}
+	}
+	if len(declErrs) > 0 {
+		return nil, stderrors.Join(declErrs...)
+	}
+
+	unused, err := ValidateCatalog(catalog, spec.Roles)
+	if err != nil {
+		return nil, NewValidationError("RoleProvider", "", "", err)
+	}
+	for _, roleName := range unused {
+		r.eventManager.EmitWarningEvent(cr, "UnusedRoleDeclaration",
+			fmt.Sprintf("the product declares role %q, which this cluster does not use", roleName))
+	}
+	return catalog, nil
 }
 
 // buildSidecarManager creates a SidecarManager based on CRD configuration.
@@ -1188,17 +1355,18 @@ func (r *GenericReconciler[CR]) buildRoleGroupContext(ctx context.Context, cr CR
 // StaticContainerProvider), so pod container injection always flows through the manager
 // rather than being mutated directly.
 //
-// It also records the resolved Vector decision on buildCtx (VectorLogPipelineActive), so the
+// It also records the resolved Vector decision on buildCtx (vectorLogPipelineActive), so the
 // logging renderers gate the rolling file appender on the sidecar that is really injected rather
 // than on the enablement flag they cannot fully evaluate.
 func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) *sidecar.SidecarManager {
 	mgr := sidecar.NewSidecarManager()
 	// Every early return below leaves the shared log volume unbuilt, so the pipeline is inactive
 	// unless the registration at the end of this function is reached.
-	buildCtx.VectorLogPipelineActive = ptr.To(false)
+	buildCtx.vectorLogPipelineActive = ptr.To(false)
 
-	// Logging was deep-merged once in buildRoleGroupContext.
-	logging := buildCtx.MergedConfig.Logging
+	// Read the FOLDED logging, not MergedConfig's copy: this runs before the override merge now, and
+	// stage 3 assigns MergedConfig.Logging from exactly this value.
+	logging := buildCtx.RoleGroupSpec.GetConfig().Logging
 	if !vector.IsAgentEnabled(logging) {
 		return mgr
 	}
@@ -1208,18 +1376,13 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 	// RW-mounts it on the producer containers, mounts it on itself (pre-creating the per-container
 	// log dirs, as it starts first), and adds the sidecar.
 	//
-	// This asserts on r.roleGroupHandler — the OUTER handler — so a product overriding
-	// LoggingProducers is honored here, while BaseRoleGroupHandler renders config files from its own
-	// LoggingContainers field and cannot see that override (Go has no virtual dispatch). Do not
-	// "simplify" this to read the rendered list: the two being separately addressable is the
-	// documented way to join the Vector pipeline without a framework-rendered config file, which is
-	// what a product owning its own logging config (Airflow's log_config.py) needs.
-	var producers []productlogging.ContainerLogging
-	var logVolumeSize string
-	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
-		producers = lp.LoggingProducers(buildCtx.RoleName)
-		logVolumeSize = lp.LogVolumeSizeLimit()
-	}
+	// ONE list serves both jobs. A producer whose config file the product writes leaves its
+	// Framework empty: it still joins the pipeline here, and the renderer skips it — so a product
+	// owning its own logging config (Airflow's log_config.py) no longer needs two separately
+	// addressable lists, which is what the old shape used and what made an override invisible to
+	// the embedded handler.
+	producers := buildCtx.Declaration.LogProducers
+	logVolumeSize := buildCtx.Declaration.LogVolumeSize
 
 	// Only register Vector when there is at least one producer to collect from. A role group that
 	// enables the Vector agent but declares no producers has nothing to ship, so skip (and warn)
@@ -1234,15 +1397,16 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 
 	// The sidecar runs "vector --config <mount>/vector.yaml", so it is only injected when
 	// something actually writes that key into the role group ConfigMap: the framework does it for
-	// a CR implementing VectorAggregatorProvider, otherwise the handler must claim the file
-	// through VectorConfigProvider. With neither, registering the provider would fail sidecar
+	// a CR implementing VectorAggregatorProvider, otherwise the role must claim the file through
+	// RoleDeclaration.OwnsVectorConfig. With neither, registering the provider would fail sidecar
 	// validation on every cycle and abort the whole cluster's reconcile over a product that is
 	// simply not wired for Vector — so this is reported as the product-configuration mistake it
 	// is, and the rest of the cluster keeps converging.
-	if !r.vectorConfigIsProvided(cr, buildCtx.RoleName) {
+	if !r.vectorConfigIsProvided(cr, buildCtx.Declaration) {
 		message := fmt.Sprintf(
-			"role %s group %s enables the vector agent, but neither the cluster resource implements VectorAggregatorProvider "+
-				"nor the role group handler implements VectorConfigProvider; no vector.yaml would be generated, so the sidecar is skipped",
+			"role %s group %s enables the vector agent, but nothing supplies vector.yaml: the cluster resource does not "+
+				"implement VectorAggregatorProvider, and the role's declaration does not set OwnsVectorConfig. "+
+				"No vector.yaml would be generated, so the sidecar is skipped",
 			buildCtx.RoleName, buildCtx.RoleGroupName)
 		log.FromContext(ctx).Info("Skipping vector sidecar: no source for vector.yaml",
 			"role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
@@ -1259,6 +1423,8 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 		vector.WithProducers(producers),
 	}
 	if logVolumeSize != "" {
+		// Already validated in RoleDeclaration.Validate, once per pass; this branch cannot be
+		// reached through the reconciler, and a hand-built declaration falling back is harmless.
 		if q, err := resource.ParseQuantity(logVolumeSize); err != nil {
 			log.FromContext(ctx).Error(err, "invalid LogVolumeSize; using vector default",
 				"logVolumeSize", logVolumeSize, "role", buildCtx.RoleName, "roleGroup", buildCtx.RoleGroupName)
@@ -1267,7 +1433,7 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 		}
 	}
 	mgr.Register(vector.NewVectorSidecarProvider("", opts...), &sidecar.SidecarConfig{Enabled: true})
-	buildCtx.VectorLogPipelineActive = ptr.To(true)
+	buildCtx.vectorLogPipelineActive = ptr.To(true)
 
 	return mgr
 }
@@ -1275,27 +1441,13 @@ func (r *GenericReconciler[CR]) buildSidecarManager(ctx context.Context, cr CR, 
 // vectorConfigIsProvided reports whether anything will write vector.yaml into the role group
 // ConfigMap: the framework generates it for a CR exposing an aggregator ConfigMap
 // (VectorAggregatorProvider, see resolveVectorAggregatorAddress), and a product that builds the
-// file itself says so through VectorConfigProvider on its handler. It gates Vector sidecar
+// file itself says so through OwnsVectorConfig on its role declaration. It gates Vector sidecar
 // registration, so the two sides of the contract cannot drift apart.
-func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, roleName string) bool {
+func (r *GenericReconciler[CR]) vectorConfigIsProvided(cr CR, decl RoleDeclaration) bool {
 	if _, ok := any(cr).(VectorAggregatorProvider); ok {
 		return true
 	}
-	if provider, ok := r.roleGroupHandler.(VectorConfigProvider); ok {
-		return provider.ProvidesVectorConfig(roleName)
-	}
-	return false
-}
-
-// loggingProducers returns the handler's declared log-producer containers when it implements
-// LoggingProducerProvider (nil otherwise). Both Vector sidecar registration and aggregator-address
-// resolution gate on "≥1 producer" so they stay consistent: the framework only wires Vector — and
-// only resolves/generates its config — when there is actually something to collect.
-func (r *GenericReconciler[CR]) loggingProducers(roleName string) []productlogging.ContainerLogging {
-	if lp, ok := r.roleGroupHandler.(LoggingProducerProvider); ok {
-		return lp.LoggingProducers(roleName)
-	}
-	return nil
+	return decl.OwnsVectorConfig
 }
 
 // resolveVectorAggregatorAddress resolves the Vector aggregator discovery address for a role group
@@ -1306,7 +1458,7 @@ func (r *GenericReconciler[CR]) loggingProducers(roleName string) []productloggi
 // must be non-empty and resolvable; an unset name or a discovery failure is returned as an error,
 // failing loudly rather than shipping a Vector sidecar with no aggregator.
 func (r *GenericReconciler[CR]) resolveVectorAggregatorAddress(ctx context.Context, cr CR, buildCtx *RoleGroupBuildContext) error {
-	if !vectorEnabledFor(buildCtx) || len(r.loggingProducers(buildCtx.RoleName)) == 0 {
+	if !vectorEnabledFor(buildCtx) || len(buildCtx.Declaration.LogProducers) == 0 {
 		return nil
 	}
 	provider, ok := any(cr).(VectorAggregatorProvider)
@@ -1902,31 +2054,6 @@ func (r *GenericReconciler[CR]) statusReader() client.Reader {
 		return r.apiReader
 	}
 	return r.client
-}
-
-// warnOnUnknownConfiguredRoles reports handler role configuration that no role in the CR claims.
-// Role names are bare strings that must match a key of spec.roles; a typo makes every per-role
-// lookup return nil, so the role group silently comes up with no ports, no image override and no
-// Service. It is only a warning, not a failure: a handler may legitimately be configured for
-// optional roles a given CR does not declare (an HA-only role, say).
-func (r *GenericReconciler[CR]) warnOnUnknownConfiguredRoles(ctx context.Context, cr CR, spec *v1alpha1.GenericClusterSpec) {
-	provider, ok := r.roleGroupHandler.(RoleNameProvider)
-	if !ok {
-		return
-	}
-	var unknown []string
-	for _, name := range provider.ConfiguredRoleNames() {
-		if _, declared := spec.Roles[name]; !declared {
-			unknown = append(unknown, name)
-		}
-	}
-	if len(unknown) == 0 {
-		return
-	}
-	message := fmt.Sprintf("handler configured for role(s) %s, which the cluster does not declare; their settings are ignored",
-		strings.Join(unknown, ", "))
-	log.FromContext(ctx).Info("Unknown configured role names", "roles", unknown)
-	r.eventManager.EmitWarningEvent(cr, "UnknownConfiguredRole", message)
 }
 
 // SetupWithManagerOptions extends the controller's watch set with resources the framework does

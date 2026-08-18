@@ -37,12 +37,7 @@ import (
 // SDK ConfigMerger, so the handler sees exactly what it would at runtime.
 func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role string, crdOverrides *commonsv1alpha1.OverridesSpec) *reconciler.RoleGroupBuildContext {
 	const group = "default"
-	merger := config.NewConfigMerger()
-	productCfg, err := product.ComputeConfig(context.Background(), nil, cr, role, group)
-	Expect(err).NotTo(HaveOccurred())
-	merged := merger.Merge(productCfg, crdOverrides)
-
-	return &reconciler.RoleGroupBuildContext{
+	buildCtx := &reconciler.RoleGroupBuildContext{
 		ClusterName:      cr.Name,
 		ClusterNamespace: "default",
 		ClusterLabels:    map[string]string{"app": "trino"},
@@ -51,9 +46,24 @@ func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role string, crdOverrides *comm
 		RoleSpec:         &commonsv1alpha1.RoleSpec{},
 		RoleGroupName:    group,
 		RoleGroupSpec:    commonsv1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
-		MergedConfig:     merged,
 		ResourceName:     reconciler.RoleGroupResourceName(cr.Name, role, group),
+		ResolvedImage:    reconciler.ResolvedImage{Reference: "trinodb/trino:435"},
 	}
+
+	// The reconciler declares the roles once per pass and folds the derived contribution beneath
+	// the CRD's overrides; do the same here so the handler sees exactly what it would at runtime.
+	catalog, err := NewTrinoRoleGroupHandler(nil).DeclareRoles(context.Background(), nil, cr)
+	Expect(err).NotTo(HaveOccurred())
+	buildCtx.Declaration = catalog[role]
+
+	derived, err := product.ComputeConfig(context.Background(), nil, cr, buildCtx)
+	Expect(err).NotTo(HaveOccurred())
+	buildCtx.MergedConfig = config.NewConfigMerger().Merge(
+		&commonsv1alpha1.OverridesSpec{ConfigOverrides: derived.ConfigOverrides,
+			EnvOverrides: derived.EnvVars},
+		crdOverrides)
+
+	return buildCtx
 }
 
 func newTrinoCR() *trinov1alpha1.TrinoCluster {

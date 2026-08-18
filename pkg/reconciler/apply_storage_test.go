@@ -52,6 +52,15 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 		secondMountPath = "/kubedoop/data-archive"
 	)
 
+	// Whether a role HAS a data volume is a structural property of the role, so it comes from the
+	// declaration; how big it is and which class it uses come from the effective config.
+	dataVolumeProvider := reconciler.RoleProviderFunc[*testutil.MockCluster](
+		func(context.Context, client.Client, *testutil.MockCluster) (reconciler.RoleCatalog, error) {
+			return reconciler.RoleCatalog{
+				role: {DataVolume: &reconciler.DataVolume{MountPath: mountPath}},
+			}, nil
+		})
+
 	storage := func() *v1alpha1.RoleGroupConfigSpec {
 		return &v1alpha1.RoleGroupConfigSpec{
 			Resources: &v1alpha1.ResourcesSpec{
@@ -85,11 +94,12 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 	}
 
 	newReconcilerFor := func(rec record.EventRecorder) *reconciler.GenericReconciler[*testutil.MockCluster] {
-		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
-		handler.StorageMountPath = mountPath
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
+			RoleProvider:     dataVolumeProvider,
 			Recorder:         rec,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -284,14 +294,15 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 		name := uniqueCRName("storage-multimount")
 		_, resourceName := newCluster(name, storage())
 
-		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
-		base.StorageMountPath = mountPath
+		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		handler := &secondDataMountHandler{BaseRoleGroupHandler: base}
 
 		rec := record.NewFakeRecorder(100)
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
+			RoleProvider:     dataVolumeProvider,
 			Recorder:         rec,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -315,11 +326,12 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 		name := uniqueCRName("storage-path-taken")
 		_, resourceName := newCluster(name, storage())
 
-		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
-		base.StorageMountPath = mountPath
+		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
+			RoleProvider:     dataVolumeProvider,
 			Recorder:         record.NewFakeRecorder(100),
 			RoleGroupHandler: &pathSquatterHandler{BaseRoleGroupHandler: base},
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),
@@ -343,14 +355,15 @@ var _ = Describe("StatefulSet data PVC transitions", func() {
 		name := uniqueCRName("storage-event-order")
 		_, resourceName := newCluster(name, nil)
 
-		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
-		base.StorageMountPath = mountPath
+		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		handler := &rejectedUpdateHandler{BaseRoleGroupHandler: base}
 
 		rec := record.NewFakeRecorder(100)
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
+			RoleProvider:     dataVolumeProvider,
 			Recorder:         rec,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", testNamespace),

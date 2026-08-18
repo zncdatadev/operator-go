@@ -4,6 +4,120 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-08-17] (review follow-up on #632: `affinity` keeps the Kubernetes rule)
+
+### Core architecture
+
+- **§2.5's `affinity` row is reversed back to wholesale replacement**, and the reversal is the
+  substantive decision in this pass rather than a doc correction. The previous entry justified
+  per-member folding by the arrival of the product-default layer; review restored the objection that
+  carried the original revert and it is not answered by that layer. `affinity` is the one field in
+  the fold table **Kubernetes itself defines**, and `PodSpec.affinity`, a Helm value and a Kustomize
+  patch all replace it wholesale — so folding per member buys the product's default at the price of
+  a merge semantic a user must learn for exactly one field of one CRD, discoverable only from
+  `kubectl explain`. `resources.cpu.min` is a knob and folds per leaf without that cost.
+- The cost of keeping the Kubernetes rule is paid to an **event**, not to a second semantic.
+  `FoldCommonConfig` returns a second value, `[]AffinityReplacement`, naming the members each layer's
+  replacement discarded, and the reconciler emits an **`AffinityOverridden`** Warning naming the
+  layer, the members and how to keep them. §2.5 records this as the framework's general answer when a
+  user's value legitimately beats a product's — the same shape as `ImmutableFieldIgnored` and
+  `PodOverrideIgnored` — and distinguishes it from **Constraint** (§2.5b), which stays unimplemented:
+  the framework is not overruling the user here, it is reporting the consequence of honouring them.
+  An `affinity: {}` clears and reports nothing, since clearing is exactly what that value asks for.
+- §2.5's product-half paragraph now states `FoldProductConfig`'s actual rule — presence-wins per
+  top-level field, **no depth** — and both shapes `ValidateProductConfigType` refuses: a bare scalar
+  (the zero value is the "was this stated?" test) and an untagged composite. The previous text
+  described `kubedoop:"atomic"` as opting *out of leaf folding*, which implied an untagged composite
+  is leaf-folded; it is refused.
+- §4.1.4's primary-container name resolution drops `RoleMainContainerName[role]`, a per-role handler
+  map #632 deleted; §4.1.5's `*ValidationError` count goes from one to **four**, naming each
+  `Subject` (`image`, `podOverrides`, `sidecar`, `logging`) since a product can route on it; the
+  `StaticContainerProvider` sample reads `buildCtx.ResolvedImage.Reference` rather than the deleted
+  `buildCtx.Image`.
+
+### AGENTS.md
+
+- §3b and §4b carry the same reversal, and §4b now shows the `AffinityOverridden` message verbatim.
+- **§4b's product `ConfigSpec` example is corrected to one that actually folds.** As written
+  (`MyProductSetting string`, `Tls *TlsSpec`) it was refused by `ValidateProductConfigType`, so the
+  `FoldProductConfig` call two lines below could only ever return an error — and it was the sole
+  worked example of that new public API outside a test.
+- `pkg/reconciler/AGENTS.md` attributes `app.kubernetes.io/name` to `ImageResolution.ProductName` and
+  `app.kubernetes.io/version` to `ResolvedImage.ProductVersion`; both previously named deleted
+  `BaseRoleGroupHandler` fields, and the version row still described the handler's static image.
+- The trino example's README no longer claims an unset `RoleProvider` makes every declared role an
+  error. It does not: the catalog is empty, nothing is rejected, and every role builds with a zero
+  declaration while the reconcile reports success — which is the behaviour worth warning about.
+
+---
+
+## [2026-08-16] (declare / fold / derive — the role config default refactor, #631)
+
+### Core architecture
+
+- `docs/architecture.md` gains **§2.5b Four Concepts, Not One "Default"**, the design statement the
+  framework was missing. #631 asked for "role config defaults"; the framework held three partial
+  answers and no account of what it was answering, so each case was resolved by whichever the author
+  found first. Names the four — **declaration** (no user layer), **default** (beneath the user),
+  **derivation** (computed from the folded result), **constraint** (above the user) — and records
+  that constraint is deliberately **not implemented**: a framework that overrules what a user wrote
+  in their own CR has no honest way to tell them, so that rejection belongs in a webhook where it
+  surfaces at `kubectl apply`.
+- §2.5 rewrites the third merge layer. The product's defaults are `RoleDeclaration.ConfigDefaults`,
+  folded by `FoldCommonConfig`, and `affinity` now folds **per member** rather than wholesale —
+  the rule changed *because* the default layer arrived: with only the CR's two levels, both written
+  by one person in one file, replacement was the simpler semantic; with a product default beneath
+  them, replacement means a user adding a `nodeAffinity` silently deletes the anti-affinity the
+  product ships to spread a quorum. Records why empty-clears works for `affinity` and not for
+  `resources` (the former is `x-kubernetes-preserve-unknown-fields`, so a stored `{}` is always
+  something the user wrote; the latter is structural, where `cpu: {}` may be a pruning artifact),
+  and adds the product's half of the block — `FoldProductConfig[T]`, `ValidateProductConfigType[T]`
+  and the `kubedoop:"atomic"` opt-out — since embedding `*RoleGroupConfigSpec` inline is the
+  sanctioned way a product extends the type.
+- §2.6 becomes **Derived Config vs. Defaulting**: `ProductConfig` is replaced by `RoleGroupResolver`
+  returning a `Contribution`. The substantive change is *position in the pass* — it runs after the
+  fold and before anything is built, which is the window the framework did not previously have. The
+  effective config was not computed until after the role group's ConfigMap had been assembled, so
+  nothing derived from it could reach a config file at all; that is what forced three operators to
+  hand-write the same JVM-heap calculation and a fourth to freeze the answer into a literal
+  `-Xmx419430k`. Records that `Contribution` carries no CLI dimension on purpose (`cliOverrides`
+  merge by replacement, so a contributed layer is not a default in either direction) and that the
+  resolver must be deterministic, since its output lands in a ConfigMap the framework applies and
+  watches.
+- §4.1.4 and §4.1.5 replace the handler-state tables. The hazard they documented — one handler
+  instance serving every cluster — is now removed rather than described: the handler has no field
+  for a role's ports, image or container name, so the assignment that raced cannot be written.
+  `MainContainerCustomizer` is recorded as **removed**, with the reason: a callback is a channel
+  whose precedence must be explained and enforced (it had to be blocked from changing the image),
+  while a declaration field has no user layer to beat.
+- §4.6 rewrites the Vector gates. One producer list now serves both jobs, and a producer opts out of
+  config-file rendering by leaving its `Framework` empty — replacing a seam that worked only because
+  Go has no virtual dispatch, which was discoverable by nobody and silently gave no pipeline to a
+  product that overrode the wrong list. The obligations that seam left to the product are now
+  enforced. Records that the resolved "is the pipeline active" answer stays **inside** the
+  framework: every input to it is already the framework's, so a product sees only the conclusion it
+  can act on, `LogFileTarget`.
+- The `Warning` event vocabulary loses `UnknownConfiguredRole` and gains `UnusedRoleDeclaration`
+  (§4.14, §7.1): "Configured" named the deleted setter world.
+- The optional-capability list drops `RoleNameProvider` and `LoggingProducerProvider`.
+  `RoleProvider` and `RoleGroupResolver` are explicit config fields, deliberately not type-asserted
+  capabilities — a handler that implemented the old method on the wrong receiver disabled the whole
+  Vector pipeline with nothing reporting it.
+
+### AGENTS.md
+
+- Root `AGENTS.md` §3 becomes **RoleProvider, RoleDeclaration and RoleGroupHandler**, §4 documents
+  the build context's settled answers and the retired escape hatches, §9 documents the empty-
+  `Framework` logging seam and `LogFileTarget`, §10 becomes **RoleGroupResolver**, and a new §4b
+  documents config folding end to end. §2's flow gains the catalog step and the
+  fold → resolve → derive → merge ordering inside the role group loop.
+- `pkg/reconciler/AGENTS.md` gains file rows for `role_declaration.go`, `role_group_resolver.go`,
+  `config_fold.go` and `resolved_image.go`.
+- `examples/trino-operator` docs follow the example's own migration to `DeclareRoles`,
+  `RoleGroupResolver` and `ImageResolution`.
+
+---
+
 ## [2026-08-13] (the operator's own ClusterRole, and the two grants that do not announce themselves)
 
 ### Core architecture

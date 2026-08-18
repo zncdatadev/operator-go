@@ -97,7 +97,7 @@ through `reconciler.RoleGroupResources.ExtraResources` or a cluster extension.
   too would not be neutral — with no readiness probe a pod is Ready the instant it starts, so a
   rolling update walks a whole role group without waiting for any member to come up.
 
-  Consequences for callers: **the first entry of `SetRoleContainerPorts`/`WithPorts` is part of the
+  Consequences for callers: **the first entry of `RoleDeclaration.ContainerPorts`/`WithPorts` is part of the
   contract** (put the port that means "this pod can serve" first), and
   `builder.DefaultTCPLivenessProbe(port)` reproduces the removed probe on a port the product picks.
   This is deliberately *not* the same call as the sidecar probes in `pkg/sidecar`, which the

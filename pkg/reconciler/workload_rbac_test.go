@@ -61,6 +61,7 @@ var _ = Describe("GenericReconciler workload RBAC", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
+			ImageResolution:   reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:          recorder,
 			RoleGroupHandler:  &handlerAdapter{handler: mockHandler},
 			Prototype:         prototype,

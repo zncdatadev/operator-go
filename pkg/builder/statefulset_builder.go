@@ -54,9 +54,13 @@ type StatefulSetBuilder struct {
 	Ports           []corev1.ContainerPort
 	Volumes         []corev1.Volume
 	VolumeMounts    []corev1.VolumeMount
-	EnvVars         []corev1.EnvVar
-	Command         []string
-	Args            []string
+	// BaseEnvVars are the container's declared env vars, emitted BEFORE the merged config's, so a
+	// user's envOverrides of the same name wins. It is the ONLY env channel: a second one that
+	// emitted after the merged env would let a caller silently beat the user, which is the shape
+	// this framework removed everywhere else.
+	BaseEnvVars []corev1.EnvVar
+	Command     []string
+	Args        []string
 
 	// InitContainers are run before the main container starts. Products use these for
 	// one-shot preparation steps (e.g. generating node ids, fetching secrets).
@@ -109,11 +113,6 @@ type StatefulSetBuilder struct {
 	// PodOverrideViolations() by the caller, which fails the role group.
 	podOverrideViolations []error
 
-	// mainContainerCustomizer is the product's hook into the assembled primary container; see
-	// WithMainContainerCustomizer. mainContainerViolations records what it got wrong.
-	mainContainerCustomizer func(*corev1.Container) error
-	mainContainerViolations []error
-
 	// Graceful shutdown timeout
 	TerminationGracePeriodSeconds *int64
 
@@ -148,7 +147,7 @@ func NewStatefulSetBuilder(name, namespace string) *StatefulSetBuilder {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Volumes:         make([]corev1.Volume, 0),
 		VolumeMounts:    make([]corev1.VolumeMount, 0),
-		EnvVars:         make([]corev1.EnvVar, 0),
+		BaseEnvVars:     make([]corev1.EnvVar, 0),
 		Ports:           make([]corev1.ContainerPort, 0),
 	}
 }
@@ -298,15 +297,6 @@ func (b *StatefulSetBuilder) AddVolumeMount(mount corev1.VolumeMount) *StatefulS
 	return b
 }
 
-// AddEnvVar adds an environment variable.
-func (b *StatefulSetBuilder) AddEnvVar(name, value string) *StatefulSetBuilder {
-	b.EnvVars = append(b.EnvVars, corev1.EnvVar{
-		Name:  name,
-		Value: value,
-	})
-	return b
-}
-
 // WithCommand sets the main container entrypoint command.
 func (b *StatefulSetBuilder) WithCommand(command []string) *StatefulSetBuilder {
 	b.Command = command
@@ -378,43 +368,6 @@ func (b *StatefulSetBuilder) WithEnableServiceLinks(enable bool) *StatefulSetBui
 // most recent build — so call it afterwards. Empty means the merge preserved everything the
 // framework mounted.
 //
-// WithMainContainerCustomizer registers a function that gets the assembled primary container just
-// before pod overrides are applied.
-//
-// It exists because the framework owns the primary container's name, image, ports, security
-// context, volume mounts and probes, but nothing else — so every product reached into the
-// StatefulSet the framework had just returned and edited it in place, re-deriving the container it
-// was handed. zookeeper-operator located it as `Containers[0]`, an assumption the framework has
-// never promised: the moment a sidecar provider inserts a container earlier, that silently
-// configures the wrong one.
-//
-// TIMING IS THE POINT, and it is why this cannot be a post-Build patch. The customizer runs AFTER
-// the framework has assembled the container and BEFORE podOverrides are strategic-merged, so a
-// user's podOverrides still outrank whatever the product set here — a post-Build edit would invert
-// that precedence silently.
-//
-// The image is off limits: it is resolved once and propagated to the sidecars before the
-// StatefulSet is built (the Vector agent ships inside the product image), so changing it here would
-// leave them on a different one. Build() records that as a violation rather than accepting it; set
-// RoleGroupBuildContext.Image instead.
-func (b *StatefulSetBuilder) WithMainContainerCustomizer(fn func(*corev1.Container) error) *StatefulSetBuilder {
-	b.mainContainerCustomizer = fn
-	return b
-}
-
-// MainContainerViolations returns the errors the main container customizer produced, if any.
-//
-// Build() cannot return an error, so — exactly as with PodOverrideViolations — the failure is
-// recorded and the caller surfaces it. BaseRoleGroupHandler turns these into a *ValidationError
-// that fails the role group, because a customizer that failed silently would ship a workload
-// missing the command, args or probes the product meant to set.
-func (b *StatefulSetBuilder) MainContainerViolations() []error {
-	if len(b.mainContainerViolations) == 0 {
-		return nil
-	}
-	return append([]error(nil), b.mainContainerViolations...)
-}
-
 // The slice is copied out, like every other value Build() hands back: the builder must not share
 // mutable state with its callers.
 func (b *StatefulSetBuilder) PodOverrideViolations() []error {
@@ -448,10 +401,38 @@ func (b *StatefulSetBuilder) WithPodOverrides(overrides *corev1.PodTemplateSpec)
 	return b
 }
 
-// WithStorage sets the storage configuration.
+// DefaultDataVolumeName is the claim-template and mount name a data volume gets when the caller
+// names none. It is reserved: a VolumeProvider must not reuse it, because duplicate volume names
+// make the API server reject the pod.
+const DefaultDataVolumeName = "data"
+
+// WithStorage sets the storage configuration, naming the claim template DefaultDataVolumeName.
 func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, mountPath string) *StatefulSetBuilder {
+	return b.WithNamedStorage(DefaultDataVolumeName, storage, mountPath)
+}
+
+// WithNamedStorage is WithStorage with the claim template's name chosen by the caller. An empty
+// name uses DefaultDataVolumeName.
+//
+// The name is a parameter because a claim template's name is IMMUTABLE and preserved by the apply
+// path, so a product that wanted its volume called anything else could not fix it afterwards
+// without deleting the StatefulSet by hand.
+//
+// It must not collide with "config" (the config ConfigMap volume, always present), with the shared
+// log volume, or with any VolumeProvider's name — and the consequence of a collision is worse than a
+// rejection, which is why RoleDeclaration.Validate rejects the reserved names before anything is
+// built. The API server ACCEPTS a StatefulSet whose claim template shares a name with a pod volume;
+// the StatefulSet controller then silently replaces the pod volume with the PVC. Named "config",
+// that means the generated ConfigMap is mounted nowhere and the product starts on an empty config
+// directory, with no event and no rejected write to say so.
+func (b *StatefulSetBuilder) WithNamedStorage(
+	name string, storage *v1alpha1.StorageResource, mountPath string,
+) *StatefulSetBuilder {
 	if storage == nil {
 		return b
+	}
+	if name == "" {
+		name = DefaultDataVolumeName
 	}
 
 	b.StorageConfig = &StorageConfig{
@@ -459,7 +440,7 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 		VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
 			{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "data",
+					Name: name,
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -488,9 +469,10 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 		b.StorageConfig.VolumeClaimTemplates[0].Spec.StorageClassName = ptr.To(*storage.StorageClass)
 	}
 
-	// Add volume mount for data
+	// The mount must carry the SAME name as the claim template, or the pod references a volume that
+	// does not exist.
 	b.VolumeMounts = append(b.VolumeMounts, corev1.VolumeMount{
-		Name:      "data",
+		Name:      name,
 		MountPath: mountPath,
 	})
 
@@ -500,6 +482,34 @@ func (b *StatefulSetBuilder) WithStorage(storage *v1alpha1.StorageResource, moun
 // WithTerminationGracePeriod sets the termination grace period.
 func (b *StatefulSetBuilder) WithTerminationGracePeriod(seconds int64) *StatefulSetBuilder {
 	b.TerminationGracePeriodSeconds = &seconds
+	return b
+}
+
+// WithBaseEnvVars declares env vars that sit BENEATH the merged config's — a downward-API POD_NAME,
+// a secretKeyRef. They are the only route for a `valueFrom`, since the override channel is
+// map[string]string and cannot express one at all.
+//
+// Emitted before the merged env so a user's envOverrides of the same name wins: Kubernetes resolves
+// a duplicate name to the last entry, which makes the ordering the precedence.
+func (b *StatefulSetBuilder) WithBaseEnvVars(env []corev1.EnvVar) *StatefulSetBuilder {
+	b.BaseEnvVars = append(b.BaseEnvVars, cloneSlice(env)...)
+	return b
+}
+
+// WithLifecycle sets the primary container's lifecycle hooks wholesale, deep-copied.
+//
+// The three narrow helpers below cover only an exec preStop, an exec postStart, and an HTTPGet
+// preStop with a path and port — so a `sleep` action, or an HTTPGet needing a scheme, host or
+// headers, had no route to the container at all. A declared lifecycle that cannot be applied is
+// worse than one the API does not offer.
+//
+// It replaces whatever the helpers set, rather than merging: a lifecycle is a small one-of, and
+// merging two partial ones produces a hook nobody wrote.
+func (b *StatefulSetBuilder) WithLifecycle(lifecycle *corev1.Lifecycle) *StatefulSetBuilder {
+	if lifecycle == nil {
+		return b
+	}
+	b.lifecycle = lifecycle.DeepCopy()
 	return b
 }
 
@@ -622,12 +632,6 @@ func (b *StatefulSetBuilder) DisableStartupProbe() *StatefulSetBuilder {
 // rewrites the template when pod overrides are applied), so sharing would let a pod-level change
 // contaminate ObjectMeta, the immutable .spec.selector, or a second Build() from the same builder.
 func (b *StatefulSetBuilder) Build() *appsv1.StatefulSet {
-	// Reset here, not next to the podOverrides reset below: customizedContainer runs inside
-	// buildPodSpec, which the struct literal calls before we ever reach that point. Same reason as
-	// there — the list describes THIS build, so a reused builder must not report the previous
-	// build's violations, nor report this one's twice.
-	b.mainContainerViolations = nil
-
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        b.Name,
@@ -694,7 +698,7 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 		Volumes:                       cloneSlice(b.Volumes),
 		InitContainers:                cloneSlice(b.InitContainers),
 		Containers: []corev1.Container{
-			b.customizedContainer(),
+			b.buildContainer(),
 		},
 	}
 
@@ -711,31 +715,6 @@ func (b *StatefulSetBuilder) buildPodSpec() corev1.PodSpec {
 	}
 
 	return spec
-}
-
-// customizedContainer assembles the primary container and hands it to the registered customizer.
-// Any error, and any attempt to change the image, is recorded for the caller to surface.
-func (b *StatefulSetBuilder) customizedContainer() corev1.Container {
-	container := b.buildContainer()
-	if b.mainContainerCustomizer == nil {
-		return container
-	}
-
-	image := container.Image
-	if err := b.mainContainerCustomizer(&container); err != nil {
-		b.mainContainerViolations = append(b.mainContainerViolations,
-			fmt.Errorf("main container customizer for %q: %w", container.Name, err))
-		return container
-	}
-	if container.Image != image {
-		b.mainContainerViolations = append(b.mainContainerViolations, fmt.Errorf(
-			"main container customizer changed the image of %q from %q to %q: the image is resolved "+
-				"once and propagated to the sidecars before the StatefulSet is built, so changing it "+
-				"here would leave them on the old one — set RoleGroupBuildContext.Image instead",
-			container.Name, image, container.Image))
-		container.Image = image
-	}
-	return container
 }
 
 // buildContainer builds the main container.
@@ -762,6 +741,12 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 		container.Args = slices.Clone(b.Args)
 	}
 
+	// Declared env goes FIRST, beneath the merged config's. Kubernetes resolves a duplicate name to
+	// the LAST entry, so this ordering IS the precedence: a product declaring FOO here is a default
+	// the user's envOverrides still beats. Appending it after would invert that silently, which is
+	// why there is no second channel that does.
+	container.Env = append(container.Env, cloneSlice(b.BaseEnvVars)...)
+
 	// Add environment variables from merged config. Iterate in sorted key order: EnvVars is a
 	// map, and Go map iteration order is randomized, so appending directly would produce a
 	// different container.Env ordering on every reconcile. That makes the rendered StatefulSet
@@ -784,9 +769,6 @@ func (b *StatefulSetBuilder) buildContainer() corev1.Container {
 			container.Args = append(container.Args, b.Config.CliArgs...)
 		}
 	}
-
-	// Add explicit env vars (these override config env vars)
-	container.Env = append(container.Env, cloneSlice(b.EnvVars)...)
 
 	// Apply lifecycle hooks
 	if b.lifecycle != nil {
@@ -848,8 +830,8 @@ func (b *StatefulSetBuilder) buildReadinessProbe() *corev1.Probe {
 // ever waiting for a member to actually come up. For a data system that is worse than a probe on an
 // imperfect port.
 //
-// It targets b.Ports[0], which makes the first entry of BaseRoleGroupHandler.SetRoleContainerPorts
-// (or WithPorts) a real part of the contract rather than an accident: put the port that means "this
+// It targets b.Ports[0], which makes the first entry of RoleDeclaration.ContainerPorts (or
+// WithPorts) a real part of the contract rather than an accident: put the port that means "this
 // pod can serve" first. Products needing anything else call WithReadinessProbe.
 func (b *StatefulSetBuilder) buildDefaultTCPReadinessProbe() *corev1.Probe {
 	if len(b.Ports) == 0 {

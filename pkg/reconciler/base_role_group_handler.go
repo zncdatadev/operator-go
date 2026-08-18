@@ -20,17 +20,13 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"maps"
-	"slices"
 	"time"
 
-	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/listener"
-	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/security"
 	"github.com/zncdatadev/operator-go/pkg/sidecar"
 	"github.com/zncdatadev/operator-go/pkg/vector"
@@ -75,61 +71,6 @@ const managedByValue = "operator-go"
 // MaxConcurrentReconciles 1, and even at 1 it leaks: skip the assignment on one CR and it silently
 // inherits the previous CR's value.
 type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
-	// Image is the default container image for all roles, and must be reconcile-invariant — see
-	// the note above the type, and RoleGroupBuildContext.Image for the per-cluster channel.
-	Image string
-
-	// ImagePullPolicy is the default image pull policy. Reconcile-invariant, as above.
-	ImagePullPolicy corev1.PullPolicy
-
-	// ProductName is the kubedoop product name (e.g. "trino"). It supplies two unrelated things:
-	// the app.kubernetes.io/name label value, and the repository path segment used when resolving
-	// spec.image into "{repo}/{ProductName}:{version}-kubedoop{v}".
-	//
-	// It no longer decides WHETHER spec.image is read — that is ImageDefaults' job now. The two
-	// were coupled, and because the image half could not express the kubedoop tag convention (see
-	// ImageDefaults), three migrated operators gave up all of it: they left ProductName empty,
-	// hand-rolled image resolution, and two of them emit no app.kubernetes.io/version at all.
-	//
-	// Left empty, the only references still resolvable are the fully qualified ones, which need no
-	// repository path segment: spec.image.custom, and ImageDefaults.Custom when the spec states no
-	// structured field. Everything else falls through to the handler's static Image/RoleImages
-	// rather than erroring — that is the shape a product uses when it resolves images itself, and
-	// its CRs may well carry a spec.image this handler is not equipped to read.
-	ProductName string
-
-	// ImageDefaults fills in whatever spec.image leaves empty. It is read on every reconcile,
-	// which is the whole point:
-	//
-	//	handler.ProductName = "hive"
-	//	handler.ImageDefaults = commonsv1alpha1.ImageSpec{
-	//	    Repo:            "quay.io/zncdatadev",
-	//	    ProductVersion:  "4.0.1",
-	//	    KubedoopVersion: version.BuildVersion, // the operator's own build version
-	//	}
-	//
-	// KubedoopVersion is why this cannot be a webhook's job. Kubedoop product images are published
-	// only with the "-kubedoop<version>" suffix, and the natural value of that suffix is the
-	// operator's build version — a reconcile-time fact that moves when the operator binary is
-	// upgraded. Webhook defaults are persisted into the spec at admission and never recomputed
-	// (docs/architecture.md §2.6), so a cluster admitted by operator 0.1.0 would keep asking for
-	// -kubedoop0.1.0 images forever. Evaluated here, an operator upgrade moves existing clusters
-	// onto the co-released product image.
-	//
-	// Precedence is per field, user first: spec.image wins wherever it states something, these
-	// fill the rest. A spec that states nothing at all leaves these deciding alone.
-	ImageDefaults v1alpha1.ImageSpec
-
-	// RoleImages maps role names to specific images.
-	// If a role is not found here, the default Image is used. Reconcile-invariant.
-	RoleImages map[string]string
-
-	// RoleContainerPorts maps role names to container ports. Reconcile-invariant: ports that
-	// depend on the CR belong on RoleGroupBuildContext.ContainerPorts.
-	RoleContainerPorts map[string][]corev1.ContainerPort
-
-	// RoleServicePorts maps role names to service ports. Reconcile-invariant, as above.
-	RoleServicePorts map[string][]corev1.ServicePort
 
 	// ConfigGenerator is used to generate configuration files.
 	// Optional - if nil, config files are generated from MergedConfig only.
@@ -137,25 +78,6 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 
 	// Scheme is the runtime scheme for ownership setup.
 	Scheme *runtime.Scheme
-
-	// StorageMountPath, when non-empty, opts the role group into a data PVC. The base
-	// StatefulSet then gets a VolumeClaimTemplate built from RoleGroupConfig.Resources.Storage
-	// mounted at this path, keeping the volume/mount contract consistent. Left empty for
-	// backward compatibility (no data PVC unless a product opts in).
-	StorageMountPath string
-
-	// RoleStorageMountPaths maps role names to a role-specific data PVC mount path, overriding
-	// StorageMountPath for that role. Symmetric with RoleContainerPorts and its siblings, and the
-	// one per-role override the handler was missing: a product either gave a data PVC to every
-	// StatefulSet role or to none.
-	//
-	// An entry set to "" means "no data PVC for this role", which is distinct from having no entry
-	// (inherit StorageMountPath). Set it through SetRoleStorageMountPath.
-	RoleStorageMountPaths map[string]string
-
-	// RoleConfigDefaults maps role names to the product's own defaults for the role group config
-	// block. See SetRoleConfigDefaults.
-	RoleConfigDefaults map[string]*v1alpha1.RoleGroupConfigSpec
 
 	// ConfigMountPath is where the generated config ConfigMap is mounted in the primary
 	// container. Products whose application reads config from a specific directory (e.g.
@@ -169,24 +91,6 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// links at the destination. See docs/architecture.md §4.1.5.
 	ConfigMountPath string
 
-	// MainContainerName, when set, renames the primary (first) container of the StatefulSet.
-	// Products use this when the container name is significant — e.g. it must match the
-	// per-container logging key (logging.containers.<name>) declared in LoggingContainers.
-	// Defaults to the resource name (set by the StatefulSet builder) when empty.
-	//
-	// Products whose primary container name differs per role (e.g. HDFS: namenode / datanode /
-	// journalnode) set it per role via SetRoleMainContainerName; the per-role value wins over
-	// this global default.
-	MainContainerName string
-
-	// RoleMainContainerName maps role names to a role-specific primary container name, overriding
-	// MainContainerName for that role. Symmetric with RoleContainerPorts.
-	RoleMainContainerName map[string]string
-
-	// PublishNotReadyAddresses, when true, sets the same flag on the headless Service so
-	// peers can resolve each other's DNS before readiness (required by quorum systems).
-	PublishNotReadyAddresses bool
-
 	// LabelDomain, when set (e.g. "zookeeper.kubedoop.dev"), enables product-owned identity
 	// labels — "<domain>/cluster", "<domain>/role", "<domain>/role-group" — that are used
 	// for resource selectors (StatefulSet, Services, PDB) instead of the descriptive
@@ -196,48 +100,6 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 	// When empty, selectors fall back to the framework-owned app.kubernetes.io/* identity subset
 	// (see frameworkSelectorLabels).
 	LabelDomain string
-
-	// LoggingContainers declares, per container, how its logging config file is generated
-	// from the deep-merged CRD logging spec and injected into the role group ConfigMap.
-	// The framework owns the whole pipeline (merge -> convert -> render -> ConfigMap key);
-	// products only declare the product-specific bits (framework, pattern). Empty means the
-	// product handles logging itself (or has none).
-	//
-	// LoggingContainers also names the producers of the Vector log pipeline. When the role group
-	// enables the Vector agent, the GenericReconciler passes these container names to the Vector
-	// sidecar provider (via LoggingProducers()), which is the single owner of the shared log
-	// volume: it creates the size-limited log emptyDir, RW-mounts it on each producer container,
-	// and mounts it on itself (pre-creating each producer's per-container log directory before
-	// exec'ing vector). Whenever the sidecar does not land — Vector disabled, no producer, or no
-	// source for vector.yaml — no shared volume exists and no file appender is emitted
-	// (console-only); see RoleGroupBuildContext.VectorLogPipelineActive.
-	//
-	// Products whose primary container name (and therefore its logging key) differs per role set
-	// this per role via SetRoleLoggingContainers; the per-role value wins over this global list.
-	//
-	// The two jobs are separable, and that is the supported seam for a product that owns its own
-	// logging config file. The reconciler reads the producer list off the OUTER handler (the object
-	// passed as GenericReconcilerConfig.RoleGroupHandler, through the LoggingProducerProvider
-	// assertion), while the config file is rendered from this field on the embedded
-	// BaseRoleGroupHandler. Go has no virtual dispatch, so an override of LoggingProducers is
-	// invisible here: a product that overrides it and leaves LoggingContainers empty gets the
-	// producer wired into the Vector pipeline (shared volume, mount, log dir, source) with NO
-	// framework-rendered config file and no ConfigMap key to collide with its own. Airflow's
-	// log_config.py, which must be built on Airflow's own DEFAULT_LOGGING_CONFIG, is the case this
-	// exists for. The product then owns two obligations the framework can no longer meet for it:
-	// the declaration's Container must name a real container in the assembled pod (enforced — see
-	// productlogging.ValidateProducers), and its log file must land at productlogging.LogDirFor(decl)
-	// with the framework's LogFileSuffix, or the pipeline comes up and collects nothing.
-	LoggingContainers []productlogging.ContainerLogging
-
-	// RoleLoggingContainers maps role names to a role-specific logging-producer list, overriding
-	// LoggingContainers for that role. Symmetric with RoleContainerPorts.
-	RoleLoggingContainers map[string][]productlogging.ContainerLogging
-
-	// LogVolumeSize overrides the SizeLimit of the shared log emptyDir. Empty uses
-	// vector.DefaultLogVolumeSize. The GenericReconciler forwards it to the Vector provider,
-	// which owns the volume (always a node-disk emptyDir, never medium=Memory, never a PVC).
-	LogVolumeSize string
 
 	// SidecarManager manages sidecar injection into pods.
 	// Optional - if nil, no sidecars are injected.
@@ -264,19 +126,8 @@ type BaseRoleGroupHandler[CR common.ClusterInterface] struct {
 }
 
 // NewBaseRoleGroupHandler creates a new BaseRoleGroupHandler with defaults.
-func NewBaseRoleGroupHandler[CR common.ClusterInterface](image string, scheme *runtime.Scheme) *BaseRoleGroupHandler[CR] {
-	return &BaseRoleGroupHandler[CR]{
-		Image:                 image,
-		ImagePullPolicy:       corev1.PullIfNotPresent,
-		RoleImages:            make(map[string]string),
-		RoleContainerPorts:    make(map[string][]corev1.ContainerPort),
-		RoleServicePorts:      make(map[string][]corev1.ServicePort),
-		RoleMainContainerName: make(map[string]string),
-		RoleLoggingContainers: make(map[string][]productlogging.ContainerLogging),
-		RoleStorageMountPaths: make(map[string]string),
-		RoleConfigDefaults:    make(map[string]*v1alpha1.RoleGroupConfigSpec),
-		Scheme:                scheme,
-	}
+func NewBaseRoleGroupHandler[CR common.ClusterInterface](scheme *runtime.Scheme) *BaseRoleGroupHandler[CR] {
+	return &BaseRoleGroupHandler[CR]{Scheme: scheme}
 }
 
 // WithSidecarManager sets the SidecarManager for sidecar injection.
@@ -341,18 +192,12 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 
 	resources := &RoleGroupResources{}
 
-	// Propagate the product image to the registered sidecars (e.g. Vector, which ships inside
-	// the product image). This must happen here — not earlier in GenericReconciler — because the
-	// documented embedding pattern resolves the CR-driven image inside the product's
-	// BuildResources override, immediately before delegating to this method; any earlier
-	// propagation would see a stale (or empty) image. Doing it in the base implementation means
-	// every embedding handler gets it for free instead of hand-calling SetProductImage.
+	// Propagate the product image to the registered sidecars (e.g. Vector, which ships inside the
+	// product image). The reconciler resolves the image before this method runs and publishes it as
+	// buildCtx.ResolvedImage, so this is a propagation step rather than a resolution one.
 	//
-	// Select the manager exactly as sidecar injection does below (prefer the SDK-created one,
-	// fall back to the instance field) so propagation and injection can never target different
-	// managers. Call SetProductImage unconditionally: it rejects an empty image, so a
-	// misconfigured product fails loudly here instead of silently injecting a sidecar with an
-	// empty image field.
+	// Select the manager exactly as sidecar injection does below (prefer the SDK-created one, fall
+	// back to the instance field) so propagation and injection can never target different managers.
 	if sidecarMgr := buildCtx.SidecarManager; sidecarMgr != nil || h.sidecarManager != nil {
 		if sidecarMgr == nil {
 			// The handler's manager is process-wide, and SetProductImage below writes THIS
@@ -363,11 +208,20 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 			sidecarMgr = h.sidecarManager.CloneForBuild()
 			buildCtx.SidecarManager = sidecarMgr
 		}
-		image, pullPolicy, err := h.containerImage(buildCtx, buildCtx.RoleName)
-		if err != nil {
-			return nil, err
-		}
+		image, pullPolicy := buildCtx.ResolvedImage.Reference, buildCtx.ResolvedImage.PullPolicy
 		if err := sidecarMgr.SetProductImage(image, pullPolicy); err != nil {
+			// SetProductImage rejects an empty image, and an empty one here is not a sidecar
+			// problem — it means nothing resolved an image for this role at all. Reporting it as
+			// "failed to set product image on sidecars" sent readers to the sidecar config, and
+			// worse, it only surfaced when a sidecar happened to be registered: with none, the
+			// empty image reached the container and the pods failed with InvalidImageName, naming
+			// nothing. Say which knob is unset.
+			if image == "" {
+				return nil, NewValidationError("image", buildCtx.RoleName, buildCtx.RoleGroupName,
+					fmt.Errorf("no image resolved for this role: set GenericReconcilerConfig.ImageResolution "+
+						"(ProductName + Defaults), or spec.image.custom on the cluster, or "+
+						"RoleDeclaration.Image for this role; a sidecar cannot be built without it either: %w", err))
+			}
 			return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
 		}
 	}
@@ -387,7 +241,7 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	resources.HeadlessService = headlessSvc
 
 	// Build Service (if ports are defined)
-	svcPorts := h.servicePorts(buildCtx, buildCtx.RoleName)
+	svcPorts := buildCtx.Declaration.ServicePorts
 	if len(svcPorts) > 0 {
 		resources.Service = h.buildService(buildCtx, labels, svcPorts)
 	}
@@ -407,16 +261,37 @@ func (h *BaseRoleGroupHandler[CR]) BuildResources(
 	return resources, nil
 }
 
-// vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on
-// the deep-merged logging spec. It is the enablement FLAG only — whether the sidecar is really
-// injected is decided by vectorLogPipelineActive.
+// vectorEnabledFor reports whether the Vector agent is enabled for this role group, based on the
+// folded logging spec. It is the enablement FLAG only — whether the sidecar is really injected is
+// decided by vectorLogPipelineActive.
+//
+// IT READS THE FOLD, NOT MergedConfig.Logging, and that is an ordering requirement rather than a
+// preference. MergedConfig is not assigned until stage 3 of buildRoleGroupContext, while three
+// callers run before it: resolveVectorAggregatorAddress and buildSidecarManager in stage 1b, and
+// LogFileTarget from a product's RoleGroupResolver in stage 2. Reading MergedConfig made this
+// return false for all three — so the aggregator address was never resolved, no vector.yaml was
+// ever written, and LogFileTarget answered "console only" at exactly the point a product asks it
+// where to write. The sidecar was still registered (buildSidecarManager reads the fold), so its
+// Validate then failed on the missing key and the role group stayed Degraded forever.
+//
+// MergedConfig.Logging is a COPY, assigned from this same folded value in stage 3, so reading the
+// source is not a second opinion — it is the only one, available from stage 1 onward.
+//
+// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and the
+// consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
 func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
-	if buildCtx == nil || buildCtx.MergedConfig == nil {
+	if buildCtx == nil {
 		return false
 	}
-	// vector.IsAgentEnabled is the single, shared predicate used by both this producer side and
-	// the consumer side (generic_reconciler.buildSidecarManager), so they can never drift.
-	return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
+	if logging := buildCtx.RoleGroupSpec.GetConfig().Logging; logging != nil {
+		return vector.IsAgentEnabled(logging)
+	}
+	// A context assembled by hand rather than by GenericReconciler carries no folded spec; fall
+	// back to whatever such a caller supplied, which is the behavior it already had.
+	if buildCtx.MergedConfig != nil {
+		return vector.IsAgentEnabled(buildCtx.MergedConfig.Logging)
+	}
+	return false
 }
 
 // vectorLogPipelineActive reports whether the shared Vector log pipeline really exists for this
@@ -426,270 +301,17 @@ func vectorEnabledFor(buildCtx *RoleGroupBuildContext) bool {
 // above all the rolling file appender — has to key off the same resolved decision, or the product
 // is pointed at a path no volume backs.
 //
-// A nil RoleGroupBuildContext.VectorLogPipelineActive means the context was not built by
+// A nil RoleGroupBuildContext.LogFileTarget means the context was not built by
 // GenericReconciler (a product assembling one by hand): the enablement flag is then all that is
 // known, which is the behavior such a caller already had.
 func vectorLogPipelineActive(buildCtx *RoleGroupBuildContext) bool {
 	if !vectorEnabledFor(buildCtx) {
 		return false
 	}
-	if buildCtx.VectorLogPipelineActive == nil {
+	if buildCtx.vectorLogPipelineActive == nil {
 		return true
 	}
-	return *buildCtx.VectorLogPipelineActive
-}
-
-// LoggingProducers implements LoggingProducerProvider: it exposes the role's declared
-// log-producer containers so the GenericReconciler can configure the Vector sidecar (the single
-// owner of the shared log volume) without reaching into handler internals. The per-role list set
-// via SetRoleLoggingContainers wins over the global LoggingContainers.
-//
-// A product may OVERRIDE this on its own handler to add a producer the framework must not render a
-// config file for; see the LoggingContainers field doc for the obligations that come with it. The
-// reconciler calls the override (it asserts LoggingProducerProvider on the outer handler), while
-// config-file rendering keeps reading LoggingContainers directly — the two are independent by
-// construction, not by accident.
-func (h *BaseRoleGroupHandler[CR]) LoggingProducers(roleName string) []productlogging.ContainerLogging {
-	return h.loggingContainersFor(roleName)
-}
-
-// loggingContainersFor returns the role-specific logging-producer list when set, else the global
-// LoggingContainers.
-func (h *BaseRoleGroupHandler[CR]) loggingContainersFor(roleName string) []productlogging.ContainerLogging {
-	if lc, ok := h.RoleLoggingContainers[roleName]; ok {
-		return lc
-	}
-	return h.LoggingContainers
-}
-
-// mainContainerNameFor returns the role-specific primary container name when set, else the global
-// MainContainerName.
-func (h *BaseRoleGroupHandler[CR]) mainContainerNameFor(roleName string) string {
-	if name, ok := h.RoleMainContainerName[roleName]; ok {
-		return name
-	}
-	return h.MainContainerName
-}
-
-// SetRoleStorageMountPath sets the data PVC mount path for a specific role, overriding
-// StorageMountPath for that role. Symmetric with SetRoleContainerPorts.
-//
-// Pass "" to say this role has NO data PVC even though the handler-global default is set — the
-// case this exists for, since a product with a stateful and a stateless role could otherwise only
-// choose between "every role" and "no role".
-func (h *BaseRoleGroupHandler[CR]) SetRoleStorageMountPath(roleName, path string) {
-	if h.RoleStorageMountPaths == nil {
-		h.RoleStorageMountPaths = make(map[string]string)
-	}
-	h.RoleStorageMountPaths[roleName] = path
-}
-
-// SetRoleConfigDefaults declares the product's own defaults for a role's config block — the
-// `resources`, `affinity`, `gracefulShutdownTimeout` and `logging` a role should have when the CR
-// says nothing.
-//
-// The value is folded BENEATH the role and role group config, through the same
-// MergeRoleGroupConfig the CR's own two levels use, so it inherits their rules exactly rather than
-// inventing a second "fill the nil fields" semantic:
-//
-//   - `resources` folds per LEAF, so a product default for cpu.min survives a user who set only
-//     cpu.max — a struct-level nil check would have dropped it;
-//   - `affinity` is REPLACED wholesale, so `affinity: {}` in the CR still clears the default rather
-//     than inheriting it, which is how a single-node development group opts out;
-//   - anything the user states anywhere wins, at every level.
-//
-// Build the affinity with DefaultAntiAffinity and EncodeAffinity rather than a JSON literal:
-//
-//	aff, err := reconciler.EncodeAffinity(
-//	    reconciler.DefaultAntiAffinity(clusterName, "worker", reconciler.TopologyKeyHostname, 70))
-//
-// Note what that example implies: the anti-affinity selector names the CLUSTER, so a default that
-// includes one is per-cluster data and cannot live on the handler, which is shared by every cluster
-// the operator serves (§4). Supply it through RoleGroupBuildContext.ConfigDefaults instead; this
-// setter is for the reconcile-invariant part.
-func (h *BaseRoleGroupHandler[CR]) SetRoleConfigDefaults(roleName string, defaults *v1alpha1.RoleGroupConfigSpec) {
-	if h.RoleConfigDefaults == nil {
-		h.RoleConfigDefaults = make(map[string]*v1alpha1.RoleGroupConfigSpec)
-	}
-	h.RoleConfigDefaults[roleName] = defaults
-}
-
-// SetRoleLoggingContainers sets the logging-producer list for a specific role, overriding the
-// global LoggingContainers for that role. Symmetric with SetRoleContainerPorts.
-func (h *BaseRoleGroupHandler[CR]) SetRoleLoggingContainers(roleName string, containers []productlogging.ContainerLogging) {
-	if h.RoleLoggingContainers == nil {
-		h.RoleLoggingContainers = make(map[string][]productlogging.ContainerLogging)
-	}
-	h.RoleLoggingContainers[roleName] = containers
-}
-
-// SetRoleMainContainerName sets the primary container name for a specific role, overriding the
-// global MainContainerName for that role. Symmetric with SetRoleContainerPorts.
-func (h *BaseRoleGroupHandler[CR]) SetRoleMainContainerName(roleName, name string) {
-	if h.RoleMainContainerName == nil {
-		h.RoleMainContainerName = make(map[string]string)
-	}
-	h.RoleMainContainerName[roleName] = name
-}
-
-// LogVolumeSizeLimit implements LoggingProducerProvider: the shared log volume SizeLimit override
-// ("" uses vector.DefaultLogVolumeSize).
-func (h *BaseRoleGroupHandler[CR]) LogVolumeSizeLimit() string {
-	return h.LogVolumeSize
-}
-
-// clusterImage resolves the image from the cluster CR's spec.image folded over ImageDefaults.
-//
-// It returns ("", "", nil) when neither the user nor the product expressed an opinion, leaving the
-// caller to fall back. It returns an ERROR when they did and the result cannot be turned into a
-// reference: the alternative is running the handler's static image, i.e. silently deploying a
-// version nobody asked for. Same call as `config.affinity` — a contract the framework cannot honor
-// is reported, not ignored.
-func (h *BaseRoleGroupHandler[CR]) clusterImage(
-	buildCtx *RoleGroupBuildContext,
-) (string, corev1.PullPolicy, error) {
-	var spec *v1alpha1.ImageSpec
-	if buildCtx != nil && buildCtx.ClusterSpec != nil {
-		spec = buildCtx.ClusterSpec.Image
-	}
-
-	image, err := spec.ResolveImage(h.ProductName, h.ImageDefaults)
-	if err != nil {
-		return "", "", err
-	}
-	if image == "" {
-		return "", "", nil
-	}
-	return image, spec.ResolvedPullPolicy(h.ImageDefaults), nil
-}
-
-// containerImage returns the container image and pull policy for a role, in precedence order:
-// the CR's spec.image (when ProductName is set), then the per-role override, then the handler
-// default. Resolving it here — rather than leaving each product to patch the built container —
-// keeps the image the sidecars are told about (SetProductImage, e.g. the Vector agent, which ships
-// inside the product image) identical to the one the main container actually runs.
-func (h *BaseRoleGroupHandler[CR]) containerImage(
-	buildCtx *RoleGroupBuildContext, roleName string,
-) (string, corev1.PullPolicy, error) {
-	image, pullPolicy, err := h.clusterImage(buildCtx)
-	if err != nil {
-		return "", "", err
-	}
-	if image != "" {
-		return image, pullPolicy, nil
-	}
-	// The per-call channel outranks the handler's own configuration: it is the one input that is
-	// allowed to depend on WHICH cluster is being built (see RoleGroupBuildContext.Image).
-	if buildCtx != nil && buildCtx.Image != "" {
-		return buildCtx.Image, h.pullPolicy(buildCtx), nil
-	}
-	if image, ok := h.RoleImages[roleName]; ok {
-		return image, h.pullPolicy(buildCtx), nil
-	}
-	return h.Image, h.pullPolicy(buildCtx), nil
-}
-
-// mergedRoleGroupConfig folds the product's own defaults BENEATH the CR's role and role group
-// levels, through the same MergeRoleGroupConfig those two use — so `resources` folds per leaf (a
-// default cpu.min survives a user who set only cpu.max), `affinity` is replaced wholesale
-// (`affinity: {}` still clears the default rather than inheriting it), and anything the user states
-// anywhere still wins. Reusing the merge is the point: a "fill the nil fields" pass would discard a
-// product's sibling leaves and make an empty affinity inherit rather than clear.
-//
-// It runs here rather than in the reconciler because the per-call channel has to outrank the
-// handler's map: an anti-affinity selector names the cluster, and one handler serves them all.
-func (h *BaseRoleGroupHandler[CR]) mergedRoleGroupConfig(
-	buildCtx *RoleGroupBuildContext,
-) (*v1alpha1.RoleGroupConfigSpec, error) {
-	defaults, source := h.configDefaults(buildCtx)
-	if defaults != nil && defaults.Logging != nil {
-		return nil, NewValidationError(source, buildCtx.RoleName, buildCtx.RoleGroupName,
-			fmt.Errorf("config defaults may not set logging: the framework merges logging at the "+
-				"reconciler level from the CR's role and role group only, and has already decided Vector "+
-				"enablement and rendered the logging config file by the time defaults are read — a "+
-				"default here would apply to neither. Put product logging defaults in the CR's own "+
-				"defaulting webhook instead"))
-	}
-	return MergeRoleGroupConfig(defaults, buildCtx.RoleGroupSpec.GetConfig()), nil
-}
-
-// configDefaults resolves the product's role-config defaults: the per-call value when the product
-// set one (it depends on WHICH cluster is being built), the handler's per-role map otherwise.
-//
-// It also returns WHICH of the two supplied the value, so an error about a bad default names the
-// place the product has to edit. The two are set through different APIs in different files, and a
-// message naming the wrong one sends the reader to code that does not contain the problem.
-func (h *BaseRoleGroupHandler[CR]) configDefaults(
-	buildCtx *RoleGroupBuildContext,
-) (*v1alpha1.RoleGroupConfigSpec, string) {
-	if buildCtx == nil {
-		return nil, ""
-	}
-	if buildCtx.ConfigDefaults != nil {
-		return buildCtx.ConfigDefaults, "RoleGroupBuildContext.ConfigDefaults"
-	}
-	if defaults, ok := h.RoleConfigDefaults[buildCtx.RoleName]; ok {
-		return defaults, fmt.Sprintf("BaseRoleGroupHandler.SetRoleConfigDefaults(%q)", buildCtx.RoleName)
-	}
-	return nil, ""
-}
-
-// storageMountPath resolves the data PVC mount path for a role: the per-role value when the product
-// set one, the handler's global default otherwise. Empty means this role gets no data PVC.
-//
-// A role SET to "" is not the same as a role with no entry: it means "no data PVC for this role even
-// though the global default is set", which is the case that made this per-role at all. DolphinScheduler
-// needs the volume on `worker` and must not have it on `master`, and with only a handler-global field
-// the migration had to choose "none" — deleting the `worker-data` volumeClaimTemplate that Gen 2
-// rendered, since Gen 2 already modelled storage per role.
-func (h *BaseRoleGroupHandler[CR]) storageMountPath(roleName string) string {
-	if path, ok := h.RoleStorageMountPaths[roleName]; ok {
-		return path
-	}
-	return h.StorageMountPath
-}
-
-// pullSecretName resolves the cluster's image pull secret from spec.image folded over
-// ImageDefaults. Empty means the deployment needs no registry credential, which is the common case.
-func (h *BaseRoleGroupHandler[CR]) pullSecretName(buildCtx *RoleGroupBuildContext) string {
-	var spec *v1alpha1.ImageSpec
-	if buildCtx != nil && buildCtx.ClusterSpec != nil {
-		spec = buildCtx.ClusterSpec.Image
-	}
-	return spec.ResolvedPullSecretName(h.ImageDefaults)
-}
-
-// pullPolicy resolves the pull policy for a handler-supplied image: the per-call value when the
-// product set one, the handler's otherwise.
-func (h *BaseRoleGroupHandler[CR]) pullPolicy(buildCtx *RoleGroupBuildContext) corev1.PullPolicy {
-	if buildCtx != nil && buildCtx.ImagePullPolicy != "" {
-		return buildCtx.ImagePullPolicy
-	}
-	return h.ImagePullPolicy
-}
-
-// containerPorts returns the container ports for a role group: the per-call value when the product
-// set one (ports that depend on the CR — a TLS toggle moving 8080 to 8443 — belong there), the
-// handler's per-role map otherwise.
-func (h *BaseRoleGroupHandler[CR]) containerPorts(buildCtx *RoleGroupBuildContext, roleName string) []corev1.ContainerPort {
-	if buildCtx != nil && len(buildCtx.ContainerPorts) > 0 {
-		return buildCtx.ContainerPorts
-	}
-	if ports, ok := h.RoleContainerPorts[roleName]; ok {
-		return ports
-	}
-	return nil
-}
-
-// servicePorts returns the service ports for a role group, with the same precedence.
-func (h *BaseRoleGroupHandler[CR]) servicePorts(buildCtx *RoleGroupBuildContext, roleName string) []corev1.ServicePort {
-	if buildCtx != nil && len(buildCtx.ServicePorts) > 0 {
-		return buildCtx.ServicePorts
-	}
-	if ports, ok := h.RoleServicePorts[roleName]; ok {
-		return ports
-	}
-	return nil
+	return *buildCtx.vectorLogPipelineActive
 }
 
 // ClusterLabelKey returns the identity label key for the cluster, under the given domain.
@@ -700,34 +322,6 @@ func RoleLabelKey(domain string) string { return domain + "/role" }
 
 // RoleGroupLabelKey returns the identity label key for the role group, under the given domain.
 func RoleGroupLabelKey(domain string) string { return domain + "/role-group" }
-
-// productVersion returns the value for app.kubernetes.io/version: the product version the image
-// this handler actually resolves is running.
-//
-// It reads the RESOLVED version — spec.image's when the user stated one, ImageDefaults' otherwise —
-// so the label tracks the tag the pods run rather than only what the user happened to type. That
-// second half is the fix: a cluster running the operator's default version used to carry no version
-// label at all.
-//
-// It is empty when:
-//   - the handler declares no ProductName, so it runs its static Image and resolves nothing from
-//     the CR — a version read from a field that never reaches the container would be a guess;
-//   - the user pinned spec.image.custom and stated no productVersion alongside it;
-//   - the custom reference came from ImageDefaults rather than the spec, since a product's default
-//     version says nothing about an image it did not build.
-//
-// A spec.image.custom WITH a productVersion still publishes it: `custom` replaces the image
-// *reference*, and that field remains the user's declaration of which product version it is.
-func (h *BaseRoleGroupHandler[CR]) productVersion(clusterSpec *v1alpha1.GenericClusterSpec) string {
-	if h.ProductName == "" {
-		return ""
-	}
-	var spec *v1alpha1.ImageSpec
-	if clusterSpec != nil {
-		spec = clusterSpec.Image
-	}
-	return spec.ResolvedProductVersion(h.ImageDefaults)
-}
 
 // recommendedLabels returns the Kubernetes recommended labels the framework stamps on every
 // resource it builds. roleGroupName is empty for role-level resources, which span every group of
@@ -742,8 +336,7 @@ func (h *BaseRoleGroupHandler[CR]) productVersion(clusterSpec *v1alpha1.GenericC
 // way: they also feed the StatefulSet's .spec.selector, so a value too long to be a label is
 // already fatal there and silently dropping it here would only hide where it failed.
 func (h *BaseRoleGroupHandler[CR]) recommendedLabels(
-	clusterName, roleName, roleGroupName string,
-	clusterSpec *v1alpha1.GenericClusterSpec,
+	clusterName, roleName, roleGroupName, productName, productVersion string,
 ) map[string]string {
 	labels := map[string]string{
 		constant.LabelKubernetesInstance:  clusterName,
@@ -753,11 +346,11 @@ func (h *BaseRoleGroupHandler[CR]) recommendedLabels(
 	if roleGroupName != "" {
 		labels[constant.LabelKubernetesRoleGroup] = roleGroupName
 	}
-	if name := h.ProductName; name != "" && len(validation.IsValidLabelValue(name)) == 0 {
-		labels[constant.LabelKubernetesName] = name
+	if productName != "" && len(validation.IsValidLabelValue(productName)) == 0 {
+		labels[constant.LabelKubernetesName] = productName
 	}
-	if version := h.productVersion(clusterSpec); version != "" && len(validation.IsValidLabelValue(version)) == 0 {
-		labels[constant.LabelKubernetesVersion] = version
+	if productVersion != "" && len(validation.IsValidLabelValue(productVersion)) == 0 {
+		labels[constant.LabelKubernetesVersion] = productVersion
 	}
 	return labels
 }
@@ -775,7 +368,8 @@ func (h *BaseRoleGroupHandler[CR]) buildLabels(buildCtx *RoleGroupBuildContext) 
 	}
 
 	// The Kubernetes recommended set is framework-owned, so it is applied over the CR's labels.
-	for k, v := range h.recommendedLabels(buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName, buildCtx.ClusterSpec) {
+	for k, v := range h.recommendedLabels(buildCtx.ClusterName, buildCtx.RoleName, buildCtx.RoleGroupName,
+		buildCtx.ProductName, buildCtx.ResolvedImage.ProductVersion) {
 		labels[k] = v
 	}
 
@@ -896,7 +490,7 @@ func (h *BaseRoleGroupHandler[CR]) buildConfigMap(buildCtx *RoleGroupBuildContex
 	// vector.yaml when the Vector agent is enabled (RenderLoggingConfigMapData owns the file
 	// appender and vector.yaml gating). Fail fast on a key collision rather than silently
 	// overwriting a file the product already produced (e.g. via MergedConfig.ConfigFiles).
-	loggingData, err := RenderLoggingConfigMapData(buildCtx, h.loggingContainersFor(buildCtx.RoleName))
+	loggingData, err := RenderLoggingConfigMapData(buildCtx, buildCtx.Declaration.LogProducers)
 	if err != nil {
 		return nil, err
 	}
@@ -927,8 +521,8 @@ func (h *BaseRoleGroupHandler[CR]) buildHeadlessService(buildCtx *RoleGroupBuild
 	return builder.NewHeadlessServiceBuilder(buildCtx.ResourceName+"-headless", buildCtx.ClusterNamespace).
 		WithLabels(labels).
 		WithSelector(h.buildSelectorLabels(buildCtx)).
-		WithPublishNotReadyAddresses(h.PublishNotReadyAddresses).
-		WithPorts(h.servicePorts(buildCtx, buildCtx.RoleName)).
+		WithPublishNotReadyAddresses(buildCtx.Declaration.PublishNotReadyAddresses).
+		WithPorts(buildCtx.Declaration.ServicePorts).
 		Build()
 }
 
@@ -940,8 +534,8 @@ func (h *BaseRoleGroupHandler[CR]) buildService(buildCtx *RoleGroupBuildContext,
 		WithPorts(ports)
 	// Set the type from the declared listener class before Build(), rather than leaving the
 	// product to patch Service.Spec.Type on the object it gets back.
-	if buildCtx.ListenerClass != "" {
-		svcBuilder = svcBuilder.WithServiceType(builder.ServiceType(listener.ServiceTypeFor(buildCtx.ListenerClass)))
+	if buildCtx.Declaration.ListenerClass != "" {
+		svcBuilder = svcBuilder.WithServiceType(builder.ServiceType(listener.ServiceTypeFor(buildCtx.Declaration.ListenerClass)))
 	}
 	return svcBuilder.Build()
 }
@@ -965,7 +559,7 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 	// and strip the framework's. The mount references buildCtx.ResourceName, which the same
 	// handler's buildConfigMap always creates, so the referenced ConfigMap always exists.
 	stsBuilder.AddVolume(corev1.Volume{
-		Name: "config",
+		Name: ConfigVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
@@ -975,7 +569,7 @@ func (h *BaseRoleGroupHandler[CR]) wireVolumes(
 		},
 	})
 	stsBuilder.AddVolumeMount(corev1.VolumeMount{
-		Name:      "config",
+		Name:      ConfigVolumeName,
 		MountPath: h.configMountPath(),
 		ReadOnly:  true,
 	})
@@ -1021,16 +615,13 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	}
 
 	// Set basic properties
-	image, pullPolicy, err := h.containerImage(buildCtx, buildCtx.RoleName)
-	if err != nil {
-		return nil, err
-	}
+	image, pullPolicy := buildCtx.ResolvedImage.Reference, buildCtx.ResolvedImage.PullPolicy
 	stsBuilder.WithLabels(labels).
 		WithSelectorLabels(h.buildSelectorLabels(buildCtx)).
 		WithReplicas(replicas).
 		WithImage(image, pullPolicy).
 		WithConfig(buildCtx.MergedConfig).
-		WithPorts(h.containerPorts(buildCtx, buildCtx.RoleName))
+		WithPorts(buildCtx.Declaration.ContainerPorts)
 
 	// Bind the reconciler-managed ServiceAccount to the pod template when configured, so the
 	// created SA is actually used. Empty leaves ServiceAccountName unset (pods use the namespace
@@ -1046,7 +637,7 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// silently dropped it on migration: the CRD still accepted `pullSecretName` and no pod ever
 	// carried an imagePullSecrets entry, so a private-registry install failed with ImagePullBackOff
 	// and no indication of why.
-	if secretName := h.pullSecretName(buildCtx); secretName != "" {
+	if secretName := buildCtx.ResolvedImage.PullSecretName; secretName != "" {
 		stsBuilder.WithImagePullSecretName(secretName)
 	}
 
@@ -1054,18 +645,20 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// StatefulSet. All of these land on the builder BEFORE pod overrides take effect: the
 	// builder applies PodOverrides last in Build(), so a user-supplied pod override (e.g. an
 	// affinity in podOverrides) always keeps precedence over the config-declared value.
-	roleGroupConfig, err := h.mergedRoleGroupConfig(buildCtx)
-	if err != nil {
-		return nil, err
-	}
+	// The effective config is folded ONCE, by the reconciler, before this runs — over the role's
+	// declared defaults, the CR's role level and its role group level. This used to be a SECOND
+	// fold computed here and thrown away, so the field a product could read was missing its own
+	// defaults, and nothing derived from the effective config could reach the ConfigMap because
+	// that had already been built.
+	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
 	if roleGroupConfig != nil {
 		if roleGroupConfig.Resources != nil {
 			stsBuilder.WithResources(roleGroupConfig.Resources)
-			// Opt-in data PVC: when a product sets StorageMountPath, build a VolumeClaimTemplate
-			// from the configured storage and mount it, so the volume/mount contract is enforced
-			// by the builder instead of being hand-assembled by each product.
-			if mountPath := h.storageMountPath(buildCtx.RoleName); mountPath != "" && roleGroupConfig.Resources.Storage != nil {
-				stsBuilder.WithStorage(roleGroupConfig.Resources.Storage, mountPath)
+			// Opt-in data PVC. Whether the role HAS one is a structural property of the role, so it
+			// comes from the declaration; how big it is and which class it uses come from the
+			// effective config, so a user can size it.
+			if dv := buildCtx.Declaration.DataVolume; dv != nil && roleGroupConfig.Resources.Storage != nil {
+				stsBuilder.WithNamedStorage(dv.Name, roleGroupConfig.Resources.Storage, dv.MountPath)
 			}
 		}
 
@@ -1135,15 +728,11 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// post-build rename would leave the override appended as a phantom, image-less container.
 	// Sidecar injection below also sees the final name (the Vector provider RW-mounts the
 	// shared log volume on the producer containers by name).
-	if mainName := h.mainContainerNameFor(buildCtx.RoleName); mainName != "" {
+	if mainName := buildCtx.Declaration.MainContainerName; mainName != "" {
 		stsBuilder.WithMainContainerName(mainName)
 	}
 
-	// Registered BEFORE Build(): the customizer runs on the assembled container and podOverrides
-	// are strategic-merged afterwards, so the user's overrides keep the last word.
-	if buildCtx.MainContainerCustomizer != nil {
-		stsBuilder.WithMainContainerCustomizer(buildCtx.MainContainerCustomizer)
-	}
+	applyDeclaredContainerFields(stsBuilder, buildCtx.Declaration)
 
 	// Build the StatefulSet
 	sts := stsBuilder.Build()
@@ -1155,14 +744,6 @@ func (h *BaseRoleGroupHandler[CR]) buildStatefulSet(
 	// Refusing to build is the only way that stops being silent.
 	if violations := stsBuilder.PodOverrideViolations(); len(violations) > 0 {
 		return nil, NewValidationError("podOverrides", buildCtx.RoleName, buildCtx.RoleGroupName,
-			stderrors.Join(violations...))
-	}
-
-	// A customizer that failed would otherwise ship a workload missing the command, args or probes
-	// the product meant to set — the same reason podOverrides violations fail the build rather than
-	// being logged.
-	if violations := stsBuilder.MainContainerViolations(); len(violations) > 0 {
-		return nil, NewValidationError("mainContainerCustomizer", buildCtx.RoleName, buildCtx.RoleGroupName,
 			stderrors.Join(violations...))
 	}
 
@@ -1275,7 +856,8 @@ func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(buildCtx *RoleBuildContext) m
 		labels[k] = v
 	}
 
-	for k, v := range h.recommendedLabels(buildCtx.ClusterName, buildCtx.RoleName, "", buildCtx.ClusterSpec) {
+	for k, v := range h.recommendedLabels(buildCtx.ClusterName, buildCtx.RoleName, "",
+		buildCtx.ProductName, buildCtx.ProductVersion) {
 		labels[k] = v
 	}
 
@@ -1284,79 +866,6 @@ func (h *BaseRoleGroupHandler[CR]) buildRoleLabels(buildCtx *RoleBuildContext) m
 	}
 
 	return labels
-}
-
-// SetRoleImage sets the image for a specific role.
-//
-// Call this at CONSTRUCTION. It writes into the shared handler instance, so calling it
-// from inside BuildResources publishes one cluster's value process-wide — use
-// RoleGroupBuildContext.Image for a value derived from the CR.
-func (h *BaseRoleGroupHandler[CR]) SetRoleImage(roleName, image string) {
-	if h.RoleImages == nil {
-		h.RoleImages = make(map[string]string)
-	}
-	h.RoleImages[roleName] = image
-}
-
-// SetRoleContainerPorts sets the container ports for a specific role.
-//
-// Call this at CONSTRUCTION. It writes into the shared handler instance, so calling it
-// from inside BuildResources publishes one cluster's value process-wide — use
-// RoleGroupBuildContext.ContainerPorts for a value derived from the CR.
-func (h *BaseRoleGroupHandler[CR]) SetRoleContainerPorts(roleName string, ports []corev1.ContainerPort) {
-	if h.RoleContainerPorts == nil {
-		h.RoleContainerPorts = make(map[string][]corev1.ContainerPort)
-	}
-	h.RoleContainerPorts[roleName] = ports
-}
-
-// SetRoleServicePorts sets the service ports for a specific role.
-//
-// Call this at CONSTRUCTION. It writes into the shared handler instance, so calling it
-// from inside BuildResources publishes one cluster's value process-wide — use
-// RoleGroupBuildContext.ServicePorts for a value derived from the CR.
-func (h *BaseRoleGroupHandler[CR]) SetRoleServicePorts(roleName string, ports []corev1.ServicePort) {
-	if h.RoleServicePorts == nil {
-		h.RoleServicePorts = make(map[string][]corev1.ServicePort)
-	}
-	h.RoleServicePorts[roleName] = ports
-}
-
-// RoleNameProvider is implemented by handlers that carry per-role configuration keyed by role name
-// (BaseRoleGroupHandler's Set* methods). A role name is a bare string that has to match a key of
-// the CR's spec.roles; when it does not, every lookup silently returns nil — no ports, no image
-// override, and no Service at all. Exposing the configured keys lets the reconciler cross-check
-// them against the CR's declared roles and fail loudly on a typo instead.
-type RoleNameProvider interface {
-	ConfiguredRoleNames() []string
-}
-
-// ConfiguredRoleNames implements RoleNameProvider: the sorted union of the role names this handler
-// was configured for through the Set* methods.
-func (h *BaseRoleGroupHandler[CR]) ConfiguredRoleNames() []string {
-	names := make(map[string]struct{})
-	for name := range h.RoleImages {
-		names[name] = struct{}{}
-	}
-	for name := range h.RoleContainerPorts {
-		names[name] = struct{}{}
-	}
-	for name := range h.RoleServicePorts {
-		names[name] = struct{}{}
-	}
-	for name := range h.RoleMainContainerName {
-		names[name] = struct{}{}
-	}
-	for name := range h.RoleLoggingContainers {
-		names[name] = struct{}{}
-	}
-	for name := range h.RoleStorageMountPaths {
-		names[name] = struct{}{}
-	}
-	for name := range h.RoleConfigDefaults {
-		names[name] = struct{}{}
-	}
-	return slices.Sorted(maps.Keys(names))
 }
 
 // FetchConfigMap fetches a ConfigMap from the cluster.
@@ -1381,3 +890,36 @@ func (h *BaseRoleGroupHandler[CR]) FetchSecret(ctx context.Context, k8sClient cl
 
 // Verify that BaseRoleGroupHandler implements RoleGroupHandler.
 var _ RoleGroupHandler[common.ClusterInterface] = &BaseRoleGroupHandler[common.ClusterInterface]{}
+
+// applyDeclaredContainerFields puts the role declaration's primary-container fields on the builder.
+//
+// All of them land BEFORE Build(), so a user's podOverrides — strategic-merged inside Build() —
+// still have the last word. They replace a general-purpose container callback that ran on the
+// ASSEMBLED container, i.e. after the user's merged cliOverrides and env had already been written
+// into it: a product setting Args or Env there silently deleted what the user wrote, which is what
+// one shipped operator does today.
+//
+// Every field here has NO user layer, which is why declaring them beats nobody. Args are absent on
+// purpose — they reach the container through cliOverrides, which the user can state.
+func applyDeclaredContainerFields(b *builder.StatefulSetBuilder, decl RoleDeclaration) {
+	if len(decl.Command) > 0 {
+		b.WithCommand(decl.Command)
+	}
+	if decl.Lifecycle != nil {
+		b.WithLifecycle(decl.Lifecycle)
+	}
+	if len(decl.Env) > 0 {
+		b.WithBaseEnvVars(decl.Env)
+	}
+	// A nil readiness probe keeps the generated TCP probe on ContainerPorts[0]; nil liveness and
+	// startup mean none, which is the framework's deliberate position rather than an omission.
+	if decl.ReadinessProbe != nil {
+		b.WithReadinessProbe(decl.ReadinessProbe)
+	}
+	if decl.LivenessProbe != nil {
+		b.WithLivenessProbe(decl.LivenessProbe)
+	}
+	if decl.StartupProbe != nil {
+		b.WithStartupProbe(decl.StartupProbe)
+	}
+}

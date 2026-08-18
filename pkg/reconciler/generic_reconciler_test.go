@@ -58,6 +58,7 @@ var _ = Describe("GenericReconciler", func() {
 			cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 				Client:           k8sClient,
 				Scheme:           testScheme,
+				ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 				Recorder:         recorder,
 				RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 				Prototype:        wrappedCR,
@@ -77,6 +78,7 @@ var _ = Describe("GenericReconciler", func() {
 			cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 				Client:           nil,
 				Scheme:           testScheme,
+				ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 				Recorder:         recorder,
 				RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 				Prototype:        wrappedCR,
@@ -117,6 +119,7 @@ var _ = Describe("GenericReconciler", func() {
 			cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 				Client:           k8sClient,
 				Scheme:           testScheme,
+				ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 				Recorder:         nil,
 				RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 				Prototype:        wrappedCR,
@@ -136,6 +139,7 @@ var _ = Describe("GenericReconciler", func() {
 			cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 				Client:           k8sClient,
 				Scheme:           testScheme,
+				ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 				Recorder:         recorder,
 				RoleGroupHandler: nil,
 				Prototype:        wrappedCR,
@@ -156,6 +160,7 @@ var _ = Describe("GenericReconciler", func() {
 			cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 				Client:           k8sClient,
 				Scheme:           testScheme,
+				ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 				Recorder:         recorder,
 				RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 				Prototype:        wrappedCR,
@@ -175,6 +180,7 @@ var _ = Describe("GenericReconciler", func() {
 			cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 				Client:              k8sClient,
 				Scheme:              testScheme,
+				ImageResolution:     reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 				Recorder:            recorder,
 				RoleGroupHandler:    &handlerAdapter{handler: mockHandler},
 				Prototype:           wrappedCR,
@@ -239,6 +245,7 @@ var _ = Describe("GenericReconciler Reconcile", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 			Prototype:        wrappedCR,
@@ -269,6 +276,7 @@ var _ = Describe("GenericReconcilerConfig", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:        wrappedCR,
@@ -285,6 +293,7 @@ var _ = Describe("GenericReconcilerConfig", func() {
 var _ = Describe("RoleGroupBuildContext", func() {
 	It("should create a valid context", func() {
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    map[string]string{"app": "test"},
@@ -509,6 +518,7 @@ var _ = Describe("GenericReconciler Integration Tests", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 			Prototype:        wrappedCR,
@@ -904,6 +914,7 @@ var _ = Describe("GenericReconciler ClusterOperation gate ordering (issue #511)"
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 			Prototype:        prototype,
@@ -1114,6 +1125,7 @@ var _ = Describe("GenericReconciler derived workload ServiceAccount", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: capturing,
 			Prototype:        prototype,
@@ -1374,6 +1386,7 @@ var _ = Describe("GenericReconciler stopped scales the StatefulSet to zero", fun
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 			Prototype:        wrappedCR,
@@ -1482,6 +1495,7 @@ var _ = Describe("GenericReconciler error paths", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 			Prototype:        wrappedCR,
@@ -1555,6 +1569,7 @@ var _ = Describe("GenericReconciler applyResources errors", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: mockHandler},
 			Prototype:        wrappedCR,
@@ -1740,6 +1755,7 @@ var _ = Describe("GenericReconciler ExtraResources", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           recClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", namespace),
@@ -1924,23 +1940,26 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.NewMockCluster("proto", namespace),
-			ProductConfig: func(_ context.Context, _ client.Client, _ *testutil.MockCluster,
-				roleName, _ string) (*v1alpha1.OverridesSpec, error) {
-				overrides := map[string]map[string]string{
-					"config.properties": {
-						"shared":       "from-product",
-						"product-only": "p",
-					},
-				}
-				// Role-specific product knowledge (neither framework nor user).
-				if roleName == "coordinator" {
-					overrides["config.properties"]["coordinator"] = "true"
-				}
-				return &v1alpha1.OverridesSpec{ConfigOverrides: overrides}, nil
-			},
+			RoleGroupResolver: reconciler.RoleGroupResolverFunc[*testutil.MockCluster](
+				func(_ context.Context, _ client.Client, _ *testutil.MockCluster,
+					rg *reconciler.RoleGroupBuildContext) (*reconciler.Contribution, error) {
+					roleName := rg.RoleName
+					overrides := map[string]map[string]string{
+						"config.properties": {
+							"shared":       "from-product",
+							"product-only": "p",
+						},
+					}
+					// Role-specific product knowledge (neither framework nor user).
+					if roleName == "coordinator" {
+						overrides["config.properties"]["coordinator"] = "true"
+					}
+					return &reconciler.Contribution{ConfigOverrides: overrides}, nil
+				}),
 		}
 
 		r, err := reconciler.NewGenericReconciler(cfg)
@@ -1966,6 +1985,7 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.NewMockCluster("proto", namespace),
@@ -2001,23 +2021,25 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.NewMockCluster("proto", namespace),
-			ProductConfig: func(hookCtx context.Context, c client.Client, cr *testutil.MockCluster,
-				_, _ string) (*v1alpha1.OverridesSpec, error) {
+			RoleGroupResolver: reconciler.RoleGroupResolverFunc[*testutil.MockCluster](func(
+				hookCtx context.Context, c client.Client, cr *testutil.MockCluster,
+				_ *reconciler.RoleGroupBuildContext) (*reconciler.Contribution, error) {
 				cm := &corev1.ConfigMap{}
 				if err := c.Get(hookCtx, types.NamespacedName{
 					Namespace: cr.Namespace, Name: cr.Name + "-source"}, cm); err != nil {
 					return nil, err
 				}
-				return &v1alpha1.OverridesSpec{ConfigOverrides: map[string]map[string]string{
+				return &reconciler.Contribution{ConfigOverrides: map[string]map[string]string{
 					"config.properties": {
 						"shared":       cm.Data["endpoint"],
 						"product-only": "p",
 					},
 				}}, nil
-			},
+			}),
 		}
 
 		r, err := reconciler.NewGenericReconciler(cfg)
@@ -2040,13 +2062,15 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.NewMockCluster("proto", namespace),
-			ProductConfig: func(context.Context, client.Client, *testutil.MockCluster,
-				string, string) (*v1alpha1.OverridesSpec, error) {
+			RoleGroupResolver: reconciler.RoleGroupResolverFunc[*testutil.MockCluster](func(
+				context.Context, client.Client, *testutil.MockCluster,
+				*reconciler.RoleGroupBuildContext) (*reconciler.Contribution, error) {
 				return nil, fmt.Errorf("the S3Connection reference could not be resolved")
-			},
+			}),
 		}
 
 		r, err := reconciler.NewGenericReconciler(cfg)
@@ -2068,13 +2092,15 @@ var _ = Describe("GenericReconciler ProductConfig", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: newCapturingHandler(&captured),
 			Prototype:        testutil.NewMockCluster("proto", namespace),
-			ProductConfig: func(context.Context, client.Client, *testutil.MockCluster,
-				string, string) (*v1alpha1.OverridesSpec, error) {
+			RoleGroupResolver: reconciler.RoleGroupResolverFunc[*testutil.MockCluster](func(
+				context.Context, client.Client, *testutil.MockCluster,
+				*reconciler.RoleGroupBuildContext) (*reconciler.Contribution, error) {
 				return nil, fmt.Errorf("resolving the warehouse connection: %w", notFound)
-			},
+			}),
 		}
 
 		r, err := reconciler.NewGenericReconciler(cfg)
@@ -2142,6 +2168,7 @@ var _ = Describe("GenericReconciler update propagation (issue #526)", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         fakeRecorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster("proto", namespace),
@@ -2532,12 +2559,13 @@ var _ = Describe("GenericReconciler role PodDisruptionBudget", func() {
 		crName = fmt.Sprintf("pdb-role-%d", time.Now().UnixNano())
 
 		handler := &embeddingRoleGroupHandler{
-			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("test-image:latest", testScheme),
+			BaseRoleGroupHandler: reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme),
 		}
 
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: handler,
 			Prototype:        testutil.NewMockCluster(crName, namespace),
@@ -2661,6 +2689,7 @@ var _ = Describe("Metrics of a deleted cluster", func() {
 		cfg := &reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:           k8sClient,
 			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:         recorder,
 			RoleGroupHandler: &handlerAdapter{handler: testutil.NewMockRoleGroupHandler()},
 			Prototype:        testutil.NewMockCluster(cluster, namespace),

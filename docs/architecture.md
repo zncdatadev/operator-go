@@ -102,14 +102,20 @@ Each field type folds with a defined strategy:
 | field | granularity | why not coarser / finer |
 | --- | --- | --- |
 | `resources` (cpu/memory/storage) | **per leaf** | Overriding one leaf — a `storageClass`, a `cpu.min` — is the normal way to use the API; struct granularity silently dropped every sibling. |
-| `affinity` | **wholesale** — the RoleGroup's replaces the Role's, and `{}` clears it | The exception, and deliberate. `resources` is independent knobs; an affinity is a single scheduling *policy*, so a partial edit produces a constraint neither author wrote (a `nodeSelectorTerms` list is an OR of ANDs). Kubernetes replaces `PodSpec.Affinity` too. Per-member inheritance also removes the only way to express "no affinity", which a single-node group needs. |
+| `affinity` | **wholesale** — any layer that states one replaces the layer beneath it entirely; `affinity: {}` clears. What the replacement discarded is **reported** as an `AffinityOverridden` Warning event | This is the one field in the table that Kubernetes itself defines, so the granularity question is not ours to answer freely: `PodSpec.affinity`, a Helm value and a Kustomize patch all replace wholesale, and a framework that folded it per member would oblige a user to learn a merge semantic for exactly one field of one CRD. `resources.cpu.min` is a knob and can fold per leaf without that cost. The loss a product default takes when a user states any affinity is paid to the event, not to a second semantic. |
 | `gracefulShutdownTimeout`, `logging` | per field / per container, and **per level** inside a container | Scalars and an already keyed map. Within a container, an entry naming `console`, `file` or a logger **without stating a level** is "inherit", not "clear" — `console: {}` keeps the Role's threshold. |
 
 This works only because these fields carry **no CRD-level default**: structural defaulting fills a field as soon as its enclosing object exists, so a `+kubebuilder:default` on a leaf makes "unset here" indistinguishable from "explicitly the default" and the Role's value can never win. Defaults therefore live at consumption time (`StorageResource.GetCapacity`, `RoleGroupConfigSpec.GetGracefulShutdownTimeout`, the renderers' root-level INFO).
 
-**A product's own defaults for this block are a third layer beneath the two, folded by the same rule.** `BaseRoleGroupHandler.SetRoleConfigDefaults` (and its per-CR counterpart `RoleGroupBuildContext.ConfigDefaults`) supply what a role's `resources`, `affinity` and `gracefulShutdownTimeout` should be when the CR says nothing. Reusing `MergeRoleGroupConfig` rather than adding a "fill the nil fields" pass is the whole design: a struct-level nil check would discard a product's `cpu.min` the moment a user set `cpu.max`, reintroducing the silent partial loss this table exists to prevent, and it would make `affinity: {}` inherit the product's policy instead of clearing it — removing the only way to say "this group has no affinity" one level further down than the case that already settled it. One rule, three layers, no new precedence for a user to learn.
+**A product's own defaults for this block are a third layer beneath the two, folded by the same rule.** `RoleDeclaration.ConfigDefaults` supplies what a role's `resources`, `affinity` and `gracefulShutdownTimeout` should be when the CR says nothing. Reusing `FoldCommonConfig` rather than adding a "fill the nil fields" pass is the whole design: a struct-level nil check would discard a product's `cpu.min` the moment a user set `cpu.max`, reintroducing the silent partial loss this table exists to prevent. One rule, three layers, no new precedence for a user to learn.
 
-`logging` is excluded, and rejected rather than ignored: it is merged in the reconciler from the CR's two levels, and Vector enablement and the rendered config file are both decided before a handler default is read, so a default there would apply to neither.
+That third layer is what makes `affinity` the hard case, and the resolution is **not** to fold it per member. Per-member inheritance was implemented and reverted once before, and the objection that carried the revert is not weakened by the new layer: `affinity` is a Kubernetes type, and every adjacent tool a user knows replaces it wholesale, so per-member folding buys the product's default at the price of a semantic the user can only discover from `kubectl explain`. Wholesale replacement stands. What it costs — a user pinning an instance type also discarding the `podAntiAffinity` their product ships to spread a quorum — is answered by making the loss **loud** rather than by changing the rule: `FoldCommonConfig` returns the members each replacement discarded, and the reconciler emits an `AffinityOverridden` Warning naming the layer, the members and how to keep them. An `affinity: {}` clears and reports nothing, because clearing is precisely what that value asks for; that clearing rule works for `affinity` and not for `resources` because the schemas differ — `affinity` is `x-kubernetes-preserve-unknown-fields`, so the API server never prunes inside it and a stored `{}` is always something the user wrote, while `resources` is structural and `cpu: {}` may be a pruning artifact.
+
+This is the framework's general answer whenever a user's value legitimately beats a product's: let the user win, and say what was displaced. It is the same shape as `ImmutableFieldIgnored` and `PodOverrideIgnored`, and it is distinct from **Constraint** (§2.5b) — the framework is not overruling the user here, it is reporting the consequence of honouring them.
+
+**The product's OWN fields in that block are folded by the product**, with `FoldProductConfig[T]` — presence-wins per top-level field, with no depth, applied to the struct a product defines by embedding `*RoleGroupConfigSpec` inline and adding its own fields beside it. The framework skips the embedded pointer so the two halves cannot fight over it, and `ValidateProductConfigType[T]()` refuses shapes that cannot be folded honestly: a **bare scalar** (the zero value is the fold's "was this stated?" test, so product fields are pointers) and an untagged **composite** (replacing one wholesale drops the siblings a user did not restate). A composite that is a single policy rather than a set of knobs accepts wholesale replacement explicitly with the `kubedoop:"atomic"` struct tag; otherwise it is flattened into scalar pointers.
+
+`logging` is **included**, and folds through `productlogging.MergeLoggingSpec` like the rest. It used to be rejected with a `*ValidationError`, and that was correct for the code as it stood: logging was merged in the reconciler from the CR's two levels only, and Vector enablement and the rendered config file were both decided before a product default was ever read, so one set there would have applied to neither. Moving the fold ahead of both consumers is what made the field honourable — the reconciler now reads Vector enablement off the folded value. This is issue #631's item 2, fixed by making the code match the doc rather than the reverse.
 
 **This rule binds product operators too, and it is checkable.** It is not an explanation of why the
 SDK's own fields are shaped the way they are — it is a constraint on any CRD whose `config` block
@@ -137,11 +143,46 @@ inspects nothing reports success.
 
 **Schema-free fields must be decoded strictly.** `config.affinity` is a `RawExtension`, so the API server neither validates nor prunes it, and a lenient decode discards what it does not recognise — which made a misspelled key (`nodeAffinty`) pass admission and evaporate, scheduling the pods anywhere with nothing reported. Any field the SDK accepts as opaque JSON and then interprets must reject unknown members loudly (`reconciler.DecodeAffinity`), because it is the only layer left that can.
 
-## 2.6 Product Config vs. Defaulting (Separation of Layers)
+## 2.5b Four Concepts, Not One "Default"
+
+Issue #631 asked for "role config defaults". The framework had grown three partial answers to that
+request and no statement of what it was answering, so each new case was resolved by whichever of the
+three the author found first. The design position is that **four distinct concepts** were being
+called "a default", and each has a different relationship to the user's own CR:
+
+| concept | position relative to the user | who states it | mechanism |
+| --- | --- | --- | --- |
+| **Declaration** | no user layer exists at all | product | `RoleDeclaration` |
+| **Default** | beneath the user's role and role group levels | product | `RoleDeclaration.ConfigDefaults`, folded by `FoldCommonConfig` |
+| **Derivation** | computed *from* the folded result, then folded beneath the user's overrides | product | `RoleGroupResolver` → `Contribution` |
+| **Constraint** | above the user — deliberately not implemented | — | — |
+
+The separation is what makes each mechanism answerable. A role's ports, primary container name,
+command and log producers are **declarations**: the CRD gives the user no field to state them, so
+there is nothing to merge and no precedence to decide — which is why they are plain struct fields
+rather than a merge layer, and why the framework can resolve the image and the Vector gates from
+them before any role group is built. A role's `resources` are a **default**, so they fold. A JVM heap
+sized from the effective memory limit is a **derivation**, and cannot be either of the others: it is
+not knowable before the fold, and it must still lose to a user's `configOverrides`.
+
+**Constraint is absent on purpose.** A framework that can overrule what a user wrote in their own CR
+needs a way to tell them, and every candidate is worse than not doing it: silently clamping produces
+a cluster that does not match its spec with nothing naming the cause; failing the role group turns a
+product's opinion into an outage; a Warning event is not read. A product that genuinely must reject a
+value rejects it in a **webhook**, where the user sees it at `kubectl apply` and no reconcile has
+happened yet.
+
+Conflating the four is what produced the defect the issue reports. The one mechanism that existed
+for "product default" was reached only by a handler setter, was consulted after the role group's
+ConfigMap had already been built, and replaced `affinity` wholesale — so it could not express a
+declaration (too late), could not express a derivation (input not yet computed), and lost sibling
+fields when it did express a default.
+
+## 2.6 Derived Config vs. Defaulting (Separation of Layers)
 
 The SDK distinguishes **two different mechanisms** by which a product supplies values that are not typed by the user, and they must not be conflated:
 
-| | **`ProductDefaulter`** (Webhook) | **`ProductConfig`** (merge layer) |
+| | **`ProductDefaulter`** (Webhook) | **`RoleGroupResolver`** (merge layer) |
 |---|---|---|
 | **Targets** | Typed **Spec fields** (image, ports, replicas) | **Config-file content** (e.g. `config.properties`, connection strings) |
 | **When** | Admission (Mutating Webhook), **persisted into the Spec** | Every reconcile, **never persisted** |
@@ -154,14 +195,14 @@ Kubedoop product images are published only with the `-kubedoop<version>` suffix,
 value of that suffix is the **operator's own build version** — a reconcile-time fact that moves when
 the operator binary is upgraded. Defaulting it in a webhook persists it into the spec at admission,
 so a cluster admitted by operator 0.1.0 keeps asking for `-kubedoop0.1.0` images forever and an
-operator upgrade cannot move it onto the co-released image. `BaseRoleGroupHandler.ImageDefaults` is
+operator upgrade cannot move it onto the co-released image. `GenericReconcilerConfig.ImageResolution.Defaults` is
 therefore evaluated on every reconcile, and `ImageSpec.ResolveImage(productName, defaults)` folds it
 under whatever the user wrote:
 
 | layer | source | when |
 | --- | --- | --- |
 | user | `spec.image` | whatever the CR states, per field |
-| product | `handler.ImageDefaults` | every reconcile |
+| product | `ImageResolution.Defaults` (and per-role `RoleDeclaration.Image`) | every reconcile |
 
 `ProductName` no longer decides *whether* `spec.image` is read — it supplies the product name, which
 is both the `app.kubernetes.io/name` value and the repository path segment. Coupling the two meant a
@@ -182,18 +223,22 @@ whatever the scaffold chose — `"N/A"` in the current one, whose `/` makes the 
 `spec.image.custom` is exempt, because the framework assembles nothing there.
 
 **A registry credential is not part of image resolution.** `spec.image.pullSecretName` folds over
-`ImageDefaults.PullSecretName` per field like everything else, but is resolved by its own accessor
+`ImageResolution.Defaults.PullSecretName` per field like everything else, but is resolved by its own accessor
 and applied to the pod directly. Where the image *lives* is independent of how its reference was
 built, so the credential must survive the two paths that assemble no reference at all — `custom`, and
 a product resolving its own images with `ProductName` empty — which is precisely where a private
 registry is most likely to be in play.
 
-**The `ProductConfig` hook receives a `ctx` and a client, and may fail.** "Recomputed every reconcile, and may reflect the current state of the cluster" is only true if the hook can *read* the cluster; without those parameters it was a pure function of the CR, so the products that most needed a product-config layer — anything resolving an `S3Connection` reference or a ZooKeeper address — could not use it, and a failed lookup had nowhere to go but a swallowed error or a panic. Zero operators used the hook, which was the symptom rather than the disease.
+**`RoleGroupResolver` receives a `ctx`, a client, the CR and the role group's build context, and may fail.** "Recomputed every reconcile, and may reflect the current state of the cluster" is only true if the hook can *read* the cluster; without those parameters it was a pure function of the CR, so the products that most needed this layer — anything resolving an `S3Connection` reference or a ZooKeeper address — could not use it, and a failed lookup had nowhere to go but a swallowed error or a panic.
 
-Products that already perform the lookup inside `BuildResources` use the imperative counterpart, `RoleGroupBuildContext.ApplyProductDefaults`, rather than repeating it: it folds an overrides layer **beneath** everything already merged, by the merge's own per-dimension rules. Two operators had hand-written that fold, identically, along with a second rule for environment variables that the framework can express directly because `MergedConfig.EnvVars` is a map rather than an ordered list.
+**Its position in the pass is the substantive part.** It runs after `FoldCommonConfig` has produced the role group's effective config and before anything is built, which is the window the framework did not previously have: the effective config was not computed until *after* the role group's ConfigMap had been assembled, so nothing derived from it could reach a config file at all. That is what forced three operators to hand-write the same JVM-heap calculation and a fourth to freeze the answer into a literal `-Xmx419430k` — 0.8 of one role's default memory, applied to every JVM component and immune to every user override. `reconciler.HeapMB` is that calculation, centralised, and `RoleGroupBuildContext.EffectiveConfig()` is its input.
+
+The returned `Contribution` folds **beneath** everything already merged, by the merge's own per-dimension rules. It carries no CLI dimension on purpose: `cliOverrides` merge by replacement, so a contributed layer would either be erased whole by any user value or erase the user's — neither is a default. Product arguments are `RoleDeclaration.Command`, which has no user layer at all.
+
+**It must be deterministic for a given (CR, effective config).** Its output lands in a ConfigMap the framework applies with `CreateOrUpdate` and watches; a value that varies per pass rewrites that ConfigMap every pass, wakes the reconciler through its own watch, and never errors, so the workqueue never backs the loop off.
 
 - **`ProductDefaulter`** is the right place for stable, user-facing **typed Spec defaults** (see §4.3). The value becomes part of the user's persisted Spec and is visible via `kubectl get`.
-- **`ProductConfig`** is the right place for **product-intrinsic and derived config-file content** — e.g. a ZooKeeper connection string built from the actual resources, a quorum peer list from pod ordinals, or a JVM heap sized from the role group's resources. It is *config generation, not defaulting*: computing it at reconcile time (rather than freezing it into the Spec at admission) means an operator upgrade **recomputes** the configuration for existing clusters, and values derived from mutable state stay fresh. It is injected as the lowest merge layer (§2.5), so user overrides still win.
+- **`RoleGroupResolver`** is the right place for **product-intrinsic and derived config-file content** — e.g. a ZooKeeper connection string built from the actual resources, a quorum peer list from pod ordinals, or a JVM heap sized from the role group's resources. It is *config generation, not defaulting*: computing it at reconcile time (rather than freezing it into the Spec at admission) means an operator upgrade **recomputes** the configuration for existing clusters, and values derived from mutable state stay fresh. It is injected as the lowest merge layer (§2.5), so user overrides still win.
 
   **Recomputing is not the same as delivering.** A change to config-file content converges the role group ConfigMap and nothing more: the pod template is unchanged, so no rollout follows, and these products do not re-read their configuration at runtime. Restarting the pods is the platform's job, not this SDK's — `commons-operator`'s restarter watches workloads whose **object metadata** carries `restarter.kubedoop.dev/enable=true` and, when a ConfigMap or Secret the pod references — as a volume or through an env var's `valueFrom` — changes, stamps the pod template so the workload controller rolls it. The SDK deliberately does not reimplement that: doing so would cover only the ConfigMap it owns (not mounted Secrets, not a product's own ConfigMaps, not secret expiry) and would give one intent two competing expressions. Labelling the workload is therefore a deployment decision, made by labelling the **cluster CR** (whose labels the reconciler propagates into every resource's metadata) rather than in operator code; unlabelled, a config-file change reaches the running processes at the next restart, whenever that is.
 
@@ -337,8 +382,12 @@ Compile-time type checking removes runtime type assertions from the reconciler a
 
 | where a value lives | lifetime | what belongs there |
 | --- | --- | --- |
-| handler fields (`Image`, `RoleContainerPorts`, …) | process | reconcile-**invariant** settings — a static image, `ProductName`, `ImageDefaults`, ports that do not depend on the CR |
-| `RoleGroupBuildContext` (`Image`, `ImagePullPolicy`, `ContainerPorts`, `ServicePorts`) | one role group of one reconcile | anything derived from **this** CR |
+| handler fields | process | reconcile-**invariant** settings only — `ConfigGenerator`, `ConfigMountPath`, `LabelDomain`, the sidecar manager, the security contexts |
+| `RoleDeclaration`, from `RoleProvider.DeclareRoles` | one reconcile pass | everything a ROLE is made of — ports, container name, command, probes, data volume, log producers, config defaults — computed from **this** CR |
+| `Contribution`, from `RoleGroupResolver` | one role group of one reconcile | anything derived from **this** role group's effective config |
+
+The middle row is what removed the hazard rather than documenting it. The handler no longer has a
+field for a role's ports, image or container name, so the assignment that raced cannot be written.
 
 Assigning a per-cluster value to a handler field from inside `BuildResources` fails in two ways, and the quieter one bites first:
 
@@ -349,14 +398,18 @@ Assigning a per-cluster value to a handler field from inside `BuildResources` fa
 
 Handler fields are still the right home for invariant configuration — this is a split, not a deprecation.
 
-**The same context carries the product's declared intent, replacing the post-build patch.** `BuildResources` returns a finished object, and for anything the framework does not model the only extension point used to be mutating it afterwards. That cost twice: products re-derived what the handler already knew (zookeeper-operator located the primary container as `Containers[0]`, which a sidecar provider inserting a container earlier silently invalidates), and the edit landed *after* the framework's own ordering.
+**The declaration also replaces the post-build patch.** `BuildResources` returns a finished object, and for anything the framework does not model the only extension point used to be mutating it afterwards. That cost twice: products re-derived what the handler already knew (zookeeper-operator located the primary container as `Containers[0]`, which a sidecar provider inserting a container earlier silently invalidates), and the edit landed *after* the framework's own ordering.
 
-| field | replaces | why declaring it first matters |
+| declaration field | replaces | why declaring it first matters |
 | --- | --- | --- |
-| `MainContainerCustomizer` | patching `Containers[0]` of the returned StatefulSet | it runs before `podOverrides` are strategic-merged, so the **user's** overrides still win; a post-build edit inverts that silently |
-| `ListenerClass` | patching `Service.Spec.Type` after the fact | one shared `listener.ServiceTypeFor` mapping instead of a three-way switch re-derived per product |
+| `Command`, `Lifecycle`, `ReadinessProbe`/`LivenessProbe`/`StartupProbe` | patching `Containers[0]` of the returned StatefulSet | they are applied to the primary container **by identity**, before `podOverrides` are strategic-merged, so the **user's** overrides still win; a post-build edit inverts that silently |
+| `ListenerClass` (or `Contribution.ListenerClass` when the value is user-settable) | patching `Service.Spec.Type` after the fact | one shared `listener.ServiceTypeFor` mapping instead of a three-way switch re-derived per product |
 
-Both fail loudly: a customizer that returns an error, or that changes the image (resolved once and already propagated to the sidecars), fails the role group with a `*ValidationError` rather than shipping a workload missing what the product meant to set.
+An earlier design gave the product a `MainContainerCustomizer` callback here. It has been removed:
+a callback is a channel whose precedence has to be explained and enforced (it had to be blocked from
+changing the image, which was resolved once and already propagated to the sidecars), while a
+declaration field simply has no user layer to beat. The image is now published read-only as
+`RoleGroupBuildContext.ResolvedImage`, so that failure mode does not exist to guard against.
 
 ### 4.1.5 Writing a Role Group Handler
 
@@ -368,7 +421,15 @@ Both fail loudly: a customizer that returns an error, or that changes the image 
 
 | the framework writes, the handler reads | the handler writes before delegating |
 | --- | --- |
-| `ClusterName`, `ClusterNamespace`, `ClusterSpec`, `RoleName`, `RoleSpec`, `RoleGroupName`, `RoleGroupSpec`, `ResourceName`, `ServiceAccountName`, `MergedConfig`, `VectorAggregatorAddress`, `VectorLogPipelineActive` | `Image`, `ImagePullPolicy`, `ContainerPorts`, `ServicePorts`, `ListenerClass`, `MainContainerCustomizer`, `VolumeProviders`, `ClusterLabels`, and `MergedConfig` via `ApplyProductDefaults` |
+| `ClusterName`, `ClusterNamespace`, `ClusterSpec`, `RoleName`, `RoleSpec`, `RoleGroupName`, `RoleGroupSpec` (whose `Config` is the FOLD — read it as `EffectiveConfig()`), `ResourceName`, `ServiceAccountName`, `MergedConfig`, `VectorAggregatorAddress`, `Declaration`, `ResolvedImage`, `ProductName` | `VolumeProviders`, `ClusterLabels` |
+
+The writable column shrank to two. Every other per-call channel was a second way to state something
+the declaration already states, with its own precedence rule; `Declaration` and `ResolvedImage` are
+now the framework's settled answers, and assigning `Declaration` here is **half-honoured** — the
+image, the fold and the Vector gates are already derived from it — which is worse than being
+ignored. The one output a product reaches for by method rather than field is
+`LogFileTarget(decl)`: where a product-owned logging config must write its rolling file, or `""`
+for console-only.
 
 `ClusterLabels` is a materialised clone and is **never nil**, so a handler may add to it unconditionally; whatever it holds is merged into every built resource's metadata and pod template. `SidecarManager` is always non-nil under the reconciler — which makes `BaseRoleGroupHandler.WithSidecarManager` inert on that path, and useful only to a product that calls `BuildResources` itself.
 
@@ -390,7 +451,7 @@ The same reasoning bounds what a CR label may say. Labels are the one channel fr
 
 #### The container contract
 
-- The primary container's name resolves `RoleMainContainerName[role]` → `MainContainerName` → the role group's resource name, and must be settled **before** `Build()`: `podOverrides` are strategic-merged by container name, so a later rename leaves the user's override appended as a phantom, image-less container.
+- The primary container's name resolves `RoleDeclaration.MainContainerName` → the role group's resource name, and must be settled **before** `Build()`: `podOverrides` are strategic-merged by container name, so a later rename leaves the user's override appended as a phantom, image-less container.
 - A **readiness** probe is generated on `Ports[0]`, so the first entry of `ContainerPorts` is part of the contract — put the port that means "this pod can serve" first. **No liveness probe is ever generated**; `builder.DefaultTCPLivenessProbe` is the opt-in.
 - `config` and `data` are reserved pod volume/mount names. A `VolumeProvider` reusing either produces a pod the API server rejects.
 - `MergedConfig.CliArgs` reaches the container as `args`; `MergedConfig.JvmArgs` reaches **nothing** — the framework merges it and never renders it, so a product populating it must render it itself.
@@ -408,7 +469,7 @@ cp -RL /kubedoop/mount/config/* /kubedoop/config/
 
 #### Ways to fail the build
 
-Eleven causes across twelve sites inside `BaseRoleGroupHandler.BuildResources`. Two produce a `*ValidationError` — a `podOverrides` mount that displaces a framework-owned one, and a `MainContainerCustomizer` that errors or changes the image — and the rest are plain wrapped errors that the reconciler re-wraps as a `*ResourceBuildError`. All of them fail one role group, not the pass: role iteration is best-effort and sorted (§4.4).
+Eleven causes across twelve sites inside `BaseRoleGroupHandler.BuildResources`. **Four** produce a `*ValidationError`, each carrying a distinct `Subject` a product can route on — `"image"` (an unresolvable or empty reference), `"podOverrides"` (a mount that displaces a framework-owned one), `"sidecar"` (a registered provider's `Validate` failing) and `"logging"` — and the rest are plain wrapped errors that the reconciler re-wraps as a `*ResourceBuildError`. All of them fail one role group, not the pass: role iteration is best-effort and sorted (§4.4).
 
 #### If you do not embed `BaseRoleGroupHandler`
 
@@ -417,7 +478,7 @@ A handler implementing the interface directly inherits none of the conventions, 
 1. every fixed slot must carry its derived name — the headless Service `<ResourceName>-headless` above all, since the StatefulSet's `serviceName` is derived from it and immutable. This one the framework now checks and rejects rather than leaving to convention;
 2. the pod must mount the ConfigMap named `buildCtx.ResourceName`, which is what the framework's own ConfigMap is called;
 3. `clusterOperation.stopped` must force replicas to 0 — it is implemented in the base handler, not in the reconciler;
-4. `RoleNameProvider`, `LoggingProducerProvider` and `BuildRolePodDisruptionBudget` are optional capability interfaces the reconciler type-asserts for; not implementing them silently disables the role-name typo warning, the Vector wiring and the role-level PDB.
+4. `BuildRolePodDisruptionBudget` is an optional capability interface the reconciler type-asserts for; not implementing it silently disables the role-level PDB. `RoleProvider` and `RoleGroupResolver` are deliberately **not** in that class — they are explicit `GenericReconcilerConfig` fields, so a product that forgets to wire one gets the framework's stated default rather than a capability that was silently not detected. Role declarations and log producers used to be discovered by assertion, and a handler that implemented the method on the wrong receiver disabled the whole Vector pipeline with nothing reporting it.
 
 ## 4.2 Extension Point Mechanism Module
 
@@ -488,7 +549,7 @@ Based on Kubebuilder annotation-driven practices, integrating MutatingWebhook an
 - **MutatingWebhook**:
     - **Common Logic**: `webhook.DefaultGenericClusterSpec(spec, defaultImage)` defaults **the image only** — it copies the operator's default `ImageSpec` when `spec.image` is absent, and sets `spec.image.pullPolicy` to `IfNotPresent` when empty. The SDK ships no CPU/Memory, ZooKeeper or log-path defaulting.
     - **Specific Logic**: Product side implements the `ProductDefaulter[CR]` interface to populate product-specific default values for **typed Spec fields** (e.g., HDFS Namenode heap size, default ports). These are *defaults* — static fallbacks persisted into the Spec at admission.
-    - **Scope boundary**: `ProductDefaulter` defaults typed Spec fields only. Product **config-file content** (and any value derived from live cluster state) is *computed* at reconcile time via `ProductConfig`, not defaulted here — see §2.6 for the distinction.
+    - **Scope boundary**: `ProductDefaulter` defaults typed Spec fields only. Product **config-file content** (and any value derived from live cluster state) is *computed* at reconcile time via `RoleGroupResolver`, not defaulted here — see §2.6 for the distinction.
 - **ValidatingWebhook**:
     - **Common Logic**: `webhook.ValidateGenericClusterSpec(spec, fldPath)` validates **the image only** — when `spec.image.custom` is unset, `repo`, `productVersion` and `kubedoopVersion` are required, and `pullPolicy` must be one of `Always`/`IfNotPresent`/`Never`. It returns a `field.ErrorList` for composition with the product's own checks. Two opt-in helpers are available for product validators: `webhook.ValidateFieldLength` and `webhook.ValidateNonEmptyMap`.
     - **Specific Logic**: Product side implements the `ProductValidator[CR]` interface to execute business rule validation (e.g., HDFS HA mode configuration validation).
@@ -654,7 +715,8 @@ Operations such as log collection (Vector), metric monitoring (JMX Exporter), an
     buildCtx.SidecarManager.Register(
         sidecar.NewStaticContainerProvider(corev1.Container{
             Name:            "statsd-exporter",
-            Image:           buildCtx.Image, // the product resolves it; SetProductImage will not
+            // The product supplies it: SetProductImage does not reach a static container.
+            Image:           buildCtx.ResolvedImage.Reference,
             Ports:           []corev1.ContainerPort{{Name: "metrics", ContainerPort: 9102}},
             RestartPolicy:   sidecar.SidecarRestartPolicy(), // the provider does not add this
             SecurityContext: sidecar.DefaultSecurityContext(),
@@ -662,12 +724,14 @@ Operations such as log collection (Vector), metric monitoring (JMX Exporter), an
         &sidecar.SidecarConfig{Enabled: true},
     )
     ```
-- **Workflow**: The `GenericReconciler` registers the Vector provider — configured with the producer declarations (`[]productlogging.ContainerLogging`, from the handler's `LoggingProducers`) and the shared log volume size — only when **all three** gates pass. Any one of them failing means the sidecar could not do its job, so the provider is not registered and the rest of the cluster keeps converging:
+- **Workflow**: The `GenericReconciler` registers the Vector provider — configured with the producer declarations (`RoleDeclaration.LogProducers`) and the shared log volume size (`RoleDeclaration.LogVolumeSize`, per role because log volume is: a DataNode writes far more than a JournalNode) — only when **all three** gates pass. Any one of them failing means the sidecar could not do its job, so the provider is not registered and the rest of the cluster keeps converging:
     1. **The agent is enabled** for the role group (`logging.enableVectorAgent`, after the role/role-group logging merge).
-    2. **At least one producer is declared** by the handler's `LoggingProducers`. An agent with nothing to collect would mount an empty pipeline; the reconciler logs the mismatch and skips, so enablement and producer declaration stay consistent in one place.
+    2. **At least one producer is declared** in `RoleDeclaration.LogProducers`. An agent with nothing to collect would mount an empty pipeline; the reconciler logs the mismatch and skips, so enablement and producer declaration stay consistent in one place.
 
-       This gate reads the **outer** handler — the object passed as `GenericReconcilerConfig.RoleGroupHandler` — while the logging *config file* is rendered from `BaseRoleGroupHandler`'s own `LoggingContainers`. Go has no virtual dispatch, so a base handler can never see an override, and the two lists are therefore independently addressable. That is the seam for a product whose logging config file is product-owned (Airflow's `log_config.py`, which must be built on Airflow's own `DEFAULT_LOGGING_CONFIG`): **override `LoggingProducers` on your handler and leave `LoggingContainers` empty.** The producer joins the pipeline, the framework renders no file for it, and there is no ConfigMap key collision. The producer's `Container` must still name a real container in the assembled pod, and the product's log file must land at `productlogging.LogDirFor(decl)` with the framework's `LogFileSuffix`, or the pipeline comes up and collects nothing.
-    3. **Something supplies `vector.yaml`.** The sidecar runs `vector --config <mount>/vector.yaml`, so it is only injected when that key will actually be written into the role group ConfigMap: either the **CR** implements `reconciler.VectorAggregatorProvider` (the framework then renders the file itself) or the **role group handler** implements `reconciler.VectorConfigProvider` and answers `ProvidesVectorConfig(roleName) == true` (the product writes it). With neither, registering the provider would fail sidecar validation (§4.6.2, Dependency Validation) on every cycle and abort the whole cluster's reconcile over a product that is simply not wired for Vector. It is reported as the product-configuration mistake it is: a `Warning`/`VectorSidecarSkipped` event on the CR naming the role group and both interfaces, and the reconcile continues.
+       **One list serves two jobs** — naming the pipeline's producers, and saying how each one's config file is rendered — and a producer opts out of the second by leaving its `Framework` empty. That is the seam for a product whose logging config file is product-owned (Airflow's `log_config.py`, which must be built on Airflow's own `DEFAULT_LOGGING_CONFIG`): the producer joins the pipeline in full, the framework renders no file for it, and there is no ConfigMap key collision. The earlier design gave the two jobs two separately-addressable lists, which worked only because Go has no virtual dispatch — an implementation accident, discoverable by nobody, and a product that overrode the wrong one silently got no pipeline. The obligations the framework can then no longer meet are now **enforced** rather than documented: such a producer must set `LogFileName`, it must carry one of the known suffixes (that suffix selects Vector's edge parser), and its `Container` must name a real container in the assembled pod. The product asks `RoleGroupBuildContext.LogFileTarget(decl)` where the file goes rather than composing the path, so "Vector is off this cycle" resolves to console-only instead of an appender writing where nothing collects.
+    3. **Something supplies `vector.yaml`.** The sidecar runs `vector --config <mount>/vector.yaml`, so it is only injected when that key will actually be written into the role group ConfigMap: either the **CR** implements `reconciler.VectorAggregatorProvider` (the framework then renders the file itself) or the **role** sets `RoleDeclaration.OwnsVectorConfig` (the product writes it). With neither, registering the provider would fail sidecar validation (§4.6.2, Dependency Validation) on every cycle and abort the whole cluster's reconcile over a product that is simply not wired for Vector. It is reported as the product-configuration mistake it is: a `Warning`/`VectorSidecarSkipped` event on the CR naming the role group and both ways to satisfy the gate, and the reconcile continues.
+
+       **The framework owns this whole chain, and the resolved answer stays inside it.** Every input — `logging.enableVectorAgent` from the folded config, the producer list, and the `vector.yaml` source — is already the framework's, so it settles the question once and nothing re-derives it. The boolean is unexported; a product sees only the conclusion it can act on, `LogFileTarget`. Exposing the flag instead would make the product a second participant in a decision already made, and would leave it composing the log path itself — correct while Vector is on and silently wrong the moment it is off.
 
   The `BaseRoleGroupHandler` then invokes the `SidecarManager` after StatefulSet construction, and the manager injects Volumes, VolumeMounts and the sidecar containers themselves — into **`InitContainers`**, with `RestartPolicy: Always` (`sidecar.SidecarRestartPolicy()`). These are *native sidecars* (KEP-753 — on by default since Kubernetes v1.29, GA in v1.33), not ordinary containers, and the placement is load-bearing rather than cosmetic: the kubelet starts them before the main container and terminates them **after** it, which is what guarantees a log agent outlives the process it collects from.
 
@@ -935,7 +999,7 @@ K8s Events provide a chronological log of significant occurrences within the clu
   - **Resource Operations**: `Created` / `Updated` / `Deleted` `Normal` events whenever the framework applies or reclaims a sub-resource (StatefulSet, Service, ConfigMap, PDB), giving auditability without boilerplate. Orphan cleanup emits `Deleted` per removed resource once the cleaner has an `EventManager` (`RoleGroupCleaner.WithEventManager`). Each message names the object's **Kind**, resolved through the scheme: the typed objects `pkg/builder` produces carry no `TypeMeta`, so the kind cannot be read off the object, and it is exactly the disambiguator between a role group's Service, its headless Service and its metrics Service.
   - **There are no reconcile start / completion events.** The framework emits nothing at the beginning or end of a successful pass; progress is reported through **status conditions**, which is what a controller should be watched on. Do not build alerting on a "reconcile completed" event.
 - **Error Integration**: an error that reaches the top of the loop (including from Extensions) sets `Degraded` **and** emits a `ReconcileError` `Warning` carrying the error text.
-- **Degraded-input warnings**: some inputs are bad but not fatal, and they get a `Warning` of their own rather than being dropped silently. The complete vocabulary the framework emits: `ReconcileError`, `ReconcilePanic` (a recovered panic), `PodOverrideIgnored` (a `podOverrides` layer that fails to decode or patch — `MergedConfig.PodOverrideErrors`), `UnknownConfiguredRole` (a handler configured for a role the CR does not declare), `ImmutableFieldIgnored` (a desired change to a preserved immutable field), `VectorSidecarSkipped` (the agent is enabled but nothing supplies `vector.yaml`), plus the three resource-operation `Normal` events above.
+- **Degraded-input warnings**: some inputs are bad but not fatal, and they get a `Warning` of their own rather than being dropped silently. The complete vocabulary the framework emits: `ReconcileError`, `ReconcilePanic` (a recovered panic), `PodOverrideIgnored` (a `podOverrides` layer that fails to decode or patch — `MergedConfig.PodOverrideErrors`), `UnusedRoleDeclaration` (the product declares a role this cluster does not use), `ImmutableFieldIgnored` (a desired change to a preserved immutable field), `VectorSidecarSkipped` (the agent is enabled but nothing supplies `vector.yaml`), plus the three resource-operation `Normal` events above.
 - **Product-facing helpers**: `EmitWarningEvent`, `EmitNormalEvent`, `LogAndEmitError` and `LogAndEmitInfo` are available to extensions and product code. The framework calls only the first two.
 
 ### 4.14.3 The precondition: `core/events` `create;patch`
@@ -956,7 +1020,7 @@ lands on stderr in klog's text format, rate-limited to roughly 25 and then one p
 
 The cost is not evenly spread across §4.14.2's vocabulary. Five of the six `Warning` events survive
 the loss because the same information exists elsewhere: `ReconcileError` also sets `Degraded`,
-and `ReconcilePanic`, `PodOverrideIgnored`, `VectorSidecarSkipped` and `UnknownConfiguredRole` each
+and `ReconcilePanic`, `PodOverrideIgnored`, `VectorSidecarSkipped` and `UnusedRoleDeclaration` each
 have a paired log line. **`ImmutableFieldIgnored` has neither** — no log line, no status condition —
 so it is the one framework warning whose information exists *only* as an event. It is also the one
 whose loss reintroduces a known data defect: it exists because preserving an immutable field
@@ -1403,7 +1467,7 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 3. **Run `make generate`.** controller-gen emits `DeepCopyObject()` (completing `client.Object`) and `DeepCopy() *YourCluster` (completing `ClusterResource[*YourCluster]`). Neither is hand-written.
 4. **Write the two `ClusterInterface` methods**: `GetSpec() *v1alpha1.GenericClusterSpec` and `GetStatus() *v1alpha1.GenericClusterStatus` (see §5.1.4). That is the whole cluster-level contract.
 5. **Implement `RoleGroupHandler[*YourCluster]`** — typically by embedding `BaseRoleGroupHandler` — to describe the Kubernetes resources of a role group.
-6. **Wire a `GenericReconciler`** with a `GenericReconcilerConfig[*YourCluster]`, setting at least `Client`, `Scheme`, `Recorder`, `RoleGroupHandler` and `Prototype` (`&YourCluster{}`), plus the optional hooks the product needs (`APIReader`, `ProductConfig`, `Dependencies`, `ServiceHealthCheck`, gray-delete and health intervals). Call `SetupWithManager`.
+6. **Wire a `GenericReconciler`** with a `GenericReconcilerConfig[*YourCluster]`, setting at least `Client`, `Scheme`, `Recorder`, `RoleGroupHandler` and `Prototype` (`&YourCluster{}`), plus `RoleProvider` (your `RoleCatalog`) and `ImageResolution`, and the optional hooks the product needs (`APIReader`, `RoleGroupResolver`, `Dependencies`, `ServiceHealthCheck`, `WorkloadRBACRules`, gray-delete and health intervals). Call `SetupWithManager`.
 7. *(Optional)* **Add extensions**: implement `ClusterExtension[*YourCluster]` / `RoleExtension[*YourCluster]` / `RoleGroupExtension[*YourCluster]` (declaring the concrete CR in the hook signatures), build a registry with `common.NewExtensionRegistry[*YourCluster]()` in `main.go` before the manager starts, register them with `RegisterClusterExtension`/`RegisterRoleExtension`/`RegisterRoleGroupExtension` (with `common.WithPriority` / `common.WithStopOnError` where ordering or fault tolerance matters), and **set `GenericReconcilerConfig.ExtensionRegistry`** — without that field the hooks never run.
 8. *(Optional)* Implement `ProductDefaulter`/`ProductValidator` interfaces to customize Webhook logic.
 9. *(Optional)* Add product config formats: an adapter implementing `config.ConfigMarshaler`, registered on the handler's `MultiFormatConfigGenerator`.

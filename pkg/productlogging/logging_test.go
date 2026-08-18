@@ -396,3 +396,76 @@ var _ = Describe("Render with appender thresholds", func() {
 		Expect(out).To(ContainSubstring("'backupCount': 1"))
 	})
 })
+
+var _ = Describe("A producer whose config file the product writes", func() {
+	It("must state the log file it will write", func() {
+		// An empty Framework says "I write the file". The framework then has nothing real to check
+		// the cross-producer collision against, and no way to tell whether the file is collectible,
+		// unless the product states the name.
+		err := productlogging.ValidateProducers([]productlogging.ContainerLogging{
+			{Container: "airflow"},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("logFileName is required"))
+		Expect(err.Error()).To(ContainSubstring("airflow"))
+	})
+
+	It("must use a suffix the Vector source globs on", func() {
+		// THE gap this rule closes. Vector's sources are static per-framework globs
+		// ("<logDir>*/*<suffix>"), so a file that ends in anything else is written and collected by
+		// nothing: the sidecar runs, the volume mounts, the directory exists, the product writes its
+		// logs, and every signal stays green.
+		err := productlogging.ValidateProducers([]productlogging.ContainerLogging{
+			{Container: "airflow", LogFileName: "airflow.log"},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no known framework suffix"))
+		Expect(err.Error()).To(ContainSubstring(".py.json"))
+	})
+
+	It("is accepted when it states a collectible file", func() {
+		Expect(productlogging.ValidateProducers([]productlogging.ContainerLogging{
+			{Container: "airflow", LogFileName: "airflow.py.json"},
+		})).To(Succeed())
+	})
+
+	It("accepts every suffix the pipeline collects, not only the ones this package renders", func() {
+		// The allow-list answers "does anything collect it", not "can we render it". Deriving it
+		// from the generator registry rejected `.stdout.log`, `.stderr.log` and `.airlift.json` —
+		// all three globbed and edge-parsed by the framework's own pipeline, and precisely the files
+		// a product that renders its own logging config writes. Trino's `.airlift.json` is the
+		// shipped case, so the seam rejected the product it was built for.
+		for _, name := range []string{
+			"coordinator.airlift.json", "server.stdout.log", "server.stderr.log",
+			"app.log4j.xml", "app.log4j2.xml", "app.py.json",
+		} {
+			Expect(productlogging.ValidateProducers([]productlogging.ContainerLogging{
+				{Container: "trino", LogFileName: name},
+			})).To(Succeed(), "%s is collected by a Vector source, so it must validate", name)
+		}
+	})
+
+	It("rejects a log file name carrying a path separator", func() {
+		// The bare-name rule RenderConfigFile applies, enforced here too because this is the ONLY
+		// gate a product-rendered producer passes: RenderConfigFile starts by looking up a generator
+		// for the empty framework and is never reached. The glob is one level deep and only
+		// LogDirFor's directory is pre-created, so a name with a separator writes where nothing
+		// collects, and ".." escapes the shared volume altogether.
+		err := productlogging.ValidateProducers([]productlogging.ContainerLogging{
+			{Container: "airflow", LogFileName: "logs/airflow.py.json"},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("bare file name"))
+	})
+
+	It("still collides with another producer writing the same file", func() {
+		// The collision check is now against the name the product REALLY writes, rather than one
+		// the framework guessed from a framework the product does not use.
+		err := productlogging.ValidateProducers([]productlogging.ContainerLogging{
+			{Container: "a", LogDirName: "shared", LogFileName: "app.py.json"},
+			{Container: "b", LogDirName: "shared", LogFileName: "app.py.json"},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("both write their log file to"))
+	})
+})

@@ -46,6 +46,7 @@ import (
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
 
 	// Import Trino Operator internal implementation
+	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/constants"
 	trinocontroller "github.com/zncdatadev/operator-go/examples/trino-operator/internal/controller"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/extensions"
 	"github.com/zncdatadev/operator-go/examples/trino-operator/internal/product"
@@ -245,9 +246,20 @@ func main() {
 		//nolint:staticcheck // TODO: migrate to GetEventRecorder when SDK supports new events API
 		Recorder:         mgr.GetEventRecorderFor("trino-cluster-controller"),
 		RoleGroupHandler: roleGroupHandler,
-		// The product's computed config flows through the SDK merge pipeline as the lowest
-		// layer; any CRD configOverrides always win over it.
-		ProductConfig:       product.ComputeConfig,
+		// The handler also declares this product's roles, once per reconcile pass with the cr in
+		// hand — ports, primary container name, log producers.
+		RoleProvider: roleGroupHandler,
+		// The product's derived config flows through the SDK merge pipeline as the lowest layer;
+		// any CRD configOverrides always win over it.
+		RoleGroupResolver: reconciler.RoleGroupResolverFunc[*trinov1alpha1.TrinoCluster](
+			product.ComputeConfig),
+		// Read every reconcile, so an operator upgrade moves existing clusters onto the co-released
+		// product image. A mutating webhook cannot do this: its defaults are persisted at admission
+		// and never recomputed, freezing kubedoopVersion at whatever version first admitted the CR.
+		ImageResolution: reconciler.ImageResolution{
+			ProductName: constants.ProductName,
+			Defaults:    constants.ImageDefaults(),
+		},
 		HealthCheckInterval: 120 * time.Second,
 		HealthCheckTimeout:  300 * time.Second,
 		Prototype:           &trinov1alpha1.TrinoCluster{},

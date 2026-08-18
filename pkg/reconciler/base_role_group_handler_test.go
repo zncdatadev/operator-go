@@ -19,9 +19,7 @@ package reconciler_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
-	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -57,12 +55,13 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCluster := testutil.NewMockCluster("test-cluster", "default")
 		mockCR = mockCluster
 
 		buildCtx = &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels: map[string]string{
@@ -87,13 +86,12 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 	})
 
 	Describe("NewBaseRoleGroupHandler", func() {
-		It("should create a handler with default values", func() {
+		It("carries no per-role state of its own", func() {
+			// The handler used to hold seven role-keyed maps and their handler-global fallbacks.
+			// Everything a role is made of now arrives per reconcile through RoleDeclaration, with
+			// the cr in hand, so the handler holds only reconcile-invariant collaborators.
 			Expect(handler).NotTo(BeNil())
-			Expect(handler.Image).To(Equal("test-image:latest"))
-			Expect(handler.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
-			Expect(handler.RoleImages).NotTo(BeNil())
-			Expect(handler.RoleContainerPorts).NotTo(BeNil())
-			Expect(handler.RoleServicePorts).NotTo(BeNil())
+			Expect(handler.Scheme).To(Equal(testScheme))
 		})
 
 		It("should set the scheme correctly", func() {
@@ -101,82 +99,11 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 		})
 	})
 
-	Describe("SetRoleImage", func() {
-		It("should set image for a role", func() {
-			handler.SetRoleImage("test-role", "custom-image:v2")
-			Expect(handler.RoleImages["test-role"]).To(Equal("custom-image:v2"))
-		})
-
-		It("should initialize RoleImages if nil", func() {
-			nilHandler := &reconciler.BaseRoleGroupHandler[common.ClusterInterface]{}
-			Expect(nilHandler.RoleImages).To(BeNil())
-			nilHandler.SetRoleImage("role", "image:v1")
-			Expect(nilHandler.RoleImages).NotTo(BeNil())
-			Expect(nilHandler.RoleImages["role"]).To(Equal("image:v1"))
-		})
-	})
-
-	Describe("SetRoleContainerPorts", func() {
-		It("should set ports for a role", func() {
-			testPorts := []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}
-			handler.SetRoleContainerPorts("web", testPorts)
-			Expect(handler.RoleContainerPorts["web"]).To(Equal(testPorts))
-		})
-
-		It("should initialize RoleContainerPorts if nil", func() {
-			nilHandler := &reconciler.BaseRoleGroupHandler[common.ClusterInterface]{}
-			Expect(nilHandler.RoleContainerPorts).To(BeNil())
-			nilHandler.SetRoleContainerPorts("role", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
-			Expect(nilHandler.RoleContainerPorts).NotTo(BeNil())
-		})
-	})
-
-	Describe("per-role logging and main container name", func() {
-		It("SetRoleLoggingContainers wins over the global LoggingContainers for that role", func() {
-			global := []productlogging.ContainerLogging{{Container: "app", Framework: productlogging.LoggingFrameworkLogback}}
-			perRole := []productlogging.ContainerLogging{{Container: "namenode", Framework: productlogging.LoggingFrameworkLog4j}}
-			handler.LoggingContainers = global
-			handler.SetRoleLoggingContainers("namenode", perRole)
-
-			Expect(handler.LoggingProducers("namenode")).To(Equal(perRole))
-			Expect(handler.LoggingProducers("datanode")).To(Equal(global), "roles without an override fall back to global")
-		})
-
-		It("SetRoleMainContainerName records a per-role override", func() {
-			handler.MainContainerName = "app"
-			handler.SetRoleMainContainerName("namenode", "namenode")
-			Expect(handler.RoleMainContainerName["namenode"]).To(Equal("namenode"))
-		})
-
-		It("initializes the per-role maps when nil", func() {
-			nilHandler := &reconciler.BaseRoleGroupHandler[common.ClusterInterface]{}
-			nilHandler.SetRoleMainContainerName("r", "c")
-			nilHandler.SetRoleLoggingContainers("r", []productlogging.ContainerLogging{{Container: "c"}})
-			Expect(nilHandler.RoleMainContainerName).NotTo(BeNil())
-			Expect(nilHandler.RoleLoggingContainers).NotTo(BeNil())
-		})
-	})
-
-	Describe("SetRoleServicePorts", func() {
-		It("should set ports for a role", func() {
-			testPorts := []corev1.ServicePort{{Name: "http", Port: 80}}
-			handler.SetRoleServicePorts("web", testPorts)
-			Expect(handler.RoleServicePorts["web"]).To(Equal(testPorts))
-		})
-
-		It("should initialize RoleServicePorts if nil", func() {
-			nilHandler := &reconciler.BaseRoleGroupHandler[common.ClusterInterface]{}
-			Expect(nilHandler.RoleServicePorts).To(BeNil())
-			nilHandler.SetRoleServicePorts("role", []corev1.ServicePort{})
-			Expect(nilHandler.RoleServicePorts).NotTo(BeNil())
-		})
-	})
-
 	Describe("BuildResources", func() {
 		It("should build all resources successfully", func() {
-			handler.SetRoleServicePorts("test-role", []corev1.ServicePort{
+			buildCtx.Declaration.ServicePorts = []corev1.ServicePort{
 				{Name: "http", Port: 8080, TargetPort: intstr.FromInt(8080)},
-			})
+			}
 
 			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 
@@ -244,9 +171,9 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			// labels the CR and every built resource carries it, which is how a platform opt-in
 			// like restarter.kubedoop.dev/enable reaches the StatefulSet metadata.
 			buildCtx.ClusterLabels["custom-label"] = "custom-value"
-			handler.SetRoleServicePorts("test-role", []corev1.ServicePort{
+			buildCtx.Declaration.ServicePorts = []corev1.ServicePort{
 				{Name: "http", Port: 8080},
-			})
+			}
 
 			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 
@@ -266,9 +193,9 @@ var _ = Describe("BaseRoleGroupHandler", func() {
 			// own orphan.zncdata.dev/* progress markers, both live there), and a compile-time
 			// handler field is the wrong layer for what is a deployment decision. Service
 			// annotations specifically are tracked in zncdatadev/operator-go#553.
-			handler.SetRoleServicePorts("test-role", []corev1.ServicePort{
+			buildCtx.Declaration.ServicePorts = []corev1.ServicePort{
 				{Name: "http", Port: 8080},
-			})
+			}
 
 			resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 
@@ -412,7 +339,7 @@ var _ = Describe("PodDisruptionBudget building", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 	})
 
 	roleWithPDB := func(spec *v1alpha1.PodDisruptionBudgetSpec) *v1alpha1.RoleSpec {
@@ -480,8 +407,9 @@ var _ = Describe("StatefulSet building", func() {
 	var buildCtx *reconciler.RoleGroupBuildContext
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		buildCtx = &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    map[string]string{},
@@ -505,7 +433,7 @@ var _ = Describe("StatefulSet building", func() {
 		// Sidecars are injected AFTER the overrides merge, so an override naming one (or a
 		// typo) yields an image-less container; without this guard the API server would
 		// reject the StatefulSet and the CR would sit silently Degraded.
-		handler.MainContainerName = "node"
+		buildCtx.Declaration.MainContainerName = "node"
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -532,7 +460,7 @@ var _ = Describe("StatefulSet building", func() {
 		// declaring its volume, the pod spec stays valid and the API server accepts it — the pods
 		// would come up with the generated ConfigMap mounted nowhere and read an empty config
 		// directory. Refusing to build is the only thing that stops that being silent.
-		handler.MainContainerName = "node"
+		buildCtx.Declaration.MainContainerName = "node"
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -560,7 +488,7 @@ var _ = Describe("StatefulSet building", func() {
 	})
 
 	It("accepts a podOverride that mounts at a path the framework does not own", func() {
-		handler.MainContainerName = "node"
+		buildCtx.Declaration.MainContainerName = "node"
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -591,7 +519,8 @@ var _ = Describe("StatefulSet building", func() {
 				EnableVectorAgent: ptr.To(true),
 			},
 		}
-		merged := reconciler.MergeRoleGroupConfig(roleCfg, &v1alpha1.RoleGroupConfigSpec{})
+		merged, _, mergeErr := reconciler.FoldCommonConfig(roleCfg, &v1alpha1.RoleGroupConfigSpec{})
+		Expect(mergeErr).NotTo(HaveOccurred())
 		Expect(merged.Logging).NotTo(BeIdenticalTo(roleCfg.Logging),
 			"the merged result must be a fresh copy, never the CR's own object")
 
@@ -603,7 +532,7 @@ var _ = Describe("StatefulSet building", func() {
 	It("consumes role-level config when the role group declares none (role->group fallback)", func() {
 		// Regression: only logging and overrides were merged role->group; role-level
 		// resources/affinity/gracefulShutdownTimeout were silently dropped.
-		merged := reconciler.MergeRoleGroupConfig(
+		merged, _, mergeErr := reconciler.FoldCommonConfig(
 			&v1alpha1.RoleGroupConfigSpec{
 				GracefulShutdownTimeout: ptr.To("60s"),
 				Resources: &v1alpha1.ResourcesSpec{
@@ -612,13 +541,14 @@ var _ = Describe("StatefulSet building", func() {
 			},
 			nil,
 		)
+		Expect(mergeErr).NotTo(HaveOccurred())
 		Expect(merged).NotTo(BeNil())
 		Expect(merged.GetGracefulShutdownTimeout()).To(Equal("60s"))
 		Expect(merged.Resources.CPU.Max.String()).To(Equal("2"))
 	})
 
 	It("lets role group config win per field over role config", func() {
-		merged := reconciler.MergeRoleGroupConfig(
+		merged, _, mergeErr := reconciler.FoldCommonConfig(
 			&v1alpha1.RoleGroupConfigSpec{
 				GracefulShutdownTimeout: ptr.To("60s"),
 				Resources: &v1alpha1.ResourcesSpec{
@@ -632,6 +562,7 @@ var _ = Describe("StatefulSet building", func() {
 				},
 			},
 		)
+		Expect(mergeErr).NotTo(HaveOccurred())
 		Expect(merged.Resources.CPU.Max.String()).To(Equal("4"), "group wins")
 		Expect(merged.Resources.Memory.Limit.String()).To(Equal("2Gi"), "role fills the gap")
 		Expect(merged.GetGracefulShutdownTimeout()).To(Equal("60s"))
@@ -643,7 +574,7 @@ var _ = Describe("StatefulSet building", func() {
 		// primary container. Before the fix the rename ran after Build(), so the override was
 		// appended as a second, image-less container and the API server rejected the
 		// StatefulSet.
-		handler.MainContainerName = "node"
+		buildCtx.Declaration.MainContainerName = "node"
 		buildCtx.MergedConfig = &config.MergedConfig{
 			PodOverrides: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -835,7 +766,7 @@ var _ = Describe("StatefulSet building", func() {
 	})
 
 	It("should use role-specific image when set", func() {
-		handler.SetRoleImage("test-role", "custom-role-image:v2")
+		buildCtx.ResolvedImage = reconciler.ResolvedImage{Reference: "custom-role-image:v2"}
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		containers := resources.StatefulSet.Spec.Template.Spec.Containers
@@ -897,10 +828,10 @@ var _ = Describe("StatefulSet building", func() {
 	})
 
 	It("should set container ports when configured", func() {
-		handler.SetRoleContainerPorts("test-role", []corev1.ContainerPort{
+		buildCtx.Declaration.ContainerPorts = []corev1.ContainerPort{
 			{Name: "http", ContainerPort: 8080},
 			{Name: "https", ContainerPort: 8443},
-		})
+		}
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1050,8 +981,9 @@ var _ = Describe("RoleGroupConfig affinity and gracefulShutdownTimeout consumpti
 	}
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		buildCtx = &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    map[string]string{},
@@ -1209,8 +1141,9 @@ var _ = Describe("ConfigGenerator integration", func() {
 	var buildCtx *reconciler.RoleGroupBuildContext
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		buildCtx = &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    map[string]string{},
@@ -1280,8 +1213,9 @@ var _ = Describe("BaseRoleGroupHandler CR label propagation", func() {
 	var buildCtx *reconciler.RoleGroupBuildContext
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		buildCtx = &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    map[string]string{"app": "myapp", "env": "test"},
@@ -1321,7 +1255,7 @@ var _ = Describe("BaseRoleGroupHandler with PDB", func() {
 	var handler *reconciler.BaseRoleGroupHandler[common.ClusterInterface]
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 	})
 
 	buildRolePDB := func(spec *v1alpha1.PodDisruptionBudgetSpec) *policyv1.PodDisruptionBudget {
@@ -1370,6 +1304,7 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 			cfg.Resources = &v1alpha1.ResourcesSpec{Storage: storage}
 		}
 		return &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "server",
@@ -1389,9 +1324,9 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 		buildCtx = newBuildCtx(&v1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse("10Gi"))})
 	})
 
-	It("creates a data PVC from storage when StorageMountPath is set", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.StorageMountPath = "/kubedoop/data"
+	It("creates a data PVC when the role declares a data volume", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
+		buildCtx.Declaration.DataVolume = &reconciler.DataVolume{MountPath: "/kubedoop/data"}
 
 		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1403,23 +1338,23 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 		Expect(mounts).To(ContainElement(HaveField("MountPath", "/kubedoop/data")))
 	})
 
-	It("does not create a data PVC when StorageMountPath is unset (backward compatible)", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+	It("does not create a data PVC when the role declares no data volume", func() {
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.StatefulSet.Spec.VolumeClaimTemplates).To(BeEmpty())
 	})
 
 	It("sets PublishNotReadyAddresses on the headless service when enabled", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.PublishNotReadyAddresses = true
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
+		buildCtx.Declaration.PublishNotReadyAddresses = true
 		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.HeadlessService.Spec.PublishNotReadyAddresses).To(BeTrue())
 	})
 
 	It("uses product-owned identity labels for selectors when LabelDomain is set", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		handler.LabelDomain = "zookeeper.kubedoop.dev"
 		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1443,7 +1378,7 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 	})
 
 	It("falls back to descriptive labels for selectors when LabelDomain is empty", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		resources, err := handler.BuildResources(ctx, k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resources.StatefulSet.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "server"))
@@ -1452,15 +1387,11 @@ var _ = Describe("BaseRoleGroupHandler enhancements", func() {
 
 var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	It("renders a declared logback container into the role group ConfigMap (Vector enabled emits file appender)", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-			Pattern:   "%d [myid:%X{myid}] %m%n",
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1482,6 +1413,11 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+			Pattern:   "%d [myid:%X{myid}] %m%n",
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1498,14 +1434,11 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	})
 
 	It("generates vector.yaml when Vector is enabled and the aggregator address is resolved", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1523,6 +1456,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1531,14 +1468,11 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	})
 
 	It("Option A: omits the file appender (console-only) when Vector is disabled", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1555,6 +1489,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1572,13 +1510,9 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	})
 
 	It("end-to-end: the Vector provider creates the shared log volume, RW-mounts producers, mounts itself", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		// The base StatefulSet main container is named after the resource name; declare it as
 		// the logging container so the Vector provider RW-mounts the shared volume on it.
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "test-cluster-default",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
 
 		// Wire the Vector provider through a SidecarManager configured with the producer container
 		// (the GenericReconciler does this automatically via buildSidecarManager in production; here
@@ -1588,13 +1522,16 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		sidecarMgr.Register(
 			vector.NewVectorSidecarProvider("test-image:latest",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "test-cluster-default"}}),
+				vector.WithProducers([]productlogging.ContainerLogging{
+					{Container: "test-cluster-default", Framework: productlogging.LoggingFrameworkLogback},
+				}),
 			),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1612,6 +1549,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "test-cluster-default",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1667,11 +1608,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	})
 
 	It("end-to-end: honors a custom shared log volume size via the Vector provider", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "test-cluster-default",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		// In production the GenericReconciler forwards handler.LogVolumeSize to the provider via
 		// WithLogVolumeSize; here we configure the provider directly to exercise the assembly.
@@ -1679,7 +1616,9 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 		sidecarMgr.Register(
 			vector.NewVectorSidecarProvider("test-image:latest",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "test-cluster-default"}}),
+				vector.WithProducers([]productlogging.ContainerLogging{
+					{Container: "test-cluster-default", Framework: productlogging.LoggingFrameworkLogback},
+				}),
 				vector.WithLogVolumeSize(resource.MustParse("128Mi")),
 			),
 			&sidecar.SidecarConfig{Enabled: true},
@@ -1687,6 +1626,7 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1702,6 +1642,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "test-cluster-default",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1716,14 +1660,11 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	})
 
 	It("falls back to defaults when no logging is configured for the container", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1733,6 +1674,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 			ResourceName:     "test-cluster-default",
 			MergedConfig:     &config.MergedConfig{},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1740,14 +1685,11 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	})
 
 	It("fails fast when a declared logging file collides with an existing ConfigMap key", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback, // default file name logback.xml
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1761,6 +1703,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback, // default file name logback.xml
+		}}
 
 		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).To(HaveOccurred())
@@ -1773,11 +1719,12 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 	// least one producer — otherwise it warns and skips). Here no SidecarManager is set, mirroring
 	// "no vector wired".
 	It("builds successfully (no error, no log volume) when Vector is enabled but no producers are declared", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		// No LoggingContainers declared.
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1799,14 +1746,11 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 
 	// The mirror case: Vector enabled WITH a logging container also builds cleanly.
 	It("builds cleanly when Vector is enabled and a logging container is declared", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -1821,6 +1765,10 @@ var _ = Describe("BaseRoleGroupHandler declarative logging", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -1875,7 +1823,7 @@ var _ = Describe("VolumeProvider injection", func() {
 	}
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("test-image:latest", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		provider = &fakeVolumeProvider{
 			volume: corev1.Volume{
 				Name: "tls-cert",
@@ -1890,6 +1838,7 @@ var _ = Describe("VolumeProvider injection", func() {
 			},
 		}
 		buildCtx = &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    map[string]string{},
@@ -1916,7 +1865,7 @@ var _ = Describe("VolumeProvider injection", func() {
 		// A renamed primary container plus an injected sidecar (init container) is the exact
 		// scenario the ordering contract must survive: the provider mount must still be on
 		// container[0] under its FINAL renamed name, not lost or moved to the sidecar.
-		handler.MainContainerName = "zookeeper"
+		buildCtx.Declaration.MainContainerName = "zookeeper"
 
 		sidecarMgr := sidecar.NewSidecarManager()
 		sidecarMgr.Register(
@@ -1946,8 +1895,8 @@ var _ = Describe("VolumeProvider injection", func() {
 	It("applies the per-role MainContainerName over the global one when building the StatefulSet", func() {
 		// buildCtx.RoleName is "test-role"; the per-role override must win over the global name in
 		// the actual built StatefulSet, exercising the mainContainerNameFor wiring end-to-end.
-		handler.MainContainerName = "global-main"
-		handler.SetRoleMainContainerName(buildCtx.RoleName, "per-role-main")
+		buildCtx.Declaration.MainContainerName = "global-main"
+		buildCtx.Declaration.MainContainerName = "per-role-main"
 
 		resources, err := handler.BuildResources(context.Background(), nil, nil, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -2008,7 +1957,7 @@ func (h *embeddingImageHandler) BuildResources(
 	cr common.ClusterInterface,
 	buildCtx *reconciler.RoleGroupBuildContext,
 ) (*reconciler.RoleGroupResources, error) {
-	h.Image = h.image
+	buildCtx.ResolvedImage = reconciler.ResolvedImage{Reference: h.image}
 	return h.BaseRoleGroupHandler.BuildResources(ctx, k8sClient, cr, buildCtx)
 }
 
@@ -2018,26 +1967,22 @@ var _ = Describe("Sidecar product image propagation", func() {
 	// never had the product image set on framework-registered sidecars and had to call
 	// SetProductImage by hand.
 	It("propagates the image resolved in an embedding handler's BuildResources to the Vector sidecar", func() {
-		base := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("", testScheme)
-		base.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
+		base := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		handler := &embeddingImageHandler{BaseRoleGroupHandler: base, image: "product-image:1.2.3"}
 
 		// The producer must name the pod's primary container, which MainContainerName pins here.
-		base.MainContainerName = "main"
 
 		mgr := sidecar.NewSidecarManager()
 		mgr.Register(
 			vector.NewVectorSidecarProvider("",
 				vector.WithConfigMapName("test-cluster-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main"}})),
+				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main", Framework: productlogging.LoggingFrameworkLogback}})),
 			&sidecar.SidecarConfig{Enabled: true},
 		)
 
 		mockCR := testutil.NewMockCluster("test-cluster", "default")
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "test-role",
@@ -2053,6 +1998,11 @@ var _ = Describe("Sidecar product image propagation", func() {
 				},
 			},
 		}
+		buildCtx.Declaration.MainContainerName = "main"
+		buildCtx.Declaration.LogProducers = []productlogging.ContainerLogging{{
+			Container: "main",
+			Framework: productlogging.LoggingFrameworkLogback,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
 		Expect(err).NotTo(HaveOccurred())
@@ -2074,6 +2024,7 @@ var _ = Describe("Selector label stability", func() {
 
 	newBuildCtx := func(clusterLabels map[string]string) *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			ClusterLabels:    clusterLabels,
@@ -2083,11 +2034,12 @@ var _ = Describe("Selector label stability", func() {
 			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
 			MergedConfig:     &config.MergedConfig{},
 			ResourceName:     "test-cluster-server-default",
+			Declaration:      reconciler.RoleDeclaration{ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}}},
 		}
 	}
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		mockCR = testutil.NewMockCluster("test-cluster", "default")
 	})
 
@@ -2160,8 +2112,6 @@ var _ = Describe("Selector label stability", func() {
 		// ExtraLabels was applied LAST and therefore won in the label map, while the builder
 		// re-wrote the selector keys into the pod template afterwards — which is exactly the
 		// mismatch that needed a build-time rejection. Ordering makes it impossible instead.
-		handler.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
-
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
 			newBuildCtx(map[string]string{
 				"app.kubernetes.io/component":  "hijacked",
@@ -2195,16 +2145,10 @@ var _ = Describe("Selector label stability", func() {
 
 var _ = Describe("Role group Services", func() {
 	It("preserves every field of a declared service port on both Services", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.SetRoleServicePorts("server", []corev1.ServicePort{{
-			Name:       "http",
-			Port:       8080,
-			TargetPort: intstr.FromString("http"),
-			NodePort:   31234,
-			Protocol:   corev1.ProtocolTCP,
-		}})
+		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 
 		buildCtx := &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "server",
@@ -2213,7 +2157,15 @@ var _ = Describe("Role group Services", func() {
 			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
 			MergedConfig:     &config.MergedConfig{},
 			ResourceName:     "test-cluster-server-default",
+			Declaration:      reconciler.RoleDeclaration{ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}}},
 		}
+		buildCtx.Declaration.ServicePorts = []corev1.ServicePort{{
+			Name:       "http",
+			Port:       8080,
+			TargetPort: intstr.FromString("http"),
+			NodePort:   31234,
+			Protocol:   corev1.ProtocolTCP,
+		}}
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient,
 			testutil.NewMockCluster("test-cluster", "default"), buildCtx)
@@ -2239,6 +2191,7 @@ var _ = Describe("Role group ConfigMap rendering", func() {
 
 	newBuildCtx := func() *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "test-cluster",
 			ClusterNamespace: "default",
 			RoleName:         "server",
@@ -2253,7 +2206,7 @@ var _ = Describe("Role group ConfigMap rendering", func() {
 	}
 
 	BeforeEach(func() {
-		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
+		handler = reconciler.NewBaseRoleGroupHandler[common.ClusterInterface](testScheme)
 		mockCR = testutil.NewMockCluster("test-cluster", "default")
 	})
 
@@ -2277,285 +2230,15 @@ var _ = Describe("Role group ConfigMap rendering", func() {
 	})
 })
 
-var _ = Describe("Container image resolution", func() {
-	var mockCR *testutil.MockCluster
-
-	newBuildCtx := func(image *v1alpha1.ImageSpec) *reconciler.RoleGroupBuildContext {
-		return &reconciler.RoleGroupBuildContext{
-			ClusterName:      "test-cluster",
-			ClusterNamespace: "default",
-			ClusterSpec:      &v1alpha1.GenericClusterSpec{Image: image},
-			RoleName:         "server",
-			RoleSpec:         &v1alpha1.RoleSpec{},
-			RoleGroupName:    "default",
-			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
-			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-server-default",
-		}
-	}
-
-	crImage := &v1alpha1.ImageSpec{
-		Repo:            "quay.io/kubedoop",
-		ProductVersion:  "4.7.0",
-		KubedoopVersion: "0.1.0",
-		PullPolicy:      corev1.PullAlways,
-	}
-
-	BeforeEach(func() {
-		mockCR = testutil.NewMockCluster("test-cluster", "default")
-	})
-
-	It("resolves the main container image from the CR spec.image when ProductName is set", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.SetRoleImage("server", "role-image:1")
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(crImage))
-		Expect(err).NotTo(HaveOccurred())
-
-		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
-		Expect(container.Image).To(Equal("quay.io/kubedoop/trino:4.7.0-kubedoop0.1.0"))
-		Expect(container.ImagePullPolicy).To(Equal(corev1.PullAlways))
-	})
-
-	It("keeps the static image when the product declares no ProductName", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(crImage))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
-	})
-
-	It("fails rather than running a different version than the user asked for", func() {
-		// This used to fall back to the per-role image and start it, so a user writing
-		// `productVersion: 4.7.0` with no repo anywhere silently got whatever the handler was
-		// built with — no error, no event, no status change. Deploying an unrequested version of a
-		// stateful product is not a safe default; the same call as config.affinity.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.SetRoleImage("server", "role-image:1")
-
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
-		Expect(err).To(MatchError(ContainSubstring("repo is unset")))
-	})
-
-	It("falls back to the per-role image when nobody stated an image at all", func() {
-		// No opinion anywhere is not a misconfiguration — it is a handler running its own image.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.SetRoleImage("server", "role-image:1")
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("role-image:1"))
-	})
-
-	It("completes a partial spec.image from ImageDefaults", func() {
-		// The case that made three operators hand-roll image resolution: kubedoop publishes only
-		// the "-kubedoop<version>" tag, and a user writing just productVersion could not produce
-		// one, because the suffix was appended only when the USER supplied kubedoopVersion.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.ImageDefaults = v1alpha1.ImageSpec{
-			Repo:            "quay.io/zncdatadev",
-			ProductVersion:  "476",
-			KubedoopVersion: "0.0.0-dev",
-		}
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{ProductVersion: "4.7.0"}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
-			To(Equal("quay.io/zncdatadev/trino:4.7.0-kubedoop0.0.0-dev"))
-	})
-
-	It("runs the defaults when the CR states no image, so an operator upgrade moves the cluster", func() {
-		// ImageDefaults is read every reconcile. A webhook could not do this: its values are
-		// persisted at admission and never recomputed, freezing kubedoopVersion at whatever
-		// operator version first admitted the CR.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.ImageDefaults = v1alpha1.ImageSpec{
-			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "0.2.0",
-		}
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
-			To(Equal("quay.io/zncdatadev/trino:476-kubedoop0.2.0"))
-	})
-
-	It("puts spec.image.pullSecretName on the pod", func() {
-		// Ten product CRDs declare this field. Before it existed here, migrating to the commons
-		// ImageSpec silently deleted the behaviour: the CRD still accepted the value, no pod
-		// carried an imagePullSecrets entry, and a private-registry install failed with
-		// ImagePullBackOff and nothing pointing at the cause.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.ImageDefaults = v1alpha1.ImageSpec{
-			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "0.2.0",
-		}
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{PullSecretName: "registry-creds"}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
-			[]corev1.LocalObjectReference{{Name: "registry-creds"}}))
-	})
-
-	It("carries the pull secret on the custom-image path too", func() {
-		// A pull secret is a property of WHERE the image lives, not of how its reference was
-		// assembled — so folding it into ResolveImage would have dropped it for `custom`, which is
-		// exactly how a user points at their own registry.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{Custom: "private.example.com/trino:476", PullSecretName: "creds"}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).
-			To(Equal("private.example.com/trino:476"))
-		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
-			[]corev1.LocalObjectReference{{Name: "creds"}}))
-	})
-
-	It("carries the pull secret when the handler resolves its own images", func() {
-		// ProductName empty is the shape hive and zookeeper use. The framework assembles no
-		// reference at all there, and the deployment still needs its registry credential.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("private.example.com/hive:1", testScheme)
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{PullSecretName: "creds"}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
-			[]corev1.LocalObjectReference{{Name: "creds"}}))
-	})
-
-	It("falls back to ImageDefaults for the pull secret, and to nothing when neither states one", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ImageDefaults = v1alpha1.ImageSpec{PullSecretName: "operator-wide-creds"}
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(Equal(
-			[]corev1.LocalObjectReference{{Name: "operator-wide-creds"}}))
-
-		// The common case: no credential anywhere leaves the field unset rather than writing an
-		// entry naming nothing.
-		plain := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		resources, err = plain.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.ImagePullSecrets).To(BeNil())
-	})
-
-	It("fails the role group when the resolved tag cannot be an image tag", func() {
-		// The dev-build case from #604: ImageDefaults.KubedoopVersion = version.BuildVersion, whose
-		// scaffold default is "N/A". Before this, the handler produced
-		// "quay.io/zncdatadev/trino:476-kubedoopN/A" and reported success.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		handler.ImageDefaults = v1alpha1.ImageSpec{
-			Repo: "quay.io/zncdatadev", ProductVersion: "476", KubedoopVersion: "N/A",
-		}
-
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR, newBuildCtx(nil))
-		Expect(err).To(HaveOccurred())
-		Expect(err).To(MatchError(ContainSubstring("kubedoopVersion")))
-	})
-
-	It("keeps a ProductName-less handler on its static image, and never errors", func() {
-		// The shape hive and zookeeper use today: they resolve images themselves and leave
-		// ProductName empty. Their CRs DO carry a webhook-filled spec.image, so treating an
-		// unresolvable spec as an error here would have broken every one of their clusters.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{Repo: "quay.io/kubedoop", ProductVersion: "4.7.0"}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("fallback:1"))
-	})
-
-	It("honours spec.image.custom even without a ProductName", func() {
-		// A fully qualified reference needs no product name to build, and ignoring it meant a user
-		// pinning an image on such an operator was silently overruled.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{Custom: "my-registry/trino:pinned"}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("my-registry/trino:pinned"))
-	})
-
-	It("gives the sidecars the same CR-resolved image as the main container", func() {
-		// The Vector agent ships inside the product image, so a product that patches the main
-		// container after BuildResources leaves the sidecar behind on the stale image.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("fallback:1", testScheme)
-		handler.ProductName = "trino"
-		// The producer must name the pod's primary container, which MainContainerName pins here.
-		handler.MainContainerName = "main"
-		handler.LoggingContainers = []productlogging.ContainerLogging{{
-			Container: "main",
-			Framework: productlogging.LoggingFrameworkLogback,
-		}}
-
-		mgr := sidecar.NewSidecarManager()
-		mgr.Register(
-			vector.NewVectorSidecarProvider("",
-				vector.WithConfigMapName("test-cluster-server-default"),
-				vector.WithProducers([]productlogging.ContainerLogging{{Container: "main"}})),
-			&sidecar.SidecarConfig{Enabled: true},
-		)
-
-		buildCtx := newBuildCtx(crImage)
-		buildCtx.SidecarManager = mgr
-		buildCtx.MergedConfig = &config.MergedConfig{
-			Logging: &v1alpha1.LoggingSpec{
-				EnableVectorAgent: ptr.To(true),
-				Containers:        map[string]v1alpha1.LoggingConfigSpec{"main": {}},
-			},
-		}
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtx)
-		Expect(err).NotTo(HaveOccurred())
-
-		podSpec := resources.StatefulSet.Spec.Template.Spec
-		var vectorImage string
-		for _, c := range append(podSpec.InitContainers, podSpec.Containers...) {
-			if c.Name == vector.VectorSidecarName {
-				vectorImage = c.Image
-			}
-		}
-		Expect(vectorImage).To(Equal("quay.io/kubedoop/trino:4.7.0-kubedoop0.1.0"))
-	})
-})
-
-var _ = Describe("ConfiguredRoleNames", func() {
-	It("returns the sorted union of every per-role configuration key", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.SetRoleImage("workers", "img:2")
-		handler.SetRoleContainerPorts("coordinators", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
-		handler.SetRoleServicePorts("coordinators", []corev1.ServicePort{{Name: "http", Port: 8080}})
-		handler.SetRoleMainContainerName("workers", "trino")
-		handler.SetRoleLoggingContainers("gateways", nil)
-
-		Expect(handler.ConfiguredRoleNames()).To(Equal([]string{"coordinators", "gateways", "workers"}))
-	})
-
-	It("returns an empty list for a handler with no per-role configuration", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		Expect(handler.ConfiguredRoleNames()).To(BeEmpty())
-	})
-})
-
 var _ = Describe("BaseRoleGroupHandler ConfigMap data", func() {
 	It("always returns a non-nil Data map so products can add files to it", func() {
 		// The documented extension pattern is to call BuildResources and then customize the
 		// returned objects; `resources.ConfigMap.Data[k] = v` panics on a nil map.
-		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:latest", testScheme)
+		handler := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		cr := testutil.NewMockCluster("cm-nil", testNamespace)
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, cr, &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      "cm-nil",
 			ClusterNamespace: testNamespace,
 			RoleName:         "broker",
@@ -2573,24 +2256,32 @@ var _ = Describe("BaseRoleGroupHandler ConfigMap data", func() {
 var _ = Describe("Recommended label set", func() {
 	var mockCR *testutil.MockCluster
 
-	newHandler := func(productName string) *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
-		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("static-image:1", testScheme)
-		h.ProductName = productName
-		h.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
-		return h
+	newHandler := func() *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
+		return reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 	}
 
-	newBuildCtx := func(image *v1alpha1.ImageSpec) *reconciler.RoleGroupBuildContext {
+	// app.kubernetes.io/name and /version are stamped from the context now, not the handler: the
+	// reconciler resolves the image once per role group and publishes what followed from it.
+	newBuildCtx := func(productName string, image *v1alpha1.ImageSpec) *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: testNamespace,
 			ClusterSpec:      &v1alpha1.GenericClusterSpec{Image: image},
-			RoleName:         "server",
-			RoleSpec:         &v1alpha1.RoleSpec{},
-			RoleGroupName:    "default",
-			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
-			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-server-default",
+			ProductName:      productName,
+			// The version follows the RESOLVED image: with no product name the framework did not
+			// assemble the reference, so publishing a version read off spec.image would describe an
+			// image it did not build.
+			ResolvedImage: reconciler.ResolvedImage{
+				Reference:      "quay.io/kubedoop/" + productName + ":x",
+				ProductVersion: map[bool]string{true: image.ProductVersion, false: ""}[productName != ""],
+			},
+			RoleName:      "server",
+			RoleSpec:      &v1alpha1.RoleSpec{},
+			RoleGroupName: "default",
+			RoleGroupSpec: v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+			MergedConfig:  &config.MergedConfig{},
+			ResourceName:  "test-cluster-server-default",
+			Declaration:   reconciler.RoleDeclaration{ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}}},
 		}
 	}
 
@@ -2607,10 +2298,10 @@ var _ = Describe("Recommended label set", func() {
 	})
 
 	It("stamps the complete set on every role group resource and its pod template", func() {
-		handler := newHandler("trino")
+		handler := newHandler()
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(kubedoopImage("476")))
+			newBuildCtx("trino", kubedoopImage("476")))
 		Expect(err).NotTo(HaveOccurred())
 
 		expected := map[string]string{
@@ -2642,10 +2333,10 @@ var _ = Describe("Recommended label set", func() {
 	})
 
 	It("keeps the added labels out of the immutable StatefulSet selector", func() {
-		handler := newHandler("trino")
+		handler := newHandler()
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(kubedoopImage("476")))
+			newBuildCtx("trino", kubedoopImage("476")))
 		Expect(err).NotTo(HaveOccurred())
 
 		// .spec.selector is a one-way door: whatever goes in can never be edited again. Version
@@ -2665,12 +2356,13 @@ var _ = Describe("Recommended label set", func() {
 	})
 
 	It("omits name and version for a handler that ignores spec.image", func() {
-		// No ProductName: the handler runs its static Image and never reads spec.image, so
-		// publishing a version from there would label the pods with something they do not run.
-		handler := newHandler("")
+		// No ProductName: the product resolves its own images, so a version read off spec.image
+		// describes an image the framework did not build. Publishing it would label the pods with
+		// something they do not run.
+		handler := newHandler()
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(kubedoopImage("476")))
+			newBuildCtx("", kubedoopImage("476")))
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(resources.StatefulSet.Labels).NotTo(HaveKey(constant.LabelKubernetesName))
@@ -2680,10 +2372,10 @@ var _ = Describe("Recommended label set", func() {
 	})
 
 	It("publishes the declared productVersion even when a custom image overrides the reference", func() {
-		handler := newHandler("trino")
+		handler := newHandler()
 
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(&v1alpha1.ImageSpec{Custom: "my-registry/trino:custom", ProductVersion: "476"}))
+			newBuildCtx("trino", &v1alpha1.ImageSpec{Custom: "my-registry/trino:custom", ProductVersion: "476"}))
 		Expect(err).NotTo(HaveOccurred())
 
 		// Custom replaces the image *reference*; productVersion still declares which product
@@ -2692,11 +2384,11 @@ var _ = Describe("Recommended label set", func() {
 	})
 
 	It("drops a productVersion that is not a legal label value instead of failing the build", func() {
-		handler := newHandler("trino")
+		handler := newHandler()
 
 		// A legal image tag (up to 128 chars) that is not a legal label value (max 63).
 		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			newBuildCtx(kubedoopImage(strings.Repeat("9", 64))))
+			newBuildCtx("trino", kubedoopImage(strings.Repeat("9", 64))))
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(resources.StatefulSet.Labels).NotTo(HaveKey(constant.LabelKubernetesVersion))
@@ -2710,13 +2402,18 @@ var _ = Describe("Recommended label set", func() {
 	})
 
 	It("stamps the set minus role-group on the role-level PodDisruptionBudget", func() {
-		handler := newHandler("trino")
+		handler := newHandler()
 
 		pdb := handler.BuildRolePodDisruptionBudget(&reconciler.RoleBuildContext{
 			ClusterName:      "test-cluster",
 			ClusterNamespace: testNamespace,
 			ClusterSpec:      &v1alpha1.GenericClusterSpec{Image: kubedoopImage("476")},
 			RoleName:         "server",
+			// The role PDB is built from a role-scoped context, so it carries the same
+			// app.kubernetes.io/name and /version as every other resource of the role. Losing them
+			// here breaks no selector, which is exactly why it would go unnoticed.
+			ProductName:    "trino",
+			ProductVersion: "476",
 			RoleSpec: &v1alpha1.RoleSpec{RoleConfig: &v1alpha1.RoleConfigSpec{
 				PodDisruptionBudget: &v1alpha1.PodDisruptionBudgetSpec{Enabled: ptr.To(true)},
 			}},
@@ -2747,13 +2444,13 @@ var _ = Describe("Role group marker label key", func() {
 	)
 
 	newHandler := func() *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
-		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("static-image:1", testScheme)
-		h.SetRoleServicePorts("worker", []corev1.ServicePort{{Name: "http", Port: 8080}})
+		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		return h
 	}
 
 	newBuildCtx := func(clusterName, roleName, groupName string) *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      clusterName,
 			ClusterNamespace: testNamespace,
 			ClusterSpec:      &v1alpha1.GenericClusterSpec{},
@@ -2763,6 +2460,7 @@ var _ = Describe("Role group marker label key", func() {
 			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
 			MergedConfig:     &config.MergedConfig{},
 			ResourceName:     reconciler.RoleGroupResourceName(clusterName, roleName, groupName),
+			Declaration:      reconciler.RoleDeclaration{ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}}},
 		}
 	}
 
@@ -2844,14 +2542,13 @@ var _ = Describe("fsGroup ownership recursion", func() {
 	// on a data PVC holding millions of files that is tens of minutes of ContainerCreating on every
 	// single pod start. These specs pin the default and the escape hatch.
 	newHandler := func() *reconciler.BaseRoleGroupHandler[*testutil.MockCluster] {
-		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster]("product:1", testScheme)
-		// A data PVC is what the policy actually applies to; ephemeral volumes ignore it.
-		h.StorageMountPath = "/kubedoop/data"
+		h := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
 		return h
 	}
 
 	newBuildCtx := func(name string, overrides *corev1.PodTemplateSpec) *reconciler.RoleGroupBuildContext {
 		return &reconciler.RoleGroupBuildContext{
+			ResolvedImage:    reconciler.ResolvedImage{Reference: "test-image:latest"},
 			ClusterName:      name,
 			ClusterNamespace: testNamespace,
 			ClusterSpec:      &v1alpha1.GenericClusterSpec{},
@@ -2868,6 +2565,8 @@ var _ = Describe("fsGroup ownership recursion", func() {
 			},
 			MergedConfig: &config.MergedConfig{PodOverrides: overrides},
 			ResourceName: reconciler.RoleGroupResourceName(name, "datanode", "default"),
+			// A data PVC is what the fsGroup policy actually applies to; ephemeral volumes ignore it.
+			Declaration: reconciler.RoleDeclaration{DataVolume: &reconciler.DataVolume{MountPath: "/kubedoop/data"}},
 		}
 	}
 
@@ -2917,283 +2616,5 @@ var _ = Describe("fsGroup ownership recursion", func() {
 		Expect(*podSC.FSGroup).To(Equal(int64(1001)))
 		Expect(podSC.RunAsNonRoot).NotTo(BeNil())
 		Expect(*podSC.RunAsNonRoot).To(BeTrue())
-	})
-})
-
-var _ = Describe("Per-CR inputs on the build context", func() {
-	// The handler is constructed once in main.go and shared across every CR and every reconcile.
-	// These specs pin the channel that lets a product supply per-cluster values without writing
-	// them into that shared instance.
-	var mockCR *testutil.MockCluster
-
-	BeforeEach(func() { mockCR = testutil.NewMockCluster("test-cluster", "default") })
-
-	buildCtxWith := func(mutate func(*reconciler.RoleGroupBuildContext)) *reconciler.RoleGroupBuildContext {
-		buildCtx := &reconciler.RoleGroupBuildContext{
-			ClusterName:      "test-cluster",
-			ClusterNamespace: "default",
-			RoleName:         "server",
-			RoleSpec:         &v1alpha1.RoleSpec{},
-			RoleGroupName:    "default",
-			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
-			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-server-default",
-		}
-		if mutate != nil {
-			mutate(buildCtx)
-		}
-		return buildCtx
-	}
-
-	It("prefers the per-call image and ports over the handler's own", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
-		handler.SetRoleImage("server", "role-image:1")
-		handler.SetRoleContainerPorts("server", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
-		handler.SetRoleServicePorts("server", []corev1.ServicePort{{Name: "http", Port: 8080}})
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
-				b.Image = "per-call:2"
-				b.ImagePullPolicy = corev1.PullAlways
-				b.ContainerPorts = []corev1.ContainerPort{{Name: "https", ContainerPort: 8443}}
-				b.ServicePorts = []corev1.ServicePort{{Name: "https", Port: 8443}}
-			}))
-		Expect(err).NotTo(HaveOccurred())
-
-		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
-		Expect(container.Image).To(Equal("per-call:2"))
-		Expect(container.ImagePullPolicy).To(Equal(corev1.PullAlways))
-		Expect(container.Ports).To(HaveLen(1))
-		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8443)))
-		Expect(resources.Service.Spec.Ports[0].Port).To(Equal(int32(8443)))
-	})
-
-	It("falls back to the handler when the build states nothing", func() {
-		// Reconcile-INVARIANT settings still belong on the handler; this channel is only for the
-		// values that depend on which cluster is being built.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
-		handler.SetRoleContainerPorts("server", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}})
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, buildCtxWith(nil))
-		Expect(err).NotTo(HaveOccurred())
-
-		container := resources.StatefulSet.Spec.Template.Spec.Containers[0]
-		Expect(container.Image).To(Equal("handler-image:1"))
-		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
-	})
-
-	It("does not carry one cluster's values into the next through the shared handler", func() {
-		// The quiet half of the hazard, and the one that bites at the default concurrency of 1:
-		// spark-k8s-operator shipped a CR inheriting the previous CR's pullPolicy, with a serial
-		// reconcile loop and no race involved.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
-
-		first, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
-				b.Image = "cluster-a:1"
-				b.ImagePullPolicy = corev1.PullAlways
-				b.ContainerPorts = []corev1.ContainerPort{{Name: "https", ContainerPort: 8443}}
-			}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(first.StatefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal("cluster-a:1"))
-
-		// The second cluster states nothing — under the old idiom it would inherit cluster A's.
-		second, err := handler.BuildResources(context.Background(), k8sClient,
-			testutil.NewMockCluster("other-cluster", "default"), buildCtxWith(nil))
-		Expect(err).NotTo(HaveOccurred())
-
-		container := second.StatefulSet.Spec.Template.Spec.Containers[0]
-		Expect(container.Image).To(Equal("handler-image:1"), "cluster A's image must not leak")
-		Expect(container.ImagePullPolicy).NotTo(Equal(corev1.PullAlways))
-		Expect(container.Ports).To(BeEmpty(), "cluster A's ports must not leak")
-	})
-
-	It("builds concurrently on one handler without crossing values", func() {
-		// The loud half: this is what raising MaxConcurrentReconciles above 1 does. `make test`
-		// runs with -race in CI, so a handler-side write would be reported as a data race here
-		// rather than as a wrong value.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
-
-		const workers = 8
-		images := make([]string, workers)
-		var wg sync.WaitGroup
-		for i := range workers {
-			wg.Add(1)
-			go func() {
-				defer GinkgoRecover()
-				defer wg.Done()
-				want := fmt.Sprintf("cluster-%d:1", i)
-				resources, err := handler.BuildResources(context.Background(), k8sClient,
-					testutil.NewMockCluster(fmt.Sprintf("cluster-%d", i), "default"),
-					buildCtxWith(func(b *reconciler.RoleGroupBuildContext) {
-						b.ClusterName = fmt.Sprintf("cluster-%d", i)
-						b.ResourceName = fmt.Sprintf("cluster-%d-server-default", i)
-						b.Image = want
-					}))
-				Expect(err).NotTo(HaveOccurred())
-				images[i] = resources.StatefulSet.Spec.Template.Spec.Containers[0].Image
-			}()
-		}
-		wg.Wait()
-
-		for i := range workers {
-			Expect(images[i]).To(Equal(fmt.Sprintf("cluster-%d:1", i)))
-		}
-	})
-
-	It("does not write one cluster's image into a handler-wide sidecar manager", func() {
-		// The framework's own instance of the same defect: SetProductImage writes into the
-		// manager's configs, and a manager registered on the handler outlives the build.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("handler-image:1", testScheme)
-		mgr := sidecar.NewSidecarManager()
-		mgr.Register(&recordingSidecarProvider{name: "probe"}, &sidecar.SidecarConfig{Enabled: true})
-		handler.WithSidecarManager(mgr)
-
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			buildCtxWith(func(b *reconciler.RoleGroupBuildContext) { b.Image = "cluster-a:1" }))
-		Expect(err).NotTo(HaveOccurred())
-
-		cfg, ok := mgr.GetConfig("probe")
-		Expect(ok).To(BeTrue())
-		Expect(cfg.Image).To(BeEmpty(),
-			"the handler's manager is process-wide; this cluster's image must not be written into it")
-	})
-})
-
-// recordingSidecarProvider is a minimal provider: it only has to be registered so SetProductImage
-// has a config to write into.
-type recordingSidecarProvider struct{ name string }
-
-func (p *recordingSidecarProvider) Name() string { return p.name }
-func (p *recordingSidecarProvider) Inject(podSpec *corev1.PodSpec, cfg *sidecar.SidecarConfig) error {
-	podSpec.InitContainers = append(podSpec.InitContainers,
-		corev1.Container{Name: p.name, Image: cfg.Image})
-	return nil
-}
-func (p *recordingSidecarProvider) Validate(context.Context, client.Client, string) error { return nil }
-
-var _ = Describe("Declaring intent before Build", func() {
-	// Both of these replace the same shape: the framework builds a complete object and the product
-	// reaches in and edits it. Declaring the intent first keeps ordering framework-owned.
-	var mockCR *testutil.MockCluster
-
-	BeforeEach(func() { mockCR = testutil.NewMockCluster("test-cluster", "default") })
-
-	declareCtx := func(mutate func(*reconciler.RoleGroupBuildContext)) *reconciler.RoleGroupBuildContext {
-		buildCtx := &reconciler.RoleGroupBuildContext{
-			ClusterName:      "test-cluster",
-			ClusterNamespace: "default",
-			RoleName:         "server",
-			RoleSpec:         &v1alpha1.RoleSpec{},
-			RoleGroupName:    "default",
-			RoleGroupSpec:    v1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
-			MergedConfig:     &config.MergedConfig{},
-			ResourceName:     "test-cluster-server-default",
-			ServicePorts:     []corev1.ServicePort{{Name: "http", Port: 8080}},
-		}
-		if mutate != nil {
-			mutate(buildCtx)
-		}
-		return buildCtx
-	}
-
-	It("sets the client Service type from the declared listener class", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
-				b.ListenerClass = listener.ListenerClassExternalUnstable
-			}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.Service.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
-	})
-
-	It("leaves the Service a ClusterIP when no class is declared", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR, declareCtx(nil))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resources.Service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
-	})
-
-	It("hands the customizer the primary container, whichever index it ends up at", func() {
-		// zookeeper-operator located it as Containers[0], an assumption the framework never made:
-		// a sidecar provider inserting a container earlier silently configures the wrong one.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.MainContainerName = "zookeeper"
-
-		var sawName string
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
-				b.MainContainerCustomizer = func(c *corev1.Container) error {
-					sawName = c.Name
-					c.Command = []string{"/bin/zkServer.sh"}
-					c.Args = []string{"start-foreground"}
-					c.Env = append(c.Env, corev1.EnvVar{Name: "ZK_ID", Value: "1"})
-					return nil
-				}
-			}))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(sawName).To(Equal("zookeeper"), "the customizer is handed the container by identity, not by index")
-
-		main := resources.StatefulSet.Spec.Template.Spec.Containers[0]
-		Expect(main.Command).To(Equal([]string{"/bin/zkServer.sh"}))
-		Expect(main.Args).To(Equal([]string{"start-foreground"}))
-		Expect(main.Env).To(ContainElement(corev1.EnvVar{Name: "ZK_ID", Value: "1"}))
-	})
-
-	It("lets podOverrides outrank the customizer", func() {
-		// The reason this is a pre-Build hook rather than a post-build patch. A product editing the
-		// returned StatefulSet would land AFTER the strategic merge and silently beat the user.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-		handler.MainContainerName = "main"
-
-		resources, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
-				b.MergedConfig.PodOverrides = &corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{Containers: []corev1.Container{{
-						Name: "main",
-						Env:  []corev1.EnvVar{{Name: "LEVEL", Value: "from-user"}},
-					}}},
-				}
-				b.MainContainerCustomizer = func(c *corev1.Container) error {
-					c.Env = append(c.Env, corev1.EnvVar{Name: "LEVEL", Value: "from-product"})
-					return nil
-				}
-			}))
-		Expect(err).NotTo(HaveOccurred())
-
-		main := resources.StatefulSet.Spec.Template.Spec.Containers[0]
-		Expect(main.Env).To(ContainElement(corev1.EnvVar{Name: "LEVEL", Value: "from-user"}))
-		Expect(main.Env).NotTo(ContainElement(corev1.EnvVar{Name: "LEVEL", Value: "from-product"}))
-	})
-
-	It("fails the role group when the customizer errors", func() {
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
-				b.MainContainerCustomizer = func(*corev1.Container) error {
-					return fmt.Errorf("no JVM heap could be computed")
-				}
-			}))
-		Expect(err).To(MatchError(ContainSubstring("no JVM heap could be computed")))
-		Expect(reconciler.IsValidationError(err)).To(BeTrue())
-	})
-
-	It("refuses an image change from the customizer, and keeps the resolved one", func() {
-		// The image is propagated to the sidecars before the StatefulSet is built (the Vector agent
-		// ships inside the product image), so changing it here would leave them on the old one.
-		handler := reconciler.NewBaseRoleGroupHandler[common.ClusterInterface]("img:1", testScheme)
-
-		_, err := handler.BuildResources(context.Background(), k8sClient, mockCR,
-			declareCtx(func(b *reconciler.RoleGroupBuildContext) {
-				b.MainContainerCustomizer = func(c *corev1.Container) error {
-					c.Image = "sneaky:2"
-					return nil
-				}
-			}))
-		Expect(err).To(MatchError(ContainSubstring("RoleGroupBuildContext.Image")))
-		Expect(err).To(MatchError(ContainSubstring("sneaky:2")))
 	})
 })

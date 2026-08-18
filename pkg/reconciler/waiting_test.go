@@ -86,6 +86,7 @@ var _ = Describe("An extension that is waiting", func() {
 		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
 			Client:            k8sClient,
 			Scheme:            testScheme,
+			ImageResolution:   reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
 			Recorder:          rec,
 			RoleGroupHandler:  testutil.NewMockRoleGroupHandler(),
 			ExtensionRegistry: registry,
@@ -250,5 +251,87 @@ var _ = Describe("An extension that is waiting", func() {
 		fetched := &testutil.MockCluster{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: cr.Name}, fetched)).To(Succeed())
 		Expect(fetched.Status.IsDegraded()).To(BeTrue())
+	})
+})
+
+var _ = Describe("A RoleProvider can say 'not ready yet' too", func() {
+	// RoleProvider's contract says a *common.RequeueAfterError reports "not ready yet" — a product
+	// whose declaration depends on an authentication class or an S3 connection that has not been
+	// issued. Returning it raw from the catalog step made that a lie: Reconcile left early WITH an
+	// error, so the workqueue backed off exponentially, no Waiting condition was raised, and
+	// Degraded stayed latched at whatever the last completed pass wrote — cleanup and health never
+	// ran. That is precisely the shape §5 says a wait must not have.
+	var ctx context.Context
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	It("requeues on its own delay without Degraded, and still observes the cluster", func() {
+		crName := uniqueCRName("waiting-roleprovider")
+		cr := testutil.NewMockCluster(crName, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{"worker": defaultGroupRole()})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
+
+		fakeRecorder := record.NewFakeRecorder(100)
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
+			Recorder:         fakeRecorder,
+			RoleGroupHandler: testutil.NewMockRoleGroupHandler(),
+			RoleProvider: reconciler.RoleProviderFunc[*testutil.MockCluster](
+				func(context.Context, client.Client, *testutil.MockCluster) (reconciler.RoleCatalog, error) {
+					return nil, common.NewRequeueAfterError(25*time.Second,
+						"WaitingForAuthClass", "the authentication class has not been issued")
+				}),
+			Prototype: testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		result, err := r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: crName},
+		})
+		Expect(err).NotTo(HaveOccurred(), "a wait must not be returned as an error")
+		Expect(result.RequeueAfter).To(Equal(25 * time.Second))
+
+		fetched := &testutil.MockCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: crName}, fetched)).To(Succeed())
+		Expect(fetched.Status.IsDegraded()).To(BeFalse(), "waiting on a declaration is not a fault")
+
+		waiting := fetched.Status.GetCondition(reconciler.ConditionWaiting)
+		Expect(waiting).NotTo(BeNil())
+		Expect(waiting.Reason).To(Equal("WaitingForAuthClass"))
+
+		// The pass must have continued past the catalog: health is what writes these, and an early
+		// return is exactly what used to leave them stale.
+		Expect(fetched.Status.GetCondition(v1alpha1.ConditionAvailable)).NotTo(BeNil(),
+			"cleanup and health still run while a declaration waits")
+	})
+
+	It("still fails the pass for an ordinary catalog error", func() {
+		crName := uniqueCRName("failing-roleprovider")
+		cr := testutil.NewMockCluster(crName, testNamespace).
+			WithRoles(map[string]v1alpha1.RoleSpec{"worker": defaultGroupRole()})
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
+
+		r, err := reconciler.NewGenericReconciler(&reconciler.GenericReconcilerConfig[*testutil.MockCluster]{
+			Client:           k8sClient,
+			Scheme:           testScheme,
+			ImageResolution:  reconciler.ImageResolution{Defaults: v1alpha1.ImageSpec{Custom: "test-image:latest"}},
+			Recorder:         record.NewFakeRecorder(100),
+			RoleGroupHandler: testutil.NewMockRoleGroupHandler(),
+			RoleProvider: reconciler.RoleProviderFunc[*testutil.MockCluster](
+				func(context.Context, client.Client, *testutil.MockCluster) (reconciler.RoleCatalog, error) {
+					return nil, errors.New("cannot reach the metastore")
+				}),
+			Prototype: testutil.NewMockCluster("proto", testNamespace),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: crName},
+		})
+		Expect(err).To(HaveOccurred(), "a real failure must still back the workqueue off")
 	})
 })

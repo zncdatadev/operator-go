@@ -80,48 +80,53 @@ type TrinoRoleGroupHandler struct {
 	*reconciler.BaseRoleGroupHandler[*trinov1alpha1.TrinoCluster]
 }
 
-// NewTrinoRoleGroupHandler creates the handler and configures the framework defaults.
+// NewTrinoRoleGroupHandler creates the handler. It now carries only reconcile-invariant
+// collaborators: everything a ROLE is made of is declared per reconcile by DeclareRoles below,
+// with the cr in hand.
 func NewTrinoRoleGroupHandler(scheme *runtime.Scheme) *TrinoRoleGroupHandler {
-	base := reconciler.NewBaseRoleGroupHandler[*trinov1alpha1.TrinoCluster](defaultImage(), scheme)
+	base := reconciler.NewBaseRoleGroupHandler[*trinov1alpha1.TrinoCluster](scheme)
 
-	// config.properties (provided as a map via ProductConfig / CRD overrides) is rendered
-	// with the properties format adapter.
+	// config.properties (provided as a map by the role group resolver / CRD overrides) is
+	// rendered with the properties format adapter.
 	base.ConfigGenerator = config.NewMultiFormatConfigGenerator()
 	base.ConfigGenerator.RegisterDefaultFormats()
 
-	// Trino reads config from /etc/trino; name the main container "trino" so it matches the
-	// per-container logging key below.
+	// Trino reads config from /etc/trino.
 	base.ConfigMountPath = "/etc/trino"
-	base.MainContainerName = constants.MainContainerName
-
-	// Opting into the product name lets the framework resolve spec.image itself, for the main
-	// container and for the sidecars that ship inside the product image alike.
-	base.ProductName = constants.ProductName
-	// Evaluated on every reconcile, so an operator upgrade moves existing clusters onto the
-	// co-released product image. A mutating webhook cannot do this: its defaults are persisted into
-	// the spec at admission and never recomputed, which would freeze kubedoopVersion at whatever
-	// operator version first admitted the CR.
-	base.ImageDefaults = constants.ImageDefaults()
-
-	// Declarative logging: the framework renders the Log4j2 config file into the ConfigMap
-	// from the deep-merged CRD logging spec.
-	base.LoggingContainers = []productlogging.ContainerLogging{
-		{Container: constants.MainContainerName, Framework: productlogging.LoggingFrameworkLog4j2},
-	}
-
-	// Ports are the same for both roles.
-	containerPorts := []corev1.ContainerPort{
-		{Name: "http", ContainerPort: constants.DefaultHTTPPort, Protocol: corev1.ProtocolTCP},
-	}
-	servicePorts := []corev1.ServicePort{
-		{Name: "http", Port: constants.DefaultHTTPPort, Protocol: corev1.ProtocolTCP},
-	}
-	for _, role := range []string{product.RoleCoordinators, product.RoleWorkers} {
-		base.SetRoleContainerPorts(role, containerPorts)
-		base.SetRoleServicePorts(role, servicePorts)
-	}
 
 	return &TrinoRoleGroupHandler{BaseRoleGroupHandler: base}
+}
+
+// DeclareRoles implements reconciler.RoleProvider: one statement per role, produced once per
+// reconcile pass with the cr in hand.
+//
+// It replaces seven role-keyed maps on the handler plus their per-call twins on the build context.
+// Taking the cr is what lets it be static data — a port that moves because the CR enabled TLS is
+// computed here, from THIS cr, rather than assigned into process-wide handler state that the next
+// cluster would inherit.
+func (h *TrinoRoleGroupHandler) DeclareRoles(
+	_ context.Context, _ client.Client, _ *trinov1alpha1.TrinoCluster,
+) (reconciler.RoleCatalog, error) {
+	// Ports are the same for both roles. Ports[0] backs the generated TCP readiness probe.
+	shared := reconciler.RoleDeclaration{
+		MainContainerName: constants.MainContainerName,
+		ContainerPorts: []corev1.ContainerPort{
+			{Name: "http", ContainerPort: constants.DefaultHTTPPort, Protocol: corev1.ProtocolTCP},
+		},
+		ServicePorts: []corev1.ServicePort{
+			{Name: "http", Port: constants.DefaultHTTPPort, Protocol: corev1.ProtocolTCP},
+		},
+		// Declarative logging: the framework renders the Log4j2 config file into the ConfigMap
+		// from the folded CRD logging spec. The container named here must be the pod's primary
+		// container, which MainContainerName pins.
+		LogProducers: []productlogging.ContainerLogging{
+			{Container: constants.MainContainerName, Framework: productlogging.LoggingFrameworkLog4j2},
+		},
+	}
+	return reconciler.RoleCatalog{
+		product.RoleCoordinators: shared,
+		product.RoleWorkers:      shared,
+	}, nil
 }
 
 // BuildResources delegates the 90% to the framework, then appends the product-specific pieces
@@ -182,16 +187,6 @@ func jvmConfig(roleName string) string {
 		b.ForCoordinator()
 	}
 	return b.Build()
-}
-
-// defaultImage is the operator's default Trino image. The CR's spec.image (defaulted by the
-// webhook) overrides it per reconcile in BuildResources.
-func defaultImage() string {
-	return fmt.Sprintf("%s/trino:%s-%s",
-		constants.DefaultImageRepo,
-		constants.DefaultImageProductVersion,
-		constants.DefaultImageKubedoopVersion,
-	)
 }
 
 // Ensure interface implementation.

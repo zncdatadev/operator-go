@@ -17,8 +17,6 @@ limitations under the License.
 package builder_test
 
 import (
-	"fmt"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
@@ -173,14 +171,14 @@ var _ = Describe("StatefulSetBuilder", func() {
 		})
 	})
 
-	Describe("AddEnvVar", func() {
+	Describe("WithBaseEnvVars", func() {
 		It("should add an environment variable", func() {
-			result := stsBuilder.AddEnvVar("KEY", "value")
+			result := stsBuilder.WithBaseEnvVars([]corev1.EnvVar{{Name: "KEY", Value: "value"}})
 
 			Expect(result).To(Equal(stsBuilder))
-			Expect(stsBuilder.EnvVars).To(HaveLen(1))
-			Expect(stsBuilder.EnvVars[0].Name).To(Equal("KEY"))
-			Expect(stsBuilder.EnvVars[0].Value).To(Equal("value"))
+			Expect(stsBuilder.BaseEnvVars).To(HaveLen(1))
+			Expect(stsBuilder.BaseEnvVars[0].Name).To(Equal("KEY"))
+			Expect(stsBuilder.BaseEnvVars[0].Value).To(Equal("value"))
 		})
 	})
 
@@ -831,7 +829,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			}
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).
-				AddEnvVar("COMMON_VAR", "built-value").
+				WithBaseEnvVars([]corev1.EnvVar{{Name: "COMMON_VAR", Value: "built-value"}}).
 				WithPodOverrides(overrides).
 				Build()
 
@@ -1205,7 +1203,7 @@ var _ = Describe("StatefulSetBuilder", func() {
 			sts := stsBuilder.
 				WithImage(image, corev1.PullIfNotPresent).
 				WithConfig(cfg).
-				AddEnvVar("OVERRIDE_KEY", "override-value").
+				WithBaseEnvVars([]corev1.EnvVar{{Name: "OVERRIDE_KEY", Value: "override-value"}}).
 				Build()
 
 			container := sts.Spec.Template.Spec.Containers[0]
@@ -1308,7 +1306,7 @@ var _ = Describe("StatefulSetBuilder Build isolation", func() {
 			WithPorts([]corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}).
 			AddVolume(corev1.Volume{Name: "config"}).
 			AddVolumeMount(corev1.VolumeMount{Name: "config", MountPath: "/etc/config"}).
-			AddEnvVar("KEY", "value")
+			WithBaseEnvVars([]corev1.EnvVar{{Name: "KEY", Value: "value"}})
 	}
 
 	It("does not let a pod template mutation reach ObjectMeta or the selector", func() {
@@ -1543,7 +1541,7 @@ var _ = Describe("StatefulSetBuilder podOverrides on mutually exclusive fields",
 			},
 		}
 		sts := newBuilder().
-			AddEnvVar("PASSWORD", "built-in-plaintext").
+			WithBaseEnvVars([]corev1.EnvVar{{Name: "PASSWORD", Value: "built-in-plaintext"}}).
 			WithPodOverrides(overrides).
 			Build()
 
@@ -1817,26 +1815,53 @@ var _ = Describe("storageClass distinguishes unset from empty", func() {
 	})
 })
 
-var _ = Describe("Main container customizer violations", func() {
-	It("reports only the current build's violations when a builder is reused", func() {
-		// The list describes THIS build. Accumulating would report a stale violation for a builder
-		// whose customizer has since been fixed, and report a surviving one twice — the same reason
-		// podOverrideViolations is reset, and the reset has to happen earlier here because
-		// customizedContainer runs inside buildPodSpec.
-		b := builder.NewStatefulSetBuilder("sts", "default").
+var _ = Describe("WithNamedStorage", func() {
+	// The custom-name path is the entire reason the name parameter exists — it is what
+	// RoleDeclaration.DataVolume{Name} reaches — and it had no coverage at all. The invariant that
+	// matters is that the claim template and the volumeMount carry the SAME name: if they drift,
+	// the pod references a volume that does not exist and the API server rejects the StatefulSet
+	// naming a field the user never wrote.
+	storage := func() *v1alpha1.StorageResource {
+		return &v1alpha1.StorageResource{
+			Capacity: ptr.To(resource.MustParse("10Gi")),
+		}
+	}
+
+	It("names the claim template and the mount identically", func() {
+		sts := builder.NewStatefulSetBuilder("test", "default").
 			WithImage("img:1", corev1.PullIfNotPresent).
-			WithMainContainerCustomizer(func(*corev1.Container) error {
-				return fmt.Errorf("boom")
-			})
+			WithNamedStorage("journal", storage(), "/kubedoop/journal").
+			Build()
 
-		b.Build()
-		Expect(b.MainContainerViolations()).To(HaveLen(1))
+		Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal("journal"))
 
-		b.Build()
-		Expect(b.MainContainerViolations()).To(HaveLen(1), "the second build must not double-count")
+		mounts := sts.Spec.Template.Spec.Containers[0].VolumeMounts
+		var found *corev1.VolumeMount
+		for i := range mounts {
+			if mounts[i].MountPath == "/kubedoop/journal" {
+				found = &mounts[i]
+			}
+		}
+		Expect(found).NotTo(BeNil(), "the declared mount path must be mounted")
+		Expect(found.Name).To(Equal("journal"),
+			"the mount must name the claim template, or the pod references a volume that does not exist")
+	})
 
-		b.WithMainContainerCustomizer(func(*corev1.Container) error { return nil })
-		b.Build()
-		Expect(b.MainContainerViolations()).To(BeEmpty(), "a fixed customizer must clear the list")
+	It("falls back to the framework's default name when none is given", func() {
+		sts := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithNamedStorage("", storage(), "/kubedoop/data").
+			Build()
+		Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal(builder.DefaultDataVolumeName))
+	})
+
+	It("declines to build a claim when the role group states no storage", func() {
+		// A nil storage is a role group that said nothing, not one asking for a zero-sized volume.
+		sts := builder.NewStatefulSetBuilder("test", "default").
+			WithImage("img:1", corev1.PullIfNotPresent).
+			WithNamedStorage("data", nil, "/kubedoop/data").
+			Build()
+		Expect(sts.Spec.VolumeClaimTemplates).To(BeEmpty())
 	})
 })

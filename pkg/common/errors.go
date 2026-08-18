@@ -64,8 +64,8 @@ const (
 // without setting Degraded and without emitting a Warning event.
 //
 // It is an ERROR TYPE rather than a change to the hook signatures because the same "not yet" arises
-// in places that are not hooks — sidecar validation, ProductConfig's live lookups, a handler's
-// BuildResources — and an error is the only channel all of them already have. RateLimitError is the
+// in places that are not hooks — sidecar validation, a RoleGroupResolver's live lookups, a
+// handler's BuildResources — and an error is the only channel all of them already have. RateLimitError is the
 // same shape for the same reason.
 //
 // Reason and Message must be STABLE across passes while the wait lasts. The framework's status
