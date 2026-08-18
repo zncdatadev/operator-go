@@ -512,10 +512,10 @@ func (c *RoleGroupBuildContext) EffectiveConfig() *v1alpha1.RoleGroupConfigSpec 
 // LogFileTarget returns the path a producer's rolling log file must be written to, or "" meaning
 // console only.
 //
-// It exists for a product that renders its own logging config file — Airflow's log_config.py, which
-// must be built on Airflow's own DEFAULT_LOGGING_CONFIG and so can never be a rendered template.
-// Such a product declares its producer with an empty Framework and calls this to learn where the
-// file goes.
+// It exists for a product that writes its own logging config file — Airflow's log_config.py, whose
+// content has to import and patch Airflow's own DEFAULT_LOGGING_CONFIG, which is one product's
+// knowledge and does not belong in the framework's generic renderer. Such a product declares its
+// producer with an empty Framework and calls this to learn where the file goes.
 //
 // It hands back a CONCLUSION, not the inputs to one. Whether the Vector pipeline is active is a
 // pure function of things the framework already holds — logging.enableVectorAgent from the folded

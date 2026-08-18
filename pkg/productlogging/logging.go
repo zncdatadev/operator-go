@@ -47,11 +47,14 @@ type ContainerLogging struct {
 	// RW mount, the pre-created log directory, the source — but the framework renders nothing for
 	// it, so there is no ConfigMap key to collide with the one the product writes.
 	//
-	// That is the seam for a config file which can never be a rendered template: Airflow's
-	// log_config.py must be built on Airflow's own DEFAULT_LOGGING_CONFIG, and the python
-	// generator's default file name is log_config.py, so a rendered file would collide with the
-	// product's own key and fail the role group — while dropping the producer entirely would cost
-	// the volume, the mount, the directory and the source.
+	// That is the seam for a config file whose CONTENT this package should not be the one to
+	// produce. Airflow's log_config.py has to import Airflow's own DEFAULT_LOGGING_CONFIG and patch
+	// it, or the task-log machinery it configures (airflow.task -> FileTaskHandler) is lost; the
+	// generic python renderer here emits a standalone dictConfig instead, and teaching it Airflow's
+	// import path and dict layout would put one product's knowledge in a component shared by all of
+	// them. Meanwhile the python default file name IS log_config.py, so a rendered file would
+	// collide with the product's own key and fail the role group — while dropping the producer
+	// entirely would cost the volume, the mount, the directory and the source.
 	//
 	// It is expressed by leaving this empty rather than by a "do not render" flag because the
 	// product then has to STATE what it will write (LogFileName), which is what makes the

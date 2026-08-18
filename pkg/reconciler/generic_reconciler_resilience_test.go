@@ -806,9 +806,10 @@ var _ = Describe("GenericReconciler vector sidecar gating", func() {
 		})
 
 		base := reconciler.NewBaseRoleGroupHandler[*testutil.MockCluster](testScheme)
-		// This product builds its own logging config file (Airflow's log_config.py has to extend
-		// Airflow's DEFAULT_LOGGING_CONFIG, so it can never be a rendered template) and only wants
-		// the container joined to the Vector pipeline.
+		// This product writes its own logging config file — Airflow's log_config.py has to import
+		// and patch Airflow's own DEFAULT_LOGGING_CONFIG, which is one product's knowledge and does
+		// not belong in the framework's generic python renderer — and only wants the container
+		// joined to the Vector pipeline.
 		r := newReconcilerWithRoles(&productLogConfigHandler{BaseRoleGroupHandler: base},
 			record.NewFakeRecorder(100), reconciler.RoleCatalog{
 				"broker": {
@@ -887,8 +888,9 @@ func (h *productLogConfigHandler) BuildResources(
 	res.ConfigMap.Data[vector.VectorConfigFileName] = "# product-owned vector config"
 
 	// The product renders its own file, from the framework's folded logging spec and the resolved
-	// log target. Airflow's log_config.py is the real case: it has to extend Airflow's own
-	// DEFAULT_LOGGING_CONFIG, so it can never be a rendered template.
+	// log target. Airflow's log_config.py is the real case: its content must import and patch
+	// Airflow's own DEFAULT_LOGGING_CONFIG, so the generic renderer is the wrong place to produce
+	// it — not because it is unrenderable, but because that shape is one product's knowledge.
 	decl := buildCtx.Declaration.LogProducers[0]
 	spec := buildCtx.ContainerLogging(decl.Container)
 	level := "INFO"
