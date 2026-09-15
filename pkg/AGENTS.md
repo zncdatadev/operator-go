@@ -16,6 +16,7 @@ Every directory under `pkg/`:
 | `common/` | Framework interfaces: `ClusterInterface` / `ClusterResource[T]`, the extension system and its per-CR-type `ExtensionRegistry[CR]`, `ServiceHealthCheck`, shared error types | |
 | `config/` | Config-file serialization (XML/Properties/YAML/Env/INI) and the layered override merge | [config/AGENTS.md](config/AGENTS.md) |
 | `constant/` | Kubedoop path, label, domain and restarter constants (`KubedoopMountDir`, `KubedoopSecretDir`, …) | |
+| `framework/` | New framework domain contracts, raw input/schema/registration generator and public operator registration; execution stays SDK-internal | [framework/AGENTS.md](framework/AGENTS.md) |
 | `listener/` | Listener CSI volume registration and `ListenerProvisioner` | |
 | `productlogging/` | Product logging config generation (Log4j, Log4j2, Logback, Python) and `ContainerLogging` | |
 | `reconciler/` | `GenericReconciler` framework, handlers, cleaner, health, dependencies, apply semantics | [reconciler/AGENTS.md](reconciler/AGENTS.md) |
@@ -28,6 +29,11 @@ Every directory under `pkg/`:
 | `webhook/` | Webhook infrastructure: `WebhookManager`, `ProductDefaulter`/`ProductValidator`, common image defaults/validators | |
 
 ## Package Boundaries
+
+The existing-SDK boundaries and working instructions below apply to the old
+packages. New-framework work under `framework/` follows its own AGENTS and
+[core specification](../docs/architecture.md#framework-design); it does not add hooks or merge
+semantics to the old reconciler.
 
 - **`pkg/common` holds interfaces, `pkg/reconciler` holds the loop.** A type that both the SDK and a
   product implement belongs in `common`; anything that talks to the API server on the reconcile path

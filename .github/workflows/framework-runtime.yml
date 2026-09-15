@@ -1,0 +1,134 @@
+name: Framework Runtime (ARM64)
+
+# Runtime acceptance uses pinned third-party product images and its own kind
+# cluster. PR generation/unit/lint checks remain in test.yml and lint.yml.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: framework-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  formal-runtime:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: operator-go
+    env:
+      KIND_VERSION: v0.32.0
+      KUBECTL_VERSION: v1.36.2
+      COMMONS_REVISION: 6e65371a2e11bef700e6493987aa81f9f73e95a3
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out SDK revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: operator-go
+          persist-credentials: false
+
+      - name: Check out fixed platform restarter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: zncdatadev/commons-operator
+          ref: ${{ env.COMMONS_REVISION }}
+          path: commons-operator
+          persist-credentials: false
+
+      # The pinned commons checkout requires Go 1.25.8, satisfying the SDK's
+      # earlier 1.25.3 minimum without an implicit toolchain switch in that build.
+      - name: Set up Go for both modules and restarter
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: commons-operator/go.mod
+          cache-dependency-path: |
+            operator-go/go.sum
+            operator-go/examples/trino-operator/go.sum
+            commons-operator/go.sum
+
+      # Docker and Python are part of the official ubuntu-24.04-arm image.
+      # Start/check that daemon explicitly; record its actual version as evidence.
+      - name: Check native ARM64 Docker and Python
+        run: |
+          test "$(uname -m)" = aarch64
+          sudo systemctl start docker
+          docker version
+          case "$(docker info --format '{{.Architecture}}')" in
+            aarch64|arm64) ;;
+            *) exit 1 ;;
+          esac
+          python3 --version
+          test "$(git -C ../commons-operator rev-parse HEAD)" = "$COMMONS_REVISION"
+
+      - name: Install pinned kind and kubectl with checksums
+        run: |
+          tool_dir="$RUNNER_TEMP/framework-tools"
+          mkdir -p "$tool_dir"
+          kind_base="https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$kind_base/kind-linux-arm64" -o "$tool_dir/kind-linux-arm64"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$kind_base/kind-linux-arm64.sha256sum" -o "$tool_dir/kind-linux-arm64.sha256sum"
+          (cd "$tool_dir" && sha256sum --check kind-linux-arm64.sha256sum)
+          install -m 0755 "$tool_dir/kind-linux-arm64" "$tool_dir/kind"
+          kubectl_base="https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/arm64"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$kubectl_base/kubectl" -o "$tool_dir/kubectl"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$kubectl_base/kubectl.sha256" -o "$tool_dir/kubectl.sha256"
+          (cd "$tool_dir" && printf '%s  kubectl\n' "$(cat kubectl.sha256)" | sha256sum --check)
+          chmod 0755 "$tool_dir/kubectl"
+          printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+          make kustomize
+          printf '%s\n' "$PWD/bin" >> "$GITHUB_PATH"
+
+      - name: Verify generation, unit tests and lint before runtime
+        run: |
+          make verify-generate
+          make test ENVTEST_K8S_VERSION=1.35.0
+          make lint
+          assets="$(bin/setup-envtest use 1.35.0 --bin-dir "$PWD/bin" -p path)"
+          make -C examples/trino-operator test KUBEBUILDER_ASSETS="$assets"
+          make -C examples/trino-operator lint
+          git diff --exit-code
+
+      - name: Record installed tool versions
+        run: |
+          mkdir -p "$RUNNER_TEMP/framework-tool-evidence"
+          docker version > "$RUNNER_TEMP/framework-tool-evidence/docker.txt"
+          kind version > "$RUNNER_TEMP/framework-tool-evidence/kind.txt"
+          kubectl version --client -o json > "$RUNNER_TEMP/framework-tool-evidence/kubectl.json"
+          kustomize version > "$RUNNER_TEMP/framework-tool-evidence/kustomize.txt"
+          go version > "$RUNNER_TEMP/framework-tool-evidence/go.txt"
+          python3 --version > "$RUNNER_TEMP/framework-tool-evidence/python.txt"
+
+      # SIGTERM reaches the harness before the job timeout, leaving four minutes
+      # for its process/image/cluster cleanup and separate cleanup verdict.
+      - name: Run formal deployment, Trino and Retain acceptance
+        run: |
+          timeout --signal=TERM --kill-after=240s 65m \
+            python3 -u -B hack/framework-e2e/run.py \
+              --commons "$GITHUB_WORKSPACE/commons-operator" \
+              --output "$RUNNER_TEMP/framework-runtime" \
+            2>&1 | tee "$RUNNER_TEMP/framework-runtime.log"
+
+      - name: Upload reviewable evidence without kubeconfig or binaries
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: framework-runtime-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/framework-tool-evidence/*.txt
+            ${{ runner.temp }}/framework-tool-evidence/*.json
+            ${{ runner.temp }}/framework-runtime.log
+            ${{ runner.temp }}/framework-runtime/**/*.json
+            ${{ runner.temp }}/framework-runtime/**/*.log
+            ${{ runner.temp }}/framework-runtime/**/*.txt
+            !${{ runner.temp }}/framework-runtime/**/*kubeconfig*

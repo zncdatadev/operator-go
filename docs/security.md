@@ -1,7 +1,133 @@
 # Operator-Go Security Architecture
 
+The sections below define the security boundaries of `pkg/framework`. The numbered
+sections beginning at **1. Overview** document the existing `GenericReconciler`,
+provisioner and sidecar SDK APIs only; their API names, RBAC tables and automatic
+workload identity rules do not describe the new framework. In particular, the old
+provisioner's annotation-only SecretClass behavior does not prohibit the framework
+from reading platform source objects before creating a workload. The complete
+framework execution contract is in [the architecture](architecture.md#framework-design).
+
+<a id="framework-authentication"></a>
+## Framework authentication and secret consumption
+
+Standard `clusterConfig.authentication` references cluster-scoped
+AuthenticationClass objects. `framework.ResolveAuthenticationClass` uses exact,
+read-only `Get`: missing or deleting objects are Pending, an invalid declaration is
+Invalid, and an API read failure remains a read error. Exactly one provider branch
+is accepted. Static, OIDC, TLS, LDAP and Kerberos are distinguishable typed inputs;
+a product must explicitly implement the providers it accepts. A resolved reference
+does not establish provider reachability, user authentication or product authorization.
+Secret bytes do not enter the returned provider facts.
+
+The product owns native authentication configuration and the process that consumes
+it. The framework owns the declared sources, read-only mount assembly and source
+identity checks. `Directory.Secret` chooses exactly one native Secret in the CR's
+namespace or cluster-scoped SecretClass. Native files have mode 0440; SecretClass files are produced
+by the platform through a generic ephemeral PVC. The product must declare a real
+main or initialization process with read-only access. A platform directory cannot
+also be Data, Listener, generated configuration or writable log output. Final Pod
+patches cannot remove, replace, redirect through subPath or shadow a declared mount
+and still pass its consumption checks.
+
+Read-only fact adapters receive `FactsReader`, not a writing client. Framework
+source checks may read native Secrets to validate required keys and observe their
+identities, but secret contents must not be copied into facts, generated ConfigMaps,
+status, diagnostic messages, command arguments or template annotations. Secret
+references and runtime-mounted files are distinct from the credential values. The
+framework uses exact direct reads for these dependencies; the cache-backed read
+RBAC advice in the legacy sections must not be applied as its call contract.
+
+Native Secret UID/resourceVersion contributes to a value-free Pod template digest,
+including final SecretKeyRef and EnvFrom consumers. Class and explicitly named
+Listener sources use UID/generation so status-only changes do not cause endless
+rollouts. Missing required inputs keep the previous workload and report Pending;
+a partial set of resolved inputs cannot become the next execution facts. CSI
+credential generation, certificate validity/rotation and actual mounts remain the
+platform operators' responsibility. Source resolution is separate from subsequent
+Pod/PVC/PV/Listener observation; see [platform identity and refresh](architecture.md#framework-platform).
+
+The Trino reference adapter accepts a single Static provider as native PASSWORD,
+requires TLS and an internal shared identity, and rejects unsupported providers.
+TLS and password files remain read-only sources; an initializer produces a private
+0600 PEM file in an ephemeral directory. No insecure-HTTP authentication or trusted
+forwarded-header setting is enabled implicitly. TLS can also be used independently.
+With a Listener, certificate scope names `listener-volume=listener` so the published
+endpoint can be covered by its SANs. These are the pinned Trino product's choices,
+not universal authentication defaults. Configuration and native source references
+are documented in the [Trino example](../examples/trino-operator/README.md#platform-domains).
+
+Client authentication does not grant worker shutdown permission. The product must
+explicitly declare `shutdownUser` or `shutdownCredentialsSecret` and supply the
+matching management authorization. The hook cannot treat a refused management
+request as successful drain or silently enable insecure HTTP to make it work.
+S3 credentials likewise use an explicit native Secret or SecretClass and a real
+process consumer; no undeclared default credential chain is substituted. See the
+[S3 contract](architecture.md#framework-s3) and
+[lifecycle contract](architecture.md#framework-lifecycle).
+
+<a id="framework-data-authorization"></a>
+## Framework data authorization
+
+Normal product reconciliation and destructive data execution are separate
+permission domains. The product operator can observe/create DataAsset ledgers and
+maintain its existing PVC receipts; it cannot execute data Jobs, rebind volumes or
+reclaim their backends. The independently deployed `cmd/dataops` executor owns
+those operations. The `framework-data-authorizer` role permits creation of
+DataOperations, not mutation of execution status, PVs or data ledgers. CRD/RBAC and
+executor installation are separate in `config/framework-data` and
+`config/framework-data-executor`; installing the Trino operator does not deploy
+the executor.
+
+An immutable DataOperation binds the action, asset name/UID, complete source data
+identity, source cluster, target where applicable, and an explicit non-root worker
+UID/GID. Source cluster identity must match the ledger; target cluster identity is
+verified against its actual API UID and the claim name must match the declared
+cluster/role/group/data-slot/ordinal. `dataops.Approval(spec)` hashes the stable Go
+JSON encoding with approval cleared. **RBAC grants authorization; the digest only
+binds the reviewed content.** CEL forbids spec edits and the executor additionally
+retains `status.specDigest` to reject changed intent outside admission.
+
+At the start and at every execution stage, the executor requires:
+
+- The exact source CR UID is gone or its CR is explicitly paused. For adoption
+  or migration, the target CR exists with its approved UID and is explicitly paused.
+- Relevant StatefulSets are retired and all actual source/target PVC consumer
+  Pods are absent. Pause or a Stopped condition alone proves neither requirement.
+- Exact PVC/PV UIDs, mutual binding, provenance, safe owner references and Retain
+  policies still match the approved data.
+- The asset lock still belongs to this operation UID.
+
+The worker runs fixed code, never a user-provided script; both Pod and container
+security settings must preserve the approved non-root UID/GID. A retry cannot
+bypass identity, provenance or consumer checks. Failed workers and their receipts
+remain inspectable and the asset remains locked. After correcting the cause and
+checking/removing the failed Pod, an authorized actor requests the next integer
+`framework.kubedoop.dev/data-retry` attempt. Deleting an in-flight operation pauses
+further actions and preserves the lock; it authorizes neither rollback nor
+continued destruction.
+
+DataAsset has no product CR owner reference, so product deletion does not erase
+its history; it remains namespaced and cannot survive namespace deletion by
+contract. Platform Secret/Listener ephemeral PVCs are not retained product data:
+only an exact final-volume match against typed runtime declarations can create a
+controller-owned `platform-claims` receipt bound to CR UID/role/group. Products
+and Pod overrides cannot forge it, and matching a StorageClass name alone grants
+no exemption. DataOperation never adopts these platform volumes.
+
+Migration retains the source as a separate recorded copy. Destruction requires a
+persisted erase receipt before changing reclaimPolicy and a persisted
+`ReclaimVolume` stage before interpreting PV disappearance as completion. Missing
+identity earlier leaves completion unknown and preserves the lock. Filesystem
+copy verification is not database consistency or backup recovery, and deletion
+is not media sanitization or removal of independent provider snapshots. The full
+stage, receipt and recovery protocol belongs to
+[data operations](architecture.md#framework-data-operations).
+
+---
+
 ## 1. Overview
-This document outlines the security architecture integrated into the `operator-go` SDK. It adopts a defense-in-depth approach, split into two primary layers:
+The following numbered sections describe the legacy `GenericReconciler` SDK security architecture. It adopts a defense-in-depth approach, split into two primary layers:
 1.  **Application Security**: Focused on safely injecting sensitive data (Secrets, Keys) into workloads.
 2.  **Infrastructure Security**: Focused on securing the Kubernetes execution environment (RBAC, Service Accounts, Pod Constraints).
 
@@ -13,7 +139,7 @@ The core design philosophy is **"Zero-Touch Security"**. The Product Operator do
 
 ## 2.1 Core Concept: SecretClass
 
-`SecretClass` is a resource managed by `secret-operator`. It defines "how" to obtain security artifacts, while the workload (Pod) simply declares "what" it needs by referencing a `SecretClass` **by name**. The CRD itself — its scope and schema — is owned by the `secret-operator`, not by this SDK; `operator-go` only emits the `secrets.kubedoop.dev/class: <name>` annotation and never reads the object.
+`SecretClass` is a resource managed by `secret-operator`. It defines "how" to obtain security artifacts, while the workload (Pod) simply declares "what" it needs by referencing a `SecretClass` **by name**. The CRD itself — its scope and schema — is owned by the `secret-operator`, not by this SDK; the legacy `security.SecretProvisioner` only emits the `secrets.kubedoop.dev/class: <name>` annotation and never reads the object. The `pkg/framework` source-validation path described above separately reads the class.
 
 This mechanism is implemented using the **Kubernetes CSI (Container Storage Interface)**. The `secret-operator` provides a CSI driver that intercepts volume mount requests, generates or retrieves the required secrets on-the-fly, and injects them into the container file system as files.
 

@@ -3,7 +3,7 @@
 ## Project Overview
 `operator-go` is a Golang SDK/framework for building Kubernetes operators. It provides a reusable reconciliation framework, CRDs, and utilities for creating product-specific operators.
 
-**Key Features:**
+**Key features of the existing GenericReconciler SDK:**
 - **GenericReconciler**: Template Method Pattern-based reconciliation framework
 - **Extension System**: Hook-based customization at cluster/role/role-group levels, with per-product registries
 - **Resource Builders**: Fluent builders for StatefulSet, Service, ConfigMap, PDB, RBAC, ServiceAccount
@@ -22,19 +22,40 @@
 
 > **IMPORTANT**: The `docs/` directory contains architecture documents that are the **authoritative source of design constraints** for this project. All implementations — including the SDK itself and any operators built with it — **must follow** the design defined in these documents. When code and documentation conflict, the documentation takes precedence. Consult these docs before making design decisions.
 
-> **Scope of that rule.** `docs/architecture.md` is authoritative about **design intent**: a
+> **Scope of that rule.** `docs/architecture.md` is the entry point for **design intent**. Its
+> applicability section routes new-framework implementation to its `framework-design` section,
+> while the separately scoped existing numbered sections apply to the GenericReconciler SDK. In the applicable scope, a
 > conflict means the code should change, not that the doc should be quietly relaxed. The
 > `AGENTS.md` files (this one and the per-package ones) are the opposite: they describe the API and
 > behavior that **exist today**, and must be corrected whenever the code changes. Never treat a
 > statement in an `AGENTS.md` as a requirement the code has yet to meet — anything aspirational
-> belongs in `docs/architecture.md` and must be explicitly labelled as such.
+> belongs in the applicable architecture specification and must be explicitly labelled as such.
+
+The new framework exposes contracts, generated input and registration in
+`pkg/framework`; see [package instructions](pkg/framework/AGENTS.md).
+Its pure build pipeline and controller are internal; the Trino reference uses
+the public contracts and generated registration as its actual executable.
+See [Trino instructions](examples/trino-operator/AGENTS.md) and the
+[delivery guide](hack/framework-e2e/README.md).
+The numbered SDK concepts below continue to describe the existing GenericReconciler API.
+
+### Local working records
+
+Store discussion notes, research, iteration plans, implementation progress, experimental
+prototypes and runtime evidence under `.local/engineering-notes/`, which is Git-ignored.
+The current discussion archive is `.local/engineering-notes/framework-redesign/README.md`.
+Do not add these records to Git or place them under `docs/`; do not use `git add -f`
+to bypass the ignore rule. Keep only maintained specifications, developer guidance and
+examples in `docs/`. Reusable tests and verification tools stay with source/test tooling;
+their generated reports belong in the local directory. Public docs and build/test paths
+must not depend on local records being present.
 
 ### Documentation Structure
 
 | File | Description |
 |------|-------------|
-| `docs/architecture.md` | **Core Technical Architecture** — design philosophy, layered architecture, core module specifications, design patterns, key problem solutions. This is the primary reference for all SDK design decisions. |
-| `docs/security.md` | **Security Architecture** — application security (SecretClass, CSI, AutoTLS, Kerberos) and infrastructure security (RBAC, ServiceAccounts, Pod security) |
+| `docs/architecture.md` | **Architecture specification** — product-description framework contracts and domain boundaries, followed by separately scoped GenericReconciler SDK sections. |
+| `docs/security.md` | **Security specification** — framework authentication, secrets and explicit data-operation authorization; existing SDK security sections are scoped separately. |
 | `docs/DOC_CHANGELOG.md` | Changelog tracking all documentation updates |
 | `docs/examples/` | CRD example YAMLs demonstrating the SDK's data model |
 

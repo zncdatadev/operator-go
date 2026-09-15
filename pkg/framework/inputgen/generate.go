@@ -1,0 +1,344 @@
+package inputgen
+
+import (
+	"bytes"
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/token"
+	"reflect"
+	"slices"
+	"strings"
+	"text/template"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/yaml"
+
+	"github.com/zncdatadev/operator-go/pkg/framework/input"
+)
+
+// Names identifies the generated Go package and namespaced Kubernetes API.
+type Names struct {
+	Package, Group, Version, Kind, Plural string
+	// ImportPath is the generated API package's Go import path. Nonempty enables
+	// an independent registration companion; output directory remains caller-owned.
+	ImportPath string
+}
+
+// Artifacts contains deterministic source and CRD bytes; callers own file IO.
+type Artifacts struct {
+	GoSource           []byte
+	CRD                []byte
+	RegistrationSource []byte
+}
+
+type inputRoleName struct{ Wire, Go string }
+
+type inputTemplateData struct {
+	Names
+	Roles           []inputRoleName
+	Types           string
+	ContractVersion int
+}
+
+// Generate emits a presence-aware API and CRD from group and cluster product
+// types. An explicit ImportPath also emits a separate registration companion.
+func Generate[C, S any](names Names, roles []string) (Artifacts, error) {
+	var out Artifacts
+	for _, typ := range []reflect.Type{reflect.TypeFor[C](), reflect.TypeFor[S]()} {
+		if err := validateRootReference(typ); err != nil {
+			return out, err
+		}
+	}
+	if !token.IsIdentifier(names.Package) || names.Package == "_" || !token.IsIdentifier(names.Kind) ||
+		!ast.IsExported(names.Kind) || len(validation.IsDNS1123Subdomain(names.Group)) != 0 ||
+		len(validation.IsDNS1035Label(names.Plural)) != 0 || len(validation.IsDNS1035Label(names.Version)) != 0 {
+		return out, fmt.Errorf("invalid generated package or API names")
+	}
+	roleNames, err := inputRoleNames(roles)
+	if err != nil {
+		return out, err
+	}
+	root, err := crdSchema[C, S](roles)
+	if err != nil {
+		return out, err
+	}
+	clusterTypes, err := emitClusterConfigTypes[S]()
+	if err != nil {
+		return out, err
+	}
+	types, err := emitConfigTypes[C]()
+	if err != nil {
+		return out, err
+	}
+	types += "\n" + clusterTypes
+	parsed, err := template.New("input").Parse(inputGoTemplate)
+	if err != nil {
+		return out, err
+	}
+	var raw bytes.Buffer
+	data := inputTemplateData{Names: names, Roles: roleNames, Types: types, ContractVersion: input.ContractVersion}
+	if err := parsed.Execute(&raw, data); err != nil {
+		return out, err
+	}
+	if err := validateGeneratedNames(raw.Bytes()); err != nil {
+		return out, err
+	}
+	out.GoSource, err = format.Source(raw.Bytes())
+	if err != nil {
+		return out, fmt.Errorf("format generated input: %w", err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apiextensions.k8s.io/v1", Kind: "CustomResourceDefinition"},
+		ObjectMeta: metav1.ObjectMeta{Name: names.Plural + "." + names.Group},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: names.Group, Scope: apiextensionsv1.NamespaceScoped,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Plural: names.Plural, Kind: names.Kind, ListKind: names.Kind + "List",
+			},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: names.Version, Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &root},
+				Subresources: &apiextensionsv1.CustomResourceSubresources{
+					Status: &apiextensionsv1.CustomResourceSubresourceStatus{},
+				},
+			}},
+		},
+	}
+	out.CRD, err = yaml.Marshal(crd)
+	if err != nil {
+		return out, err
+	}
+	if names.ImportPath != "" {
+		out.RegistrationSource, err = generateRegistration[C, S](names)
+		if err != nil {
+			return Artifacts{}, err
+		}
+	}
+	return out, nil
+}
+
+func inputRoleNames(roles []string) ([]inputRoleName, error) {
+	if len(roles) == 0 {
+		return nil, fmt.Errorf("at least one role is required")
+	}
+	names := make([]inputRoleName, 0, len(roles))
+	seen := map[string]bool{"Image": true, "ClusterConfig": true}
+	for _, role := range slices.Sorted(slices.Values(roles)) {
+		if role == imageInputField || role == clusterConfigInputField {
+			return nil, fmt.Errorf("role name %q is reserved for a fixed spec input", role)
+		}
+		if len(validation.IsDNS1123Label(role)) != 0 {
+			return nil, fmt.Errorf("invalid role name %q", role)
+		}
+		var field strings.Builder
+		for _, part := range strings.Split(role, "-") {
+			if part != "" {
+				field.WriteString(strings.ToUpper(part[:1]) + part[1:])
+			}
+		}
+		name := field.String()
+		if !token.IsIdentifier(name) || !ast.IsExported(name) || seen[name] {
+			return nil, fmt.Errorf("role %q cannot produce a unique exported Go field", role)
+		}
+		seen[name] = true
+		names = append(names, inputRoleName{Wire: role, Go: name})
+	}
+	return names, nil
+}
+
+const inputGoTemplate = `// Code generated by operator-go inputgen; DO NOT EDIT.
+package {{.Package}}
+
+import (
+    "encoding/json"
+    "fmt"
+    "sort"
+
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/apimachinery/pkg/api/resource"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/apimachinery/pkg/runtime"
+    "k8s.io/apimachinery/pkg/runtime/schema"
+
+    "github.com/zncdatadev/operator-go/pkg/framework"
+    "github.com/zncdatadev/operator-go/pkg/framework/input"
+)
+
+const InputContractVersion = {{.ContractVersion}}
+
+var GroupVersion = schema.GroupVersion{Group: {{printf "%q" .Group}}, Version: {{printf "%q" .Version}}}
+var SchemeBuilder = runtime.NewSchemeBuilder(func(scheme *runtime.Scheme) error {
+    scheme.AddKnownTypes(GroupVersion, &{{.Kind}}{}, &{{.Kind}}List{})
+    metav1.AddToGroupVersion(scheme, GroupVersion)
+    return nil
+})
+var AddToScheme = SchemeBuilder.AddToScheme
+
+type {{.Kind}} struct {
+    metav1.TypeMeta ` + "`json:\",inline\"`" + `
+    metav1.ObjectMeta ` + "`json:\"metadata,omitempty\"`" + `
+    Spec SpecInput ` + "`json:\"spec\"`" + `
+    Status framework.ReconcileStatus ` + "`json:\"status,omitempty\"`" + `
+}
+
+type {{.Kind}}List struct {
+    metav1.TypeMeta ` + "`json:\",inline\"`" + `
+    metav1.ListMeta ` + "`json:\"metadata,omitempty\"`" + `
+    Items []{{.Kind}} ` + "`json:\"items\"`" + `
+}
+
+type SpecInput struct {
+    Image *input.ImageInput ` + "`json:\"image,omitempty\"`" + `
+    ClusterConfig *ClusterConfigInput ` + "`json:\"clusterConfig,omitempty\"`" + `
+{{range .Roles}}    {{.Go}} *RoleInput ` + "`json:\"{{.Wire}},omitempty\"`" + `
+{{end}}}
+
+type RoleInput struct {
+    RoleConfig *input.RoleConfigInput ` + "`json:\"roleConfig,omitempty\"`" + `
+    Replicas *int32 ` + "`json:\"replicas,omitempty\"`" + `
+    Config *ConfigInput ` + "`json:\"config,omitempty\"`" + `
+    ConfigOverrides *map[string]input.FileOverride ` + "`json:\"configOverrides,omitempty\"`" + `
+    EnvOverrides *map[string]string ` + "`json:\"envOverrides,omitempty\"`" + `
+    CLIOverrides *[]string ` + "`json:\"cliOverrides,omitempty\"`" + `
+    PodOverrides json.RawMessage ` + "`json:\"podOverrides,omitempty\"`" + `
+    RoleGroups map[string]RoleGroupInput ` + "`json:\"roleGroups,omitempty\"`" + `
+}
+
+type RoleGroupInput struct {
+    Replicas *int32 ` + "`json:\"replicas,omitempty\"`" + `
+    Config *ConfigInput ` + "`json:\"config,omitempty\"`" + `
+    ConfigOverrides *map[string]input.FileOverride ` + "`json:\"configOverrides,omitempty\"`" + `
+    EnvOverrides *map[string]string ` + "`json:\"envOverrides,omitempty\"`" + `
+    CLIOverrides *[]string ` + "`json:\"cliOverrides,omitempty\"`" + `
+    PodOverrides json.RawMessage ` + "`json:\"podOverrides,omitempty\"`" + `
+}
+
+{{.Types}}
+
+func (in *{{.Kind}}) DeepCopyInto(out *{{.Kind}}) {
+    *out = *in
+    in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+    out.Spec = input.Clone(in.Spec)
+    in.Status.DeepCopyInto(&out.Status)
+}
+func (in *{{.Kind}}) DeepCopy() *{{.Kind}} {
+    if in == nil { return nil }
+    out := new({{.Kind}})
+    in.DeepCopyInto(out)
+    return out
+}
+func (in *{{.Kind}}) DeepCopyObject() runtime.Object {
+    if in == nil { return nil }
+    return in.DeepCopy()
+}
+func (in *{{.Kind}}List) DeepCopyInto(out *{{.Kind}}List) {
+    *out = *in
+    in.ListMeta.DeepCopyInto(&out.ListMeta)
+    if in.Items != nil {
+        out.Items = make([]{{.Kind}}, len(in.Items))
+        for i := range in.Items { in.Items[i].DeepCopyInto(&out.Items[i]) }
+    }
+}
+func (in *{{.Kind}}List) DeepCopy() *{{.Kind}}List {
+    if in == nil { return nil }
+    out := new({{.Kind}}List)
+    in.DeepCopyInto(out)
+    return out
+}
+func (in *{{.Kind}}List) DeepCopyObject() runtime.Object {
+    if in == nil { return nil }
+    return in.DeepCopy()
+}
+
+// Decode is the strict local JSON entry point. A typed API-server GET is the
+// other supported input path; ordinary json.Unmarshal alone loses null values.
+func Decode(data []byte) (*{{.Kind}}, error) {
+    var out {{.Kind}}
+    if err := input.DecodeJSON(data, &out); err != nil { return nil, err }
+    return &out, nil
+}
+
+// Operation reads only fixed controls, before projection or product validation.
+// It neither marshals product fields nor changes the declared replica inventory.
+func Operation(in *{{.Kind}}) framework.ClusterOperation {
+    var out framework.ClusterOperation
+    if in == nil || in.Spec.ClusterConfig == nil { return out }
+    controls := in.Spec.ClusterConfig
+    if controls.Stopped != nil { out.Stopped = *controls.Stopped }
+    if controls.ReconciliationPaused != nil { out.ReconciliationPaused = *controls.ReconciliationPaused }
+    return out
+}
+
+// Project preserves raw layer presence and the complete declared role inventory.
+// It neither folds replicas/config nor carries facts or runtime control state.
+func Project(in *{{.Kind}}) (input.Projection, error) {
+    var out input.Projection
+    if in == nil { return out, fmt.Errorf("input CR is required") }
+    out.Cluster = framework.ClusterIdentity{
+        Name: in.Name, Namespace: in.Namespace, Labels: input.Clone(in.Labels),
+    }
+    image, err := input.ConfigJSON(in.Spec.Image)
+    if err != nil { return out, fmt.Errorf("image: %w", err) }
+    out.Image = image
+    clusterConfig, err := input.ClusterConfigJSON(in.Spec.ClusterConfig)
+    if err != nil { return out, fmt.Errorf("clusterConfig: %w", err) }
+    out.ClusterConfig = clusterConfig
+    roles := []struct { name string; value *RoleInput }{
+{{range .Roles}}        { {{printf "%q" .Wire}}, in.Spec.{{.Go}} },
+{{end}}    }
+    for _, entry := range roles {
+        if entry.value == nil { continue }
+        role := entry.value
+        management, err := input.ConfigJSON(role.RoleConfig)
+        if err != nil { return out, fmt.Errorf("%s.roleConfig: %w", entry.name, err) }
+        config, err := input.ConfigJSON(role.Config)
+        if err != nil { return out, fmt.Errorf("%s.config: %w", entry.name, err) }
+        projected := input.Role{Name: entry.name, Replicas: input.Clone(role.Replicas),
+            Config: config, RoleConfig: management,
+            Overrides: inputOverrides(role.ConfigOverrides, role.EnvOverrides, role.CLIOverrides, role.PodOverrides),
+        }
+        groups := make([]string, 0, len(role.RoleGroups))
+        for name := range role.RoleGroups { groups = append(groups, name) }
+        sort.Strings(groups)
+        for _, name := range groups {
+            group := role.RoleGroups[name]
+            config, err := input.ConfigJSON(group.Config)
+            if err != nil { return out, fmt.Errorf("%s/%s.config: %w", entry.name, name, err) }
+            projected.Groups = append(projected.Groups, input.Group{
+                Name: name, Replicas: input.Clone(group.Replicas), Config: config,
+                Overrides: inputOverrides(
+                    group.ConfigOverrides, group.EnvOverrides, group.CLIOverrides, group.PodOverrides),
+            })
+        }
+        out.Roles = append(out.Roles, projected)
+    }
+    return out, nil
+}
+
+// Binding is the versioned generated-code bridge, not a product controller.
+func Binding() input.Binding[*{{.Kind}}] {
+    return input.Binding[*{{.Kind}}]{
+        Version: InputContractVersion,
+        Roles: []string{ {{range .Roles}}{{printf "%q" .Wire}},{{end}} },
+        AddToScheme: AddToScheme,
+        NewObject: func() *{{.Kind}} { return &{{.Kind}}{} },
+        Operation: Operation, Project: Project,
+        Status: func(in *{{.Kind}}) *framework.ReconcileStatus { return &in.Status },
+    }
+}
+
+func inputOverrides(
+    files *map[string]input.FileOverride, env *map[string]string, cli *[]string, pod json.RawMessage,
+) *input.Overrides {
+    if files == nil && env == nil && cli == nil && len(pod) == 0 { return nil }
+    out := &input.Overrides{
+        CLIOverrides: input.Clone(cli), PodOverrides: input.Clone(pod),
+    }
+    if files != nil { out.ConfigOverrides = input.Clone(*files) }
+    if env != nil { out.EnvOverrides = input.Clone(*env) }
+    return out
+}
+`

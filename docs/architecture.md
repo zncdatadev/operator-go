@@ -1,4 +1,636 @@
-# Common Product Cluster Operator SDK Technical Architecture Document
+# Operator-Go Architecture
+
+## Applicability and design authority
+
+This document is the design authority for both implemented API families, with explicit scope:
+
+- [Product-description framework](#framework-design): the public `pkg/framework` contracts used by the Trino reference.
+- [Existing GenericReconciler SDK](#existing-generic-reconciler-sdk): the numbered English sections retained for the existing API.
+
+Use the applicable section; GenericReconciler hooks, admission defaults and merge semantics do not add requirements to the product-description framework.
+[Security](security.md), the [Trino developer guide](../examples/trino-operator/README.md) and the
+[delivery guide](../hack/framework-e2e/README.md) cover their respective responsibilities.
+Discussion notes, iteration plans and runtime reports are Git-ignored local records, not another source of design authority.
+
+<a id="framework-design"></a>
+
+## Product-description framework
+
+产品声明业务输入和运行方式；框架负责继承、覆盖、资源装配和持续收敛。产品作者不编排这些阶段。
+以下规范适用于正式的 `pkg/framework` API，不是 SDK 版本或镜像发布声明。
+
+领域细节：[存储](#framework-storage) · [平台依赖](#framework-platform) ·
+[认证](security.md#framework-authentication) · [S3](#framework-s3) · [日志](#framework-logging) ·
+[生命周期](#framework-lifecycle) · [数据操作](#framework-data-operations)。
+
+### 1. 能力与支持边界
+
+| 领域 | 实现范围与边界 |
+| --- | --- |
+| CR 输入 | 标准 image、独立 clusterConfig、显式角色与角色组、公共/产品 config、roleConfig/PDB、四通道 overrides；生成存在性输入与 CRD |
+| 产品运行描述 | 一个主进程、有序初始化、原生 lifecycle/probe、文件、目录访问、端点和日志产出；物化器与可选 Vector；不提供任意 sidecar/资源注册表 |
+| 文件 | KeyValues、Lines、Text；明确覆盖动作和受限运行期属性绑定；不按扩展名猜编码器 |
+| 资源 | 每组 ConfigMap、StatefulSet、普通/Headless Service；每角色 PDB；显式共享 ConfigMap及同源撤回 |
+| 外部事实与平台结果 | 精确只读 Get、按组结果、单轮引用快照和有界刷新；创建前来源解析与创建后 CSI/Listener 观察分离 |
+| 日志 | enableVectorAgent、原生适配和实际文件声明；Vector 到 stdout JSON 或集中目的地；产品明确原生格式支持范围 |
+| 保留存储 | [标准存储](architecture.md#framework-storage)绑定一个 Data 目录；RWO/Filesystem、Retain/Retain；[数据操作](architecture.md#framework-data-operations)独立授权 |
+| 协调控制 | 暂停、停止、恢复、组退休、固定资源所有权、条件状态；逐 ordinal 缩容、停止优先级和持久进展预算；不承诺通用事务一致性 |
+| 开发与交付 | 生成输入/schema/注册、参考 operator、物化 helper、独立数据 executor、CRD/RBAC/部署和可复用验收工具 |
+
+具体产品只接收有实际消费者的配置。旧 SDK 的能力不自动成为新框架的支持范围。
+运行/API 测试分别验证对应层次；发布制品必须满足[交付指南](../hack/framework-e2e/README.md)的检查要求。
+
+### 2. 产品作者的三个对象
+
+| 对象 | 构造者 | 内容和责任 |
+| --- | --- | --- |
+| `ProductDefinition[C,S,F]` | 产品 | 角色及默认配置、镜像默认、输入校验、组运行描述生成、可选共享 ConfigMap 生成和最终业务关系检查 |
+| `EffectiveInput[C,S,F]` | 框架 | 当前组身份、完整有效配置、产品集群配置、标准 Platform 输入、有效镜像、该组事实和完整声明拓扑 |
+| `RuntimeDescription` | 产品生成函数 | 主进程与有序初始化、原生生命周期/探针、协调策略、文件、目录访问、端点、日志和 Data/Secret/Listener 目录声明 |
+
+`C` 是组级产品配置，`S` 是集群级产品配置，`F` 是产品使用的事实数据；没有相应内容时用 `struct{}`。
+有效值不携带“用户是否填写”的指针。公共字段与产品字段在 Go 中分别处于 `Config.Common` 和 `Config.Product`，
+在 CR 的 `config` 中仍是平铺字段；生成时拒绝字段重名。
+
+定义按进程注册，CR 数据按协调轮次读取。默认数据、基础事实、平台选项在注册时复制；
+每个回调取得隔离的数据快照。框架不承诺复制函数闭包捕获的可变状态，产品必须避免跨 CR 的隐式状态。
+生成和校验函数不得访问集群或写外部状态；需要读取的依赖由只读事实适配器提供。
+
+普通产品通过函数字段提供语义，不需要继承基类、实现空钩子或构造 reconciler。
+可选 `GenerateCluster` 首批只生成共享 ConfigMap，并显式报告 Ready 或 Pending（第 6.1 节），
+不扩为任意资源或事后修改 Pod 的入口。共享输出结果是辅助数据类型，不增加一个产品生命周期阶段。
+`ValidateFinal` 只返回检查结果；检查之后不存在能修改最终产物的产品钩子。
+
+### 3. 输入领域与继承
+
+#### 3.1 各领域拥有自己的作用域
+
+| 输入 | 折叠来源，左低右高 | 最终消费位置 |
+| --- | --- | --- |
+| 组 `config` | 角色完整默认 → CR role.config → roleGroup.config | 公共装配和产品生成，共用一次确定的有效值 |
+| 产品 `clusterConfig` | ClusterConfigDefaults → CR clusterConfig 中的产品字段 | 集群、事实和组生成；不向 role.config 隐式继承 |
+| image | 产品镜像默认 → CR image，按镜像领域解析一次 | 有效镜像、主进程默认、pull policy/secrets |
+| roleConfig | RoleDefinition 中的角色管理默认 → CR role.roleConfig | 角色资源；组不能声明此入口 |
+| replicas | 框架默认 1 → role.replicas → roleGroup.replicas | 声明拓扑；停止时另外计算执行副本 |
+| stopped / reconciliationPaused | clusterConfig 中的固定运行控制；省略为 false | 执行控制；不接受产品默认，不参与产品 S 的折叠 |
+
+组生成失败仍保留该组的声明身份；零组角色仍是一个角色。配置、事实和构建错误都不能把期望资源误判为退休对象。
+资源名、选择器和供产品生成地址使用的名称必须共用同一确定性命名规则。
+首批要求在构建写入前拒绝非法组合名称及碰撞；不要求通过静默截断接受所有合法单段名称的组合。
+
+#### 3.2 普通配置的固定规则
+
+普通产品对象按字段递归，字符串键 map 按键递归；带点号的键是字面键，不解释为路径。
+序列整体替换，不提供按字段选择 Append、Atomic 或自定义合并策略的接口。
+
+| 更高层输入 | 语义 |
+| --- | --- |
+| 未填写 | 继承 |
+| `false`、`0`、`""` | 明确的值，覆盖低层 |
+| 对象或 map 的 `{}` | 没有新字段/键，继承；不是清空动作 |
+| 序列 `[]` | 明确替换为空 |
+| 普通配置中的 `null` | 本地解码拒绝；不是一套隐式删除语法 |
+
+先检查各输入层的结构、类型和歧义，再折叠，最后检查有效业务值。
+低层某个业务值无效但被高层修正，不应在折叠前阻断；无效类型和歧义则不能依靠覆盖掩盖。
+CRD 不写入继承默认，确保持久化不会把“未填写”变成“用户显式填写”。
+
+原生领域单独定义语义：Affinity 的 node/pod/podAnti 三个分支分别处理，省略分支继承，
+出现分支则整体替换，`nodeAffinity: {}` 清空该分支。Quantity 按数量值处理，Duration 是字符串，
+最终 gracefulShutdownTimeout 必须是非负整秒，0 有效。CPU 有 min/max，内存 limit 同时成为 request 和 limit。
+这些是固定领域规则，不是允许产品注册任意反射策略的先例。
+
+#### 3.3 可生成的 Go 类型与 admission 边界
+
+首批 C/S 支持导出字段的普通结构体、标量、字符串键 map、slice，以及固定支持的 Quantity/Duration。
+不支持嵌入、指针、interface、`[]byte`、自定义 JSON/Text 编解码等任意 Go 模型。
+生成注册包引用的顶层 C/S 必须是可跨包引用的命名结构体或 `struct{}`；非空匿名结构体、未导出类型和
+暂不支持的泛型实例必须报错。生成器检查不替代生成包的真实编译。
+
+presence 输入、CRD schema、投影和注册代码从同一描述生成，不手工维护多份业务字段清单。
+首批保留已验证的 schema 容量约束：普通配置集合上限 32，原生 Affinity 集合上限 16；
+这不是 status 列表上限，也不保证任意深度/嵌套 schema 都能安装。扩大容量必须有 admission 成本和真实安装证据。
+
+本地严格解码拒绝重复键、未知字段和普通配置 null。API server 可能裁剪未知字段，
+因此“本地拒绝”不能冒充“所有 API 请求都会拒绝”；交付示例用严格字段校验，并测试真实持久化结果。
+JSON Merge Patch 的 null 可以删除已存储输入而恢复继承，与配置对象显式含 null 的含义不同。
+
+### 4. 从有效输入到最终资源
+
+#### 4.1 框架拥有固定执行顺序
+
+1. 投影完整身份清单，折叠公共与产品输入，解析镜像，准备声明拓扑。
+2. 通过事实适配器取得组所需的外部值；只有有效且已就绪的组进入产品生成。
+3. 产品为有效组生成一次运行描述；框架根据实际 LogOutputs 解析集中日志目的地，并检查目录、产出归属、文件、端点和进程声明。
+4. 组合平台能力，处理文件/env/CLI 的角色层和组层覆盖，装配工作负载及配套资源。
+5. 对完整 PodTemplate 先应用 role.podOverrides，再应用 roleGroup.podOverrides。
+6. 独立检查最终产物之间的已知关系，形成可执行计划或带原因的失败；控制器负责应用。
+7. 应用后独立观察平台生产者及 CSI/Listener 结果，通过 RefreshClusterOutput 刷新共享输出；结果 Pending 保留旧输出。
+
+Source、Prepared、Plan 是内部工作结构，不是要求产品作者依次调用的公共阶段。
+最终 Pod 改变不会反向重算有效配置、重新派生文件或触发一次隐藏的产品生成。
+
+#### 4.2 四个覆盖通道
+
+| 通道 | 目标和行为 |
+| --- | --- |
+| configOverrides | 产品显式 ConfigDirectory 下的相对文件路径；按角色、组依次执行文件动作 |
+| envOverrides | 主进程 env，按名称覆盖；空字符串是值，不是删除 |
+| cliOverrides | 主进程 Args 整体替换，保持 Command；`[]` 清空参数 |
+| podOverrides | 完整 PodTemplate 的原生 Strategic Merge Patch；平台装配及其他覆盖全部完成后执行 |
+
+这里的优先级按通道顺序确定：**role.podOverrides 也高于 roleGroup.envOverrides/cliOverrides**。
+Pod 补丁中的 null、`$patch`、按 mountPath 等原生合并键保留其补丁语义，不套用普通配置规则。
+“最高优先级”意味着最终值生效，不意味着能绕过最终资源和已知消费关系的检查。
+可确定的冲突使该组不能应用；无法静态判断的产品消费关系必须保留 Unknown，不擅自修复用户输入。
+
+文件有三种内容类型：`KeyValues{Codec,Values}`、`Lines`、`Text`。
+覆盖动作是 `properties.set/remove`、`properties.replace`、`lines`、`text`、`remove: true`；
+replace 与 set/remove 互斥，同一键不能同时 set/remove，每个文件一次只选一种内容/删除动作。
+空内容与删除文件不同；后续空 patch 不会使已删除文件复活。
+properties 操作依赖产品原始结构化编码声明，不能从 `.xml` 或 `.properties` 后缀推断。
+覆盖语法由[输入契约](../pkg/framework/input/contract.go)定义，例如：
+
+```yaml
+configOverrides:
+  config.properties:
+    properties:
+      set:
+        query.max-memory: "3GB"
+      remove:
+        - an.optional.property
+  jvm.config:
+    lines:
+      - "-Xmx1024m"
+  custom.conf:
+    text: ""
+  catalog/unused.properties:
+    remove: true
+```
+
+`properties.replace: {}`、`lines: []` 和 `text: ""` 分别产生对应类型的空文件；`remove: true` 删除文件。
+
+#### 4.3 文件物化与运行期绑定
+
+文件标识由目录与相对路径组成，ConfigMap 存储键是交付细节。框架验证越界、冲突、重复生产和目录访问，
+通过版本化计划及 init helper 写入文件。主进程身份、共享组和 helper 身份显式提供，不根据镜像猜测权限。
+
+属性值是 Literal 或明确的运行期绑定，不能同时存在；首批运行期绑定是 PodName。
+覆盖触及键/文件时取消对应旧绑定，运行期值作为编码数据写入，不拼进 shell 命令。
+纯生成时 PropertyCodec 可以由产品实现；跨进程物化只支持交付 helper 明确实现的 codec，
+首批为 PropertiesCodec，不承诺任意 Go 编码器能在 Pod 中执行。
+
+ConfigMap 更新不自动证明进程重载。文件配置送达由平台 restarter 合约完成，部署者通过 CR 标签选择启用；
+框架传递 workload 标签并保留 restarter 的 PodTemplate 注解，不自行写 restarter stamp。
+env/CLI/Pod 覆盖改变模板后由 StatefulSet 控制器滚动。两种路径必须分别验收实际进程消费。
+
+#### 4.4 日志是产品语法与平台采集的协作
+
+产品从有效 logging 配置生成自己的原生格式，并声明确实会产生的日志文件。
+无法表达的阈值应返回明确错误，不能静默改成最接近的值。每个产品须明确其原生日志支持范围；
+Trino 的 sink 和级别限制见[示例说明](../examples/trino-operator/README.md#native-trino-logging-and-process-identity)。
+
+框架统一消费有效 `enableVectorAgent`：开启时采集已声明的日志文件，关闭时不装配采集器。
+产品只声明实际日志产出，LogOutput 不携带采集开关；该开关由框架统一消费。
+未指定集中目的地时，Vector 输出到 stdout JSON。当前 `clusterConfig.vectorAgentConfigMap` 已由框架
+通过精确只读 Get 解析同 namespace ConfigMap 的 ADDRESS；仅开启采集且有实际文件时读取该依赖。
+解析后的地址进入原生 Vector sink 和 Pod 模板，引用缺失为 Pending，地址更新触发模板收敛。
+最终文件、挂载和 Vector 路径仍独立检查，产品关系 Unknown 不得屏蔽确定的采集冲突。
+
+### 5. 外部事实、来源与诊断
+
+Facts resolver 位于产品适配包，使用框架提供的只读 `FactsReader.Get`，不得获得写客户端。
+它收到有效组配置、集群配置、基础 F 和声明拓扑，返回 resolved、pending、invalid 或 readError。
+未解析的组不生成/应用新计划；无关组、角色资源和明确退休仍可推进。
+共享输出能看到每组结果，但“已生成端点”不能当作“已经可访问”。
+
+框架按完整 GVK/namespace/name 缓存本轮 Get，记录 UID/resourceVersion，保证本轮同引用的一致观察；
+记录不包含外部对象内容。UID/RV 表示读取来源，不表示文件已送达或业务已加载。
+注册基础 F 与各组解析 F 分离，禁止把某个 CR 的事实存到进程级定义中。
+
+使用定时刷新，不承诺动态依赖 watch。默认周期为 30 秒，包括没有产品 resolver 的配置；
+pending 最早按 `min(刷新间隔, 2秒)` 重试，错误退避上限不得阻断该刷新。
+自定义间隔为正数，零使用默认。这些是调度上限，不是 API 阻塞、队列积压下的 wall-clock SLA。
+
+最终关系检查 `Check` 固定三态：consistent、conflict、unknown。consistent 证明已知结构关系；
+conflict 阻止对应组应用；unknown 保留诊断且不隐式改写结果，不代表业务健康。
+status 的条件类型、三态值和事实状态是机器契约；Subject/Reason/Message 供定位，未声明为枚举的文本不得用作稳定解析接口。
+诊断应带组/角色身份、输入通道或检查对象；不把外部 Secret 内容、整个 facts 或完整有效配置复制到 status。
+首批不承诺逐字段来源图或完整 explain/dry-run 公共 API。
+
+### 6. 控制器拥有执行责任
+
+#### 6.1 资源与所有权
+
+框架自行构造直接 API 客户端，从当前观察执行判断、冲突重试和写入；manager 的缓存用于 watch 调度，
+不能替代修改意图、所有权和保留卷的即时读取。多资源操作不是事务，已发出的请求无法取消。
+
+固定资源槽由 CR owner UID、规范化槽位记录、名称及框架管理元数据共同识别，不能仅凭 label 接管或删除对象。
+apply 前检查身份、来源、不可变字段和存储约束；不可实现的声明报错，不能保留旧值后报告成功。
+更新保留 API 分配值与外部控制器管理的元数据，框架自己的字段按期望收敛。
+使用 server dry-run 规范化默认值后比较，稳态不发持久化的无变化更新；这不意味着零 API 请求。
+
+角色 PDB 独立于组构建成功与否，产品显式选择启用；按全部声明副本计算
+`minAvailable = max(0, sum(replicas) - maxUnavailable)`，覆盖该角色全部组。
+停止或 facts pending 不减少声明预算；PDB 不提供缩容、直接删除或业务排空保证。
+
+共享 ConfigMap 也需要可识别的完整期望集合与同源撤回清理，不能只 apply 新输出而永久遗留旧输出。
+GenerateCluster 必须返回有明确状态的共享输出结果：Ready 携带完整期望集合，空集合表示撤回全部；
+Pending 携带原因并保留旧输出，不得同时提交部分输出；未声明状态无效。返回 error 同样保留旧输出并报告失败。
+没有注册可选 GenerateCluster 回调表示完整空集合，可回收此前可信的共享槽位。
+共享输出的状态必须显式表达，不能用 nil 切片同时表示等待与撤回。
+
+#### 6.2 暂停、停止与恢复
+
+暂停在完整投影、配置校验、facts 和资源读写前判断，仅允许报告 Paused 与当前顶层观察代次；
+此前执行条件及组/角色观察保持原代次。稳定暂停不写 status、不轮询，不表示 Kubernetes GC 或其他控制器暂停。
+
+停止独立扫描可信的 live 固定槽位，使已有 StatefulSet 降为 0，即使当前 image/产品配置/facts 错误。
+声明 replicas、拓扑和 PDB 不变，计划另持有执行副本 0；恢复使用最新 CR 声明。
+停止本身不删除资源，明确移除的组仍走退休。配置失败组没有新的执行计划，不能伪造已应用状态。
+
+Stopped 需要当前 StatefulSet 代次已观察、status.replicas/readyReplicas/updatedReplicas 为零、
+实际 Pod 消失并复读 StatefulSet 的 UID/resourceVersion；
+清单不完整则 Unknown，不能以空列表得出全停成功。Stopped 与 Applied 独立；停止期间 WorkloadsReady 不声称业务就绪。
+每轮发请求及冲突重试前重查 CR UID、generation、deletion 和运行控制；已发请求与检查后的竞争窗口不作原子保证。
+首批守卫不把任意 metadata-only 更新当作撤销整轮的事务屏障，元数据在后续协调收敛。
+
+#### 6.3 退休、删除和保留数据
+
+组退出期望清单后，控制器从 live 来源重建退休工作，不依赖 status 账本或进程内历史。
+按缩容到 0、确认控制器和实际 Pod 排空、逐项删除并确认固定槽位消失推进；不强杀 Pod 或移除 finalizer。
+排空中重加按最新声明恢复；旧对象已 Terminating 时等待删除完成再创建。
+CR 删除依赖 owner-reference GC；首批不提供产品 finalizer 清理协议，不能把组退休保证扩展到 CR 删除。
+
+保留数据只支持一个明确的 RWO/Filesystem 槽位，StatefulSet 的 whenDeleted/whenScaled 均为 Retain，
+StorageClass 及实际 PV 的 reclaimPolicy 也必须为 Retain。
+在 apply/重试/停止/退休前核对 StorageClass、claim、PV 绑定、来源记录和实际消费者，包括缩容后的高序号 claim。
+合法首次创建及未绑定 PVC 可以先创建消费者，以支持 WaitForFirstConsumer；实际 PV 出现后再核验绑定与策略，
+不能把已有 PV 验证成功作为首次创建 Pod 的前提。
+产品协调器不删除 PVC/PV；同 CR UID 重加只能复用仍存活、可验证的原卷。
+E05 的独立 DataAsset 自动记录已确认绑定，在原 claim 丢失时拒绝当作首次创建。
+跨 CR 接管、容量/类迁移和销毁通过独立 DataOperation 与独立 executor 执行；
+批准内容绑定实际数据和集群 UID，每个阶段复核来源、暂停与真实消费者排空。
+迁移必须实际复制并校验，销毁必须实际清空并等待后端 provisioner 回收，不能只删除 Retain PV 对象。
+数据身份、旧副本、授权、恢复阶段与历史的完整契约见 [数据操作协议](architecture.md#framework-data-operations)。
+这些文件系统操作不提供产品级一致性或备份恢复保证。
+
+#### 6.4 状态与可验证程度
+
+条件包括 Built、Applied、WorkloadsReady、PlatformReady、RoleResourcesApplied、Retired、Paused、Stopped；
+组状态区分 declared desiredReplicas、可选 executionReplicas、readyReplicas、检查和事实观察。
+条件观察代次必须与产生它的执行轮次对应，暂停时不得把旧成功条件重新盖成当前代次。
+完整可信身份清单取得后，组级配置、facts、构建和应用失败不能阻断其他组；
+身份非法、名称碰撞或完整清单不可取得属于整体输入失败，可以阻断依赖该清单的构建和回收。
+状态写入也需避免无变化循环。
+WorkloadsReady 描述工作负载观察，不替代产品服务健康或查询成功；Applied 也只证明资源应用阶段。
+
+### 7. Go 包与生成代码的边界
+
+使用现有 Go module，不增加 `/v2` 或独立 runtime module。公开与内部包按下表划分职责。
+
+| 包 | 公开程度 | 拥有的责任 |
+| --- | --- | --- |
+| `pkg/framework` | 产品作者使用 | 三个对象、Config/运行描述领域值、FactsReader/FactInput/FactResult、Check/status 数据、平台装配选项 |
+| `pkg/framework/input` | 生成代码契约 | presence 基础类型、原始 CR Projection、类型明确的绑定以及严格解码/复制辅助；不包含有效配置或资源计划 |
+| `pkg/framework/operator` | 部署入口 | Options 和供生成 registration 调用的注册函数；隐藏可变 Reconciler |
+| `pkg/framework/inputgen` | 开发工具库 | 输入/schema/投影/注册生成；工具依赖不进入运行期输入包 |
+| `internal/framework/pipeline` | SDK 内部 | Source/Prepared/Plan、折叠、覆盖、平台组合、物化计划、装配、最终检查 |
+| `internal/framework/controller` | SDK 内部 | API/facts 观察、apply/status、运行控制、退休、保留卷检查 |
+
+`framework` 是叶级领域契约，可引用 Kubernetes 数据类型与必要的只读接口，不依赖本表其他包或产品代码。
+`input` 只向 `framework` 依赖；pipeline 使用二者；controller 使用它们及 pipeline；operator 连接到 controller。
+inputgen 依赖领域与输入描述，不依赖 controller。`internal` 放在 module 根下，使仓库工具能合法使用内部构建/物化能力，
+无需为了 render 或 helper 人为开放 Plan 公共 API。
+
+产品生成的 API 包依赖 framework/input 和状态数据，不依赖 operator/controller。
+其独立 registration 子包引用生成 API、原始 C/S 产品类型和 framework/operator，固定 C/S，只留下 F 泛型。
+产品定义包不能反向导入生成 API/registration；产品事实适配器也不能放入通用 controller 包。
+
+外部 operator 的生成代码无法导入本 module 的 internal，因此必须有薄的公开生成代码契约。
+Projection 只携带原始 image、clusterConfig、角色/组输入及完整身份清单，不含 F、有效配置或计划。
+正式投影保留嵌套 Roles/Groups，每层持有自己的配置/overrides 和可选 replicas，不提前折叠副本或复制角色层到每组。
+controller 将注册的基础 F 与 Projection 组合为内部 Source；公共 API 不暴露 SourceSnapshot 或构建阶段编排。
+固定运行控制通过独立 `Operation(cr)` 读取，不能为了统一投影而重新让暂停依赖完整 Snapshot 成功。
+生成绑定还提供对象构造、scheme 注册和 status 访问；任何需要外部生成包实现的函数/类型都必须可公开引用，
+不能使用含内部返回类型或不可从外部实现的私有方法来“隐藏”它。
+
+生成代码契约可导入，但不是普通产品手工接线接口。它和 inputgen 一起交付，具有显式的生成契约版本；
+生成代码记录该版本，生成检查和注册校验拒绝不兼容版本。不同 SDK 发布版本可以共享兼容的生成契约版本，
+不能声称仅凭编译通过就证明 SDK 版本完全相同。无公共合并引擎、阶段注册表或事后资源修改钩子。
+
+### 8. 注册与交付
+
+普通入口是生成的 `registration.Register(manager, definition, options)`，只返回 error。
+Options 包含基础 F、可选只读 resolver、AssemblyOptions 和刷新间隔；初始 AssemblyOptions 仅声明
+物化/Vector 镜像及 helper 身份，不构建尚无消费者的通用能力插件体系。
+
+注册验证配置类型、完整角色清单和绑定，复制部署数据，加入生成 API scheme，并注册使用直接客户端的控制器。
+注册不执行产品生成或业务值校验，不读取 CR，不安装 CRD/RBAC，不启动 manager，也不是热更新接口。
+manager 配置和启动、CRD/RBAC/镜像部署属于 operator 的组合入口及交付清单。
+
+正式 SDK 不得导入本地实验原型或具体产品代码；新框架的执行路径不得借旧 GenericReconciler
+和 hook 机制恢复另一套配置语义。发布路径不得依赖本地过程记录。
+参考 operator 必须真实使用新包和生成注册，不以在示例旁新增未被启动的演示代码算作落地。
+helper 计划版本、镜像和 SDK 的兼容关系、生成一致性、RBAC 及部署说明一起交付。
+
+<a id="framework-storage"></a>
+
+## 标准数据存储
+
+标准输入是 `config.resources.storage`，与 CPU、内存并列。产品运行描述用 `Directory.Data: true`
+标记一个数据目录，并通过 `Main.Access` 声明产品实际使用的路径。产品无需重新构造 StorageClass、容量或 PVC。
+未声明 Data、Secret 或 Listener 来源的目录为临时目录。配置文件和日志必须使用独立临时目录，数据目录必须有主进程可写访问。
+
+```yaml
+workers:
+  config:
+    resources:
+      storage:
+        type: persistent
+        storageClassName: retained
+        capacity: 32Gi
+  roleGroups:
+    default:
+      config:
+        resources:
+          storage:
+            capacity: 64Gi
+```
+
+- 类型是 `ephemeral` 或 `persistent`；产品零值默认解析为 ephemeral，API 不填充默认值。
+- 默认值 → 角色 → 角色组。省略类型或保持同一类型时按字段继承；空对象继承。
+- 显式改变类型时先清除低层存储分支，再应用高层字段。切到 ephemeral 不携带旧 class/capacity。
+- 每层检查字段形状与互斥关系；最终持久类型必须有有效的显式 StorageClass 和正容量。
+  用户层 `type: ephemeral` 不能同时指定 class/capacity；null 不是删除或继承动作。
+- persistent 必须有 `Data` 消费者，不能接受输入后不生成卷。该单元支持一个 RWO/Filesystem 数据槽。
+- persistent 装配为 claim template，scale/delete 均 Retain。控制器继续要求实际 StorageClass 显式 Retain，
+  验证来源、绑定、现有消费者；最终 podOverrides 不能挪走或遮蔽已声明的保留数据挂载。
+- **继承中的分支切换不迁移已有数据。** 现有 StatefulSet 的存储声明改变会报错；组删除后还有保留卷时，
+  改成 ephemeral 也会被来源检查拒绝。跨身份迁移和销毁必须使用独立授权的 [DataOperation 流程](architecture.md#framework-data-operations)。
+
+产品通过 Data 标记声明数据目录。卷身份和字节保持不等于业务数据恢复；产品须验证自己的恢复语义。
+
+
+<a id="framework-platform"></a>
+
+## 平台依赖与运行结果
+
+产品仍只声明输入、解析事实、生成运行描述。平台依赖按生命周期拆分：创建前已有的引用必须先解析；只有 Pod 启动后才出现的地址和 CSI 绑定，在应用工作负载之后观察。两者各自保留状态和刷新记录，不能用同一个 Pending 阻断所有阶段。
+
+### 输入和调用链
+
+生成的 `spec.clusterConfig` 平铺三部分：独立运行控制、`framework.ClusterConfig` 和产品 S。框架公共部分包含 `authentication` 与 `vectorAgentConfigMap`。字段冲突在定义和生成时拒绝；公共字段不会混入产品 S 的反序列化。`EffectiveInput.Platform` 和 `FactInput.Platform` 提供公共平台输入，产品字段继续通过 `ClusterConfig` 访问。
+
+内部执行顺序：
+
+1. 严格输入、公共/产品配置继承和完整拓扑准备。
+2. 产品 `ResolveFacts` 通过精确只读 Get 解析已有外部对象；缺失/无效事实只保留对应组的旧资源。
+3. 每组产品生成一次运行描述；框架按真实 LogOutputs 决定是否解析集中日志目的地。
+4. 纯装配、四通道覆盖、最终消费关系检查。
+5. 对声明的 Secret/Listener 来源和最终 Pod 的 Secret 环境变量引用进行创建前核对，再应用资源。
+6. 从当前 StatefulSet 和 Pod 观察 CSI 绑定及 Listener 地址，刷新组的 `PlatformObservation`。
+7. 使用新的组观察生成共享输出。Pending 保留上次有效输出，不撤回生产结果的 Pod。
+
+`GeneratePreparedGroups` / `AssemblePreparedGroups` / `RefreshClusterOutput` 属于内部管线。它们不是产品可编排的阶段接口，也没有新增事后任意资源修改钩子。
+
+### 平台目录
+
+`Directory.Secret` 和 `Directory.Listener` 声明目录的来源；同一目录不能同时是 Data、Secret、Listener。平台目录不是框架生成文件或日志的写入目标，必须有主进程或初始化进程的只读访问。
+
+| 声明 | 实际装配 | 结果观察 |
+| --- | --- | --- |
+| `SecretVolume.SecretName` | 当前 namespace 的原生 Secret 卷，文件 mode 0440 | 当前生产者 Pod 就绪 |
+| `SecretVolume.SecretClass` | `secrets.kubedoop.dev` 通用临时 PVC，原生 class/format/scope/Kerberos service 注解 | 当前 Pod 的 PVC/PV 身份与挂载就绪 |
+| `ListenerVolume.Class` | `listeners.kubedoop.dev` 通用临时 PVC，class 注解 | CSI 创建的 Listener 属于当前 PV，读取其实际地址/端口 |
+| `ListenerVolume.Name` | 同 namespace 现有 Listener 的通用临时 PVC，listenerName 注解 | 当前绑定、现有 Listener 的实际结果 |
+
+SecretName 与 SecretClass、Listener Class 与 Name 各自互斥。框架不把凭据字节写进生成 ConfigMap、状态或模板注解。
+SecretClass 的凭据生成、证书内容/有效期及 CSI 挂载属于平台组件；产品负责将挂载文件转换成自身原生认证配置。
+
+最终 podOverrides 仍最后执行。它可以调整未受约束的原生字段；若移除、替换、使用 subPath 或嵌套挂载遮蔽已声明的平台目录，会得到明确的消费关系冲突，不能静默启动一个失去原配置来源的产品。
+
+### 观察与刷新
+
+`status.groups[].facts` 描述创建前产品事实及按实际日志声明解析的集中目的地事实；`status.groups[].platform` 描述平台准备或后置观察，包含 phase、diagnostic、观测对象 UID/RV 和 Listener 地址。`PlatformReady` 是单独条件，不能替代 WorkloadsReady 或业务查询成功。
+
+后置读取使用新的一轮精确读取缓存。它检查 StatefulSet 当前 revision、Pod owner 和 Ready、通用临时 PVC 的 Pod owner、PV 的 claim UID，以及自动 Listener 的 PV owner。任何缺失结果为 Pending；身份冲突/API 错误保留错误诊断。未全部就绪时不发布局部地址清单，不把旧 PV 的 Listener 当作新实例的结果。
+
+原生 Secret 的 UID/resourceVersion、SecretClass/ListenerClass/已指定 Listener 的 UID/generation 构成不含值的模板摘要。Secret 更新会使使用其文件或最终 SecretKeyRef/EnvFrom 的 Pod 替换；可选且缺失的 Secret 不阻止创建，后续出现会刷新。类或 Listener 的纯 status 更新不会导致无休止滚动。地址本身在下一次观察中刷新共享 ConfigMap，不要求 CR 编辑或 Pod 替换。
+
+有无自定义 resolver 都默认每 30 秒刷新，Pending 使用较短的 2 秒周期；错误的单 key 退避同样有界。该间隔是队列调度上界，不是 API 故障或队列拥塞时的墙钟保证。暂停仍优先阻止执行；停止继续使用独立的工作负载排空路径。
+
+
+<a id="framework-s3"></a>
+
+## S3 连接领域
+
+S3 是一个有明确语义的连接领域。产品在自身配置中嵌入 `framework.S3Connection`，框架识别这个确定的类型、处理角色继承和分支切换，产品使用解析后的连接事实生成原生配置。不引入字段级 atomic 标签、可注册 union 引擎或“任何对象都是原子”的合并开关。
+
+### 输入、继承与解析
+
+`S3Connection` 的 type 为 `disabled`、`inline` 或 `reference`；产品零值默认等价于 disabled。inline 提供 host、port、tls、region、pathStyle 和 credentials；reference 指向同 namespace 的 `s3.kubedoop.dev/v1alpha1 S3Connection`。
+
+默认值 → 角色 → 角色组。同一 type 或省略 type 时按字段继承；显式切换 type 清除全部旧分支，然后应用新分支。角色组可以只改变 pathStyle 并继承同分支其余字段；切换到 reference 时不携带旧 inline 端点和凭据。disabled 清除整条连接。每层拒绝跨分支字段，完整值在折叠结束后验证。该确定领域可嵌套于产品 struct/map，序列仍遵循整体替换规则。
+
+引用缺失/删除中为 Pending，API 读取失败保留为读取错误，非法端点和不支持的 TLS 配置为 Invalid。通过 FactsReader 精确读取，框架记录 UID/resourceVersion 并刷新；事实包含 endpoint、region、pathStyle 和凭据**引用**，不读取或返回凭据字节。
+
+host 必须是 DNS/IP；未指定 port 时 HTTP 为 80、HTTPS 为 443；未指定 region 时为 us-east-1。当前支持经过系统 CA 验证的 HTTPS，不接受组织 S3Connection 中 `verification.none` 或尚未有消费者的自定义 CA 声明。
+
+### 凭据与运行期边界
+
+inline.credentials 必须显式选择 native `secretName` 或 `secretClass`，只有后者可设置 scope。reference 读取组织 S3Connection 的 credentials.secretClass 及 node/pod/service/listener-volume scope。两条路径都声明包含 `ACCESS_KEY`、`SECRET_KEY` 的只读运行目录：
+
+- native Secret 使用 Kubernetes 原生卷；
+- SecretClass 使用 generic ephemeral 卷，经 Pod 所属 PVC 绑定到真实 secret-operator CSI PV；创建前验证声明，创建后由平台观察挂载结果。
+
+端点解析不等待 CSI 生成的秘密字节，因此不会形成“必须先有 Pod 的结果才能创建 Pod”的依赖环。secretName 与 secretClass 不同时选择，也不退回未声明的默认凭据链。
+
+产品须在自己的进程中读取凭据文件并按原生配置机制消费；init 容器不能向主容器导出环境变量。
+固定启动命令与可覆盖的 Args 必须分离，避免环境准备过程破坏 CLI 覆盖契约。
+凭据不得写入 ConfigMap、状态、facts 或启动参数。Trino 的具体属性及 launcher 说明见[产品指南](../examples/trino-operator/README.md#platform-domains)。
+
+
+<a id="framework-logging"></a>
+
+## 日志配置与集中送达
+
+本领域保持两种责任：产品把有效 `logging` 翻译成其进程真正读取的原生配置，并声明实际产生的日志文件；框架决定是否装配 Vector、解析集中目的地并连接所有声明文件。产品不重复合并日志输入，也不构造 Vector 容器。
+
+### 集中目的地契约
+
+标准 `spec.clusterConfig.vectorAgentConfigMap` 是当前 CR namespace 中的 ConfigMap 名称。该 ConfigMap 的 `data.ADDRESS` 是单个 DNS/IP 与端口，例如：
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-destination
+data:
+  ADDRESS: vector-aggregator.observability.svc:6000
+---
+# Cluster CR 的 spec 片段
+clusterConfig:
+  vectorAgentConfigMap: log-destination
+workers:
+  config:
+    logging:
+      enableVectorAgent: true
+```
+
+`ADDRESS` 不是任意 Vector YAML、URL 或凭据。框架验证 DNS/IP 和 1–65535 端口，JSON/YAML 编码仍由编码器负责。使用 [Vector 原生 sink](https://vector.dev/docs/reference/configuration/sinks/vector/) 连接对应的 Vector source。目的地未指定时保留文件到 stdout JSON 的消费路径。
+
+`ResolveVectorDestination` 使用只读 `FactsReader` 精确读取。缺失引用为 `Pending / VectorDestinationMissing`；缺失或无效 ADDRESS 为 `Invalid / InvalidVectorDestination`；API 读取失败仍为读取错误。控制器负责记录实际 UID/resourceVersion、定期重新读取和按组隔离。已禁用 Vector 或没有实际 LogOutputs（例如 file OFF）的组不因该引用等待。产品生成只调用一次，控制器在拿到真实日志声明后解析目的地，再进入纯装配。解析成功仅表示地址配置已得到验证，不表示远端正在接收。
+
+解析后的 `AssemblyOptions.VectorDestination` 只传入当前组装配。生成的 `vector.yaml` 使用该地址；同时地址进入框架 Vector 容器的 `FRAMEWORK_VECTOR_DESTINATION` 环境变量，作为 PodTemplate 的配置变更触发值。因此只更新引用 ConfigMap 的 ADDRESS，就会更新物化配置并替换运行中的采集器，无需修改 CR，也无需依赖另一个 restarter 才交付这个目的地变更。其他配置文件的变更仍遵循既有 restarter 契约。
+
+文件覆盖与最终 Pod 覆盖仍执行既有规则。更改采集器命令或生成配置会失去框架的结构关系证明，不能把这种未知关系报告为送达保证。网络故障时的缓冲/重试由 Vector 负责；当前 Vector 数据目录为临时卷，本领域不提供日志的永久保存或恰好一次送达承诺。
+
+### 有原生消费者的适配器
+
+Trino 的原生日志约束见[产品指南](../examples/trino-operator/README.md#native-trino-logging-and-process-identity)。
+
+`pkg/framework/logging.Python` 接收有效 `framework.ContainerLogging`，返回 Python 标准库 `logging.config.dictConfig` 可直接加载的 JSON：
+
+- console/file handler 各自消费阈值，不为了最低共同配置而强行令二者相等；
+- ROOT 与命名 logger 使用 Python 自身的层级传播规则；
+- TRACE/DEBUG/INFO/WARN/ERROR/FATAL 映射为 5/10/20/30/40/50，OFF 关闭对应 handler；
+- file 使用标准库 RotatingFileHandler，10 MiB、3 份备份；产品提供实际绝对文件路径和可写目录；
+- 产品显式加载 JSON，并只在 File.Level 非 OFF 时声明该文件为 LogOutput。
+
+`TestPythonNativeConsumerThresholds` 启动实际 python3 进程加载生成文档，再观察 stdout 和实际日志文件。它验证文件 DEBUG、console WARN、命名 logger DEBUG 与 ROOT INFO 的共同作用，以及 file OFF 不创建文件。它不通过 Go 重实现 Python 过滤规则来模拟成功。
+
+不列出只有编码函数、没有真实消费和执行证据的 Java 日志适配器支持矩阵。
+
+
+状态提交与 Pod 替换是不同的异步观察点。新 Pod Ready 不能替代同 generation 下新 ConfigMap UID/resourceVersion 的 resolved 事实记录。
+
+
+<a id="framework-lifecycle"></a>
+
+## 初始化与工作负载协调
+
+### 产品声明与执行责任
+
+`RuntimeDescription.Initializers` 声明有序的 `Process` 列表。有文件需要物化时，框架先装配物化器，再按声明顺序
+装配普通 init containers，最后启动主进程。每个初始化进程有自己的 image、command/args、env、
+身份和显式目录访问；没有隐式获得主容器所有挂载。未指定 image 时继承已解析的产品镜像。
+普通 init container 不能声明 lifecycle/probe。产品初始化必须幂等：kubelet 可以重新执行它。
+失败初始化不会启动主进程，也不能用一个历史完成标记绕过本次实际执行。
+
+`Process.Lifecycle` 和 `StartupProbe`、`ReadinessProbe`、`LivenessProbe` 使用 Kubernetes 类型。
+框架将它们装配到主容器；产品选择真实协议和命令，kubelet 执行。它们不经过 file/env/CLI 覆盖；
+最终 podOverrides 仍然最高。覆盖改变生命周期、初始化顺序、探针或退出预算时，
+`assembly.lifecycle` 报告 Unknown，不能继续把原声明当成经过验证的消费前提。
+
+### 可恢复的协调
+
+`RuntimeDescription.Coordination` 包含 `ProgressDeadline` 和 `ShutdownPriority`。
+前者为 1 秒至 1 小时的无进展预算；后者越小越先退出，同优先级组独立推进。
+拥有初始化进程的工作负载必须声明协调预算。
+
+- 框架显式使用 StatefulSet `OrderedReady` 和 `RollingUpdate`；Kubernetes 持久化并执行逐 Pod 滚动。
+  框架不再实现一套与 StatefulSet 竞争的副本控制器。
+- 普通 CR 缩容、停止和组退休共用 `nextScaleDown`。每次最多降低一个 ordinal；开始下一步前，
+  必须直接读取实际 Pod，确认上一 ordinal 消失并核对当前 StatefulSet UID。
+- 全集群停止与多组退休按已验证 live 工作负载上的优先级执行。较低优先级仍 Pending/失败时，
+  不开始较高优先级。停止时的普通 apply 不能跳过这个顺序，把所有 StatefulSet 一次设为零。
+- `framework.kubedoop.dev/workload-coordination` 保存当前产品策略；`workload-progress` 保存版本、
+  StatefulSet UID、目标摘要、进展摘要和起始时间。控制器重启后从这些 live 信息继续，status 丢失不重置预算。
+- 进展只计副本/版本、当前 Pod UID/phase/终止状态、成功完成的初始化阶段。
+  resourceVersion、失败重试计数和经过时间不构成进展。
+- 超时报告失败并保留工作负载；不强删 Pod、不删除数据、不把超时改写为业务退出成功。
+  实际进展或新的目标重新建立预算，已经恢复的工作负载清除过期进展记录。
+
+停止完成仍要求目标副本为零、当前 StatefulSet 控制器观察和实际 Pod 全部消失。
+数据操作不把 Stopped 条件当作数据操作授权或静止证明；独立 executor 要求相关 StatefulSet 已退休、
+仍存在的相关 CR 已暂停，并直接读取源/目标 PVC 消费者。停止完成不等于产品事务提交或磁盘内容正确。
+
+协调策略必须跨越最终资源克隆和 apply 边界。资源克隆先保留完整值，再深拷贝引用字段。
+即使状态计数已经为零，只要前序工作负载的实际 Pod 尚在，后续优先级仍须等待。
+
+当前保证覆盖框架发起的缩容、stopped、组退休，以及原生 StatefulSet 滚动和 kubelet lifecycle。
+CR 删除仍由 Kubernetes owner-reference GC 执行，不保证跨角色停止顺序；管理员强删、节点断电、
+进程 OOM、跨组零中断、业务数据升级/回滚不在此协调协议的保证范围。
+产品原生退出、查询结果和主进程终态需要分别验证，具体 Trino 行为见[产品指南](../examples/trino-operator/README.md)。
+
+
+<a id="framework-data-operations"></a>
+
+## 数据身份与显式数据操作
+
+框架使用独立的 `DataAsset` 和 `DataOperation`，产品 CR 的退休或删除不再同时抹去数据历史。
+正常协调在确认 PVC/PV 双向绑定之后自动创建账本；停止和退休的共享检查只读取账本，不创建资源。
+账本记录原始 PVC/PV UID、实际源 CR 的 GVK/name/UID、角色/组/槽位、StorageClass 和规范容量。
+这些是实际观察到的身份，不能从名称或用户提供的标记推断出来。
+
+### 责任与调用链
+
+```text
+产品正常协调 → 检查 Retain/来源/双向绑定 → 创建 DataAsset → 在 PVC 记录 asset 名称
+产品停止/退休/重新创建 → 读取账本 → 拒绝身份丢失、操作锁、已转移数据的隐式重建
+
+授权者创建不可变 DataOperation → 独立 executor → 持久阶段/Job → 重新验证来源与绑定
+  → 写入目标 retained-data / retained-binding → 写历史并解除 asset 锁
+  → 产品正常协调消费已授权目标 PVC
+```
+
+`DataAsset` 没有产品 CR 的 owner reference；历史与当前身份留在独立 CR 中。
+账本是 namespaced 资源，生命周期独立于产品 CR，不承诺抵抗命名空间本身被删除。
+迁移的旧副本进入 `status.retiredCopies`，仍可通过准确身份发起独立销毁操作。
+迁移不会顺便删除源数据，销毁旧副本也不会删除当前数据。
+
+部署分为两个权限域。产品 operator 只有账本 get/list/watch/create 和既有 PVC 收据权限；
+独立 `cmd/dataops` executor 才有执行 Job、重绑和回收卷的权限。
+`framework-data-authorizer` 可以创建操作，没有修改执行状态、PV 或数据账本的权限。
+CRD/平台 RBAC 位于 `config/framework-data`，独立 executor 部署位于 `config/framework-data-executor`；CRD 和 DeepCopy 由根 Makefile 生成。
+
+### 授权前置条件
+
+操作输入、approval 与 RBAC 的区别、不可变请求、源/目标身份、暂停、退休及实际消费者检查，
+统一见[数据操作安全契约](security.md#framework-data-authorization)。这些条件在开始和每个执行阶段都必须满足。
+
+### 三条实际执行路径
+
+| 动作 | 持久阶段与实际行为 | 完成证据 |
+| --- | --- | --- |
+| adopt | Locked → 创建目标名 PVC → ReleaseSource → Rebind → BindTarget → Record | 原 PV UID 保持；新 PVC UID、目标双向绑定与正式框架来源收据 |
+| migrate | Locked → 创建目标 PVC → Copy → BindTarget → Record | 源复制前、源复制后、目标三个 SHA256 文件树一致；目标绑定完整；旧副本留账 |
+| destroy | Locked → Erase → DeleteClaim → DeleteVolume → ReclaimVolume → Record | worker 确认目录为空；按 UID/RV 删除 PVC；PV 记录 operation UID 后 Retain→Delete；实际 provisioner 回收后端并删除 PV |
+
+复制 worker 在源只读挂载下复制普通文件、目录、符号链接，并核对文件内容、长度、权限和链接目标。
+迁移对象是卷根之下的数据树；卷挂载根目录仍由 provisioner 管理，worker 不复制或改变其权限、
+时间戳等元数据。执行保持审批绑定的非 root UID/GID，以 fsGroup 提供的数据写权限完成复制。
+特殊文件会报错；不会把复制成功扩张为 POSIX ACL、数据库日志恢复或存储快照一致性保证。
+目标由本操作新建，只有属于同一 operation UID 的半成品目录允许重试；已有未知数据的目标拒绝覆盖。
+
+销毁是在已批准的文件系统上删除并核验文件，随后要求实际存储 provisioner 回收卷。
+它不承诺介质级擦除或清除供应商独立快照。改变 reclaimPolicy 前必须已有持久的擦空收据；
+仅删除 Retain PV 对象会遗留后端存储，因此这里不把该动作当作销毁完成。
+只有已持久化 `ReclaimVolume` 阶段才接受 PV 消失作为回收完成；此前丢失 PV 保留锁并报告完成状态未知。
+这也覆盖写入 Delete 策略成功、但保存阶段失败且 PV 随即消失的窗口，避免猜测后端回收结果。
+
+### 重启、失败和证据
+
+每轮将 phase、Job UID、attempt、worker termination receipt 写入 DataOperation status。
+worker receipt 包含 operation UID、校验类型与迁移文件树摘要，先持久化再删除已完成的 worker Pod。
+Job 保留；controller 重启从已保存阶段继续，不重复创建已存在目标或凭空替代丢失身份。
+检查固定 worker 同时覆盖 Pod 与容器的执行身份和容器安全限制，防止容器配置覆盖批准的非 root UID/GID。
+完成记录以 operation UID 去重；账本已更新但 operation status 写失败时可以继续完成。
+
+worker 的执行有 30 分钟上限。失败的 Job、Pod 和原因保留，asset 保持锁定。
+修复原因并检查/移除失败 Pod 后，授权者设置 `framework.kubedoop.dev/data-retry` 为下一整数尝试号。
+下一 Job 使用新 attempt 名称，旧失败 Job 保留，审批意图保持不变。
+身份变化、未知消费者或来源错误不会被重试参数绕过；删除正在执行的操作会暂停后续动作并保留锁，
+不自动把“请求删除”解释成恢复源数据或继续销毁的授权。
+
+
+<a id="existing-generic-reconciler-sdk"></a>
+
+# Existing GenericReconciler SDK
+
+The following numbered sections describe the existing GenericReconciler API only.
+They remain available for its maintenance and do not override the product-description framework above.
 
 # 1. Document Overview
 

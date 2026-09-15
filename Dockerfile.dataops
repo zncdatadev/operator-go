@@ -1,0 +1,5 @@
+# Build context: bin/dataops-image, produced by make dataops-image.
+FROM scratch
+COPY dataops /dataops
+USER 65532:65532
+ENTRYPOINT ["/dataops"]

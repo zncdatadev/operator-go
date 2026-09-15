@@ -1,18 +1,7 @@
-# operator-go/examples - Example Operators
+# Example operators
 
-**Parent:** [../AGENTS.md](../AGENTS.md)
-**Generated:** 2026-03-29
+Parent: [../AGENTS.md](../AGENTS.md).
 
-Example operator implementations demonstrating framework usage patterns.
+`trino-operator/` is a separate Go module with a local SDK replace. Its real executable uses the formal `pkg/framework` API: product C/S/F and Definition, generated input/CRD/registration, then public operator registration on a controller-runtime manager. See its [AGENTS.md](trino-operator/AGENTS.md) and [README.md](trino-operator/README.md).
 
-## Key Directories
-
-| Directory | Purpose |
-|-----------|---------|
-| `trino-operator/` | Trino operator example |
-
-## Working Instructions
-
-1. **Creating a new example:** Add a new directory with complete operator implementation
-2. **Structure:** Follow the pattern of `trino-operator/` with config, reconciler, and CRD definitions
-3. **Documentation:** Include README with setup and usage instructions
+Examples should demonstrate the public author path and complete deployable manifests. Product generation stays pure, external reads use FactsReader, and SDK pipeline/controller internals are not imported. Generated input artifacts and companions are checked by `make verify-generate`. Test-only runtime tools must remain separate from the product executable and must not be described as product query validation.

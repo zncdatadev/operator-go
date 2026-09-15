@@ -1,0 +1,165 @@
+package inputgen
+
+import (
+	"bytes"
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/token"
+	"reflect"
+	"slices"
+	"strings"
+	"text/template"
+
+	"github.com/zncdatadev/operator-go/pkg/framework/input"
+)
+
+const frameworkImportPath = "github.com/zncdatadev/operator-go/pkg/framework"
+
+type registrationType struct{ Path, Name string }
+type registrationImport struct{ Path, Alias string }
+type registrationTemplateData struct {
+	Kind            string
+	Config          string
+	Cluster         string
+	Imports         []registrationImport
+	ContractVersion int
+}
+
+func generateRegistration[C, S any](names Names) ([]byte, error) {
+	if err := checkRegistrationImportPath(names.ImportPath); err != nil {
+		return nil, fmt.Errorf("registration input import path: %w", err)
+	}
+	imports := map[string]string{
+		frameworkImportPath: "framework", frameworkImportPath + "/operator": "operator",
+		frameworkImportPath + "/input":   "input",
+		"sigs.k8s.io/controller-runtime": "ctrl",
+	}
+	if _, exists := imports[names.ImportPath]; exists {
+		return nil, fmt.Errorf("registration input import path %q conflicts with a framework dependency", names.ImportPath)
+	}
+	imports[names.ImportPath] = "generated"
+	config, err := registrationTypeFor(reflect.TypeFor[C]())
+	if err != nil {
+		return nil, fmt.Errorf("registration product config: %w", err)
+	}
+	cluster, err := registrationTypeFor(reflect.TypeFor[S]())
+	if err != nil {
+		return nil, fmt.Errorf("registration cluster config: %w", err)
+	}
+	for _, typ := range []registrationType{config, cluster} {
+		if typ.Path == names.ImportPath+"/registration" {
+			return nil, fmt.Errorf("registration config type %s would import its own companion package", typ.Name)
+		}
+		if typ.Path != "" {
+			if _, exists := imports[typ.Path]; !exists {
+				imports[typ.Path] = ""
+			}
+		}
+	}
+	data := registrationTemplateData{Kind: names.Kind, ContractVersion: input.ContractVersion, Imports: registrationImports(imports)}
+	data.Config, data.Cluster = config.reference(imports), cluster.reference(imports)
+	parsed, err := template.New("registration").Parse(registrationGoTemplate)
+	if err != nil {
+		return nil, err
+	}
+	var raw bytes.Buffer
+	if err := parsed.Execute(&raw, data); err != nil {
+		return nil, err
+	}
+	if err := validateGeneratedNames(raw.Bytes()); err != nil {
+		return nil, err
+	}
+	source, err := format.Source(raw.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("format generated registration: %w", err)
+	}
+	return source, nil
+}
+
+// Root configuration types are already checked by the input profile. Registration
+// additionally needs a static reference usable from a separate Go package.
+func registrationTypeFor(typ reflect.Type) (registrationType, error) {
+	if typ.Kind() != reflect.Struct {
+		return registrationType{}, fmt.Errorf("configuration must be a struct")
+	}
+	if typ.Name() == "" && typ.NumField() == 0 {
+		return registrationType{Name: "struct{}"}, nil
+	}
+	if !token.IsIdentifier(typ.Name()) || !ast.IsExported(typ.Name()) || typ.PkgPath() == "" {
+		return registrationType{}, fmt.Errorf("configuration must be an exported named struct or struct{}: %s", typ)
+	}
+	if err := checkRegistrationImportPath(typ.PkgPath()); err != nil {
+		return registrationType{}, fmt.Errorf("configuration type import path: %w", err)
+	}
+	return registrationType{Path: typ.PkgPath(), Name: typ.Name()}, nil
+}
+
+func (typ registrationType) reference(imports map[string]string) string {
+	if typ.Path == "" {
+		return typ.Name
+	}
+	return imports[typ.Path] + "." + typ.Name
+}
+
+func registrationImports(imports map[string]string) []registrationImport {
+	paths := make([]string, 0, len(imports))
+	for importPath := range imports {
+		paths = append(paths, importPath)
+	}
+	slices.Sort(paths)
+	result := make([]registrationImport, 0, len(paths))
+	index := 0
+	for _, importPath := range paths {
+		if imports[importPath] == "" {
+			imports[importPath] = fmt.Sprintf("product%d", index)
+			index++
+		}
+		result = append(result, registrationImport{Path: importPath, Alias: imports[importPath]})
+	}
+	return result
+}
+
+// This bounded generator accepts conventional Go import paths, not filesystem
+// paths, module versions or relative imports. Output location is a separate option.
+func checkRegistrationImportPath(importPath string) error {
+	if importPath == "" {
+		return fmt.Errorf("import path is empty")
+	}
+	for _, part := range strings.Split(importPath, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".") {
+			return fmt.Errorf("invalid import path %q", importPath)
+		}
+		for _, char := range part {
+			allowed := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' ||
+				char == '-' || char == '_' || char == '.'
+			if !allowed {
+				return fmt.Errorf("invalid import path %q", importPath)
+			}
+		}
+	}
+	return nil
+}
+
+const registrationGoTemplate = `// Code generated by operator-go inputgen; DO NOT EDIT.
+// Package registration connects the generated API to the framework operator.
+package registration
+
+import (
+{{range .Imports}}    {{.Alias}} {{printf "%q" .Path}}
+{{end}})
+
+const InputContractVersion = {{.ContractVersion}}
+
+// Options supplies product facts and platform settings without pipeline bindings.
+type Options[F any] = operator.Options[{{.Config}}, {{.Cluster}}, F]
+
+// Register fixes the generated API's C/S types; F is inferred from the definition
+// and deployment options. It registers the controller but does not start manager.
+func Register[F any](manager ctrl.Manager,
+    definition framework.ProductDefinition[{{.Config}}, {{.Cluster}}, F], options Options[F],
+) error {
+    if err := input.CheckVersion(InputContractVersion); err != nil { return err }
+    return operator.Register(manager, definition, options, generated.Binding())
+}
+`

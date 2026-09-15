@@ -1,100 +1,56 @@
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: manager-role
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  - services
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
-  - persistentvolumeclaims
-  verbs:
-  - delete
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - serviceaccounts
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - statefulsets
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy
-  resources:
-  - poddisruptionbudgets
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - trino.kubedoop.dev
-  resources:
-  - trinoclusters
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - trino.kubedoop.dev
-  resources:
-  - trinoclusters/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - trino.kubedoop.dev
-  resources:
-  - trinoclusters/status
-  verbs:
-  - get
-  - patch
-  - update
+  - apiGroups: [trino.kubedoop.dev]
+    resources: [trinoclusters]
+    verbs: [get, list, watch]
+  - apiGroups: [trino.kubedoop.dev]
+    resources: [trinoclusters/status]
+    verbs: [get, update, patch]
+  - apiGroups: [trino.kubedoop.dev]
+    resources: [trinoclusters/finalizers]
+    verbs: [update]
+  - apiGroups: [""]
+    resources: [configmaps, services]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [data.framework.kubedoop.dev]
+    resources: [dataassets]
+    verbs: [get, list, watch, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+  - apiGroups: [secrets.kubedoop.dev]
+    resources: [secretclasses]
+    verbs: [get]
+  - apiGroups: [listeners.kubedoop.dev]
+    resources: [listenerclasses, listeners]
+    verbs: [get]
+  - apiGroups: [authentication.kubedoop.dev]
+    resources: [authenticationclasses]
+    verbs: [get]
+  - apiGroups: [s3.kubedoop.dev]
+    resources: [s3connections]
+    verbs: [get]

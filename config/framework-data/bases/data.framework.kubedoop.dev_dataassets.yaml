@@ -1,0 +1,570 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: dataassets.data.framework.kubedoop.dev
+spec:
+  group: data.framework.kubedoop.dev
+  names:
+    kind: DataAsset
+    listKind: DataAssetList
+    plural: dataassets
+    singular: dataasset
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DataAsset is independent of a product CR's ownership and survives
+          its deletion.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              binding:
+                properties:
+                  pvUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 4096
+                    type: string
+                  pvcUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 4096
+                    type: string
+                  version:
+                    type: integer
+                  volumeName:
+                    maxLength: 4096
+                    type: string
+                required:
+                - pvUID
+                - pvcUID
+                - version
+                - volumeName
+                type: object
+              claimName:
+                maxLength: 4096
+                type: string
+              cluster:
+                properties:
+                  apiVersion:
+                    maxLength: 4096
+                    type: string
+                  kind:
+                    maxLength: 4096
+                    type: string
+                  name:
+                    maxLength: 4096
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 4096
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - uid
+                type: object
+              source:
+                properties:
+                  capacity:
+                    maxLength: 4096
+                    type: string
+                  crUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 4096
+                    type: string
+                  group:
+                    maxLength: 4096
+                    type: string
+                  role:
+                    maxLength: 4096
+                    type: string
+                  slot:
+                    maxLength: 4096
+                    type: string
+                  storageClass:
+                    maxLength: 4096
+                    type: string
+                  version:
+                    type: integer
+                required:
+                - capacity
+                - crUID
+                - group
+                - role
+                - slot
+                - storageClass
+                - version
+                type: object
+            required:
+            - binding
+            - claimName
+            - cluster
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: initial data identity is immutable
+              rule: self == oldSelf
+          status:
+            properties:
+              current:
+                properties:
+                  binding:
+                    properties:
+                      pvUID:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 4096
+                        type: string
+                      pvcUID:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 4096
+                        type: string
+                      version:
+                        type: integer
+                      volumeName:
+                        maxLength: 4096
+                        type: string
+                    required:
+                    - pvUID
+                    - pvcUID
+                    - version
+                    - volumeName
+                    type: object
+                  claimName:
+                    maxLength: 4096
+                    type: string
+                  cluster:
+                    properties:
+                      apiVersion:
+                        maxLength: 4096
+                        type: string
+                      kind:
+                        maxLength: 4096
+                        type: string
+                      name:
+                        maxLength: 4096
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 4096
+                        type: string
+                    required:
+                    - apiVersion
+                    - kind
+                    - name
+                    - uid
+                    type: object
+                  source:
+                    properties:
+                      capacity:
+                        maxLength: 4096
+                        type: string
+                      crUID:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 4096
+                        type: string
+                      group:
+                        maxLength: 4096
+                        type: string
+                      role:
+                        maxLength: 4096
+                        type: string
+                      slot:
+                        maxLength: 4096
+                        type: string
+                      storageClass:
+                        maxLength: 4096
+                        type: string
+                      version:
+                        type: integer
+                    required:
+                    - capacity
+                    - crUID
+                    - group
+                    - role
+                    - slot
+                    - storageClass
+                    - version
+                    type: object
+                required:
+                - binding
+                - claimName
+                - cluster
+                - source
+                type: object
+              destroyed:
+                type: boolean
+              history:
+                items:
+                  properties:
+                    action:
+                      maxLength: 4096
+                      type: string
+                    completed:
+                      format: date-time
+                      type: string
+                    from:
+                      properties:
+                        binding:
+                          properties:
+                            pvUID:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                            pvcUID:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                            version:
+                              type: integer
+                            volumeName:
+                              maxLength: 4096
+                              type: string
+                          required:
+                          - pvUID
+                          - pvcUID
+                          - version
+                          - volumeName
+                          type: object
+                        claimName:
+                          maxLength: 4096
+                          type: string
+                        cluster:
+                          properties:
+                            apiVersion:
+                              maxLength: 4096
+                              type: string
+                            kind:
+                              maxLength: 4096
+                              type: string
+                            name:
+                              maxLength: 4096
+                              type: string
+                            uid:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                          required:
+                          - apiVersion
+                          - kind
+                          - name
+                          - uid
+                          type: object
+                        source:
+                          properties:
+                            capacity:
+                              maxLength: 4096
+                              type: string
+                            crUID:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                            group:
+                              maxLength: 4096
+                              type: string
+                            role:
+                              maxLength: 4096
+                              type: string
+                            slot:
+                              maxLength: 4096
+                              type: string
+                            storageClass:
+                              maxLength: 4096
+                              type: string
+                            version:
+                              type: integer
+                          required:
+                          - capacity
+                          - crUID
+                          - group
+                          - role
+                          - slot
+                          - storageClass
+                          - version
+                          type: object
+                      required:
+                      - binding
+                      - claimName
+                      - cluster
+                      - source
+                      type: object
+                    operationUID:
+                      description: |-
+                        UID is a type that holds unique ID values, including UUIDs.  Because we
+                        don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                        intent and helps make sure that UIDs and names do not get conflated.
+                      maxLength: 4096
+                      type: string
+                    to:
+                      properties:
+                        binding:
+                          properties:
+                            pvUID:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                            pvcUID:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                            version:
+                              type: integer
+                            volumeName:
+                              maxLength: 4096
+                              type: string
+                          required:
+                          - pvUID
+                          - pvcUID
+                          - version
+                          - volumeName
+                          type: object
+                        claimName:
+                          maxLength: 4096
+                          type: string
+                        cluster:
+                          properties:
+                            apiVersion:
+                              maxLength: 4096
+                              type: string
+                            kind:
+                              maxLength: 4096
+                              type: string
+                            name:
+                              maxLength: 4096
+                              type: string
+                            uid:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                          required:
+                          - apiVersion
+                          - kind
+                          - name
+                          - uid
+                          type: object
+                        source:
+                          properties:
+                            capacity:
+                              maxLength: 4096
+                              type: string
+                            crUID:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 4096
+                              type: string
+                            group:
+                              maxLength: 4096
+                              type: string
+                            role:
+                              maxLength: 4096
+                              type: string
+                            slot:
+                              maxLength: 4096
+                              type: string
+                            storageClass:
+                              maxLength: 4096
+                              type: string
+                            version:
+                              type: integer
+                          required:
+                          - capacity
+                          - crUID
+                          - group
+                          - role
+                          - slot
+                          - storageClass
+                          - version
+                          type: object
+                      required:
+                      - binding
+                      - claimName
+                      - cluster
+                      - source
+                      type: object
+                    verification:
+                      maxLength: 4096
+                      type: string
+                  required:
+                  - action
+                  - completed
+                  - from
+                  - operationUID
+                  - verification
+                  type: object
+                maxItems: 1000
+                type: array
+              retiredCopies:
+                items:
+                  properties:
+                    binding:
+                      properties:
+                        pvUID:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 4096
+                          type: string
+                        pvcUID:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 4096
+                          type: string
+                        version:
+                          type: integer
+                        volumeName:
+                          maxLength: 4096
+                          type: string
+                      required:
+                      - pvUID
+                      - pvcUID
+                      - version
+                      - volumeName
+                      type: object
+                    claimName:
+                      maxLength: 4096
+                      type: string
+                    cluster:
+                      properties:
+                        apiVersion:
+                          maxLength: 4096
+                          type: string
+                        kind:
+                          maxLength: 4096
+                          type: string
+                        name:
+                          maxLength: 4096
+                          type: string
+                        uid:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 4096
+                          type: string
+                      required:
+                      - apiVersion
+                      - kind
+                      - name
+                      - uid
+                      type: object
+                    source:
+                      properties:
+                        capacity:
+                          maxLength: 4096
+                          type: string
+                        crUID:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 4096
+                          type: string
+                        group:
+                          maxLength: 4096
+                          type: string
+                        role:
+                          maxLength: 4096
+                          type: string
+                        slot:
+                          maxLength: 4096
+                          type: string
+                        storageClass:
+                          maxLength: 4096
+                          type: string
+                        version:
+                          type: integer
+                      required:
+                      - capacity
+                      - crUID
+                      - group
+                      - role
+                      - slot
+                      - storageClass
+                      - version
+                      type: object
+                  required:
+                  - binding
+                  - claimName
+                  - cluster
+                  - source
+                  type: object
+                maxItems: 1000
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

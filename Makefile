@@ -21,18 +21,29 @@ help: ## Display this help.
 
 ##@ Development
 
+MATERIALIZER_IMG ?= quay.io/zncdatadev/operator-go-materializer:0.0.0-dev
+MATERIALIZER_ARCH ?= $(shell go env GOARCH)
+MATERIALIZER_CONTEXT = $(LOCALBIN)/materializer-$(MATERIALIZER_ARCH)
+
+.PHONY: materializer-build
+materializer-build: ## Compile the formal materializer as a static Linux binary.
+	mkdir -p "$(MATERIALIZER_CONTEXT)"
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(MATERIALIZER_ARCH) go build -mod=readonly -trimpath -buildvcs=false -o "$(MATERIALIZER_CONTEXT)/materialize" ./cmd/materialize
+
+.PHONY: materializer-image
+materializer-image: materializer-build ## Build the materializer image; no registry push.
+	docker build --network=none --platform linux/$(MATERIALIZER_ARCH) --build-arg SOURCE_REVISION="$$(git rev-parse HEAD)" -f cmd/materialize/Dockerfile -t "$(MATERIALIZER_IMG)" "$(MATERIALIZER_CONTEXT)"
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./pkg/..."
 
 .PHONY: manifests
-manifests: controller-gen ## Generate the CRDs backing the test mock cluster resources.
-# This SDK ships API types, not CRDs — a product operator generates its own from the types it
-# embeds. The only CRDs generated here are the ones envtest installs for pkg/testutil's mock
-# cluster resources, and they are generated rather than hand-written on purpose: a hand-written
-# CRD drifts from the Go types, and the schema-free version this replaced meant the API server
-# performed no defaulting, validation or pruning in ANY test in the repository.
+manifests: controller-gen ## Generate test cluster and independent framework data CRDs.
+# Products generate their own cluster CRDs. The framework also owns the independent
+# data identity/operation protocol and the mock cluster CRDs used by envtest.
 	$(CONTROLLER_GEN) crd paths="./pkg/testutil/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) crd paths="./pkg/framework/dataops/..." output:crd:artifacts:config=config/framework-data/bases
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -59,23 +70,12 @@ verify-generate: generate manifests ## Fail if the committed generated files are
 # Scoped to the paths generation writes, so the target stays usable with unrelated work in progress
 # — a check that fails on any dirty file is a check nobody runs locally.
 #
-# examples/trino-operator is a separate module and is checked too: it embeds the commons API types,
-# so a change to pkg/apis leaves its CRD stale, and it is the reference implementation downstream
-# operators copy. Its own Makefile pins its own controller-gen, so it is driven through that.
-#
-# '*/config/rbac/*' is in the pathspec because that module's generated ClusterRole is the canonical
-# operator-side permission set docs/security.md §3.3 points adopters at. Without it, an edited
-# +kubebuilder:rbac marker whose regenerated role.yaml was never committed passed CI.
-#
-# The trailing /* is load-bearing, and its absence is why the sibling '*/config/crd/bases' entry had
-# been inert since it was written. A git pathspec containing a wildcard is wildmatched against the
-# FULL path with no directory-prefix expansion, so '*/config/rbac' matches a path that IS that
-# directory and never a file inside it — the guard passed unconditionally. Verified by dirtying
-# examples/trino-operator/config/rbac/role.yaml: plain `git status` shows it, the old pathspec
-# reported nothing, the new one reports it. The literal `config/crd/bases` (no wildcard) always
-# worked, which is why only the root module was ever actually covered.
-	$(MAKE) -C examples/trino-operator generate manifests
-	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases/*' config/crd/bases '*/config/rbac/*')"; \
+# The formal Trino example is a separate module. Its own generator checks the
+# committed input, CRD and registration companion against the product definition.
+# It does not use controller-gen or generate its deployment RBAC. Keep the scoped
+# status guard for root generated files and committed example delivery inputs.
+	$(MAKE) -C examples/trino-operator verify-generate
+	@drift="$$(git status --porcelain -- '*zz_generated*.go' '*/config/crd/bases/*' config/crd/bases config/framework-data/bases '*/config/rbac/*')"; \
 	if [ -n "$$drift" ]; then \
 		echo "Generated files are out of date. Run 'make generate manifests' and commit the result:"; \
 		echo "$$drift"; \
@@ -171,3 +171,13 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+DATAOPS_IMAGE ?= operator-go-dataops:dev
+DATAOPS_ARCH ?= $(shell go env GOARCH)
+.PHONY: dataops-build dataops-image
+dataops-build: ## Build the independently deployed explicit-data executor.
+	mkdir -p bin/dataops-image
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(DATAOPS_ARCH) go build -mod=readonly -trimpath -buildvcs=false -o bin/dataops-image/dataops ./cmd/dataops
+
+dataops-image: dataops-build ## Package the data executor separately from product operators.
+	docker build --platform linux/$(DATAOPS_ARCH) -f Dockerfile.dataops -t $(DATAOPS_IMAGE) bin/dataops-image

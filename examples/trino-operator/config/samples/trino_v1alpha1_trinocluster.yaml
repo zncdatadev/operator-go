@@ -3,49 +3,67 @@ kind: TrinoCluster
 metadata:
   name: demo-trino
   labels:
-    app.kubernetes.io/name: trino
-    app.kubernetes.io/instance: demo-trino
-    app.kubernetes.io/managed-by: trino-operator
+    # commons-operator restarter delivers ConfigMap changes to running processes.
+    # Enabling it for the first time also stamps the workload and triggers a rollout.
+    restarter.kubedoop.dev/enable: "true"
 spec:
   image:
+    repo: quay.io/zncdatadev
     productVersion: "476"
-    kubedoopVersion: "0.0.0-dev"
-
-  # Coordinators role configuration (plural naming)
+    kubedoopVersion: 0.0.0-dev
+    pullPolicy: IfNotPresent
+  clusterConfig:
+    nodeEnvironment: kubedoop
+    stopped: false
+    reconciliationPaused: false
   coordinators:
+    roleConfig:
+      podDisruptionBudget:
+        enabled: true
+        maxUnavailable: 0
+    config:
+      gracefulShutdownTimeout: 30s
+      resources:
+        cpu: {min: 500m, max: "2"}
+        memory: {limit: 1536Mi}
+    podOverrides:
+      spec:
+        automountServiceAccountToken: false
+        containers:
+          - name: vector
+            resources:
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: 200m, memory: 128Mi}
     roleGroups:
       default:
         replicas: 1
-        config:
-          # Consumed by the framework (podOverrides take precedence when both are set):
-          # gracefulShutdownTimeout maps to the pod's terminationGracePeriodSeconds, and an
-          # `affinity:` block here (a full corev1.Affinity) lands on the pod spec as-is.
-          gracefulShutdownTimeout: "30s"
-          resources:
-            cpu:
-              min: "500m"
-              max: "1"
-            memory:
-              limit: "2Gi"
-
-  # Workers role configuration (plural naming)
   workers:
+    replicas: 1
+    roleConfig:
+      podDisruptionBudget:
+        enabled: true
+        maxUnavailable: 1
+    config:
+      gracefulShutdownTimeout: 30s
+      resources:
+        cpu: {min: 500m, max: "2"}
+        memory: {limit: 1536Mi}
+      logging:
+        enableVectorAgent: true
+        containers:
+          trino:
+            console: {level: "OFF"}
+            file: {level: TRACE}
+            loggers:
+              ROOT: {level: INFO}
+              io.trino: {level: INFO}
+    podOverrides:
+      spec:
+        automountServiceAccountToken: false
+        containers:
+          - name: vector
+            resources:
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: 200m, memory: 128Mi}
     roleGroups:
-      default:
-        replicas: 3
-        config:
-          resources:
-            cpu:
-              min: "1"
-              max: "2"
-            memory:
-              limit: "4Gi"
-
-  # Catalog configuration
-  catalogs:
-    - name: hive
-      type: hive
-      properties:
-        "hive.metastore.uri": "thrift://hive-metastore:9083"
-    - name: tpch
-      type: tpch
+      default: {}

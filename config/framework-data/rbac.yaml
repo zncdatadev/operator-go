@@ -1,0 +1,45 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: framework-data-observer
+rules:
+  - apiGroups: [data.framework.kubedoop.dev]
+    resources: [dataassets]
+    verbs: [get, list, watch, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: framework-data-executor
+rules:
+  - apiGroups: [data.framework.kubedoop.dev]
+    resources: [dataassets, dataassets/status, dataoperations, dataoperations/status]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims, persistentvolumes, pods]
+    verbs: [get, list, watch, create, update, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get]
+  # CR kinds are product-defined. This rule only reads the exact explicitly authorized source/target CR.
+  - apiGroups: ['*']
+    resources: ['*']
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: framework-data-authorizer
+rules:
+  - apiGroups: [data.framework.kubedoop.dev]
+    resources: [dataassets, dataoperations]
+    verbs: [get, list, watch]
+  - apiGroups: [data.framework.kubedoop.dev]
+    resources: [dataoperations]
+    verbs: [create, patch, update]

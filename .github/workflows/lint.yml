@@ -32,11 +32,7 @@ jobs:
         with:
           version: ${{ steps.golangci.outputs.version }}
 
-  # examples/trino-operator is a separate Go module with its own .golangci.yml and its own pinned
-  # golangci-lint version, and the job above lints the root module only — so the reference
-  # implementation downstream operators copy was never linted at all. Driven through the module's
-  # own Makefile so its pin stays the single source of truth (it currently differs from the root's,
-  # which is fine: they are independent modules).
+  # The example is a separate module/config, using the root-pinned linter binary.
   examples-lint:
     name: Go Lint (examples/trino-operator)
     runs-on: ubuntu-latest
@@ -51,6 +47,7 @@ jobs:
 
       - name: Run linter
         run: |
+          make golangci-lint
           make -C examples/trino-operator lint
 
   md-lint:

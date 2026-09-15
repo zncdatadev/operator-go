@@ -11,6 +11,12 @@ English | [简体中文](./README_zh-CN.md)
 
 A Golang SDK/framework for building Kubernetes operators. Built on [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime), it provides a reusable reconciliation framework, CRDs, and utilities for creating product-specific operators.
 
+## New framework reference
+
+The new `pkg/framework` API lets a product declare its configuration and runtime while the SDK owns folding, overrides, resource assembly and reconciliation. Start with the [Trino reference operator](examples/trino-operator/README.md), [core specification](docs/architecture.md#framework-design) and [delivery/validation guide](hack/framework-e2e/README.md). Use the reviewed source revision for these packages; their presence here does not assert that `@latest` or a public image release already includes them.
+
+The remaining overview and quick start below describe the existing GenericReconciler API. They are not the authoring path used by the new Trino reference.
+
 ## Overview
 
 **operator-go** is designed to work seamlessly with [Kubebuilder](https://book.kubebuilder.io/), the standard framework for building Kubernetes APIs. We recommend following the [Kubebuilder documentation](https://book.kubebuilder.io/quick-start.html) to scaffold your operator project, then integrate operator-go to leverage its powerful reconciliation framework.
@@ -120,10 +126,10 @@ func (r *TrinoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 A complete example operator is available in [`examples/trino-operator/`](./examples/trino-operator/), demonstrating:
 
-- CRD definition with `ClusterInterface` implementation
-- RoleGroupHandler for coordinator and worker roles
-- Extension registration for custom logic
-- Webhook setup for validation and defaulting
+- Typed product configuration and generated presence-preserving API/CRD
+- ProductDefinition runtime generation for coordinator and worker roles
+- Generated registration through the public framework/operator API
+- Platform dependencies, logging, typed lifecycle and retained-storage consumers; runtime evidence is recorded separately
 
 ## Development
 

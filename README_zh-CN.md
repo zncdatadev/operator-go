@@ -11,6 +11,12 @@
 
 一个用于构建 Kubernetes Operator 的 Golang SDK/框架。基于 [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) 构建，提供可复用的调和框架、CRD 和实用工具，用于创建产品特定的 Operator。
 
+## 新框架入口
+
+新的 `pkg/framework` API 由产品声明配置和运行方式，SDK 负责继承、覆盖、资源装配与持续收敛。从 [Trino 参考 operator](examples/trino-operator/README.md)、[核心规范](docs/architecture.md#framework-design)和[交付验收指南](hack/framework-e2e/README.md)开始。请使用已审阅的源码修订；这里存在实现不代表 `@latest` 或公共镜像已经发布该版本。
+
+下文的概述和快速开始继续介绍现有 GenericReconciler API，不是新 Trino 参考实现的作者接入路径。
+
 ## 概述
 
 **operator-go** 设计为与 [Kubebuilder](https://book.kubebuilder.io/) 无缝协作，Kubebuilder 是构建 Kubernetes API 的标准框架。我们建议遵循 [Kubebuilder 文档](https://book.kubebuilder.io/quick-start.html) 来搭建您的 Operator 项目脚手架，然后集成 operator-go 以利用其强大的调和框架。
@@ -120,10 +126,10 @@ func (r *TrinoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 完整的示例 Operator 可在 [`examples/trino-operator/`](./examples/trino-operator/) 中找到，演示了：
 
-- 带有 `ClusterInterface` 实现的 CRD 定义
-- coordinator 和 worker 角色的 RoleGroupHandler
-- 自定义逻辑的扩展注册
-- 用于验证和默认值设置的 Webhook 配置
+- 类型化产品配置与保留字段填写状态的生成 API/CRD
+- coordinator 和 worker 角色的 ProductDefinition 运行描述
+- 通过公共 framework/operator API 的生成注册
+- 平台依赖、日志、类型化生命周期和保留存储消费者；实际运行证据独立记录
 
 ## 开发
 

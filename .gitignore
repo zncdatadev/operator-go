@@ -201,3 +201,6 @@ _bmad*
 .claude/worktrees
 .serena
 .worktree/
+
+# Local discussion, iteration notes and runtime evidence (never commit)
+/.local/

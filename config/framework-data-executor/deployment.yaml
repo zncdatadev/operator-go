@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: framework-data-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: framework-data-executor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: framework-data-executor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: framework-data-executor
+subjects:
+  - kind: ServiceAccount
+    name: framework-data-executor
+    namespace: framework-data-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: framework-data-executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: framework-data-executor
+  template:
+    metadata:
+      labels:
+        app: framework-data-executor
+    spec:
+      serviceAccountName: framework-data-executor
+      containers:
+        - name: executor
+          image: operator-go-dataops:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --worker-image=quay.io/zncdatadev/trino@sha256:6c7002a7e6d4f7a738f3e3066dabf06f433c32e57900d5697a7544187f40875f
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: '1'
+              memory: 256Mi

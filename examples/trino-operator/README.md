@@ -1,419 +1,180 @@
-# Trino Operator Example
+# Trino operator example
 
-This is an example operator built with [Kubebuilder](https://book.kubebuilder.io/) and the
-[operator-go](../../) SDK. It demonstrates all core capabilities of the operator-go SDK.
+This module is the Trino reference product for the formal `operator-go/pkg/framework` API. The executable registers its generated API and `product.Definition()` with the public operator package. The SDK owns folding, resource assembly, apply, observation, stop/pause and retained-resource safety; the product owns Trino configuration and its read-only catalog, authentication and S3 resolvers.
 
-## Features Demonstrated
+The reference image is `quay.io/zncdatadev/trino:476-kubedoop0.0.0-dev`. Its launcher is `/kubedoop/trino-server/bin/launcher`, running as UID/GID 1001. It uses one coordinator group with one replica and any number of worker groups. Default catalogs contain the bundled `tpch` connector. Catalog declarations do not establish plugin availability, credentials or external service readiness.
 
-- **GenericReconciler Template Method Pattern**: The reconciliation loop is owned by the SDK's
-  `GenericReconciler`, which calls product-specific seams at fixed points.
-- **BaseRoleGroupHandler Delegation**: `TrinoRoleGroupHandler` embeds
-  `reconciler.BaseRoleGroupHandler`, so the framework builds the ConfigMap, Services, StatefulSet
-  and role PDB; the override only appends what the merge pipeline cannot express.
-- **RoleGroupResolver**: `product.ComputeConfig` contributes Trino's `config.properties` as the
-  lowest-precedence merge layer, so any user `configOverrides` wins over it.
-- **Typed Extension Registry**: `common.NewExtensionRegistry[*TrinoCluster]()` holds
-  `ClusterExtension` (Catalog, Discovery) and `RoleExtension` (Health) hooks, each declaring
-  `*TrinoCluster` in its signatures.
-- **Admission Webhook**: a `CustomDefaulter` fills product defaults into the typed spec and a
-  `CustomValidator` rejects invalid clusters before they reach the reconciler.
-- **Declarative Logging**: `RoleDeclaration.LogProducers` lets the framework render the Log4j2 config from
-  the CRD logging spec.
+## Product and generated input
 
-## Project Structure
+The author-maintained product lives in `internal/product/`:
 
-```text
-trino-operator/
-├── api/v1alpha1/                    # CRD definitions
-│   ├── trinocluster_types.go        # TrinoCluster CRD (implements ClusterInterface)
-│   ├── groupversion_info.go         # Auto-generated
-│   └── zz_generated.deepcopy.go     # Auto-generated
-├── cmd/
-│   └── main.go                      # Entry point: registry + GenericReconciler setup
-├── config/
-│   ├── crd/                         # CRD YAMLs (auto-generated)
-│   ├── rbac/                        # RBAC configuration (auto-generated)
-│   ├── webhook/                     # Webhook configuration (auto-generated)
-│   ├── certmanager/                 # Serving certificates for the webhook
-│   ├── samples/                     # Sample CRs
-│   ├── manager/                     # Manager configuration
-│   └── default/                     # Kustomize overlay wiring all of the above
-├── internal/
-│   ├── controller/
-│   │   └── trino_handler.go         # RoleGroupHandler (embeds BaseRoleGroupHandler)
-│   ├── extensions/
-│   │   ├── catalog_extension.go     # ClusterExtension example
-│   │   ├── discovery_extension.go   # ClusterExtension + discovery ConfigMap example
-│   │   └── health_extension.go      # RoleExtension example
-│   ├── product/
-│   │   └── config.go                # RoleGroupResolver and role name constants
-│   ├── config/
-│   │   ├── trino_config.go          # jvm.config generation
-│   │   └── catalog_config.go        # Catalog properties generation
-│   ├── constants/
-│   │   └── constants.go             # Image, port and container name constants
-│   └── webhook/v1alpha1/
-│       └── trinocluster_webhook.go  # Defaulter and validator
-├── test/
-│   ├── e2e/                         # E2E tests (build tag `e2e`)
-│   └── utils/                       # E2E helpers
-├── Dockerfile                       # Container image
-├── Makefile                         # Build targets
-└── README.md                        # This file
-```
+- `TrinoConfig`: role/group HTTP port, catalog reference, explicit shutdown identity and typed Hive/S3 configuration.
+- `TrinoClusterConfig`: cluster-wide environment, ListenerClass, TLS source and internal shared-secret reference.
+- `TrinoFacts`: resolved catalogs, authentication and S3 references, supplied independently for each group.
+- `Definition()`: image and role defaults, product validation, runtime/files, final relationship checks and shared discovery output.
+- `ResolveFacts`: combines referenced `catalogs.json`, authentication and S3 inputs for each group; missing/deleting required sources remain Pending. It does not write Kubernetes resources.
 
-## Quick Start
+`cmd/generate` derives the API role list from the definition and generates the input types, CRD, binding and registration companion. Generated presence fields preserve `false`, zero, empty strings and empty collections. `Operation` reads fixed controls before product projection. The generated raw projection does not merge role layers or resolve facts.
 
-### Prerequisites
-
-- Go 1.25+ (see `go.mod`)
-- Docker
-- kubectl
-- Access to a Kubernetes cluster
-- [cert-manager](https://cert-manager.io/) in the cluster — the default overlay deploys the
-  admission webhook and takes its serving certificate from cert-manager
-
-### Build and Run Locally
-
-`main.go` always registers the admission webhook, so the manager needs a serving certificate even
-when run from the host — the webhook server fails to start without one. Either point
-`--webhook-cert-path` at a directory holding `tls.crt`/`tls.key`, or place them in
-controller-runtime's default directory, `<temp-dir>/k8s-webhook-server/serving-certs`.
-
-```bash
-# Install CRDs into the cluster
-make install
-
-# Run the controller locally
-make run
-
-# In another terminal, apply the sample CR
-kubectl apply -f config/samples/trino_v1alpha1_trinocluster.yaml
-```
-
-### Build and Deploy
-
-```bash
-# Build the Docker image
-make docker-build IMG=trino-operator:latest
-
-# Push to registry
-make docker-push IMG=trino-operator:latest
-
-# Deploy to cluster
-make deploy IMG=trino-operator:latest
-```
-
-### Run Tests
-
-```bash
-# Run unit and envtest suites
+```sh
+make generate
+make verify-generate
 make test
-
-# Run the e2e suite against a Kind cluster
-make test-e2e
+make lint
+make build
 ```
 
-## Architecture
+`make test` uses the root checkout's Kubernetes 1.35 envtest binaries, or an explicit `KUBEBUILDER_ASSETS`. The published sample is tested through YAML-to-JSON decoding and real API-server create/get/projection. These tests do not start Trino or prove query readiness. Runtime delivery validation is maintained separately by the repository's [framework acceptance harness](../../hack/framework-e2e/README.md).
 
-### GenericReconciler Flow
+The module retains a local SDK `replace` to `../..`; generated files are checked into this module. There is no alternate legacy handler, extension registry, webhook or controller entrypoint.
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                     GenericReconciler                           │
-├─────────────────────────────────────────────────────────────────┤
-│ 1. Fetch CR, record observedGeneration                          │
-│ 2. ClusterOperation gate (reconciliationPaused returns here)    │
-│ 3. Ensure workload ServiceAccount (always; name derived from CR)│
-│ 3b. Ensure workload RBAC (only when WorkloadRBACRules is set)   │
-│ 4. Execute Cluster PreReconcile extensions                      │
-│ 5. Validate dependencies                                        │
-│ 6. For each Role (sorted by name):                              │
-│    a. Execute Role PreReconcile extensions                      │
-│    b. For each RoleGroup:                                       │
-│       - Execute RoleGroup PreReconcile extensions               │
-│       - Build RoleGroupBuildContext (merged config + sidecars)  │
-│       - Delegate to RoleGroupHandler.BuildResources()           │
-│       - Apply CM → HeadlessSvc → Svc → extras → STS → PDB       │
-│       - Execute RoleGroup PostReconcile extensions              │
-│    c. Reconcile the role-level PodDisruptionBudget              │
-│    d. Execute Role PostReconcile extensions                     │
-│ 7. Cleanup orphaned resources                                   │
-│ 8. Update health status                                         │
-│ 9. Execute Cluster PostReconcile extensions                     │
-│ 10. Write status and schedule the next wakeup                   │
-└─────────────────────────────────────────────────────────────────┘
+## Deploy the actual executable
+
+Build the materializer from the same SDK revision as the operator. The materializer and operator images contain statically compiled Linux executables, so no Go builder image is needed:
+
+```sh
+make -C ../.. materializer-image
+make docker-build IMG=trino-operator:dev
+make build-installer IMG=trino-operator:dev
+kubectl apply --validate=strict -f dist/install.yaml
+kubectl apply --validate=strict -f config/samples/trino_v1alpha1_trinocluster.yaml
 ```
 
-A failure anywhere in this flow runs the `OnReconcileError` extensions and maps to the `Degraded`
-condition on the CR. API-server rate limiting is the exception: it backs off and retries without
-marking the cluster degraded.
+Images must be available to the target cluster: load locally built images into a local cluster, or tag/push them to a reachable registry. `TARGETARCH` controls the operator cross-compile and image platform; `MATERIALIZER_ARCH` controls the SDK helper. The installer uses the fixed Vector digest declared in `config/manager/manager.yaml`. Change image references in a deployment overlay for another platform/release.
 
-### Resource Building Split
+The installer creates namespace `trino-operator-system`, Deployment `trino-operator-controller-manager`, its ServiceAccount/RBAC, `trinoclusters.trino.kubedoop.dev` and independent DataAsset/DataOperation CRDs. It does not deploy the destructive data executor. It has no admission-webhook or cert-manager dependency. `make deploy` builds and applies the installer. The operator defaults to watching all namespaces; `--namespace` limits the manager watch.
 
-```text
-GenericReconciler
-    │
-    ├── per role group: TrinoRoleGroupHandler.BuildResources()
-    │       │
-    │       ├── BaseRoleGroupHandler.BuildResources()   # the framework's 90%
-    │       │       ├── ConfigMap (merged config + Log4j2 logging file)
-    │       │       ├── Headless Service + Service
-    │       │       └── StatefulSet (image, sidecars, podOverrides)
-    │       │
-    │       └── product-specific additions
-    │               ├── jvm.config            (both roles)
-    │               └── catalog/*.properties  (coordinators only)
-    │
-    └── per role: BaseRoleGroupHandler.BuildRolePodDisruptionBudget()
+For a local process, pass the same helper images explicitly:
+
+```sh
+make run ARGS='--materializer-image=quay.io/zncdatadev/operator-go-materializer:0.0.0-dev --vector-image=quay.io/zncdatadev/vector@sha256:3b9a99d98905443924bee204bd76c2818ad2da7056388fd524b0ea000eb55682'
 ```
 
-The PDB is deliberately outside `BuildResources`: `roleConfig.podDisruptionBudget` covers all
-pods of a role across every role group, so the framework builds exactly one per role instead of
-one per group.
+Other options include `--fact-refresh-interval` (30s), `--health-probe-bind-address`, `--metrics-bind-address`, `--leader-elect` and `--leader-election-namespace`. Helper images are required at startup. The health endpoints report manager health; Trino `/v1/info` probes and the initialization process are declared by the product through typed framework process fields.
 
-Both roles share one handler; the role is read from `buildCtx.RoleName` rather than routed to
-separate handler types.
+## Standard CRD controls
 
-## CRD Example
+See `config/samples/trino_v1alpha1_trinocluster.yaml` for a complete coordinator/worker deployment. The standard shape is:
+
+- `spec.image`: structured repo/productVersion/kubedoopVersion, or `custom` for an explicit reference/digest; independent pull policy and pull Secret.
+- `spec.clusterConfig`: common authentication/Vector references, product platform settings, plus independent `stopped` and `reconciliationPaused`.
+- `coordinators` / `workers`: optional role replicas, role-only PDB configuration, common/product `config`, four overrides, and named `roleGroups`.
+
+Common configuration controls CPU, memory, affinity, termination grace and structured logging. Product configuration defaults to HTTP port 8080. User workload configuration folds product defaults, role and group layers. PDB computation uses the complete declared replica inventory, including groups whose resources are waiting or invalid. Stop retains those declarations while scaling authenticated workloads to zero; pause prevents business reads and resource mutations until resumed.
+
+The four override channels are explicit. For example, within `workers.roleGroups.default`:
 
 ```yaml
-apiVersion: trino.kubedoop.dev/v1alpha1
-kind: TrinoCluster
+configOverrides:
+  config.properties:
+    properties:
+      set:
+        query.max-memory-per-node: 256MB
+envOverrides:
+  EXAMPLE_ENV: enabled
+cliOverrides:
+  - --etc-dir=/etc/trino
+  - run
+podOverrides:
+  metadata:
+    annotations:
+      example.kubedoop.dev/intent: explicit
+```
+
+File actions are `properties` (set/remove/replace), `lines`, `text`, or `remove`; the framework does not infer syntax from the file extension. CLI input replaces the full argument list, so the launcher arguments must remain present when intended. Role and group Pod patches are applied after file/env/CLI channels. A role Pod patch can therefore override a group env/CLI entry. Known final relationship conflicts block that group's apply; unknown relationships remain visibly unknown and do not establish runtime correctness.
+
+The sample carries `restarter.kubedoop.dev/enable: "true"`. Product file ConfigMap changes need the platform's commons-operator restarter to reach existing processes; initial opt-in also causes one rollout. Env/CLI/Pod changes alter the Pod template directly. The SDK does not synthesize restarter stamps. Install the restarter when exercising file-only delivery. Central Vector destination changes are resolved into the Pod template and roll the collector through that template change.
+
+## Native Trino logging and process identity
+
+Trino 476 uses Airlift/JUL logging. This product generates `log.properties` and native `log.enable-console`, `log.path`, and JSON file logging properties; it does not emit Logback or Log4j configuration. `ROOT` maps to the empty native property key. Supported levels are TRACE, DEBUG, INFO, WARN, ERROR and OFF. FATAL is rejected because it has no faithful native mapping here.
+
+One active sink, or two active sinks with the same threshold, is supported. Each logger threshold is clamped by the active sink threshold. Different active console/file thresholds are explicitly rejected. The defaults are console OFF, file TRACE and ROOT INFO. Quote `"OFF"` in YAML to avoid YAML 1.1 boolean conversion.
+
+Vector is assembled only when `config.logging.enableVectorAgent` is true and the product declares a real file output. File OFF withdraws the native file output; console logging alone is not a file source. The sample also supplies a `vector` resources patch. If disabling file collection in a descendant group, remove that inherited container patch explicitly:
+
+```yaml
+config:
+  logging:
+    enableVectorAgent: false
+podOverrides:
+  spec:
+    containers:
+      - name: vector
+        $patch: delete
+```
+
+The product writes `node.id=${ENV:TRINO_NODE_ID}` and supplies the Pod UID via the downward API. A container restart in the same Pod keeps that identity; a replacement Pod has a new identity. Configuration materialization leaves the native environment expression literal for Trino to resolve. The product declares initialization, probes and ordered workload coordination. Initialization checks this Pod's required materialized files and data/log directory writability on each execution; it does not use a historical marker to skip initialization. Startup/readiness probes require `/v1/info` to report `starting=false`; liveness checks the native info endpoint. Workers have shutdown priority 0 and coordinators 100.
+
+Worker management writes are disabled by default. Set `config.shutdownUser` or `config.shutdownCredentialsSecret` explicitly to enable preStop; the Secret supplies read-only `username` and `password` files. The hook constructs Basic Authorization at runtime when credentials are supplied, identifies the current JVM by PID and birth identity, sends native `SHUTTING_DOWN`, and waits for that JVM to exit. Coordinators do not call this worker protocol. The hook currently uses loopback HTTP: authentication must match that management endpoint, and PASSWORD/TLS configuration does not implicitly make coordinator HTTPS available on a worker or enable insecure HTTP authentication.
+
+The hook budget is `config.gracefulShutdownTimeout` minus two seconds; enabling it with a configured budget below ten seconds is rejected. Final Pod overrides can change the actual kubelet budget but do not recompute hook arguments, so such a change reports an unknown lifecycle relationship. Request acceptance, original query completion, main JVM exit and hook exit are separate observations. Finite budgets can still end in SIGKILL. Cross-role ordering covers framework stop/retirement; CR deletion uses Kubernetes GC and does not preserve that guarantee. See [lifecycle coordination](../../docs/architecture.md#framework-lifecycle) for recovery and progress rules.
+
+## External catalogs and scope
+
+Set role/group `config.catalogConfigMapName` to consume a same-namespace ConfigMap:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: demo-trino
-spec:
-  image:
-    productVersion: "476"
-    kubedoopVersion: "0.0.0-dev"
-
-  coordinators:
-    roleGroups:
-      default:
-        replicas: 1
-        config:
-          gracefulShutdownTimeout: "30s"
-          resources:
-            cpu:
-              min: "500m"
-              max: "1"
-            memory:
-              limit: "2Gi"
-
-  workers:
-    roleGroups:
-      default:
-        replicas: 3
-        config:
-          resources:
-            cpu:
-              min: "1"
-              max: "2"
-            memory:
-              limit: "4Gi"
-
-  catalogs:
-    - name: hive
-      type: hive
-      properties:
-        hive.metastore.uri: "thrift://hive-metastore:9083"
-    - name: tpch
-      type: tpch
+  name: trino-catalogs
+data:
+  catalogs.json: |
+    {"tpch":{"connector.name":"tpch"}}
 ```
 
-See `config/samples/trino_v1alpha1_trinocluster.yaml` for the full sample.
+A resolved source replaces that group's base catalog map. The framework records the observed source UID/resourceVersion; the product resolver returns catalog facts and diagnostics without copying catalog contents into diagnostic messages. Periodic refresh makes external changes observable; file delivery still requires the restarter. Empty reference means no external lookup and uses the base TPCH catalog.
 
-## Key Integration Points
+This reference defaults to ephemeral data directories. Set role/group `config.resources.storage` to
+`{type: persistent, storageClassName: <explicit-Retain-class>, capacity: 64Gi}` to back
+the declared `/var/trino/data` directory with a retained RWO/Filesystem claim. Role groups
+can override capacity while inheriting type/class. Existing storage changes require an
+explicit migration process; changing this field does not migrate data. `test/runtime/storage-controller` is a separate marker-only validation executable for the framework's explicitly retained slot; the production Trino executable does not import it. Explicit cross-CR adoption, migration and destruction belong to the independently deployed SDK data executor. They do not happen through storage configuration changes and do not imply Trino database recovery.
 
-### 1. Implementing ClusterInterface
 
-`ClusterInterface` has two methods. Everything else the SDK needs — metadata accessors, object
-kind, `DeepCopyObject` — comes from the embedded `TypeMeta`/`ObjectMeta` and the generated
-deep-copy code.
+## Platform domains
 
-```go
-// GetSpec builds a GenericClusterSpec from the typed coordinators/workers fields, bridging the
-// type-safe CRD structure to the SDK's generic Roles map without a redundant spec.roles field.
-func (t *TrinoCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
-    roles := make(map[string]commonsv1alpha1.RoleSpec)
-    if t.Spec.Coordinators != nil {
-        roles["coordinators"] = t.Spec.Coordinators.RoleSpec
-    }
-    if t.Spec.Workers != nil {
-        roles["workers"] = t.Spec.Workers.RoleSpec
-    }
-    return &commonsv1alpha1.GenericClusterSpec{
-        Image:            t.Spec.Image,
-        ClusterOperation: t.Spec.ClusterOperation,
-        Roles:            roles,
-    }
-}
+`clusterConfig.vectorAgentConfigMap` references a same-namespace ConfigMap with
+`data.ADDRESS=host:port`, pointing to a Vector source. It is an address, not arbitrary Vector YAML or a URL. If no destination is specified, Vector emits stdout JSON. Only enabled collectors with actual file outputs consume
+that dependency. Missing sources are Pending; invalid addresses are Invalid and retain the preceding valid workload. ADDRESS changes update the collector template; native file
+configuration delivery otherwise continues to use the platform restarter. Collection configuration does not prove remote delivery; Vector buffering/retry applies and its data directory is ephemeral.
 
-// GetStatus returns a pointer into the CR, so product-specific status fields survive a
-// reconcile cycle untouched. There is no SetStatus: the framework mutates through this pointer.
-func (t *TrinoCluster) GetStatus() *commonsv1alpha1.GenericClusterStatus {
-    return &t.Status.GenericClusterStatus
-}
+`clusterConfig.authentication` accepts one static AuthenticationClass for PASSWORD
+authentication. The class is cluster-scoped; its credentials Secret is in the Trino CR namespace and must contain nonempty `password.db` in native Trino hash format. Configure exactly
+one of `tlsSecret` (keys `tls.crt`, `tls.key`) and `tlsSecretClass` (platform PEM
+output), plus `internalSecret` (key `shared-secret`). HTTPS uses port 8443; the
+product refuses other authentication providers until a concrete adapter exists.
+Native Secret files are mounted read-only with mode 0440. An initialization process prepares a mode-0600 PEM in an ephemeral directory from read-only mounts; the internal shared identity reaches all roles through SecretKeyRef and native `${ENV:TRINO_INTERNAL_SHARED_SECRET}`. PASSWORD requires both TLS and the internal identity. TLS may also be enabled independently. Neither insecure HTTP authentication nor trust of forwarded headers is enabled implicitly. With a Listener, the TLS scope includes `listener-volume=listener` to cover its published address.
+
+Secret bytes stay in volumes or SecretKeyRef, and native Secret revisions refresh consuming Pods. Missing required references retain the previous valid resources while waiting. AuthenticationClass resolution alone does not prove user authentication or grant worker shutdown permission. See the [authentication boundary](../../docs/security.md#framework-authentication) and the pinned Trino 476 [TLS](https://github.com/trinodb/trino/blob/476/docs/src/main/sphinx/security/tls.md), [password file](https://github.com/trinodb/trino/blob/476/docs/src/main/sphinx/security/password-file.md) and [internal communication](https://github.com/trinodb/trino/blob/476/docs/src/main/sphinx/security/internal-communication.md) contracts.
+
+`clusterConfig.listenerClass` declares the coordinator Listener CSI producer.
+Discovery waits for the current Pod/PVC/PV/Listener result, then publishes its
+observed address and named HTTP/HTTPS port, preferring HTTPS when enabled. With no Listener it uses the declared Service DNS. Pending observations retain the previous discovery output; a zero-replica group has no newly observed live address. Install the actual platform Secret and
+Listener operators when selecting their CSI sources; the Trino installer grants
+reference reads but does not install those platform components.
+
+For an actual Hive catalog, set role/group `config.hive.metastoreURI` and
+`config.hive.s3`. S3 has explicit `disabled`, `inline`, `reference` variants;
+changing the variant clears the inherited branch. Within the same variant, omitted fields inherit from role to group, so a group can change pathStyle while retaining its endpoint and credentials. An unspecified region becomes `us-east-1`; an unspecified port becomes 80 for HTTP or 443 for HTTPS, and host must be a DNS name or IP. Inline credentials select a
+native Secret or SecretClass; reference uses an actual namespaced platform
+S3Connection. The Trino launcher reads mounted ACCESS_KEY/SECRET_KEY files into
+its process environment and native catalog expressions reference those variables.
+No credential bytes are emitted into generated ConfigMaps. Empty or unreadable credential files fail startup; no undeclared credential chain is used. The fixed launcher remains in `Main.Command`, so inherited CLI overrides still replace only `Main.Args`, including an explicit empty argument list, and final Pod arguments retain their higher priority.
+
+The fixed `hive` catalog uses Trino 476's `fs.native-s3.enabled`, `s3.endpoint`, `s3.region`, `s3.path-style-access`, and `${ENV:TRINO_S3_ACCESS_KEY}` / `${ENV:TRINO_S3_SECRET_KEY}` credential values. A catalog ConfigMap that also defines `hive` conflicts with this typed input; final file overrides keep their existing priority. Only system-CA-verified S3 HTTPS is supported; verification bypass or an unconsumed custom CA is rejected. Connection endpoint/region/pathStyle changes also update `TRINO_S3_CONNECTION` in the Pod template so refreshed references reach a new process without editing the CR. This does not change Trino's default policy for writes to non-managed Hive tables. See the pinned [Trino 476 S3 filesystem configuration](https://github.com/trinodb/trino/blob/476/docs/src/main/sphinx/object-storage/file-system-s3.md).
+
+Shared contracts are maintained in [framework design](../../docs/architecture.md#framework-design), [platform inputs and observation](../../docs/architecture.md#framework-platform), [S3](../../docs/architecture.md#framework-s3), [logging](../../docs/architecture.md#framework-logging) and [data operations](../../docs/architecture.md#framework-data-operations). Product runtime and fixture validation use the [acceptance harness](../../hack/framework-e2e/README.md); framework marker/logging fixtures do not establish Trino database recovery or product query results.
+
+To package the independently authorized data executor, run from the SDK root:
+
+```sh
+make dataops-image DATAOPS_IMAGE=operator-go-dataops:dev
+kustomize build config/framework-data-executor > /tmp/data-executor.yaml
 ```
 
-Optional seams are separate interfaces the CR may also satisfy — `TrinoCluster` implements
-`reconciler.VectorAggregatorProvider` so the framework owns `vector.yaml` generation.
-
-### 2. Implementing RoleGroupHandler
-
-```go
-// TrinoRoleGroupHandler embeds the SDK handler, so the framework builds the bulk of the
-// resources and the override only appends what the merge pipeline cannot express.
-type TrinoRoleGroupHandler struct {
-    *reconciler.BaseRoleGroupHandler[*trinov1alpha1.TrinoCluster]
-}
-
-func (h *TrinoRoleGroupHandler) BuildResources(
-    ctx context.Context,
-    k8sClient client.Client,
-    cr *trinov1alpha1.TrinoCluster,
-    buildCtx *reconciler.RoleGroupBuildContext,
-) (*reconciler.RoleGroupResources, error) {
-    resources, err := h.BaseRoleGroupHandler.BuildResources(ctx, k8sClient, cr, buildCtx)
-    if err != nil {
-        return nil, err
-    }
-
-    if resources.ConfigMap != nil {
-        // setIfAbsent never clobbers a key the merge pipeline already produced (CRD always wins).
-        setIfAbsent(resources.ConfigMap.Data, "jvm.config", func() string { return jvmConfig(buildCtx.RoleName) })
-
-        if buildCtx.RoleName == product.RoleCoordinators {
-            // ... catalog/<name>.properties, coordinator only
-        }
-    }
-
-    return resources, nil
-}
-```
-
-`NewTrinoRoleGroupHandler(scheme)` configures only what a role cannot differ on
-(`ConfigGenerator`, `ConfigMountPath`). Everything role-shaped — primary container name, container
-and service ports, log producers — is stated by `DeclareRoles`, which implements
-`reconciler.RoleProvider` and receives the cr, so a port that moves because the CR enabled TLS is
-computed there rather than written into handler state the next cluster inherits.
-
-### 3. Deriving Config from the Effective Config
-
-```go
-// ComputeConfig is merged as the LOWEST layer (product < role < role group), so a user's
-// configOverrides always win over it. It runs once per role group, AFTER the typed config
-// block has been folded — so it can read rg.EffectiveConfig() — and before anything is built.
-// It is recomputed every reconcile and may derive from live cluster state; here, the discovery
-// URI of the coordinator Service.
-func ComputeConfig(
-    _ context.Context, _ client.Client, cr *trinov1alpha1.TrinoCluster,
-    rg *reconciler.RoleGroupBuildContext,
-) (*reconciler.Contribution, error) {
-    port := CoordinatorPort(cr)
-
-    props := map[string]string{
-        "http-server.http.port": fmt.Sprintf("%d", port),
-        "discovery.uri":         discoveryURI(cr, port),
-    }
-    switch rg.RoleName {
-    case RoleCoordinators:
-        props["coordinator"] = "true"
-        props["node-scheduler.include-coordinator"] = "false"
-        props["discovery-server.enabled"] = "true"
-    case RoleWorkers:
-        props["coordinator"] = "false"
-    }
-    return &reconciler.Contribution{
-        ConfigOverrides: map[string]map[string]string{
-            "config.properties": props,
-        },
-    }, nil
-}
-```
-
-### 4. Registering Extensions
-
-The registry is instantiated for the product's own CR type, which is what lets extensions
-declare `*TrinoCluster` in their hooks instead of the SDK's wide `ClusterInterface`. There is no
-process-global registry: a registry is handed to exactly one reconciler, and an operator that
-manages several CR types builds one registry per type.
-
-```go
-// In main.go
-func newExtensionRegistry(scheme *runtime.Scheme) *common.ExtensionRegistry[*trinov1alpha1.TrinoCluster] {
-    registry := common.NewExtensionRegistry[*trinov1alpha1.TrinoCluster]()
-
-    registry.RegisterClusterExtension(extensions.NewCatalogExtension())
-    registry.RegisterRoleExtension(extensions.NewHealthExtension())
-
-    // Priority (not registration order) is what keeps the discovery extension running after the
-    // catalog extension has refreshed the status.
-    registry.RegisterClusterExtension(extensions.NewDiscoveryExtension(scheme), common.WithPriority(common.PriorityLow))
-
-    return registry
-}
-```
-
-### 5. Wiring the GenericReconciler
-
-The registry only runs when it reaches the reconciler through `ExtensionRegistry`; without that
-field the hooks are never executed.
-
-```go
-// In main.go
-roleGroupHandler := trinocontroller.NewTrinoRoleGroupHandler(mgr.GetScheme())
-
-reconcilerCfg := &reconciler.GenericReconcilerConfig[*trinov1alpha1.TrinoCluster]{
-    Client: mgr.GetClient(),
-    // Uncached: refreshes the resourceVersion after a conflicting status write, which the
-    // informer cache is by definition too stale to serve.
-    APIReader:           mgr.GetAPIReader(),
-    Scheme:              mgr.GetScheme(),
-    Recorder:            mgr.GetEventRecorderFor("trino-cluster-controller"),
-    RoleGroupHandler:    roleGroupHandler,
-    // The same object declares this product's roles, once per pass with the cr in hand.
-    // Leaving it unset is legal and means the catalog is EMPTY: no role is rejected, but every
-    // role builds with a zero declaration — no ports, no container name, no Service, no log
-    // producers — and the reconcile reports success. Set it unless the handler builds everything.
-    RoleProvider:        roleGroupHandler,
-    RoleGroupResolver:   reconciler.RoleGroupResolverFunc[*trinov1alpha1.TrinoCluster](product.ComputeConfig),
-    // Read every reconcile, so an operator upgrade moves existing clusters onto the
-    // co-released product image — which a mutating webhook cannot do, since its defaults are
-    // persisted at admission and never recomputed.
-    ImageResolution: reconciler.ImageResolution{
-        ProductName: constants.ProductName,
-        Defaults:    constants.ImageDefaults(),
-    },
-    HealthCheckInterval: 120 * time.Second,
-    HealthCheckTimeout:  300 * time.Second,
-    Prototype:           &trinov1alpha1.TrinoCluster{},
-    ExtensionRegistry:   newExtensionRegistry(mgr.GetScheme()),
-}
-
-trinoReconciler, err := reconciler.NewGenericReconciler(reconcilerCfg)
-if err != nil {
-    setupLog.Error(err, "unable to create reconciler")
-    os.Exit(1)
-}
-if err := trinoReconciler.SetupWithManager(mgr); err != nil {
-    setupLog.Error(err, "unable to create controller", "controller", "TrinoCluster")
-    os.Exit(1)
-}
-```
-
-## License
-
-Copyright 2024 ZNCDataDev.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Load the image into the intended cluster and review/apply that explicit deployment
+when data operations are needed. Its worker image contains Python 3 and is pinned
+in the overlay. Creating an approved immutable DataOperation is a separate action;
+ordinary product reconciliation never requests adoption, migration or destruction. The operation binds exact asset/source/target UIDs and an explicit non-root worker identity; RBAC grants authorization and the approval digest binds the reviewed input. Before execution, relevant StatefulSets must be retired, all actual data consumers absent, and any existing source CR paused. Adoption and migration also require the target CR to be paused. A Stopped condition or pause alone is insufficient. Migration retains the source copy; destruction is an independently approved action. See [data authorization](../../docs/security.md#framework-data-authorization) and [retained storage](../../docs/architecture.md#framework-storage) before preparing an operation.
