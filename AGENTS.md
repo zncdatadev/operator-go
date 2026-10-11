@@ -56,17 +56,17 @@
 6. **Layered Architecture**: Specific Product Layer → Abstract Interface Layer → Core Component Layer → Tools Layer → API Layer.
 
 ## Development Environment
-- **Language**: Go 1.25.3
+- **Language**: Go 1.26.0
 - **Dependency Management**: Go Modules (`go.mod`)
 - **Testing**: Ginkgo v2 + Gomega
 - **Tooling**: Uses `Makefile` to manage local binaries in `bin/`
 
 ### Tool Versions
-- `controller-gen`: v0.19.0
+- `controller-gen`: v0.21.0
 - `golangci-lint`: v2.12.2
 - `kustomize`: v5.7.1
-- `controller-runtime`: v0.23.3
-- `k8s.io/api`: v0.35.4
+- `controller-runtime`: v0.24.1
+- `k8s.io/api`: v0.36.4
 
 ## Common Commands
 Run these from the project root:

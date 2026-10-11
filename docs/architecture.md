@@ -559,7 +559,7 @@ Based on Kubebuilder annotation-driven practices, integrating MutatingWebhook an
 
 MutatingWebhook runs first to apply defaults. ValidatingWebhook runs next to enforce invariants. Failed validations reject the request before persistence, ensuring only valid specs enter reconciliation.
 
-`ProductDefaulter[CR]`/`ProductValidator[CR]` mirror controller-runtime's `admission.Defaulter[T]`/`admission.Validator[T]`, so a typed implementation is wired directly (controller-runtime v0.23.x):
+`ProductDefaulter[CR]`/`ProductValidator[CR]` mirror controller-runtime's `admission.Defaulter[T]`/`admission.Validator[T]`, so a typed implementation is wired directly (controller-runtime v0.24.x):
 
 ```go
 func SetupWebhookWithManager(mgr ctrl.Manager) error {
@@ -1452,6 +1452,9 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 # 7. Deployment and Extension Guide
 
 ## 7.1 SDK Deployment Dependencies
+
+- **Build toolchain**: Go 1.26.0 or newer. The SDK and Trino reference pin Kubernetes Go
+  modules to v0.36.4, controller-runtime to v0.24.1, and controller-gen to v0.21.0.
 
 - **K8s Version**: 1.31+ (Adapts to Webhook AdmissionReviewVersions=v1).
 - **Dependent Components**: cert-manager (for Webhook certificate generation), kubebuilder 3.0+ (for code generation).

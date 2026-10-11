@@ -45,7 +45,7 @@
 
 ### 前置条件
 
-- [Go](https://golang.org/doc/install) 1.25+
+- [Go](https://golang.org/doc/install) 1.26+
 - [Kubebuilder](https://book.kubebuilder.io/quick-start.html#install)（推荐用于脚手架搭建）
 
 ### 安装

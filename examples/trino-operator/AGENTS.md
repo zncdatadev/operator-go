@@ -33,6 +33,11 @@ This example demonstrates the SDK's preferred division of labour:
 `api/v1alpha1` exports a Kubernetes `runtime.SchemeBuilder` and `AddToScheme`. Its
 `addKnownTypes` function registers `TrinoCluster`, `TrinoClusterList`, and metadata kinds.
 
+## Toolchain
+
+Go 1.26.0+, Kubernetes Go modules v0.36.4, controller-runtime v0.24.1, and
+controller-gen v0.21.0. The module uses the SDK in this repository through its local replace.
+
 ## Working Instructions
 
 1. **Building:** Run `make build` to compile the operator

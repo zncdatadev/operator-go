@@ -29,7 +29,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/config"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 )
 
 // buildCtxFor assembles a RoleGroupBuildContext the way the GenericReconciler would: it merges
@@ -45,7 +44,7 @@ func buildCtxFor(cr *trinov1alpha1.TrinoCluster, role string, crdOverrides *comm
 		RoleName:         role,
 		RoleSpec:         &commonsv1alpha1.RoleSpec{},
 		RoleGroupName:    group,
-		RoleGroupSpec:    commonsv1alpha1.RoleGroupSpec{Replicas: ptr.To(int32(1))},
+		RoleGroupSpec:    commonsv1alpha1.RoleGroupSpec{Replicas: new(int32(1))},
 		ResourceName:     reconciler.RoleGroupResourceName(cr.Name, role, group),
 		ResolvedImage:    reconciler.ResolvedImage{Reference: "trinodb/trino:435"},
 	}

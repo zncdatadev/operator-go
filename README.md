@@ -45,7 +45,7 @@ A Golang SDK/framework for building Kubernetes operators. Built on [controller-r
 
 ### Prerequisites
 
-- [Go](https://golang.org/doc/install) 1.25+
+- [Go](https://golang.org/doc/install) 1.26+
 - [Kubebuilder](https://book.kubebuilder.io/quick-start.html#install) (recommended for scaffolding)
 
 ### Installation
