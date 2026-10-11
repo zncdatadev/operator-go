@@ -1552,7 +1552,7 @@ neither a class nor a listener name is rejected.
 ## Building a New Operator
 
 1. **Define CRD** - Create API types embedding `metav1.TypeMeta` + `metav1.ObjectMeta`, marked
-   `+kubebuilder:object:root=true` and registered with `SchemeBuilder.Register`; implement
+   `+kubebuilder:object:root=true` and registered with `scheme.AddKnownTypes` in `addKnownTypes`; implement
    `ClusterInterface`'s two methods (`GetSpec`, `GetStatus`) and run `make generate` for
    `DeepCopy`/`DeepCopyObject`. Scheme registration is required — the reconciler reads the fetched
    object into the CR itself

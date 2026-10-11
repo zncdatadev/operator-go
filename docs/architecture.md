@@ -1158,7 +1158,7 @@ func (h *HdfsCluster) GetStatus() *v1alpha1.GenericClusterStatus {
 }
 ```
 
-> The CR must also be registered with the manager's scheme (`SchemeBuilder.Register(&HdfsCluster{}, &HdfsClusterList{})`): the reconciler reads the fetched object into the CR itself, so an unregistered type fails at `client.Get` with "no kind is registered for the type".
+> The CR must also be registered with the manager's scheme (an `addKnownTypes` function passed to `runtime.NewSchemeBuilder`, registering `&HdfsCluster{}` and `&HdfsClusterList{}` with `scheme.AddKnownTypes(GroupVersion, ...)` and calling `metav1.AddToGroupVersion(scheme, GroupVersion)`): the reconciler reads the fetched object into the CR itself, so an unregistered type fails at `client.Get` with "no kind is registered for the type".
 
 > A `GetSpec()` implementation that builds a fresh `GenericClusterSpec` on every call is legal but subtle: the reconcile loop snapshots the spec once per cycle, so in-memory mutations made after that snapshot are not observed consistently (see §4.2.5). Returning a pointer into the CR is the simpler contract.
 
@@ -1462,8 +1462,16 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 
 ## 7.2 New Product Extension Steps
 
+The SDK API packages and the Trino example use Kubernetes `runtime.SchemeBuilder`.
+`GroupVersion` and `AddToScheme` keep their names and registration behavior. `SchemeBuilder`
+now has type `runtime.SchemeBuilder`: its `Register` method accepts registration functions
+(`func(*runtime.Scheme) error`), not CR objects. Move object registration into `addKnownTypes`;
+use the package-level `GroupVersion` instead of the former builder field. The old `Build` and
+`RegisterAll` helpers are not retained; create a `runtime.NewScheme()` and call `AddToScheme`
+when a standalone scheme is needed.
+
 1. **Define the CRD struct.** Embed `metav1.TypeMeta` and `metav1.ObjectMeta`, mark the type `+kubebuilder:object:root=true`, and embed the SDK Generic Spec/Status model in the product's own Spec/Status.
-2. **Register it with the scheme.** `SchemeBuilder.Register(&YourCluster{}, &YourClusterList{})` — the reconciler reads the fetched object into the CR itself, so an unregistered type fails at `client.Get`.
+2. **Register it with the scheme.** Define `SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)` and `AddToScheme = SchemeBuilder.AddToScheme`. In `addKnownTypes`, call `scheme.AddKnownTypes(GroupVersion, &YourCluster{}, &YourClusterList{})` and `metav1.AddToGroupVersion(scheme, GroupVersion)`, then return `nil` — the reconciler reads the fetched object into the CR itself, so an unregistered type fails at `client.Get`.
 3. **Run `make generate`.** controller-gen emits `DeepCopyObject()` (completing `client.Object`) and `DeepCopy() *YourCluster` (completing `ClusterResource[*YourCluster]`). Neither is hand-written.
 4. **Write the two `ClusterInterface` methods**: `GetSpec() *v1alpha1.GenericClusterSpec` and `GetStatus() *v1alpha1.GenericClusterStatus` (see §5.1.4). That is the whole cluster-level contract.
 5. **Implement `RoleGroupHandler[*YourCluster]`** — typically by embedding `BaseRoleGroupHandler` — to describe the Kubernetes resources of a role group.

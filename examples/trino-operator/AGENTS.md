@@ -28,6 +28,11 @@ This example demonstrates the SDK's preferred division of labour:
 - **Discovery is a one-liner.** `extensions.DiscoveryExtension` (a `ClusterExtension` running PostReconcile) publishes the coordinator URI in a discovery ConfigMap named after the cluster via `reconciler.EnsureDiscoveryConfigMap` — the framework owns CreateOrUpdate + controller owner reference + canonical labels; the product only computes the data map.
 - **Escape hatch for what the pipeline can't model.** `BuildResources` calls the base, then appends the CR-driven image, the non-key-value `jvm.config`, and coordinator-only catalog files. There is no hand-built `StatefulSet`.
 
+## API Registration
+
+`api/v1alpha1` exports a Kubernetes `runtime.SchemeBuilder` and `AddToScheme`. Its
+`addKnownTypes` function registers `TrinoCluster`, `TrinoClusterList`, and metadata kinds.
+
 ## Working Instructions
 
 1. **Building:** Run `make build` to compile the operator

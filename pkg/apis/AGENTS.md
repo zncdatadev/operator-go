@@ -35,6 +35,13 @@ string), not as a nested spec type, and a single data volume request is
 `ResourcesSpec.Storage`. The orphaned `GracefulShutdownSpec`, `ZKConfig` and
 `StorageResourceSpec` types that used to sit beside them were removed; no CRD embedded them.
 
+## Scheme Registration
+
+Each API package exports `GroupVersion`, `SchemeBuilder` (`runtime.SchemeBuilder`), and
+`AddToScheme`. `runtime.NewSchemeBuilder(addKnownTypes)` registers the group's CRs and List
+types through `scheme.AddKnownTypes`; `metav1.AddToGroupVersion` also registers metadata
+kinds. Add new root types to `addKnownTypes` in `groupversion_info.go`.
+
 ## Status Conventions
 
 - **`GenericClusterStatus.SetCondition` is not a wholesale replace.** An existing condition of the

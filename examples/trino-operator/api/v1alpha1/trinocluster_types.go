@@ -177,7 +177,3 @@ func (t *TrinoCluster) VectorAggregatorConfigMapName() string {
 func (t *TrinoCluster) GetStatus() *commonsv1alpha1.GenericClusterStatus {
 	return &t.Status.GenericClusterStatus
 }
-
-func init() {
-	SchemeBuilder.Register(&TrinoCluster{}, &TrinoClusterList{})
-}
