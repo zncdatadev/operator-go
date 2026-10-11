@@ -71,7 +71,3 @@ type PodListenersList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PodListeners `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&PodListeners{}, &PodListenersList{})
-}

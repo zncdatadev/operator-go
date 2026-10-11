@@ -154,7 +154,3 @@ func (d *DatabaseConnectionSpec) Validate() error {
 	// Validation logic can be extended as needed
 	return nil
 }
-
-func init() {
-	SchemeBuilder.Register(&DatabaseConnection{}, &DatabaseConnectionList{})
-}

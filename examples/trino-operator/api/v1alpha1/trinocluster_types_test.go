@@ -235,5 +235,5 @@ var _ = Describe("TrinoCluster", func() {
 })
 
 func int32Ptr(i int32) *int32 {
-	return &i
+	return new(i)
 }

@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	trinov1alpha1 "github.com/zncdatadev/operator-go/examples/trino-operator/api/v1alpha1"
@@ -66,15 +65,15 @@ var _ = Describe("Vector agent, end to end through the reconciler", func() {
 				Coordinators: &trinov1alpha1.CoordinatorsSpec{
 					RoleSpec: commonsv1alpha1.RoleSpec{
 						Config: &commonsv1alpha1.RoleGroupConfigSpec{
-							Logging: &commonsv1alpha1.LoggingSpec{EnableVectorAgent: ptr.To(true)},
+							Logging: &commonsv1alpha1.LoggingSpec{EnableVectorAgent: new(true)},
 						},
 						RoleGroups: map[string]commonsv1alpha1.RoleGroupSpec{
-							"default": {Replicas: ptr.To(int32(1))},
+							"default": {Replicas: new(int32(1))},
 						},
 					},
 				},
 				ClusterConfig: &trinov1alpha1.ClusterConfigSpec{
-					VectorAggregatorConfigMapName: ptr.To(aggregator),
+					VectorAggregatorConfigMapName: new(aggregator),
 				},
 			},
 		}

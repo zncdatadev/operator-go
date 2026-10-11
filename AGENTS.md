@@ -56,17 +56,17 @@
 6. **Layered Architecture**: Specific Product Layer → Abstract Interface Layer → Core Component Layer → Tools Layer → API Layer.
 
 ## Development Environment
-- **Language**: Go 1.25.3
+- **Language**: Go 1.26.0
 - **Dependency Management**: Go Modules (`go.mod`)
 - **Testing**: Ginkgo v2 + Gomega
 - **Tooling**: Uses `Makefile` to manage local binaries in `bin/`
 
 ### Tool Versions
-- `controller-gen`: v0.19.0
+- `controller-gen`: v0.21.0
 - `golangci-lint`: v2.12.2
 - `kustomize`: v5.7.1
-- `controller-runtime`: v0.23.3
-- `k8s.io/api`: v0.35.4
+- `controller-runtime`: v0.24.1
+- `k8s.io/api`: v0.36.4
 
 ## Common Commands
 Run these from the project root:
@@ -82,6 +82,9 @@ Run these from the project root:
 | `make lint` | Run `golangci-lint` |
 | `make lint-fix` | Run `golangci-lint` with auto-fix |
 | `make lint-config` | Verify golangci-lint configuration |
+
+CI runs Go commands with `GOFLAGS=-mod=readonly`: stale module manifests or missing
+required checksums fail validation instead of being updated while testing.
 
 ## Directory Structure
 > Subdirectories with their own `AGENTS.md` provide detailed file-level documentation. This section shows the top-level layout only.
@@ -1552,7 +1555,7 @@ neither a class nor a listener name is rejected.
 ## Building a New Operator
 
 1. **Define CRD** - Create API types embedding `metav1.TypeMeta` + `metav1.ObjectMeta`, marked
-   `+kubebuilder:object:root=true` and registered with `SchemeBuilder.Register`; implement
+   `+kubebuilder:object:root=true` and registered with `scheme.AddKnownTypes` in `addKnownTypes`; implement
    `ClusterInterface`'s two methods (`GetSpec`, `GetStatus`) and run `make generate` for
    `DeepCopy`/`DeepCopyObject`. Scheme registration is required — the reconciler reads the fetched
    object into the CR itself

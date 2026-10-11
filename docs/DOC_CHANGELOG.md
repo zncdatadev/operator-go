@@ -4,6 +4,19 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-10-11] (Kubernetes dependency upgrade, #639)
+
+- Update the SDK and Trino build baseline to Go 1.26.0, Kubernetes modules v0.36.4,
+  controller-runtime v0.24.1, and controller-gen v0.21.0. Keep the Kubernetes 1.31+
+  deployment baseline and extend CI through 1.36.0.
+
+- Architecture extension examples and API guidance now use `runtime.SchemeBuilder` with
+  `addKnownTypes`. Document the changed `SchemeBuilder.Register` signature and removal of the
+  old builder helpers; `GroupVersion`, `AddToScheme`, CR/List kinds, and metadata registration
+  retain their behavior.
+
+---
+
 ## [2026-08-17] (review follow-up on #632: `affinity` keeps the Kubernetes rule)
 
 ### Core architecture

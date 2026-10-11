@@ -185,7 +185,3 @@ type AuthenticationClassList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []AuthenticationClass `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&AuthenticationClass{}, &AuthenticationClassList{})
-}
