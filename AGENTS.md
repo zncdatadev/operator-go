@@ -83,6 +83,9 @@ Run these from the project root:
 | `make lint-fix` | Run `golangci-lint` with auto-fix |
 | `make lint-config` | Verify golangci-lint configuration |
 
+CI runs Go commands with `GOFLAGS=-mod=readonly`: stale module manifests or missing
+required checksums fail validation instead of being updated while testing.
+
 ## Directory Structure
 > Subdirectories with their own `AGENTS.md` provide detailed file-level documentation. This section shows the top-level layout only.
 

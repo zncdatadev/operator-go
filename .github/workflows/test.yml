@@ -1,5 +1,8 @@
 name: Tests
 
+env:
+  GOFLAGS: -mod=readonly
+
 on:
   push:
   pull_request:
