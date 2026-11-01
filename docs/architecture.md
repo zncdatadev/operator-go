@@ -1454,7 +1454,7 @@ The Observer Pattern defines a one-to-many dependency between objects so that wh
 ## 7.1 SDK Deployment Dependencies
 
 - **Build toolchain**: Go 1.26.0 or newer. The SDK and Trino reference pin Kubernetes Go
-  modules to v0.36.4, controller-runtime to v0.24.1, and controller-gen to v0.21.0.
+  modules to v0.37.1, controller-runtime to v0.25.2, and controller-gen to v0.22.0.
 
 - **K8s Version**: 1.31+ (Adapts to Webhook AdmissionReviewVersions=v1).
 - **Dependent Components**: cert-manager (for Webhook certificate generation), kubebuilder 3.0+ (for code generation).

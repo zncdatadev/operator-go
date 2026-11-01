@@ -62,11 +62,11 @@
 - **Tooling**: Uses `Makefile` to manage local binaries in `bin/`
 
 ### Tool Versions
-- `controller-gen`: v0.21.0
+- `controller-gen`: v0.22.0
 - `golangci-lint`: v2.12.2
 - `kustomize`: v5.7.1
-- `controller-runtime`: v0.24.1
-- `k8s.io/api`: v0.36.4
+- `controller-runtime`: v0.25.2
+- `k8s.io/api`: v0.37.1
 
 ## Common Commands
 Run these from the project root:
