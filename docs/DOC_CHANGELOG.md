@@ -4,6 +4,13 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-11-01] (Kubernetes dependency upgrade)
+
+- Update Kubernetes modules to v0.37.1, controller-runtime to v0.25.2 and controller-gen
+  to v0.22.0; extend CI through Kubernetes 1.37.0.
+
+---
+
 ## [2026-10-11] (Kubernetes dependency upgrade, #639)
 
 - Update the SDK and Trino build baseline to Go 1.26.0, Kubernetes modules v0.36.4,
