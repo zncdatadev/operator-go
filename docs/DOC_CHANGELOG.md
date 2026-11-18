@@ -4,6 +4,12 @@ This document tracks all changes made to the SDK documentation.
 
 ---
 
+## [2026-11-18] (Kubernetes patch upgrade)
+
+- Synchronize Kubernetes versioned modules at v0.37.2 in the SDK and Trino example.
+
+---
+
 ## [2026-11-01] (Kubernetes dependency upgrade)
 
 - Update Kubernetes modules to v0.37.1, controller-runtime to v0.25.2 and controller-gen

@@ -66,7 +66,7 @@
 - `golangci-lint`: v2.12.2
 - `kustomize`: v5.7.1
 - `controller-runtime`: v0.25.2
-- `k8s.io/api`: v0.37.1
+- `k8s.io/api`: v0.37.2
 
 ## Common Commands
 Run these from the project root:

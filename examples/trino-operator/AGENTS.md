@@ -35,7 +35,7 @@ This example demonstrates the SDK's preferred division of labour:
 
 ## Toolchain
 
-Go 1.26.0+, Kubernetes Go modules v0.37.1, controller-runtime v0.25.2, and
+Go 1.26.0+, Kubernetes Go modules v0.37.2, controller-runtime v0.25.2, and
 controller-gen v0.22.0. The module uses the SDK in this repository through its local replace.
 
 ## Working Instructions
